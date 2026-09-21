@@ -1,6 +1,6 @@
 # OCC fleet CQE coverage collector
 
-This isolated operations tool produces a deterministic, report-only inventory for the 38 repositories installed on the governed `occ-review-bot` GitHub App. It does not import Paperclip server modules and it never mutates GitHub, repositories, workflows, dependencies, Paperclip tasks, staging, or production.
+This isolated operations tool produces a deterministic, report-only inventory for the 39 repositories installed on the governed `occ-review-bot` GitHub App. It does not import Paperclip server modules and it never mutates GitHub, repositories, workflows, dependencies, Paperclip tasks, staging, or production.
 
 ## Scheduled invocation
 
@@ -33,7 +33,7 @@ Trend evidence retrieval is paginated in bounded 100-record pages. Exhausting th
 - Dependency advisory evidence counts open, non-dismissed Dependabot alerts by severity. Audit-command availability alone never produces a zero advisory count.
 - Owner-assignment records are bounded by the inspected repositories/branches/PRs and keyed as `owner/name:kind:subject`. They are proposals only; v1 does not emit Paperclip or GitHub issues.
 
-Collector/runtime/schema failure, a repository count other than 38, duplicate repositories, or artifact-upload failure is operational failure and must exit non-zero. Coverage findings and explicit unknowns remain report findings and do not by themselves change the collector exit status. The scheduler must treat upload failure as non-zero because upload occurs outside this process.
+Collector/runtime/schema failure, a repository count other than 39, duplicate repositories, or artifact-upload failure is operational failure and must exit non-zero. Coverage findings and explicit unknowns remain report findings and do not by themselves change the collector exit status. The scheduler must treat upload failure as non-zero because upload occurs outside this process.
 
 ## Verification and rollback
 
