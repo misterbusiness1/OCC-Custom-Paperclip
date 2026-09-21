@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { classifyDependencyAudit, classifyProtection, gapRecords } from "./classify.mjs";
 import { githubApi as gh, listInstalledRepositories } from "./github.mjs";
+import { validateInstallationInventory } from "./inventory.mjs";
 import { collectDependabotAlerts, mergedReviewRecord } from "./reviews.mjs";
 import { dependencyAdvisories } from "./trends.mjs";
 
@@ -83,10 +84,7 @@ function mergedReviews(repo) {
 
 try {
   const installed = listInstalledRepositories();
-  if (installed.some((repo) => repo.owner !== args.repositoryOwner)) throw new Error(`installation inventory contains repositories outside ${args.repositoryOwner}`);
-  const unique = new Set(installed.map((repo) => repo.repository));
-  if (unique.size !== installed.length) throw new Error("duplicate repositories returned by installation inventory");
-  if (installed.length !== 38) throw new Error(`incomplete installation inventory: expected 38, received ${installed.length}`);
+  validateInstallationInventory(installed, args.repositoryOwner);
 
   const repositories = installed.map((repo) => {
     const names = [...new Set([repo.default_branch, "main", "production"])];
