@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addApprovalCommentSchema,
+  approvalDetailV2Schema,
   createApprovalSchema,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
@@ -163,6 +164,51 @@ describe("approval validators", () => {
         expect.objectContaining({ path: ["payload", "risks"] }),
       ]),
     );
+  });
+
+  it("accepts Gate B payloads carrying an optional originalMessage field", () => {
+    const parsed = createApprovalSchema.parse({
+      type: "request_board_approval",
+      payload: { ...validGateBPayload, originalMessage: "Hi, where is my order?" },
+    });
+
+    expect(parsed.payload).toMatchObject({ originalMessage: "Hi, where is my order?" });
+  });
+
+  it("contract-checks a well-formed v2 hydrated refund detail envelope", () => {
+    const result = approvalDetailV2Schema.safeParse({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      version: 2,
+      summary: "Refund request: refund_full of $42.50 on order 1001",
+      sideEffects: [{ label: "Refund issued", detail: "$42.50 refund issued for customer 2002 on order 1001" }],
+      refund: {
+        orderId: "1001",
+        customerId: "2002",
+        amountUsd: 42.5,
+        currency: "USD",
+        actionType: "refund_full",
+        reasonCode: null,
+        reason: "Customer requested a full refund before fulfillment.",
+      },
+      reply: null,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a v2 hydrated refund detail missing required fields", () => {
+    const result = approvalDetailV2Schema.safeParse({
+      version: 2,
+      summary: "Refund request",
+      sideEffects: [],
+      refund: { orderId: "1001" },
+      reply: null,
+    });
+
+    expect(result.success).toBe(false);
   });
 
   it("rejects unknown fields on generic board-decision payloads", () => {

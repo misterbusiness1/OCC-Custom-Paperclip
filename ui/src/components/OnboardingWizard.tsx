@@ -47,6 +47,7 @@ import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
+import { OnboardingCompanyNameField } from "./OnboardingCompanyNameField";
 import { Badge } from "@/components/ui/badge";
 import {
   Building2,
@@ -979,32 +980,17 @@ export function OnboardingWizard() {
                       </p>
                     </div>
                   </div>
-                  <div className="mt-3 group">
-                    <label
-                      className={cn(
-                        "text-xs mb-1 block transition-colors",
-                        companyName.trim()
-                          ? "text-foreground"
-                          : "text-muted-foreground group-focus-within:text-foreground"
-                      )}
-                    >
-                      Company name
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Acme Corp"
-                      value={companyName}
-                      onChange={(e) => setCompanyName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && companyName.trim()) {
-                          e.preventDefault();
-                          if (onboardingPath !== "grow" && !missionPath) setMissionPath("direct");
-                          setStep(2);
-                        }
-                      }}
-                      autoFocus
-                    />
-                  </div>
+                  <OnboardingCompanyNameField
+                    value={companyName}
+                    onChange={setCompanyName}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && companyName.trim()) {
+                        e.preventDefault();
+                        if (onboardingPath !== "grow" && !missionPath) setMissionPath("direct");
+                        setStep(2);
+                      }
+                    }}
+                  />
                   <button
                     className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
                     onClick={() => { setOnboardingPath(null); setStep(0); }}

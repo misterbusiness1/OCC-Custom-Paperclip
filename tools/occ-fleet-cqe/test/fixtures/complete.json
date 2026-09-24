@@ -1,0 +1,19 @@
+{
+  "pr": { "number": 42, "created_at": "2026-09-01T10:00:00Z", "head": { "sha": "abc" }, "html_url": "https://example.test/pr/42" },
+  "reviews": [{ "user": { "login": "occ-review-bot[bot]" }, "commit_id": "abc", "submitted_at": "2026-09-01T10:30:00Z", "html_url": "https://example.test/review" }],
+  "checks": { "check_runs": [
+    { "id": 10, "name": "CQE", "status": "completed", "completed_at": "2026-09-01T10:20:00Z", "html_url": "https://example.test/cqe" },
+    { "id": 11, "name": "PHPStan", "status": "completed", "output": { "summary": "baseline delta: -2" }, "html_url": "https://example.test/phpstan" },
+    { "id": 12, "name": "PHPCS", "status": "completed", "html_url": "https://example.test/phpcs" }
+  ] },
+  "files": [{ "filename": "src/Changed.php" }],
+  "annotations": {
+    "11": [{ "path": "src/Changed.php", "annotation_level": "failure" }, { "path": "src/Old.php", "annotation_level": "failure" }],
+    "12": []
+  },
+  "alerts": [
+    { "state": "open", "dismissed_at": null, "security_advisory": { "severity": "high" } },
+    { "state": "open", "dismissed_at": null, "security_advisory": { "severity": "low" } },
+    { "state": "dismissed", "dismissed_at": "2026-08-01T00:00:00Z", "security_advisory": { "severity": "critical" } }
+  ]
+}

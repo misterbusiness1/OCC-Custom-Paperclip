@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -164,6 +164,15 @@ import {
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
+import {
+  classifyBlockedTaskRetryEligibility,
+  RETRY_BLOCKED_TASK_QUEUED_ACTION,
+  RETRY_BLOCKED_TASKS_COOLDOWN_MS,
+  RETRY_BLOCKED_TASKS_DEFAULT_LIMIT,
+  RETRY_BLOCKED_TASKS_DEFAULT_MAX_RETRIES,
+  RETRY_BLOCKED_TASKS_MAX_LIMIT,
+  type RetryBlockedTaskLatestRun,
+} from "../services/recovery/service.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -9010,6 +9019,233 @@ export function issueRoutes(
     });
 
     res.json(result);
+  });
+
+  // Admin retry-blocked-tasks (OXFA-18135, parent OXFA-18132): board-only,
+  // dry-run-by-default tool that finds blocked issues eligible for an
+  // automatic retry and, on commit, re-queues them through the existing
+  // `stranded_issue_recovery` child-issue lifecycle. Retry count/cooldown
+  // are derived from durable `activity_log` rows on the *source* blocked
+  // issue (not from the latest heartbeat run), so a closed/cancelled
+  // recovery child can never make the same source issue re-eligible before
+  // its cooldown window or retry cap is honored.
+  router.post("/companies/:companyId/issues/admin/retry-blocked-tasks", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const dryRun = req.body?.dryRun !== false;
+    const agentIdFilter =
+      typeof req.body?.agentId === "string" && req.body.agentId.trim().length > 0
+        ? req.body.agentId.trim()
+        : null;
+    const priorityFilter =
+      typeof req.body?.priority === "string" && req.body.priority.trim().length > 0
+        ? req.body.priority.trim()
+        : null;
+    const rawLimit = req.body?.max ?? req.body?.limit;
+    const parsedLimit = Number(rawLimit);
+    const limit =
+      Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.min(Math.floor(parsedLimit), RETRY_BLOCKED_TASKS_MAX_LIMIT)
+        : RETRY_BLOCKED_TASKS_DEFAULT_LIMIT;
+    const rawMaxRetries = req.body?.maxRetries;
+    const parsedMaxRetries = Number(rawMaxRetries);
+    const maxRetries =
+      Number.isFinite(parsedMaxRetries) && parsedMaxRetries > 0
+        ? Math.floor(parsedMaxRetries)
+        : RETRY_BLOCKED_TASKS_DEFAULT_MAX_RETRIES;
+    const cooldownMs = RETRY_BLOCKED_TASKS_COOLDOWN_MS;
+    const now = new Date();
+
+    const blockedIssues = await svc.list(companyId, {
+      status: "blocked",
+      ...(agentIdFilter ? { assigneeAgentId: agentIdFilter } : {}),
+      limit: RETRY_BLOCKED_TASKS_MAX_LIMIT,
+    });
+    const filteredIssues = (
+      priorityFilter ? blockedIssues.filter((issue) => issue.priority === priorityFilter) : blockedIssues
+    ).slice(0, limit);
+
+    const actor = getActorInfo(req);
+    const candidates: Array<{
+      issueId: string;
+      identifier: string | null;
+      title: string;
+      assigneeAgentId: string | null;
+      eligible: boolean;
+      reason: string;
+      retryCount: number;
+      maxRetries: number;
+    }> = [];
+    const queuedRecoveryIssueIds: string[] = [];
+
+    for (const issue of filteredIssues) {
+      const retryActivityRows = await db
+        .select({ createdAt: activityLog.createdAt })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, issue.id),
+            eq(activityLog.action, RETRY_BLOCKED_TASK_QUEUED_ACTION),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt));
+      const retryCount = retryActivityRows.length;
+      const lastRetryAt = retryActivityRows[0]?.createdAt ?? null;
+
+      const latestRun: RetryBlockedTaskLatestRun = await db
+        .select({
+          status: heartbeatRuns.status,
+          error: heartbeatRuns.error,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      const blockerAttentionState = (issue as { blockerAttention?: { state?: string } }).blockerAttention?.state;
+      const eligibility = classifyBlockedTaskRetryEligibility({
+        issue: {
+          status: issue.status,
+          priority: issue.priority,
+          createdByUserId: issue.createdByUserId,
+          cancelledAt: issue.cancelledAt,
+          hiddenAt: issue.hiddenAt,
+        },
+        blockerAttentionState,
+        latestRun,
+        retryCount,
+        maxRetries,
+        lastRetryAt,
+        cooldownMs,
+        now,
+      });
+
+      candidates.push({
+        issueId: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        assigneeAgentId: issue.assigneeAgentId,
+        eligible: eligibility.eligible,
+        reason: eligibility.reason,
+        retryCount,
+        maxRetries,
+      });
+
+      if (!eligibility.eligible || dryRun) continue;
+
+      const existingRecoveryIssue = await db
+        .select({ id: issueRows.id, assigneeAgentId: issueRows.assigneeAgentId })
+        .from(issueRows)
+        .where(
+          and(
+            eq(issueRows.companyId, companyId),
+            eq(issueRows.parentId, issue.id),
+            eq(issueRows.originKind, "stranded_issue_recovery"),
+            isNull(issueRows.hiddenAt),
+            notInArray(issueRows.status, ["done", "cancelled"]),
+          ),
+        )
+        .orderBy(desc(issueRows.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      const recoveryIssue =
+        existingRecoveryIssue ??
+        (await svc.create(companyId, {
+          title: `Retry: ${issue.title}`,
+          description: `Admin-triggered retry of blocked task ${issue.identifier ?? issue.id} via retry-blocked-tasks.`,
+          parentId: issue.id,
+          originKind: "stranded_issue_recovery",
+          priority: issue.priority,
+          status: "todo",
+          ...(issue.assigneeAgentId ? { assigneeAgentId: issue.assigneeAgentId } : {}),
+        }));
+
+      queuedRecoveryIssueIds.push(recoveryIssue.id);
+
+      if (recoveryIssue.assigneeAgentId) {
+        // Awaited (unlike the best-effort checkout/force-release wakeups
+        // above): this is an explicit board-triggered batch commit, not a
+        // hot path, so the response should reflect whether each queued
+        // retry's wakeup actually landed rather than racing it in the
+        // background.
+        await heartbeat
+          .wakeup(recoveryIssue.assigneeAgentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: "issue_assigned",
+            payload: { issueId: recoveryIssue.id, mutation: "admin_retry_blocked_task" },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: { issueId: recoveryIssue.id, source: "issue.admin_retry_blocked_task" },
+          })
+          .catch((err) =>
+            logger.warn({ err, issueId: recoveryIssue.id }, "failed to wake recovery owner on admin retry"),
+          );
+      }
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: RETRY_BLOCKED_TASK_QUEUED_ACTION,
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          previousRetryCount: retryCount,
+          retryCount: retryCount + 1,
+          maxRetries,
+          cooldownMs,
+          recoveryIssueId: recoveryIssue.id,
+          agentId: recoveryIssue.assigneeAgentId,
+        },
+      });
+    }
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.admin_retry_blocked_tasks_batch",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        dryRun,
+        evaluated: candidates.length,
+        eligible: candidates.filter((candidate) => candidate.eligible).length,
+        queued: queuedRecoveryIssueIds.length,
+        agentId: agentIdFilter,
+        priority: priorityFilter,
+        limit,
+        maxRetries,
+      },
+    });
+
+    res.json({
+      dryRun,
+      evaluated: candidates.length,
+      eligible: candidates.filter((candidate) => candidate.eligible).length,
+      queued: queuedRecoveryIssueIds,
+      candidates,
+    });
   });
 
   router.get("/issues/:id/comments", async (req, res) => {

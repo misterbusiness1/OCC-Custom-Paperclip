@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
+  buildHydratedApprovalDetail,
   createApprovalSchema,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
@@ -136,7 +137,12 @@ export function approvalRoutes(
     const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!approval) return;
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
-    res.json(redactApprovalPayload(approval));
+    const redacted = redactApprovalPayload(approval);
+    if (req.query.v === "2") {
+      res.json(buildHydratedApprovalDetail(redacted));
+      return;
+    }
+    res.json(redacted);
   });
 
   router.post("/companies/:companyId/approvals", validate(createApprovalSchema), async (req, res) => {

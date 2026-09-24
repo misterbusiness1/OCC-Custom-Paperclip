@@ -415,6 +415,111 @@ export function classifyAdapterFailureForRecovery(
   };
 }
 
+// --- Admin retry-blocked-tasks classifier (OXFA-18135) -------------------
+//
+// Backs `POST /api/companies/:companyId/issues/admin/retry-blocked-tasks`.
+// Kept as a pure function so the eligibility rules can be unit tested
+// without a database, while the route/db-driven orchestration (durable
+// retry-count lookup via `activity_log`, recovery-issue create/reuse, and
+// wakeup) lives in server/src/routes/issues.ts.
+
+export const RETRY_BLOCKED_TASKS_DEFAULT_MAX_RETRIES = 3;
+export const RETRY_BLOCKED_TASKS_COOLDOWN_MS = 30 * 60 * 1000;
+export const RETRY_BLOCKED_TASKS_DEFAULT_LIMIT = 50;
+export const RETRY_BLOCKED_TASKS_MAX_LIMIT = 200;
+export const RETRY_BLOCKED_TASK_QUEUED_ACTION = "issue.admin_retry_blocked_task_queued";
+
+// Beyond the generic adapter-failure classification above (provider_quota /
+// configuration_incomplete), the admin retry tool also treats these
+// heartbeat-run error codes as transient per the OXFA-18132 acceptance
+// criteria ("rate limit, runtime crash, missing-secret-now-rotated, network").
+const RETRY_BLOCKED_TASKS_TRANSIENT_ERROR_CODES = new Set<string>([
+  "adapter_failed",
+  "codex_transient_upstream",
+  "claude_transient_upstream",
+  "timeout",
+  "rate_limited",
+  "network_error",
+  "runtime_crash",
+  "missing_secret",
+]);
+
+export type RetryBlockedTaskLatestRun = Pick<
+  NonNullable<LatestIssueRun>,
+  "status" | "error" | "errorCode" | "resultJson"
+> | null;
+
+export function isTransientBlockedTaskFailure(
+  latestRun: RetryBlockedTaskLatestRun,
+  now = new Date(),
+): boolean {
+  if (!latestRun) return false;
+  if (!TERMINAL_HEARTBEAT_RUN_STATUSES.has(latestRun.status)) return false;
+  if (latestRun.status === "succeeded") return false;
+  if (classifyAdapterFailureForRecovery(latestRun, now) !== null) return true;
+  return Boolean(latestRun.errorCode && RETRY_BLOCKED_TASKS_TRANSIENT_ERROR_CODES.has(latestRun.errorCode));
+}
+
+export type RetryBlockedTaskIneligibleReason =
+  | "not_blocked"
+  | "critical_priority"
+  | "user_authored_directive"
+  | "blocker_not_actionable"
+  | "not_transient_failure"
+  | "retry_cap_reached"
+  | "cooldown_active";
+
+export type RetryBlockedTaskEligibility =
+  | { eligible: true; reason: "eligible" }
+  | { eligible: false; reason: RetryBlockedTaskIneligibleReason };
+
+export function classifyBlockedTaskRetryEligibility(input: {
+  issue: {
+    status: string;
+    priority: string;
+    createdByUserId: string | null;
+    cancelledAt: Date | null;
+    hiddenAt: Date | null;
+  };
+  blockerAttentionState: string | null | undefined;
+  latestRun: RetryBlockedTaskLatestRun;
+  retryCount: number;
+  maxRetries: number;
+  lastRetryAt: Date | null;
+  cooldownMs: number;
+  now?: Date;
+}): RetryBlockedTaskEligibility {
+  const now = input.now ?? new Date();
+  if (input.issue.status !== "blocked" || input.issue.cancelledAt || input.issue.hiddenAt) {
+    return { eligible: false, reason: "not_blocked" };
+  }
+  // Never-negotiable exclusions (OXFA-18135 CEO guardrail): critical-priority
+  // work and user-authored directives always require human review, never an
+  // automatic/admin-triggered retry.
+  if (input.issue.priority === "critical") {
+    return { eligible: false, reason: "critical_priority" };
+  }
+  if (input.issue.createdByUserId) {
+    return { eligible: false, reason: "user_authored_directive" };
+  }
+  if (input.blockerAttentionState !== "stalled" && input.blockerAttentionState !== "needs_attention") {
+    return { eligible: false, reason: "blocker_not_actionable" };
+  }
+  if (!isTransientBlockedTaskFailure(input.latestRun, now)) {
+    return { eligible: false, reason: "not_transient_failure" };
+  }
+  // Cooldown is checked before the hard cap: a just-committed retry should
+  // read as "come back later" rather than "permanently exhausted" until the
+  // cooldown window has actually elapsed and the cap can be evaluated fresh.
+  if (input.lastRetryAt && now.getTime() - input.lastRetryAt.getTime() < input.cooldownMs) {
+    return { eligible: false, reason: "cooldown_active" };
+  }
+  if (input.retryCount >= input.maxRetries) {
+    return { eligible: false, reason: "retry_cap_reached" };
+  }
+  return { eligible: true, reason: "eligible" };
+}
+
 type ContinuationRetryClassification = {
   kind: "transient_infra" | "non_retryable" | "default";
   maxAttempts: number;

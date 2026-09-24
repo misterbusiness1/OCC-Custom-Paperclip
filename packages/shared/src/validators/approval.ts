@@ -55,6 +55,7 @@ export const gateBBoardApprovalPayloadSchema = requestedByAgentPayloadField.exte
   channel: z.enum(gateBBoardApprovalChannels),
   subject: z.string().trim().min(1),
   body: multilineTextSchema.pipe(z.string().min(1)),
+  originalMessage: multilineTextSchema.pipe(z.string().min(1)).optional(),
   threadOrOrderRef: z.string().trim().min(1),
   contentType: z.enum(["text/plain", "text/html"]).optional(),
   bodyHash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
@@ -151,3 +152,42 @@ export const addApprovalCommentSchema = z.object({
 });
 
 export type AddApprovalComment = z.infer<typeof addApprovalCommentSchema>;
+
+export const hydratedApprovalSideEffectSchema = z.object({
+  label: z.string().trim().min(1),
+  detail: z.string().nullable(),
+}).strict();
+
+export const hydratedApprovalRefundDetailSchema = z.object({
+  orderId: z.string().trim().min(1),
+  customerId: z.string().trim().min(1),
+  amountUsd: z.number().finite().nonnegative(),
+  currency: z.string().nullable(),
+  actionType: z.string().trim().min(1),
+  reasonCode: z.string().nullable(),
+  reason: z.string().trim().min(1),
+}).strict();
+
+export const hydratedApprovalReplyDetailSchema = z.object({
+  recipient: z.string().trim().min(1),
+  channel: z.string().trim().min(1),
+  subject: z.string().trim().min(1),
+  proposedMessage: z.string().trim().min(1),
+  originalMessage: z.string().nullable(),
+}).strict();
+
+/**
+ * Contract-checks the delta the `?v=2` envelope adds over the legacy approval
+ * object; the inherited base fields (id, companyId, status, ...) are accepted
+ * via passthrough since their shape is already covered by the legacy contract.
+ */
+export const approvalDetailV2Schema = z.object({
+  version: z.literal(2),
+  summary: z.string().trim().min(1),
+  sideEffects: z.array(hydratedApprovalSideEffectSchema),
+  refund: hydratedApprovalRefundDetailSchema.nullable(),
+  reply: hydratedApprovalReplyDetailSchema.nullable(),
+  rawPayload: z.record(z.string(), z.unknown()).optional(),
+}).passthrough();
+
+export type ApprovalDetailV2Shape = z.infer<typeof approvalDetailV2Schema>;

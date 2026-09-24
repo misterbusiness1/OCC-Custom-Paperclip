@@ -1,0 +1,9 @@
+{
+  "name": "occ-fleet-cqe",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "collect": "node src/collect.mjs"
+  }
+}

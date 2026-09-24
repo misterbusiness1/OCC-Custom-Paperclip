@@ -189,6 +189,58 @@ describe("openapi routes", () => {
     expect(res.body.paths["/api/companies/{companyId}/folders/items/move"].post.summary).toBe(
       "Move an item into or out of a folder",
     );
+    const retryBlockedTasks =
+      res.body.paths["/api/companies/{companyId}/issues/admin/retry-blocked-tasks"].post;
+    expect(retryBlockedTasks.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+    expect(retryBlockedTasks["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(retryBlockedTasks.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "companyId", in: "path", required: true }),
+      ]),
+    );
+    expect(retryBlockedTasks.requestBody).toMatchObject({
+      required: false,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object",
+            properties: {
+              dryRun: { type: "boolean" },
+              agentId: { type: "string" },
+              priority: { type: "string" },
+              max: { type: "integer", minimum: 0, exclusiveMinimum: true },
+              limit: { type: "integer", minimum: 0, exclusiveMinimum: true },
+              maxRetries: { type: "integer", minimum: 0, exclusiveMinimum: true },
+            },
+          },
+        },
+      },
+    });
+    expect(retryBlockedTasks.responses).toMatchObject({
+      200: {
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                dryRun: { type: "boolean" },
+                evaluated: { type: "integer" },
+                eligible: { type: "integer" },
+                queued: { type: "array", items: { type: "string" } },
+                candidates: { type: "array" },
+              },
+              required: ["dryRun", "evaluated", "eligible", "queued", "candidates"],
+            },
+          },
+        },
+      },
+      401: expect.any(Object),
+      403: expect.any(Object),
+      500: expect.any(Object),
+    });
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
   });
