@@ -16889,14 +16889,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // someone other than the owner: an @mention of another agent (often in
         // the closing comment itself) and a board decision for the approval's
         // requester. Those still run against the closed issue without reopening it.
+        // Mentions are only handed on when the owner's run ends, so a mentioned
+        // agent running on the closed issue cannot mention others into a chain.
         const deliverDeferredWakeOnTerminalIssue =
           (issue.status === "done" || issue.status === "cancelled") &&
           (
             (
               deferredWakeReason === "issue_comment_mentioned" &&
               allowsIssueInteractionWake(deferredContextSeed) &&
-              deferred.agentId !== issue.assigneeAgentId &&
-              deferred.agentId !== run.agentId
+              run.agentId === issue.assigneeAgentId &&
+              deferred.agentId !== issue.assigneeAgentId
             ) ||
             await isVerifiedApprovalDecisionWakeForRequester(tx, {
               companyId: issue.companyId,
