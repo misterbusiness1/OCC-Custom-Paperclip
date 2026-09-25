@@ -6,6 +6,7 @@ import {
   agents,
   companies,
   companySkills,
+  completionContracts,
   costEvents,
   createDb,
   decisionBundles,
@@ -24,6 +25,7 @@ import {
   issueExecutionDecisions,
   issueReadStates,
   issues,
+  nativeRunResults,
   routines,
 } from "@paperclipai/db";
 import {
@@ -68,6 +70,8 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(companySkills);
+    await db.delete(nativeRunResults);
+    await db.delete(completionContracts);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(routines);
@@ -275,6 +279,48 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(companies).where(eq(companies.id, otherCompanyId))).resolves.toHaveLength(1);
+  });
+
+  it("removes native-runner rows before deleting company issues and runs", async () => {
+    const { companyId, issueId, runId } = await seedFixture();
+    const contractId = randomUUID();
+    await db.insert(completionContracts).values({
+      id: contractId,
+      companyId,
+      issueId,
+      revision: 1,
+      schemaVersion: "1",
+      policyVersion: "1",
+      risk: "low",
+      completionAuthority: "agent",
+      incompleteCriteriaPolicy: "block",
+      contractJson: {},
+      canonicalSha256: "a".repeat(64),
+      createdByActorType: "system",
+      createdByActorId: "test",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ nativeIssueId: issueId, completionContractId: contractId })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(nativeRunResults).values({
+      companyId,
+      issueId,
+      runId,
+      completionContractId: contractId,
+      serverFingerprint: "fingerprint-1",
+      schemaStatus: "valid",
+      resultJson: {},
+      canonicalSha256: "b".repeat(64),
+    });
+
+    const removed = await companyService(db).remove(companyId);
+
+    expect(removed?.id).toBe(companyId);
+    await expect(db.select().from(nativeRunResults).where(eq(nativeRunResults.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(completionContracts).where(eq(completionContracts.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toHaveLength(0);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
   });
 
   it("removes run-linked cost events before deleting company-owned runs", async () => {

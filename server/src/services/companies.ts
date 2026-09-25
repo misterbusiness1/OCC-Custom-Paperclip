@@ -17,6 +17,12 @@ import {
   goals,
   heartbeatRuns,
   heartbeatRunEvents,
+  nativeRunFinalizations,
+  statusDecisionEffects,
+  statusDecisions,
+  workAssessments,
+  nativeRunResults,
+  completionContracts,
   costEvents,
   financeEvents,
   issueReadStates,
@@ -546,6 +552,15 @@ export function companyService(db: Db) {
             .delete(heartbeatRunEvents)
             .where(inArray(heartbeatRunEvents.runId, companyRunIds.map((run) => run.id)));
         }
+        // Native-runner rows (upstream 0227) reference issues and heartbeat_runs
+        // with NO ACTION foreign keys and reference each other, so they go first,
+        // children before parents.
+        await tx.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, id));
+        await tx.delete(statusDecisionEffects).where(eq(statusDecisionEffects.companyId, id));
+        await tx.delete(statusDecisions).where(eq(statusDecisions.companyId, id));
+        await tx.delete(workAssessments).where(eq(workAssessments.companyId, id));
+        await tx.delete(nativeRunResults).where(eq(nativeRunResults.companyId, id));
+        await tx.delete(completionContracts).where(eq(completionContracts.companyId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         await tx.delete(costEvents).where(eq(costEvents.companyId, id));
