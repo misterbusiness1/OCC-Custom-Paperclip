@@ -35,6 +35,7 @@ import {
 import { and, desc, eq, gte, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { conflict } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import { hasVerifiedWorktreeSeedManifest, isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
 import {
@@ -5893,6 +5894,27 @@ function createProvisioningRuntimeServiceRecord(
   };
 }
 
+/**
+ * Node reports a missing spawn cwd as `spawn <shell> ENOENT`, which reads as a
+ * missing shell. Name the real cause so the recorded failure is actionable.
+ */
+function describeRuntimeServiceSpawnError(
+  err: unknown,
+  context: { cwd: string },
+): Error {
+  const error = err instanceof Error ? err : new Error(String(err));
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "ENOENT" && !existsSync(context.cwd)) {
+    const described = new Error(
+      `service cwd does not exist: ${context.cwd} (${error.message})`,
+      { cause: error },
+    );
+    (described as NodeJS.ErrnoException).code = code;
+    return described;
+  }
+  return error;
+}
+
 async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): Promise<LocalRuntimeServiceStart> {
   const leaseRunId = input.leaseRunId === undefined ? input.runId : input.leaseRunId;
   const startedByRunId = input.startedByRunId === undefined ? input.runId : input.startedByRunId;
@@ -6383,37 +6405,65 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   const shell = resolveShell();
   const serviceLog = await openLocalServiceLogFile(serviceKey);
   let child: ChildProcess;
+  let spawnErrorPromise!: Promise<never>;
+  let earlyExitPromise!: Promise<never>;
   try {
-    child = spawn(shell, ["-lc", command], {
-      cwd: serviceCwd,
-      env,
-      detached: process.platform !== "win32",
-      // The service receives duplicate append-only file descriptors. Closing
-      // Paperclip (or this parent handle below) cannot strand a request logger
-      // on an orphaned socketpair during startup reconciliation.
-      stdio: ["ignore", serviceLog.handle.fd, serviceLog.handle.fd],
+    try {
+      child = spawn(shell, ["-lc", command], {
+        cwd: serviceCwd,
+        env,
+        detached: process.platform !== "win32",
+        // The service receives duplicate append-only file descriptors. Closing
+        // Paperclip (or this parent handle below) cannot strand a request logger
+        // on an orphaned socketpair during startup reconciliation.
+        stdio: ["ignore", serviceLog.handle.fd, serviceLog.handle.fd],
+      });
+    } catch (error) {
+      // A synchronous spawn failure never produces a child, so nothing else
+      // releases this start's port claims or exposure reservation.
+      releasePortReservation(reservedPort);
+      releasePortReservation(claimedIdentityPort);
+      if (reservedExposure) await cleanupRecordExposure(record).catch(() => undefined);
+      throw error;
+    }
+    // Both listeners MUST be attached synchronously, in the same tick as
+    // spawn(). A spawn failure (for example a service cwd that no longer
+    // exists, which Node reports as `spawn /bin/sh ENOENT`) is emitted as an
+    // `error` event on the next tick. Attaching the listener only after the
+    // awaited log-handle close below left that event without a listener, and an
+    // unhandled `error` event is an uncaught exception that kills the whole
+    // server, which is what happened during startup restarts of desired-running
+    // services. The failure is instead routed into the readiness race, whose
+    // rejection path marks the record stopped/unhealthy with the reason.
+    const spawnedChild = child;
+    spawnErrorPromise = new Promise<never>((_, reject) => {
+      spawnedChild.on("error", (err) => {
+        record.healthStatus = "unhealthy";
+        reject(describeRuntimeServiceSpawnError(err, { cwd: serviceCwd }));
+      });
     });
+    earlyExitPromise = new Promise<never>((_, reject) => {
+      // `close` follows `exit` after the child's inherited stdout/stderr file
+      // descriptors are closed. Waiting for it makes the startup log excerpt
+      // deterministic instead of racing the final validation line.
+      spawnedChild.once("close", (code, signal) => {
+        reject(new Error(
+          `service process exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
+        ));
+      });
+    });
+    // These promises only become part of the readiness race after further
+    // awaits (log-handle close, registry write). Mark them handled now so a
+    // rejection that lands in between is not reported as an unhandled
+    // rejection, which the server treats as fatal. The race still observes it.
+    spawnErrorPromise.catch(() => undefined);
+    earlyExitPromise.catch(() => undefined);
   } finally {
     await serviceLog.handle.close();
   }
   record.child = child;
   record.providerRef = child.pid ? String(child.pid) : null;
   record.processGroupId = child.pid ?? null;
-  const spawnErrorPromise = new Promise<never>((_, reject) => {
-    child.once("error", (err) => {
-      reject(err);
-    });
-  });
-  const earlyExitPromise = new Promise<never>((_, reject) => {
-    // `close` follows `exit` after the child's inherited stdout/stderr file
-    // descriptors are closed. Waiting for it makes the startup log excerpt
-    // deterministic instead of racing the final validation line.
-    child.once("close", (code, signal) => {
-      reject(new Error(
-        `service process exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
-      ));
-    });
-  });
   const readServiceOutputExcerpt = async () => {
     try {
       const contents = await fs.readFile(serviceLog.logPath);
@@ -6682,6 +6732,13 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     );
   });
 
+  // Callers that defer readiness (workspace control, startup restarts) first
+  // await DB writes and only then await or `.catch` this promise. A fast
+  // failure, such as a spawn error for a missing cwd, rejects it inside that
+  // window and would otherwise be reported as an unhandled rejection, which
+  // the server treats as fatal. Marking it handled here does not swallow the
+  // failure: every caller still awaits this same promise and receives it.
+  readinessPromise.catch(() => undefined);
   return { record, readiness: readinessPromise };
 }
 
@@ -7618,7 +7675,13 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
     await persistRuntimeServiceRecord(persistenceDb, started.record);
     refs.push(toRuntimeServiceRef(started.record));
 
-    if (options?.deferReadiness && started.record.status === "starting" && !started.record.reused) {
+    // Do not gate this on `status === "starting"`: a start that failed fast (for
+    // example a spawn error because the service cwd no longer exists) has
+    // already been flipped to stopped/unhealthy by its readiness rejection path
+    // during the awaits above. Skipping it here silently dropped the failure:
+    // the caller reported the service as (re)started and nothing ever awaited
+    // the rejected readiness promise.
+    if (options?.deferReadiness && !started.record.reused) {
       // Attach a rejection handler immediately; the caller awaits the same promise after
       // the DB transaction commits, but transaction failures may skip that wait path.
       started.readiness.catch(() => undefined);
@@ -8581,9 +8644,43 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
   };
 }
 
+export interface DesiredRuntimeServiceRestartFailure {
+  workspaceKind: "project_workspace" | "execution_workspace";
+  workspaceId: string;
+  cwd: string | null;
+  error: string;
+}
+
+/**
+ * Re-applies persisted `desiredState: "running"` on server start.
+ *
+ * Every workspace is isolated: a workspace whose services cannot be restarted
+ * (missing cwd, bad config, port conflict, ...) is logged and counted in
+ * `failed`, its runtime service rows are left stopped/unhealthy by the start
+ * path, and the loop moves on. Nothing here may reject or throw into startup.
+ */
 export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
   let restarted = 0;
   let failed = 0;
+  const failures: DesiredRuntimeServiceRestartFailure[] = [];
+  const recordFailure = (
+    workspaceKind: DesiredRuntimeServiceRestartFailure["workspaceKind"],
+    row: { id: string; cwd: string | null },
+    error: unknown,
+  ) => {
+    failed += 1;
+    const failure: DesiredRuntimeServiceRestartFailure = {
+      workspaceKind,
+      workspaceId: row.id,
+      cwd: row.cwd ?? null,
+      error: error instanceof Error ? error.message : String(error),
+    };
+    failures.push(failure);
+    logger.warn(
+      { ...failure, err: error },
+      "failed to restart desired-running runtime services on startup; leaving them stopped",
+    );
+  };
 
   const projectWorkspaceRows = await db
     .select()
@@ -8591,10 +8688,10 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
   const projectWorkspaceRowsById = new Map(projectWorkspaceRows.map((row) => [row.id, row] as const));
 
   for (const row of projectWorkspaceRows) {
-    const runtimeConfig = readProjectWorkspaceRuntimeConfig((row.metadata as Record<string, unknown> | null) ?? null);
-    if (runtimeConfig?.desiredState !== "running" || !runtimeConfig.workspaceRuntime || !row.cwd) continue;
-
     try {
+      const runtimeConfig = readProjectWorkspaceRuntimeConfig((row.metadata as Record<string, unknown> | null) ?? null);
+      if (runtimeConfig?.desiredState !== "running" || !runtimeConfig.workspaceRuntime || !row.cwd) continue;
+
       const refs = await startRuntimeServicesForWorkspaceControl({
         db,
         actor: { id: null, name: "Paperclip", companyId: row.companyId },
@@ -8623,8 +8720,8 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
         respectDesiredStates: true,
       });
       if (refs.length > 0) restarted += refs.filter((ref) => !ref.reused).length;
-    } catch {
-      failed += 1;
+    } catch (error) {
+      recordFailure("project_workspace", row, error);
     }
   }
 
@@ -8634,16 +8731,16 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
     .where(inArray(executionWorkspaces.status, ["active", "idle", "in_review", "cleanup_failed"]));
 
   for (const row of executionWorkspaceRows) {
-    const config = readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null);
-    const inheritedRuntimeConfig = row.projectWorkspaceId
-      ? readProjectWorkspaceRuntimeConfig(
-          (projectWorkspaceRowsById.get(row.projectWorkspaceId)?.metadata as Record<string, unknown> | null) ?? null,
-        )?.workspaceRuntime ?? null
-      : null;
-    const effectiveRuntimeConfig = config?.workspaceRuntime ?? inheritedRuntimeConfig;
-    if (config?.desiredState !== "running" || !effectiveRuntimeConfig || !row.cwd) continue;
-
     try {
+      const config = readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null);
+      const inheritedRuntimeConfig = row.projectWorkspaceId
+        ? readProjectWorkspaceRuntimeConfig(
+            (projectWorkspaceRowsById.get(row.projectWorkspaceId)?.metadata as Record<string, unknown> | null) ?? null,
+          )?.workspaceRuntime ?? null
+        : null;
+      const effectiveRuntimeConfig = config?.workspaceRuntime ?? inheritedRuntimeConfig;
+      if (config?.desiredState !== "running" || !effectiveRuntimeConfig || !row.cwd) continue;
+
       const refs = await startRuntimeServicesForWorkspaceControl({
         db,
         actor: { id: null, name: "Paperclip", companyId: row.companyId },
@@ -8682,12 +8779,12 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
         respectDesiredStates: true,
       });
       if (refs.length > 0) restarted += refs.filter((ref) => !ref.reused).length;
-    } catch {
-      failed += 1;
+    } catch (error) {
+      recordFailure("execution_workspace", row, error);
     }
   }
 
-  return { restarted, failed };
+  return { restarted, failed, failures };
 }
 
 export async function persistAdapterManagedRuntimeServices(input: {
