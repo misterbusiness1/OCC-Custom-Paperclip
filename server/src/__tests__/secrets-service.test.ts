@@ -25,6 +25,7 @@ import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provid
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { SecretProviderClientError } from "../secrets/types.js";
 import { secretService } from "../services/secrets.js";
+import { redactAgentAdapterConfig } from "../redaction.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -146,6 +147,45 @@ describeEmbeddedPostgres("secretService", () => {
         API_KEY: { type: "secret_ref", secretId: foreignSecret.id, version: "latest" },
       }),
     ).rejects.toThrow(/same company/i);
+  });
+
+  it("refuses to persist agent-response env redaction placeholders copied into create or hire configs", async () => {
+    // #9860 backport: agent read responses now return every plain env value as
+    // the redaction placeholder. Clients that copy that config into a create or
+    // hire (for example the UI's Duplicate agent action) must be rejected rather
+    // than persisting the placeholder as the real value.
+    const companyId = await seedCompany("Redacted");
+    const svc = secretService(db);
+    const redactedConfig = redactAgentAdapterConfig({
+      model: "gpt-5",
+      env: {
+        HOME: { type: "plain", value: "/paperclip/agents/home" },
+        CODEX_HOME: "/paperclip/agents/codex",
+        OPENAI_API_KEY: { type: "plain", value: "sk-live-value" },
+      },
+    });
+    expect(redactedConfig.env).toMatchObject({
+      HOME: { type: "plain", value: "***REDACTED***" },
+      CODEX_HOME: { type: "plain", value: "***REDACTED***" },
+    });
+
+    const createAttempt = svc.normalizeAdapterConfigForPersistence(companyId, redactedConfig, {
+      adapterType: "codex_local",
+    });
+    await expect(createAttempt).rejects.toMatchObject({ status: 422 });
+    await expect(createAttempt).rejects.toThrow(/Refusing to persist redacted placeholder for key: HOME/);
+
+    await expect(
+      svc.normalizeHireApprovalPayloadForPersistence(
+        companyId,
+        { name: "Copy", adapterType: "codex_local", adapterConfig: redactedConfig },
+        { adapterType: "codex_local" },
+      ),
+    ).rejects.toMatchObject({ status: 422 });
+
+    await expect(
+      svc.normalizeEnvBindingsForPersistence(companyId, { CODEX_HOME: "***REDACTED***" }),
+    ).rejects.toThrow(/Refusing to persist redacted placeholder for key: CODEX_HOME/);
   });
 
   it("replaceSecretRefsForInstanceTarget moves the binding to the referenced secret's company", async () => {
