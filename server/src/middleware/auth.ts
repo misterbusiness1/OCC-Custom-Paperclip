@@ -176,6 +176,18 @@ interface ActorMiddlewareOptions {
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
+const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}\/fire\/?$/i;
+
+const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
+
+// Fork: heartbeat runtime MCP delivery (services/heartbeat.ts) points adapters
+// at the id-addressed gateway endpoint under /api with a run-scoped pcgw_*
+// bearer, which handleMcpGatewayProtocol validates itself.
+const runtimeMcpGatewayProtocolPath =
+  /^\/api\/tool-gateway\/gateways\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/mcp\/?$/i;
+
+const runtimeMcpGatewayBearer = /^bearer\s+pcgw_[0-9a-f-]{36}\.[A-Za-z0-9_-]+\s*$/i;
+
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
@@ -191,10 +203,44 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
+    // Routine ingress authenticates its own bearer/signature. Never interpret
+    // webhook credentials as agent keys or attach an ambient browser session.
+    if (req.method === "POST" && publicRoutineWebhookPath.test(req.path)) {
+      req.actor = { type: "none", source: "none" };
+      next();
+      return;
+    }
+
     const runIdHeader = req.header("x-paperclip-run-id");
 
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
+
+    // Public MCP gateway protocol requests carry a pcgw_* bearer that is
+    // validated by the gateway service itself. Do not interpret that bearer as
+    // a board key or agent JWT here: doing so rejects the MCP handshake before
+    // the protocol route can verify its run-scoped credential. Keep this bypass
+    // restricted to the unguessable public gateway path; all /api routes retain
+    // the normal actor authentication path below.
+    if (hasBearerCredentials && publicMcpGatewayProtocolPath.test(req.path)) {
+      if (runIdHeader) req.actor.runId = runIdHeader;
+      next();
+      return;
+    }
+
+    // Fork: same as above for the id-addressed runtime MCP endpoint, limited to
+    // POST with a well-formed pcgw_* bearer. The route never reads req.actor,
+    // so no actor is attached.
+    if (
+      req.method === "POST" &&
+      runtimeMcpGatewayProtocolPath.test(req.path) &&
+      runtimeMcpGatewayBearer.test(authHeader ?? "")
+    ) {
+      req.actor = { type: "none", source: "none" };
+      next();
+      return;
+    }
+
     if (!hasBearerCredentials) {
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
