@@ -1383,6 +1383,65 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
   });
 
+  it("re-archives a cleanup_failed workspace only when the caller retries cleanup", async () => {
+    // Fork (#97): the archive route treats archiving a cleanup_failed row as an
+    // explicit cleanup retry and passes retryCleanupFailed. Without the flag the
+    // lifecycle gateway still skips every closed row, so an archive that raced
+    // another closer never re-closes it.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "cleanup_failed",
+        closedAt: new Date(Date.now() - 60_000),
+        cleanupReason: "synthetic cleanup failure",
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    await expect(svc.archiveWorkspaceUnderLifecycleLock({
+      id: seeded.executionWorkspaceId,
+      patch: {},
+      closedAt: new Date(),
+    })).resolves.toBeNull();
+
+    const retryClosedAt = new Date();
+    const retried = await svc.archiveWorkspaceUnderLifecycleLock({
+      id: seeded.executionWorkspaceId,
+      patch: {},
+      closedAt: retryClosedAt,
+      retryCleanupFailed: true,
+    });
+    expect(retried).toMatchObject({ outcome: "archived", capturedGeneration: 5 });
+
+    const [workspace] = await db
+      .select({
+        status: executionWorkspaces.status,
+        closedAt: executionWorkspaces.closedAt,
+        cleanupReason: executionWorkspaces.cleanupReason,
+        metadata: executionWorkspaces.metadata,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    expect(workspace?.status).toBe("archived");
+    expect(workspace?.cleanupReason).toBeNull();
+    expect(workspace?.closedAt?.getTime()).toBe(retryClosedAt.getTime());
+    expect(
+      (workspace?.metadata as Record<string, unknown> | null)?.[EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY],
+    ).toBe(5);
+
+    // The retry flag only applies to cleanup_failed rows: an archived row stays closed.
+    await expect(svc.archiveWorkspaceUnderLifecycleLock({
+      id: seeded.executionWorkspaceId,
+      patch: {},
+      closedAt: new Date(),
+      retryCleanupFailed: true,
+    })).resolves.toBeNull();
+  });
+
   it("does not overwrite a newer archive when a stale cleanup failure lands late", async () => {
     // The archive route records a cleanup failure through the generation-fenced
     // write after the destructive cleanup throws. Simulate a reopen and a fresh
