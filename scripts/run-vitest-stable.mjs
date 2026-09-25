@@ -73,7 +73,7 @@ const serializedServerVitestArgs = [
   "--no-file-parallelism",
   "--maxWorkers=1",
 ];
-const generatedOutputVitestArgs = ["--exclude", "**/dist/**"];
+const sourceOnlyVitestArgs = ["--exclude", "**/dist/**"];
 
 function walk(dir) {
   const entries = readdirSync(dir);
@@ -304,7 +304,7 @@ function runVitest(args, label, watch = false) {
   delete env.PAPERCLIP_WORKTREES_DIR;
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
-  const result = spawnSync("pnpm", ["exec", "vitest", ...(watch ? [] : ["run"]), ...generatedOutputVitestArgs, ...args], {
+  const result = spawnSync("pnpm", ["exec", "vitest", ...(watch ? [] : ["run"]), ...sourceOnlyVitestArgs, ...args], {
     cwd: repoRoot,
     env,
     stdio: "inherit",
@@ -481,7 +481,7 @@ if (options.dryRun) {
           options.shardCount > 1
             ? `${options.shardIndex + 1}/${options.shardCount}`
             : null,
-        vitestExcludePatterns: [generatedOutputVitestArgs[1]],
+        vitestExcludePatterns: [sourceOnlyVitestArgs[1]],
       },
       null,
       2,

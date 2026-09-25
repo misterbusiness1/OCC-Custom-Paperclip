@@ -52,6 +52,7 @@ describePosix("process session wrapper teardown", () => {
     command: string;
     args?: string[];
     streamOutput?: boolean;
+    env?: Record<string, string>;
   }) {
     const sessionDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-session-orphan-"));
     cleanupDirs.push(sessionDir);
@@ -72,6 +73,7 @@ describePosix("process session wrapper teardown", () => {
     };
     const env: Record<string, string> = {
       ...process.env,
+      ...(options.env ?? {}),
       PAPERCLIP_PROCESS_SESSION_DIR: sessionDir,
       PAPERCLIP_PROCESS_SESSION_COMMAND_B64: Buffer.from(JSON.stringify(config), "utf8").toString("base64"),
     };
@@ -113,49 +115,56 @@ describePosix("process session wrapper teardown", () => {
     expect(await waitForExit(wrapper.pid as number, 2_000)).toBe(true);
   }, 20_000);
 
+  // Upstream v2026.831 (#12244/#12248) signals only the wrapper's direct child,
+  // through the child handle (invariants I2/I3, enforced by
+  // execution-target-stdin-race T11). These cases therefore use a child that
+  // owns its stdio itself; a grandchild that inherits the pipes is outside the
+  // wrapper's contract.
+  const IGNORE_SIGTERM_CHILD = [
+    "-e",
+    "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);",
+  ];
+
   it("reaps the wrapper and child when the session directory disappears", async () => {
     const { sessionDir, wrapper } = await startWrapper({
-      command: "sh",
-      args: ["-c", "sleep 300 & wait"],
+      command: "sleep",
+      args: ["300"],
     });
     const childPid = await findChildPid(wrapper.pid as number);
-    const grandchildPid = await findChildPid(childPid);
 
     await rm(sessionDir, { recursive: true, force: true });
 
     expect(await waitForExit(wrapper.pid as number, 10_000)).toBe(true);
     expect(await waitForExit(childPid, 10_000)).toBe(true);
-    expect(await waitForExit(grandchildPid, 10_000)).toBe(true);
   }, 30_000);
 
   it("reaps the wrapper and child on SIGTERM", async () => {
     const { wrapper } = await startWrapper({
-      command: "sh",
-      args: ["-c", "sleep 300 & wait"],
+      command: "sleep",
+      args: ["300"],
     });
     const childPid = await findChildPid(wrapper.pid as number);
-    const grandchildPid = await findChildPid(childPid);
 
     process.kill(wrapper.pid as number, "SIGTERM");
 
     expect(await waitForExit(wrapper.pid as number, 10_000)).toBe(true);
     expect(await waitForExit(childPid, 10_000)).toBe(true);
-    expect(await waitForExit(grandchildPid, 10_000)).toBe(true);
   }, 30_000);
 
   it("escalates when the child ignores SIGTERM", async () => {
     const { wrapper } = await startWrapper({
-      command: "sh",
-      args: ["-c", "trap '' TERM\nsleep 300 & wait"],
+      command: process.execPath,
+      args: IGNORE_SIGTERM_CHILD,
+      env: { PAPERCLIP_PROCESS_SESSION_TERMINATE_GRACE_MS: "500" },
     });
     const childPid = await findChildPid(wrapper.pid as number);
-    const grandchildPid = await findChildPid(childPid);
+    // Give the child time to install its SIGTERM handler.
+    await new Promise((resolve) => setTimeout(resolve, 300));
 
     process.kill(wrapper.pid as number, "SIGTERM");
 
     expect(await waitForExit(wrapper.pid as number, 10_000)).toBe(true);
     expect(await waitForExit(childPid, 10_000)).toBe(true);
-    expect(await waitForExit(grandchildPid, 10_000)).toBe(true);
   }, 30_000);
 
   it("still exits the streamed wrapper when its child closes", async () => {

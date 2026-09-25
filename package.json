@@ -40,6 +40,7 @@
     "release:bootstrap-package": "node scripts/bootstrap-npm-package.mjs",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "check:token-gates": "node scripts/check-token-gates.mjs",
+    "check:node-version": "node scripts/check-node-version-policy.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
     "test:install-sh-docker": "./scripts/test-install-sh-docker.sh",
@@ -55,7 +56,7 @@
     "smoke:terminal-bench-loop-skill": "node scripts/smoke/terminal-bench-loop-skill-smoke.mjs",
     "smoke:provider-free": "./scripts/provider-free-smoke-launcher.sh",
     "test:provider-free-smoke-launcher": "./scripts/provider-free-smoke-launcher.test.sh",
-    "test:release-registry": "node --test scripts/verify-release-registry-state.test.mjs scripts/release-package-map.test.mjs scripts/check-release-package-bootstrap.test.mjs scripts/check-no-git-push.test.mjs scripts/release-lib.test.mjs scripts/release-registry-versions.test.mjs scripts/link-plugin-dev-sdk.test.js scripts/acpx-patch-packaging.test.mjs",
+    "test:release-registry": "node --test scripts/verify-release-registry-state.test.mjs scripts/release-package-map.test.mjs scripts/check-release-package-bootstrap.test.mjs scripts/check-no-git-push.test.mjs scripts/release-lib.test.mjs scripts/release-registry-versions.test.mjs scripts/link-plugin-dev-sdk.test.js scripts/acpx-patch-packaging.test.mjs scripts/service-onboard-smoke.test.mjs scripts/docker-onboard-smoke.test.mjs",
     "storybook-visual:baseline": "node scripts/storybook-visual-baseline.mjs",
     "test:storybook-visual": "node scripts/storybook-visual-baseline.mjs download && node scripts/storybook-visual-baseline.mjs verify && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts",
     "test:storybook-visual:update": "node scripts/storybook-visual-baseline.mjs download && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts --update-snapshots && node scripts/storybook-visual-baseline.mjs pack",
@@ -71,14 +72,14 @@
     "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.1",
+    "@playwright/test": "^1.62.1",
     "cross-env": "^10.1.0",
-    "esbuild": "^0.28.1",
-    "typescript": "^5.7.3",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24.11.0"
   },
   "packageManager": "pnpm@9.15.4",
   "pnpm": {
@@ -89,34 +90,17 @@
     },
     "overrides": {
       "rollup": ">=4.59.0",
-      "react": "^19.2.7",
-      "react-dom": "^19.2.7",
-      "lexical": "0.49.0",
-      "@lexical/clipboard": "0.49.0",
-      "@lexical/link": "0.49.0",
-      "@lexical/list": "0.49.0",
-      "@lexical/markdown": "0.49.0",
-      "@lexical/plain-text": "0.49.0",
-      "@lexical/react": "0.49.0",
-      "@lexical/rich-text": "0.49.0",
-      "@lexical/selection": "0.49.0",
-      "@lexical/utils": "0.49.0",
+      "react": "^19.2.8",
+      "react-dom": "^19.2.8",
       "brace-expansion@<2": "1.1.18",
       "brace-expansion@>=2 <3": "2.1.4",
       "fast-uri": "3.1.5",
-      "hono": "4.12.34",
-      "ip-address": "10.3.1",
       "js-yaml": "4.3.1",
       "nanoid@<4": "3.3.18",
-      "nanoid@>=4": "5.1.16",
       "path-to-regexp": "8.4.0",
-      "picomatch": "4.0.4",
-      "postcss": "8.5.23",
       "react-router": "7.18.2",
       "tar": "7.5.21",
-      "undici@<7": "6.28.0",
-      "undici@>=7": "7.29.0",
-      "vite@>=6 <7": "6.4.3"
+      "undici@<7": "6.28.0"
     }
   }
 }

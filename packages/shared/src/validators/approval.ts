@@ -13,9 +13,9 @@ export const decisionReadyApprovalPayloadSchema = z.object({
 
 export const createApprovalInputSchema = z.object({
   type: z.enum(APPROVAL_TYPES),
-  requestedByAgentId: z.string().uuid().optional().nullable(),
+  requestedByAgentId: z.string().guid().optional().nullable(),
   payload: z.record(z.string(), z.unknown()),
-  issueIds: z.array(z.string().uuid()).optional(),
+  issueIds: z.array(z.string().guid()).optional(),
 });
 
 export const createApprovalSchema = createApprovalInputSchema.superRefine((value, ctx) => {

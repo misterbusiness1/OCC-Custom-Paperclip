@@ -1,14 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return { ...actual, runAdapterExecutionTargetProcess: vi.fn() };
 });
 
-import { ensureRemoteOpenCodeModelConfiguredAndAvailable } from "./execute.js";
+import { ensureRemoteOpenCodeModelConfiguredAndAvailable, execute } from "./execute.js";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 
 const runProcessMock = vi.mocked(runAdapterExecutionTargetProcess);
+
+async function createSkillDir(root: string, name: string): Promise<string> {
+  const skillDir = path.join(root, name);
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(path.join(skillDir, "SKILL.md"), `# ${name}\n`, "utf8");
+  return skillDir;
+}
 
 function probeResult(overrides: Record<string, unknown>) {
   return {
@@ -22,6 +32,98 @@ function probeResult(overrides: Record<string, unknown>) {
     ...overrides,
   } as never;
 }
+
+describe("OpenCode local skill injection", () => {
+  // Fork 7ed62ed3a: runtime skills are mounted through an isolated per-run
+  // skills directory (OpenCode `skills.paths` in the per-run XDG config), never
+  // written into the configured child HOME or the server's own HOME.
+  it("mounts runtime skills through the per-run skills dir without touching any HOME", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-configured-home-"));
+    const processHome = path.join(root, "process-home");
+    const configuredHome = path.join(root, "configured-home");
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "opencode");
+    const skillSource = await createSkillDir(path.join(root, "runtime-skills"), "paperclip");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", "utf8");
+    await fs.chmod(commandPath, 0o755);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = processHome;
+    runProcessMock.mockReset();
+    let mountedSkillsPaths: string[] = [];
+    let mountedSkillTarget: string | null = null;
+    let childEnv: Record<string, string> = {};
+    runProcessMock.mockImplementationOnce(async (_runId, _target, _command, _args, options) => {
+      childEnv = { ...(options.env as Record<string, string>) };
+      const runtimeConfig = JSON.parse(
+        await fs.readFile(path.join(childEnv.XDG_CONFIG_HOME!, "opencode", "opencode.json"), "utf8"),
+      ) as { skills?: { paths?: string[] } };
+      mountedSkillsPaths = runtimeConfig.skills?.paths ?? [];
+      if (mountedSkillsPaths[0]) {
+        mountedSkillTarget = await fs.realpath(path.join(mountedSkillsPaths[0], "paperclip"));
+      }
+      return probeResult({
+        stdout: JSON.stringify({
+          type: "text",
+          sessionID: "session-configured-home",
+          part: { text: "done" },
+        }),
+      });
+    });
+
+    try {
+      const result = await execute({
+        runId: "run-configured-home",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OpenCode Coder",
+          adapterType: "opencode_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "openai/gpt-5",
+          env: {
+            HOME: configuredHome,
+            OPENCODE_ALLOW_ALL_MODELS: "1",
+          },
+          paperclipRuntimeSkills: [{
+            key: "paperclipai/paperclip/paperclip",
+            runtimeName: "paperclip",
+            source: skillSource,
+          }],
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(childEnv.HOME).toBe(configuredHome);
+      expect(childEnv.OPENCODE_DISABLE_EXTERNAL_SKILLS).toBe("1");
+      expect(mountedSkillsPaths).toHaveLength(1);
+      expect(mountedSkillTarget).toBe(await fs.realpath(skillSource));
+      // The per-run skills dir is removed once the run ends.
+      await expect(fs.lstat(mountedSkillsPaths[0]!)).rejects.toThrow();
+      await expect(fs.lstat(path.join(configuredHome, ".claude", "skills"))).rejects.toThrow();
+      await expect(fs.lstat(path.join(processHome, ".claude", "skills"))).rejects.toThrow();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("ensureRemoteOpenCodeModelConfiguredAndAvailable", () => {
   afterEach(() => {

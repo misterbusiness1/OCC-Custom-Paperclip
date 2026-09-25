@@ -9,6 +9,8 @@ import {
   jsonb,
   index,
   uniqueIndex,
+  unique,
+  bigint,
 } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { projects } from "./projects.js";
@@ -31,6 +33,8 @@ export const issues = pgTable(
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
+    statusVersion: bigint("status_version", { mode: "number" }).notNull().default(0),
+    lastStatusDecisionId: uuid("last_status_decision_id"),
     workMode: text("work_mode").notNull().default("standard"),
     harnessKind: text("harness_kind"),
     priority: text("priority").notNull().default("medium"),
@@ -82,6 +86,7 @@ export const issues = pgTable(
     checkoutRunIdForeignKeyIdx: index("issues_checkout_run_id_fk_idx").on(table.checkoutRunId),
     executionRunIdForeignKeyIdx: index("issues_execution_run_id_fk_idx").on(table.executionRunId),
     executionWorkspaceIdForeignKeyIdx: index("issues_execution_workspace_id_fk_idx").on(table.executionWorkspaceId),
+    companyIdUq: unique("issues_company_id_uq").on(table.companyId, table.id),
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
     companyHarnessKindIdx: index("issues_company_harness_kind_idx").on(table.companyId, table.harnessKind),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(
