@@ -16,6 +16,7 @@ const mockApprovalService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(),
+  describeUnqueuedWakeup: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -137,6 +138,7 @@ describe("approval routes idempotent retries", () => {
     mockApprovalService.listComments.mockReset();
     mockApprovalService.addComment.mockReset();
     mockHeartbeatService.wakeup.mockReset();
+    mockHeartbeatService.describeUnqueuedWakeup.mockReset();
     mockIssueApprovalService.listIssuesForApproval.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
@@ -643,6 +645,85 @@ describe("approval routes idempotent retries", () => {
       expect(mockIssueService.update).not.toHaveBeenCalled();
       // The requester is still told about the decision.
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith("agent-1", expect.objectContaining({ reason: "approval_approved" }));
+    });
+
+    it("logs requester_wakeup_skipped, not queued, when the heartbeat skipped the decision wake", async () => {
+      mockApprovalService.getById.mockResolvedValue(decided("approved"));
+      mockApprovalService.approve.mockResolvedValue({ approval: decided("approved"), applied: true });
+      mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([parkedIssue]);
+      mockHeartbeatService.wakeup.mockResolvedValue(null);
+      mockHeartbeatService.describeUnqueuedWakeup.mockResolvedValue({
+        outcome: "skipped",
+        wakeupRequestId: "wakeup-9",
+        reason: "heartbeat.wakeOnDemand.disabled",
+        error: null,
+      });
+
+      const res = await request(await createApp()).post("/api/approvals/approval-1/approve").send({});
+
+      expect(res.status).toBe(200);
+      expect(mockHeartbeatService.describeUnqueuedWakeup).toHaveBeenCalledWith({
+        companyId: "company-1",
+        agentId: "agent-1",
+        idempotencyKey: `approval-requester:approval-1:approved:${decidedAt.toISOString()}`,
+        issueId: "issue-1",
+      });
+      const actions = mockLogActivity.mock.calls.map(([, entry]) => entry.action);
+      expect(actions).toContain("approval.requester_wakeup_skipped");
+      expect(actions).not.toContain("approval.requester_wakeup_queued");
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "approval.requester_wakeup_skipped",
+        entityId: "approval-1",
+        details: expect.objectContaining({
+          approvalStatus: "approved",
+          requesterAgentId: "agent-1",
+          wakeupRequestId: "wakeup-9",
+          reason: "heartbeat.wakeOnDemand.disabled",
+        }),
+      }));
+    });
+
+    it("still logs requester_wakeup_queued when the decision wake was deferred behind a live run", async () => {
+      mockApprovalService.getById.mockResolvedValue(decided("rejected"));
+      mockApprovalService.reject.mockResolvedValue({ approval: decided("rejected"), applied: true });
+      mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([parkedIssue]);
+      mockHeartbeatService.wakeup.mockResolvedValue(null);
+      mockHeartbeatService.describeUnqueuedWakeup.mockResolvedValue({
+        outcome: "deferred",
+        wakeupRequestId: "wakeup-deferred",
+        reason: "issue_execution_deferred",
+        error: null,
+      });
+
+      const res = await request(await createApp()).post("/api/approvals/approval-1/reject").send({ decisionNote: "no" });
+
+      expect(res.status).toBe(200);
+      const actions = mockLogActivity.mock.calls.map(([, entry]) => entry.action);
+      expect(actions).not.toContain("approval.requester_wakeup_skipped");
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "approval.requester_wakeup_queued",
+        details: expect.objectContaining({
+          approvalStatus: "rejected",
+          wakeRunId: null,
+          deferred: true,
+          wakeupRequestId: "wakeup-deferred",
+        }),
+      }));
+    });
+
+    it("does not look up the wake outcome when a run was queued", async () => {
+      mockApprovalService.getById.mockResolvedValue(decided("approved"));
+      mockApprovalService.approve.mockResolvedValue({ approval: decided("approved"), applied: true });
+      mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([parkedIssue]);
+
+      const res = await request(await createApp()).post("/api/approvals/approval-1/approve").send({});
+
+      expect(res.status).toBe(200);
+      expect(mockHeartbeatService.describeUnqueuedWakeup).not.toHaveBeenCalled();
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "approval.requester_wakeup_queued",
+        details: expect.not.objectContaining({ deferred: true }),
+      }));
     });
 
     it("does not hand back or wake anything when the approval has no requesting agent", async () => {

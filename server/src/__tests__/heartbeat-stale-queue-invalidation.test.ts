@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   agents,
   agentWakeupRequests,
+  approvals,
   companies,
   costEvents,
   createDb,
@@ -1639,6 +1640,260 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(wakeup?.status).not.toBe("skipped");
     expect(countExecuteCallsForRun(runId)).toBe(1);
   });
+
+  async function seedDecidedApproval(input: { companyId: string; requestedByAgentId: string }) {
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId: input.companyId,
+      type: "request_board_approval",
+      requestedByAgentId: input.requestedByAgentId,
+      status: "approved",
+      payload: {},
+      decidedByUserId: "board-user-1",
+      decidedAt: new Date(),
+    });
+    return approvalId;
+  }
+
+  it("still delivers the requester's decision wake after the requester closed the linked issue", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "SocialMediaManager" });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Closed before the board decided",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      completedAt: new Date(),
+    });
+    const approvalId = await seedDecidedApproval({ companyId, requestedByAgentId: agentId });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "approval_approved",
+      invocationSource: "automation",
+      contextExtras: {
+        source: "approval.approved",
+        approvalId,
+        approvalStatus: "approved",
+        taskId: issueId,
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded" || run?.status === "cancelled";
+    });
+
+    const [run, wakeup, issue] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(wakeup?.status).not.toBe("skipped");
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+    // Delivery is informational: the closed issue is not reopened.
+    expect(issue?.status).toBe("done");
+
+    // The decision run on the closed issue does not wake itself again.
+    await heartbeat.drainActiveRunExecutions();
+    const decisionRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'approval_approved'`,
+      ));
+    expect(decisionRuns).toHaveLength(1);
+  });
+
+  it("still cancels a decision wake on a closed issue when the woken agent did not request the approval", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "Bystander" });
+    const requesterAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: requesterAgentId,
+      companyId,
+      name: "ActualRequester",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true } },
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Closed issue with someone else's approval",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      completedAt: new Date(),
+    });
+    const approvalId = await seedDecidedApproval({ companyId, requestedByAgentId: requesterAgentId });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "approval_approved",
+      invocationSource: "automation",
+      contextExtras: { source: "approval.approved", approvalId, approvalStatus: "approved", taskId: issueId },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run).toEqual({ status: "cancelled", errorCode: "issue_terminal_status" });
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it.each([
+    { endingRunOwner: "assignee", expectPromoted: true },
+    { endingRunOwner: "another mentioned agent", expectPromoted: false },
+  ])(
+    "hands a deferred mention on a closed issue on only when the $endingRunOwner run ends",
+    async ({ expectPromoted }) => {
+      const { companyId, agentId: assigneeAgentId } = await seedCompanyAndAgent({ agentName: "DigestOwner" });
+      const [mentionedAgentId, chainedAgentId] = [randomUUID(), randomUUID()];
+      await db.insert(agents).values([mentionedAgentId, chainedAgentId].map((id, index) => ({
+        id,
+        companyId,
+        name: index === 0 ? "MentionedAgent" : "ChainedAgent",
+        role: "engineer",
+        status: "active" as const,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true } },
+        permissions: {},
+      })));
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Closed digest",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId,
+        completedAt: new Date(),
+      });
+      // The ending run is stale on the closed issue, so claiming it cancels it
+      // and runs the deferred-wake promotion loop without invoking an adapter.
+      const endingAgentId = expectPromoted ? assigneeAgentId : mentionedAgentId;
+      const { runId } = await seedQueuedRun({
+        companyId,
+        agentId: endingAgentId,
+        issueId,
+        wakeReason: "issue_assigned",
+      });
+      const comment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorAgentId: endingAgentId,
+          createdByRunId: runId,
+          body: "@ChainedAgent over to you",
+        })
+        .returning()
+        .then((rows) => rows[0]!);
+      const deferredWakeupId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: deferredWakeupId,
+        companyId,
+        agentId: chainedAgentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_execution_deferred",
+        payload: {
+          issueId,
+          commentId: comment.id,
+          _paperclipWakeContext: {
+            issueId,
+            taskId: issueId,
+            commentId: comment.id,
+            wakeCommentId: comment.id,
+            wakeReason: "issue_comment_mentioned",
+            source: "comment.mention",
+          },
+        },
+        status: "deferred_issue_execution",
+        requestedByActorType: "agent",
+        requestedByActorId: endingAgentId,
+      });
+
+      await heartbeat.resumeQueuedRuns();
+      await waitForCondition(async () => {
+        const deferred = await db
+          .select({ status: agentWakeupRequests.status })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, deferredWakeupId))
+          .then((rows) => rows[0] ?? null);
+        return deferred?.status !== "deferred_issue_execution";
+      });
+
+      const deferred = await db
+        .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, deferredWakeupId))
+        .then((rows) => rows[0] ?? null);
+      const chainedRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, chainedAgentId));
+      if (expectPromoted) {
+        expect(deferred?.status).not.toBe("cancelled");
+        expect(chainedRuns.map((run) => run.id)).toEqual([deferred?.runId]);
+      } else {
+        expect(deferred?.status).toBe("cancelled");
+        expect(chainedRuns).toHaveLength(0);
+      }
+      const issue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.status).toBe("done");
+    },
+  );
 
   it("still cancels a non-decision wake when the issue was handed to a human owner", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "FormerAssignee" });
