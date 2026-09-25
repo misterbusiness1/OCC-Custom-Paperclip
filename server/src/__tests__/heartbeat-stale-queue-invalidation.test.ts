@@ -2060,6 +2060,111 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  // Fork (PR #104) end to end in the v2026.916.1 layout: the decision wake is
+  // admitted by wakeup(), survives the run-dispatch staleness policy at claim,
+  // and executeRun delivers it without an execution continuation (which 916
+  // rejects on closed issues). The tests above seed the queued run directly.
+  it.each([
+    {
+      issueStatus: "done" as const,
+      decision: "rejected" as const,
+      requesterIsAssignee: true,
+    },
+    {
+      issueStatus: "cancelled" as const,
+      decision: "revision_requested" as const,
+      requesterIsAssignee: false,
+    },
+  ])(
+    "delivers a $decision decision through wakeup() to its requester on a $issueStatus issue (assignee: $requesterIsAssignee)",
+    async ({ issueStatus, decision, requesterIsAssignee }) => {
+      const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "DecisionRequester" });
+      const otherAssigneeId = randomUUID();
+      if (!requesterIsAssignee) {
+        await db.insert(agents).values({
+          id: otherAssigneeId,
+          companyId,
+          name: "CurrentOwner",
+          role: "engineer",
+          status: "active",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: { heartbeat: { wakeOnDemand: true } },
+          permissions: {},
+        });
+      }
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Closed before the board decided",
+        status: issueStatus,
+        priority: "medium",
+        assigneeAgentId: requesterIsAssignee ? agentId : otherAssigneeId,
+        ...(issueStatus === "done" ? { completedAt: new Date() } : { cancelledAt: new Date() }),
+      });
+      const approvalId = await seedDecidedApproval({ companyId, requestedByAgentId: agentId });
+      const wakeReason = `approval_${decision}`;
+
+      const queued = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: wakeReason,
+        idempotencyKey: `approval-requester:${approvalId}:${decision}:test`,
+        payload: { approvalId, approvalStatus: decision, issueId, issueIds: [issueId] },
+        requestedByActorType: "user",
+        requestedByActorId: "board-user-1",
+        contextSnapshot: {
+          source: `approval.${decision}`,
+          approvalId,
+          approvalStatus: decision,
+          issueId,
+          issueIds: [issueId],
+          taskId: issueId,
+          wakeReason,
+        },
+      });
+      expect(queued).not.toBeNull();
+      const runId = queued!.id;
+
+      await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded" || run?.status === "cancelled" || run?.status === "failed";
+      }, 10_000);
+      await heartbeat.drainActiveRunExecutions();
+
+      const [run, issue, requesterRuns] = await Promise.all([
+        db
+          .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId)),
+      ]);
+      expect(run).toMatchObject({ status: "succeeded", errorCode: null });
+      expect(countExecuteCallsForRun(runId)).toBe(1);
+      // Informational delivery: the closed issue is neither reopened nor reassigned.
+      expect(issue).toEqual({
+        status: issueStatus,
+        assigneeAgentId: requesterIsAssignee ? agentId : otherAssigneeId,
+      });
+      // The decision run does not wake its requester again.
+      expect(requesterRuns.map((row) => row.id)).toEqual([runId]);
+    },
+  );
+
   it.each([
     { endingRunOwner: "assignee", expectPromoted: true },
     { endingRunOwner: "another mentioned agent", expectPromoted: false },
