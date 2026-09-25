@@ -235,7 +235,11 @@ import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
-import { ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS, recoveryService } from "./recovery/service.js";
+import {
+  ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+  normalizeProviderQuotaAdapterResult,
+  recoveryService,
+} from "./recovery/service.js";
 import {
   buildIssueReviewPathLostIdempotencyKey,
   decideIssueReviewPathRecovery,
@@ -15718,6 +15722,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
       }
+      // Adapters without their own quota mapping (opencode_local, the ACP lanes,
+      // plugins) report provider balance/usage-limit exhaustion under a generic
+      // failure code; reclassify it as provider_quota so the run defers to the
+      // reset time instead of retrying immediately and stranding the issue.
+      adapterResult = normalizeProviderQuotaAdapterResult(adapterResult);
       // Reconcile the referenced-project set against the real remote staging outcome. A referenced
       // project can pass authorization and clone locally at run prep, then fail to stage into the
       // sandbox during execution. The run-prep observability above counts such a project as synced,
