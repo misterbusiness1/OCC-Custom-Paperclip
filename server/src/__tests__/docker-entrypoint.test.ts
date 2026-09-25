@@ -120,7 +120,9 @@ describe("docker-entrypoint.sh", () => {
     expect(stdout).toContain("ENTRYPOINT-CMD-RAN");
     expect(calls).not.toContain("usermod");
     expect(calls).not.toContain("groupmod");
-    expect(calls.includes(`chown -R node:node ${stubDir}`)).toBe(homeMismatch);
+    // Fork: ownership repair is per entry (read-only mounts are pruned), not chown -R.
+    expect(calls.includes(`chown node:node ${stubDir}/mismatched-entry`)).toBe(homeMismatch);
+    expect(calls).not.toContain("chown -R");
     expect(calls).toContain("gosu node echo ENTRYPOINT-CMD-RAN");
   });
 
