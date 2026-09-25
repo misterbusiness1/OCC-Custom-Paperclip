@@ -4089,6 +4089,32 @@ function isApprovalDecisionWakeForRequester(
   return readNonEmptyString(contextSnapshot?.approvalId) !== null;
 }
 
+// Unlike the assignee guard above, the dependency and terminal-status gates
+// only let a decision wake through when the approval really was requested by
+// the woken agent, so review-path wakes to other owners keep today's gating.
+async function isVerifiedApprovalDecisionWakeForRequester(
+  dbOrTx: Pick<Db, "select">,
+  input: {
+    companyId: string;
+    agentId: string;
+    contextSnapshot: Record<string, unknown> | null | undefined;
+  },
+) {
+  if (!isApprovalDecisionWakeForRequester(input.contextSnapshot)) return false;
+  const approvalId = readNonEmptyString(input.contextSnapshot?.approvalId);
+  if (!approvalId || !isUuidLike(approvalId)) return false;
+  const approval = await dbOrTx
+    .select({ id: approvals.id })
+    .from(approvals)
+    .where(and(
+      eq(approvals.id, approvalId),
+      eq(approvals.companyId, input.companyId),
+      eq(approvals.requestedByAgentId, input.agentId),
+    ))
+    .then((rows) => rows[0] ?? null);
+  return approval !== null;
+}
+
 function allowsIssueInteractionWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -12512,7 +12538,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+      if (
+        unresolvedBlockerCount > 0 &&
+        !allowsIssueInteractionWake(context) &&
+        !(await isVerifiedApprovalDecisionWakeForRequester(db, {
+          companyId: run.companyId,
+          agentId: run.agentId,
+          contextSnapshot: context,
+        }))
+      ) {
         await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
         logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
         return null;
@@ -12766,7 +12800,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
+      // A board decision still reaches the requester after it closed the
+      // linked issue; the run is informational and does not reopen the issue.
+      if (
+        !resumeIntent &&
+        !wakeCommentId &&
+        !(isApprovalDecisionWake && await isVerifiedApprovalDecisionWakeForRequester(db, {
+          companyId: run.companyId,
+          agentId: run.agentId,
+          contextSnapshot: context,
+        }))
+      ) {
         return {
           stale: true,
           errorCode: "issue_terminal_status",
@@ -13627,6 +13671,94 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       activeWakeupPromises.delete(promise);
     });
     return promise;
+  }
+
+  // wakeup() returns null both when it parked the wake behind another run on
+  // the same issue (still delivered later) and when a gate skipped it. Callers
+  // that report delivery use this to tell the two apart from the recorded
+  // wakeup request. A deferred wake merged into an existing deferred request
+  // for the same agent and issue writes no row of its own, so fall back to that.
+  async function describeUnqueuedWakeup(input: {
+    companyId: string;
+    agentId: string;
+    idempotencyKey: string;
+    issueId?: string | null;
+  }): Promise<{
+    outcome: "deferred" | "skipped";
+    wakeupRequestId: string | null;
+    reason: string | null;
+    error: string | null;
+  }> {
+    const recorded = await db
+      .select({
+        id: agentWakeupRequests.id,
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        error: agentWakeupRequests.error,
+      })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, input.agentId),
+        eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
+        // The wake was requested moments ago; bound the scan on the agent index.
+        gte(agentWakeupRequests.requestedAt, new Date(Date.now() - 15 * 60_000)),
+      ))
+      .orderBy(desc(agentWakeupRequests.requestedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (recorded) {
+      const deferred = recorded.status === "deferred_issue_execution" || recorded.status === "queued";
+      return {
+        outcome: deferred ? "deferred" : "skipped",
+        wakeupRequestId: recorded.id,
+        reason: recorded.reason ?? null,
+        error: recorded.error ?? null,
+      };
+    }
+    if (!input.issueId) {
+      return { outcome: "skipped", wakeupRequestId: null, reason: "wakeup_not_recorded", error: null };
+    }
+    const issueWakeFilter = and(
+      eq(agentWakeupRequests.companyId, input.companyId),
+      eq(agentWakeupRequests.agentId, input.agentId),
+      sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+    );
+    const mergedDeferred = await db
+      .select({ id: agentWakeupRequests.id, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(and(issueWakeFilter, eq(agentWakeupRequests.status, "deferred_issue_execution")))
+      .orderBy(asc(agentWakeupRequests.requestedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (mergedDeferred) {
+      return {
+        outcome: "deferred",
+        wakeupRequestId: mergedDeferred.id,
+        reason: mergedDeferred.reason ?? null,
+        error: null,
+      };
+    }
+    // An identical dependency-blocked skip is deduplicated without a new row;
+    // surface the reason recorded by the earlier skip.
+    const priorSkip = await db
+      .select({
+        id: agentWakeupRequests.id,
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        error: agentWakeupRequests.error,
+      })
+      .from(agentWakeupRequests)
+      .where(issueWakeFilter)
+      .orderBy(desc(agentWakeupRequests.requestedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return {
+      outcome: "skipped",
+      wakeupRequestId: null,
+      reason: priorSkip?.status === "skipped" && priorSkip.reason ? priorSkip.reason : "wakeup_not_recorded",
+      error: priorSkip?.status === "skipped" ? priorSkip.error ?? null : null,
+    };
   }
 
   async function executeRun(runId: string) {
@@ -16753,7 +16885,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
 
-        if (issue.status === "done" || issue.status === "cancelled") {
+        // A closed issue retires deferred follow-ups, except wakes addressed to
+        // someone other than the owner: an @mention of another agent (often in
+        // the closing comment itself) and a board decision for the approval's
+        // requester. Those still run against the closed issue without reopening it.
+        const deliverDeferredWakeOnTerminalIssue =
+          (issue.status === "done" || issue.status === "cancelled") &&
+          (
+            (
+              deferredWakeReason === "issue_comment_mentioned" &&
+              allowsIssueInteractionWake(deferredContextSeed) &&
+              deferred.agentId !== issue.assigneeAgentId &&
+              deferred.agentId !== run.agentId
+            ) ||
+            await isVerifiedApprovalDecisionWakeForRequester(tx, {
+              companyId: issue.companyId,
+              agentId: deferred.agentId,
+              contextSnapshot: deferredContextSeed,
+            })
+          );
+
+        if ((issue.status === "done" || issue.status === "cancelled") && !deliverDeferredWakeOnTerminalIssue) {
           const now = new Date();
           await tx
             .update(agentWakeupRequests)
@@ -17800,12 +17952,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ).then((rows) => rows.get(issue.id) ?? null);
 
         // Blocked descendants should stay idle until the final blocker resolves.
-        // Human comment/mention wakes are the exception: they may run in a
-        // bounded interaction mode so the assignee can answer or triage.
+        // Human comment/mention wakes and board decisions on the agent's own
+        // approval are the exception: they may run in a bounded interaction
+        // mode so the agent can answer, triage, or record the decision.
         const blockedInteractionWake =
           dependencyReadiness &&
           !dependencyReadiness.isDependencyReady &&
-          allowsIssueInteractionWake(enrichedContextSnapshot);
+          (
+            allowsIssueInteractionWake(enrichedContextSnapshot) ||
+            await isVerifiedApprovalDecisionWakeForRequester(tx, {
+              companyId: issue.companyId,
+              agentId,
+              contextSnapshot: enrichedContextSnapshot,
+            })
+          );
 
         if (blockedInteractionWake) {
           enrichedContextSnapshot.dependencyBlockedInteraction = true;
@@ -19052,6 +19212,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }),
 
     wakeup: trackWakeup,
+    describeUnqueuedWakeup,
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,

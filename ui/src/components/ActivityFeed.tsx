@@ -80,6 +80,7 @@ const ACTION_TIER: Record<string, EventTier> = {
   "agent.terminated": 2,
   "approval.requester_wakeup_queued": 3,
   "approval.requester_wakeup_failed": 3,
+  "approval.requester_wakeup_skipped": 3,
   "company.created": 3,
   "company.updated": 3,
   "company.archived": 3,

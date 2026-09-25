@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  approvals,
   agentRuntimeState,
   agentWakeupRequests,
   companySkills,
@@ -145,6 +146,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
+    await db.delete(approvals);
     await db.delete(agents);
     await db.delete(companySkills);
     await db.delete(environments);
@@ -907,6 +909,244 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
     expect(readyRun?.status).toBe("succeeded");
     expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  describe("board decisions on a dependency-blocked issue (approval wakes)", () => {
+    async function seedBlockedApprovalFixture() {
+      const companyId = randomUUID();
+      const requesterAgentId = randomUUID();
+      const otherAgentId = randomUUID();
+      const blockerId = randomUUID();
+      const blockedIssueId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+      await db.insert(agents).values([
+        {
+          id: requesterAgentId,
+          companyId,
+          name: "PluginEngineer",
+          role: "engineer",
+          status: "active",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+          permissions: {},
+        },
+        {
+          id: otherAgentId,
+          companyId,
+          name: "OtherRequester",
+          role: "engineer",
+          status: "active",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+          permissions: {},
+        },
+      ]);
+      await db.insert(issues).values([
+        {
+          id: blockerId,
+          companyId,
+          title: "Upstream dependency",
+          status: "todo",
+          priority: "high",
+          responsibleUserId: "responsible-user",
+        },
+        {
+          id: blockedIssueId,
+          companyId,
+          title: "Waiting on upstream and the board",
+          status: "blocked",
+          priority: "medium",
+          assigneeAgentId: requesterAgentId,
+          responsibleUserId: "responsible-user",
+        },
+      ]);
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      });
+      const insertApproval = async (requestedByAgentId: string) => {
+        const approvalId = randomUUID();
+        await db.insert(approvals).values({
+          id: approvalId,
+          companyId,
+          type: "request_board_approval",
+          requestedByAgentId,
+          status: "approved",
+          payload: {},
+          decidedByUserId: "board-user",
+          decidedAt: new Date(),
+        });
+        return approvalId;
+      };
+      return { companyId, requesterAgentId, otherAgentId, blockerId, blockedIssueId, insertApproval };
+    }
+
+    function approvalWake(issueId: string, approvalId: string) {
+      return {
+        source: "automation" as const,
+        triggerDetail: "system" as const,
+        reason: "approval_approved",
+        idempotencyKey: `approval-requester:${approvalId}:approved:test`,
+        payload: { approvalId, approvalStatus: "approved", issueId, issueIds: [issueId] },
+        requestedByActorType: "user" as const,
+        requestedByActorId: "board-user",
+        contextSnapshot: {
+          source: "approval.approved",
+          approvalId,
+          approvalStatus: "approved",
+          issueId,
+          issueIds: [issueId],
+          taskId: issueId,
+          wakeReason: "approval_approved",
+        },
+      };
+    }
+
+    it("delivers the requester's decision wake as a bounded interaction run, even after a deduplicated blocked skip", async () => {
+      const fixture = await seedBlockedApprovalFixture();
+
+      // A normal wake records the blocked skip; an identical later skip would
+      // be deduplicated without a row, which is how decisions were lost.
+      const assignedWake = await heartbeat.wakeup(fixture.requesterAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: fixture.blockedIssueId },
+        contextSnapshot: { issueId: fixture.blockedIssueId, wakeReason: "issue_assigned" },
+      });
+      expect(assignedWake).toBeNull();
+
+      const approvalId = await fixture.insertApproval(fixture.requesterAgentId);
+      const decisionRun = await heartbeat.wakeup(
+        fixture.requesterAgentId,
+        approvalWake(fixture.blockedIssueId, approvalId),
+      );
+      expect(decisionRun).not.toBeNull();
+
+      await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, decisionRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      });
+
+      const run = await db
+        .select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, decisionRun!.id))
+        .then((rows) => rows[0] ?? null);
+      expect(run?.status).toBe("succeeded");
+      expect(run?.contextSnapshot).toMatchObject({
+        wakeReason: "approval_approved",
+        approvalId,
+        dependencyBlockedInteraction: true,
+        unresolvedBlockerIssueIds: [fixture.blockerId],
+      });
+      expect(mockAdapterExecute.mock.calls.some(([context]) => context?.runId === decisionRun!.id)).toBe(true);
+
+      // The issue stays blocked; the decision run is an interaction, not an unblock.
+      const issue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, fixture.blockedIssueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.status).toBe("blocked");
+    });
+
+    it("keeps gating decision wakes for an approval the woken agent did not request", async () => {
+      const fixture = await seedBlockedApprovalFixture();
+      const approvalId = await fixture.insertApproval(fixture.otherAgentId);
+
+      const wake = await heartbeat.wakeup(
+        fixture.requesterAgentId,
+        approvalWake(fixture.blockedIssueId, approvalId),
+      );
+      expect(wake).toBeNull();
+
+      const skipped = await db
+        .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, fixture.requesterAgentId))
+        .then((rows) => rows);
+      expect(skipped).toEqual([{ status: "skipped", reason: "issue_dependencies_blocked" }]);
+      expect(
+        await heartbeat.describeUnqueuedWakeup({
+          companyId: fixture.companyId,
+          agentId: fixture.requesterAgentId,
+          idempotencyKey: `approval-requester:${approvalId}:approved:test`,
+          issueId: fixture.blockedIssueId,
+        }),
+      ).toMatchObject({ outcome: "skipped", reason: "issue_dependencies_blocked" });
+
+      const runs = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, fixture.requesterAgentId));
+      expect(runs).toHaveLength(0);
+    });
+
+    it("does not cancel an already-queued decision run at claim time while blockers remain", async () => {
+      const fixture = await seedBlockedApprovalFixture();
+      const approvalId = await fixture.insertApproval(fixture.requesterAgentId);
+      const wakeupRequestId = randomUUID();
+      const runId = randomUUID();
+      const wake = approvalWake(fixture.blockedIssueId, approvalId);
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupRequestId,
+        companyId: fixture.companyId,
+        agentId: fixture.requesterAgentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "approval_approved",
+        payload: wake.payload,
+        status: "queued",
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: fixture.companyId,
+        agentId: fixture.requesterAgentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "queued",
+        wakeupRequestId,
+        contextSnapshot: wake.contextSnapshot,
+      });
+      await db
+        .update(agentWakeupRequests)
+        .set({ runId })
+        .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+      await heartbeat.resumeQueuedRuns();
+
+      await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded" || run?.status === "cancelled";
+      });
+
+      const run = await db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(run).toEqual({ status: "succeeded", errorCode: null });
+      expect(mockAdapterExecute.mock.calls.some(([context]) => context?.runId === runId)).toBe(true);
+    });
   });
 
   it("suppresses normal wakeups while allowing comment interaction wakes under a pause hold", async () => {

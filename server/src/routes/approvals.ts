@@ -247,12 +247,13 @@ export function approvalRoutes(
       : approval.updatedAt instanceof Date
         ? approval.updatedAt.toISOString()
         : "na";
+    const idempotencyKey = `approval-requester:${approval.id}:${approval.status}:${decidedAt}`;
     try {
       const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
         source: "automation",
         triggerDetail: "system",
         reason: wakeReason,
-        idempotencyKey: `approval-requester:${approval.id}:${approval.status}:${decidedAt}`,
+        idempotencyKey,
         payload: {
           approvalId: approval.id,
           approvalStatus: approval.status,
@@ -273,6 +274,35 @@ export function approvalRoutes(
           ...(input.reviewPathContext ?? {}),
         },
       });
+      // A null result is either a wake parked behind another run on the issue
+      // (still delivered) or a skip; only report "queued" when it will arrive.
+      const unqueued = wakeRun
+        ? null
+        : await heartbeat.describeUnqueuedWakeup({
+          companyId: approval.companyId,
+          agentId: approval.requestedByAgentId,
+          idempotencyKey,
+          issueId: primaryIssueId,
+        });
+      if (unqueued?.outcome === "skipped") {
+        await logActivity(db, {
+          companyId: approval.companyId,
+          actorType: "user",
+          actorId: input.actorUserId,
+          action: "approval.requester_wakeup_skipped",
+          entityType: "approval",
+          entityId: approval.id,
+          details: {
+            approvalStatus: approval.status,
+            requesterAgentId: approval.requestedByAgentId,
+            linkedIssueIds: input.linkedIssueIds,
+            wakeupRequestId: unqueued.wakeupRequestId,
+            reason: unqueued.reason,
+            error: unqueued.error,
+          },
+        });
+        return { wakeRunId: null, queued: false };
+      }
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
@@ -285,6 +315,9 @@ export function approvalRoutes(
           requesterAgentId: approval.requestedByAgentId,
           wakeRunId: wakeRun?.id ?? null,
           linkedIssueIds: input.linkedIssueIds,
+          ...(unqueued
+            ? { deferred: true, wakeupRequestId: unqueued.wakeupRequestId }
+            : {}),
         },
       });
       return { wakeRunId: wakeRun?.id ?? null, queued: true };

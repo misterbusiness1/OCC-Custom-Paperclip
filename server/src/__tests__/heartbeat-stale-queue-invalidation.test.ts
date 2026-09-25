@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   agents,
   agentWakeupRequests,
+  approvals,
   companies,
   costEvents,
   createDb,
@@ -1638,6 +1639,151 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBeNull();
     expect(wakeup?.status).not.toBe("skipped");
     expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
+  async function seedDecidedApproval(input: { companyId: string; requestedByAgentId: string }) {
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId: input.companyId,
+      type: "request_board_approval",
+      requestedByAgentId: input.requestedByAgentId,
+      status: "approved",
+      payload: {},
+      decidedByUserId: "board-user-1",
+      decidedAt: new Date(),
+    });
+    return approvalId;
+  }
+
+  it("still delivers the requester's decision wake after the requester closed the linked issue", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "SocialMediaManager" });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Closed before the board decided",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      completedAt: new Date(),
+    });
+    const approvalId = await seedDecidedApproval({ companyId, requestedByAgentId: agentId });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "approval_approved",
+      invocationSource: "automation",
+      contextExtras: {
+        source: "approval.approved",
+        approvalId,
+        approvalStatus: "approved",
+        taskId: issueId,
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded" || run?.status === "cancelled";
+    });
+
+    const [run, wakeup, issue] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(wakeup?.status).not.toBe("skipped");
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+    // Delivery is informational: the closed issue is not reopened.
+    expect(issue?.status).toBe("done");
+
+    // The decision run on the closed issue does not wake itself again.
+    await heartbeat.drainActiveRunExecutions();
+    const decisionRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'approval_approved'`,
+      ));
+    expect(decisionRuns).toHaveLength(1);
+  });
+
+  it("still cancels a decision wake on a closed issue when the woken agent did not request the approval", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "Bystander" });
+    const requesterAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: requesterAgentId,
+      companyId,
+      name: "ActualRequester",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true } },
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Closed issue with someone else's approval",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      completedAt: new Date(),
+    });
+    const approvalId = await seedDecidedApproval({ companyId, requestedByAgentId: requesterAgentId });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "approval_approved",
+      invocationSource: "automation",
+      contextExtras: { source: "approval.approved", approvalId, approvalStatus: "approved", taskId: issueId },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run).toEqual({ status: "cancelled", errorCode: "issue_terminal_status" });
+    expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
   it("still cancels a non-decision wake when the issue was handed to a human owner", async () => {

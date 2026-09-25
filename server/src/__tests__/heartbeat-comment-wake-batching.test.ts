@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   agentWakeupRequests,
+  approvals,
   companies,
   createDb,
   heartbeatRuns,
@@ -1071,7 +1072,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("cancels a deferred agent comment wake when the issue closes before promotion", async () => {
+  it("promotes a deferred mention of another agent after the closing run, without reopening the issue", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -1228,25 +1229,29 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
+      // The mention is addressed to another agent, so closing the issue must
+      // not swallow it (regression: daily digests to a strategist were lost).
+      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
         const runs = await db
           .select()
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.companyId, companyId));
-        const cancelledWake = await db
-          .select({ id: agentWakeupRequests.id })
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, companyId),
-              eq(agentWakeupRequests.agentId, mentionedAgentId),
-              eq(agentWakeupRequests.status, "cancelled"),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
-        return runs.length === 1 && runs[0]?.status === "succeeded" && Boolean(cancelledWake);
+        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
       }, 90_000);
-      expect(gateway.getAgentPayloads()).toHaveLength(1);
+
+      const cancelledWake = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, mentionedAgentId),
+            eq(agentWakeupRequests.status, "cancelled"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      expect(cancelledWake).toBeNull();
 
       const issueAfterPromotion = await db
         .select({
@@ -1261,6 +1266,171 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "done",
       });
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
+
+      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
+      const secondWake = parseWakePayloadFromMessage(secondPayload.message);
+      expect(secondWake).toMatchObject({
+        reason: "issue_comment_mentioned",
+        commentIds: [comment.id],
+        latestCommentId: comment.id,
+        issue: {
+          id: issueId,
+          status: "done",
+        },
+      });
+      expect(String(secondPayload.message ?? "")).toContain("please review after I finish");
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("promotes a deferred board decision for the requester after its run closed the issue", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const approvalId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Requester Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: { "x-openclaw-token": "gateway-token" },
+          payloadTemplate: { message: "wake now" },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Closed while the board was deciding",
+        status: "todo",
+        priority: "medium",
+        responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+      await db.insert(approvals).values({
+        id: approvalId,
+        companyId,
+        type: "request_board_approval",
+        requestedByAgentId: agentId,
+        status: "approved",
+        payload: {},
+        decidedByUserId: "local-board",
+        decidedAt: new Date(),
+      });
+
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+      expect(firstRun).not.toBeNull();
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: firstRun!.id,
+        body: "Shipped; closing while the approval is still with the board.",
+      });
+
+      const decisionWake = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "approval_approved",
+        idempotencyKey: `approval-requester:${approvalId}:approved:test`,
+        payload: { issueId, approvalId, approvalStatus: "approved" },
+        contextSnapshot: {
+          source: "approval.approved",
+          issueId,
+          taskId: issueId,
+          approvalId,
+          approvalStatus: "approved",
+          wakeReason: "approval_approved",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "local-board",
+      });
+      expect(decisionWake).toBeNull();
+      expect(
+        await heartbeat.describeUnqueuedWakeup({
+          companyId,
+          agentId,
+          idempotencyKey: `approval-requester:${approvalId}:approved:test`,
+          issueId,
+        }),
+      ).toMatchObject({ outcome: "deferred" });
+
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: new Date(),
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issueId));
+
+      gateway.releaseFirstWait();
+
+      await waitFor(async () => {
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.companyId, companyId));
+        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+      }, 90_000);
+
+      const decisionRuns = await db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      expect(decisionRuns[1]?.contextSnapshot).toMatchObject({
+        wakeReason: "approval_approved",
+        approvalId,
+      });
+
+      const issueAfter = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issueAfter?.status).toBe("done");
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
