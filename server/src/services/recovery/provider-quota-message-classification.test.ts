@@ -186,6 +186,37 @@ describe("normalizeProviderQuotaAdapterResult", () => {
     });
   });
 
+  it("never retries a balance failure sooner than the default backoff", () => {
+    const now = new Date("2026-09-24T10:00:00.000Z");
+    const normalized = normalizeProviderQuotaAdapterResult(failedResult({
+      errorMessage: "Insufficient Balance, retry after 5 seconds",
+    }), now);
+    expect(normalized).toMatchObject({
+      retryNotBefore: "2026-09-24T11:00:00.000Z",
+      resultJson: { providerQuotaKind: "balance_exhausted", providerQuotaResetSource: "default" },
+    });
+  });
+
+  it("discards an implausibly distant reset matched from agent output", () => {
+    const now = new Date("2026-09-24T10:00:00.000Z");
+    const normalized = normalizeProviderQuotaAdapterResult(failedResult({
+      errorMessage: "You've hit your usage limit",
+      resultJson: { stdout: "curl -H 'Retry-After: 9999999' https://example.test" },
+    }), now);
+    expect(normalized).toMatchObject({
+      retryNotBefore: "2026-09-24T11:00:00.000Z",
+      resultJson: { providerQuotaResetSource: "default" },
+    });
+  });
+
+  it("does not read a reset clock out of a longer word such as 'presets'", () => {
+    const now = new Date("2026-09-24T10:00:00.000Z");
+    const normalized = normalizeProviderQuotaAdapterResult(failedResult({
+      errorMessage: "You've hit your usage limit (loaded presets 10:30)",
+    }), now);
+    expect(normalized.retryNotBefore).toBe("2026-09-24T11:00:00.000Z");
+  });
+
   it("ignores a stale reset timestamp instead of retrying immediately", () => {
     const now = new Date("2026-09-24T10:00:00.000Z");
     const normalized = normalizeProviderQuotaAdapterResult(failedResult({

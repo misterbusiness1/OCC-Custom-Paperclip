@@ -479,11 +479,18 @@ export function normalizeProviderQuotaAdapterResult<T extends ProviderQuotaNorma
 
   const resultJson = result.resultJson ?? {};
   const parsedResetAt = parseProviderQuotaResetTime(result.errorMessage ?? "", now) ??
-    parseProviderQuotaRetryAfter(JSON.stringify(resultJson), now);
+    withinProviderQuotaResetHorizon(parseProviderQuotaRetryAfter(JSON.stringify(resultJson), now), now);
   // A reset already in the past on a fresh failure is stale or misparsed;
   // never let it turn into an immediate retry.
-  const providerResetAt = parsedResetAt && parsedResetAt.getTime() > now.getTime() ? parsedResetAt : null;
-  const retryAt = providerResetAt ?? new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS);
+  const futureResetAt = parsedResetAt && parsedResetAt.getTime() > now.getTime() ? parsedResetAt : null;
+  const defaultRetryAt = new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS);
+  // Balance exhaustion waits on a human top-up: a provider hint (e.g. a short
+  // Retry-After) may push the retry later, never earlier than the default.
+  const providerResetAt =
+    futureResetAt && (quotaKind !== "balance_exhausted" || futureResetAt.getTime() > defaultRetryAt.getTime())
+      ? futureResetAt
+      : null;
+  const retryAt = providerResetAt ?? defaultRetryAt;
   const retryNotBefore = retryAt.toISOString();
   return {
     ...result,
@@ -561,13 +568,13 @@ function resolveWallClockInTimeZone(
 // "resets Oct 2, 5pm (UTC)" (no year: the next such date). Tried before the
 // bare-clock pattern below since it is the more specific match.
 const PROVIDER_QUOTA_ABSOLUTE_RESET_RE =
-  /(?:try again at|resets?(?:\s+at)?)\s+([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:(\d{4}),?\s+)?(?:at\s+)?(\d{1,2})(?!\d)(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i;
+  /(?:try again at|\bresets?(?:\s+at)?)\s+([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:(\d{4}),?\s+)?(?:at\s+)?(\d{1,2})(?!\d)(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i;
 
 // Matches a bare clock time with no date, e.g. "try again at 4:30 PM
 // (America/Chicago)" or Claude's "You've hit your session limit · resets
 // 3:10am (UTC)".
 const PROVIDER_QUOTA_CLOCK_RESET_RE =
-  /(try again at|resets?(?:\s+at)?)\s+(\d{1,2})(?!\d)(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i;
+  /(try again at|\bresets?(?:\s+at)?)\s+(\d{1,2})(?!\d)(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i;
 
 // "try again after 2026-09-25T15:00:00Z" style ISO timestamps (no offset: UTC).
 const PROVIDER_QUOTA_ISO_RESET_RE =
@@ -719,6 +726,17 @@ function parseProviderQuotaRetryAfter(text: string, now: Date): Date | null {
   return null;
 }
 
+// The longest provider window is a week (Claude/Codex weekly limits); allow
+// slack for that. A parsed reset further out is almost certainly matched from
+// unrelated text (e.g. a Retry-After in agent stdout) and would silently park
+// the issue, so it is discarded in favour of the bounded default backoff.
+const PROVIDER_QUOTA_MAX_RESET_HORIZON_MS = 14 * 24 * 60 * 60 * 1000;
+
+function withinProviderQuotaResetHorizon(resetAt: Date | null, now: Date): Date | null {
+  if (!resetAt) return null;
+  return resetAt.getTime() - now.getTime() > PROVIDER_QUOTA_MAX_RESET_HORIZON_MS ? null : resetAt;
+}
+
 // Every reset-time shape providers are known to print, most specific first.
 function parseProviderQuotaResetTime(error: string, now: Date): Date | null {
   const parsers: Array<() => Date | null> = [
@@ -730,7 +748,7 @@ function parseProviderQuotaResetTime(error: string, now: Date): Date | null {
     () => parseProviderQuotaRetryAfter(error, now),
   ];
   for (const parse of parsers) {
-    const resetAt = parse();
+    const resetAt = withinProviderQuotaResetHorizon(parse(), now);
     if (resetAt) return resetAt;
   }
   return null;
