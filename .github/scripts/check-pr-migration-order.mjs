@@ -10,6 +10,13 @@ function parseMigration(file) {
   return match ? { file, number: Number.parseInt(match[1], 10) } : null;
 }
 
+// Fork: first migration number of the fork's trailing migration block.
+export const FORK_MIGRATION_BLOCK_START = 9000;
+
+function isForkBlockMigration(migration) {
+  return migration.number >= FORK_MIGRATION_BLOCK_START;
+}
+
 function formatMigrationNumber(number) {
   return String(number).padStart(4, '0');
 }
@@ -34,21 +41,32 @@ export function checkMigrationOrder(baseMigrationFiles, prMigrationFiles) {
 
   const baseMigrations = baseMigrationFiles.map(parseMigration);
   const prMigrations = prMigrationFiles.map(parseMigration);
-  const latestBaseMigration = baseMigrations.reduce(
-    (latest, migration) => migration.number > latest.number ? migration : latest,
-    { file: '(none)', number: -1 },
-  );
+  // Fork: migrations numbered FORK_MIGRATION_BLOCK_START and above are the fork's
+  // trailing block (see packages/db upgrade-migration notes). Upstream-numbered
+  // migrations and fork-block migrations are each append-only within their own
+  // range, so an upstream sync adding 0280+ is not compared against 9000+.
+  const latestIn = (migrations, inForkBlock) => migrations
+    .filter((migration) => isForkBlockMigration(migration) === inForkBlock)
+    .reduce(
+      (latest, migration) => migration.number > latest.number ? migration : latest,
+      { file: '(none)', number: inForkBlock ? FORK_MIGRATION_BLOCK_START - 1 : -1 },
+    );
+  const latestBaseUpstream = latestIn(baseMigrations, false);
+  const latestBaseFork = latestIn(baseMigrations, true);
+  const latestFor = (migration) => isForkBlockMigration(migration) ? latestBaseFork : latestBaseUpstream;
   const outOfOrder = prMigrations.filter(
-    (migration) => migration.number <= latestBaseMigration.number,
+    (migration) => migration.number <= latestFor(migration).number,
   );
 
   if (outOfOrder.length === 0) {
+    const latestBaseMigration = latestBaseFork.file !== '(none)' ? latestBaseFork : latestBaseUpstream;
     return {
       passed: true,
       message: `All new migrations follow ${latestBaseMigration.file}.`,
     };
   }
 
+  const latestBaseMigration = latestFor(outOfOrder[0]);
   const nextNumber = formatMigrationNumber(latestBaseMigration.number + 1);
   return {
     passed: false,

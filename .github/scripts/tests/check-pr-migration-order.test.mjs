@@ -41,3 +41,29 @@ test('fails when a PR inserts a migration before the target branch tip', () => {
   assert.match(result.message, /0229_from_stale_branch\.sql/);
   assert.doesNotMatch(result.message, /- packages\/db\/src\/migrations\/0231_valid_but_after_stale\.sql/);
 });
+
+test('fork: compares upstream-numbered migrations only against upstream-numbered base migrations', () => {
+  const result = checkMigrationOrder(
+    [migration('0279_upstream_tip'), migration('9006_fork_tip')],
+    [migration('0280_next_upstream'), migration('9007_next_fork')],
+  );
+
+  assert.equal(result.passed, true);
+});
+
+test('fork: still rejects collisions inside the upstream range and the fork block', () => {
+  const upstream = checkMigrationOrder(
+    [migration('0279_upstream_tip'), migration('9006_fork_tip')],
+    [migration('0279_stale_upstream')],
+  );
+  assert.equal(upstream.passed, false);
+  assert.match(upstream.message, /renumber this PR's migrations starting at 0280/);
+
+  const fork = checkMigrationOrder(
+    [migration('0279_upstream_tip'), migration('9006_fork_tip')],
+    [migration('9006_stale_fork')],
+  );
+  assert.equal(fork.passed, false);
+  assert.match(fork.message, /already contains migrations through .*9006_fork_tip\.sql/);
+  assert.match(fork.message, /renumber this PR's migrations starting at 9007/);
+});

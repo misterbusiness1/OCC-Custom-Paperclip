@@ -606,7 +606,9 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
       const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
       const originalPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      const originalPsqlPath = process.env.PAPERCLIP_PSQL_PATH;
       process.env.PAPERCLIP_PG_DUMP_PATH = "/bin/false";
+      process.env.PAPERCLIP_PSQL_PATH = "/bin/false";
 
       try {
         await sourceSql.unsafe(`
@@ -642,6 +644,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(backupSql.indexOf("-- Data for: public.aaa_child_records")).toBeLessThan(
           backupSql.indexOf("-- Data for: public.zzz_parent_records"),
         );
+        expect(backupSql).not.toContain(" FROM stdin;");
 
         await runDatabaseRestore({
           connectionString: restoreConnectionString,
@@ -659,6 +662,11 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           delete process.env.PAPERCLIP_PG_DUMP_PATH;
         } else {
           process.env.PAPERCLIP_PG_DUMP_PATH = originalPgDumpPath;
+        }
+        if (originalPsqlPath === undefined) {
+          delete process.env.PAPERCLIP_PSQL_PATH;
+        } else {
+          process.env.PAPERCLIP_PSQL_PATH = originalPsqlPath;
         }
         await sourceSql.end();
         await restoreSql.end();

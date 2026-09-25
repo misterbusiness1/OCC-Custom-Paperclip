@@ -39,7 +39,12 @@ describeEmbedded("generic adapter provider quota failures", () => {
           timedOut: false,
           errorCode: nextFailure.errorCode,
           errorMessage: nextFailure.errorMessage,
-          resultJson: { stdout: "", stderr: "" },
+          // The production lanes (opencode_local, the claude_local ACP lane)
+          // are conversation adapters, whose failed runs the server marks
+          // continue_conversation_v1. Upstream v2026.916.1 holds any other
+          // failed legacy run for reconciliation instead of retrying it, so
+          // this synthetic adapter reports the same continuation contract.
+          resultJson: { stdout: "", stderr: "", conversationContinuation: "continue_conversation_v1" },
         };
       },
       testEnvironment: async () => ({ adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }),

@@ -53,11 +53,21 @@ describeEmbedded("Codex ACP credits quota native retry", () => {
     });
     registerServerAdapter({
       type: adapterType,
-      execute: async (ctx) => execute({
-        ...ctx,
-        config: { ...ctx.config, engine: "acp", cwd: root, stateDir: path.join(root, "state"),
-          env: { CODEX_HOME: path.join(root, "codex-home") } },
-      }),
+      execute: async (ctx) => {
+        const result = await execute({
+          ...ctx,
+          config: { ...ctx.config, engine: "acp", cwd: root, stateDir: path.join(root, "state"),
+            env: { CODEX_HOME: path.join(root, "codex-home") } },
+        });
+        // codex_local is a conversation adapter, whose failed runs the server
+        // marks continue_conversation_v1. Upstream v2026.916.1 holds any other
+        // failed legacy run for reconciliation instead of retrying it, so this
+        // synthetic adapter type reports the same continuation contract.
+        return {
+          ...result,
+          resultJson: { ...(result.resultJson ?? {}), conversationContinuation: "continue_conversation_v1" },
+        };
+      },
       testEnvironment: async () => ({ adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }),
     });
   }, 30_000);

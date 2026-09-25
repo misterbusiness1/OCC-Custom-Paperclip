@@ -13,5 +13,47 @@ packages:
   - ui
   - cli
 
+# Keep in sync with package.json#pnpm.patchedDependencies. Newer pnpm
+# versions read patch configuration only from the workspace manifest.
 patchedDependencies:
-  '@agentclientprotocol/codex-acp@1.1.7': patches/@agentclientprotocol__codex-acp@1.1.7.patch
+  embedded-postgres@18.1.0-beta.16: patches/embedded-postgres@18.1.0-beta.16.patch
+  acpx@0.12.0: patches/acpx@0.12.0.patch
+  # Fork (#61): codex-local stays on codex-acp 1.1.7 with the non-retryable
+  # provider-error patch; the runner's 1.6.2 copy keeps upstream's patch.
+  "@agentclientprotocol/codex-acp@1.1.7": patches/@agentclientprotocol__codex-acp@1.1.7.patch
+  acpx@0.13.1: patches/acpx@0.13.1.patch
+  "@agentclientprotocol/claude-agent-acp@0.73.0": patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch
+  "@agentclientprotocol/codex-acp@1.6.2": patches/@agentclientprotocol__codex-acp@1.6.2.patch
+  "@chat-adapter/slack@4.39.0": patches/@chat-adapter__slack@4.39.0.patch
+  "@chat-adapter/discord@4.39.0": patches/@chat-adapter__discord@4.39.0.patch
+  "@chat-adapter/telegram@4.39.0": patches/@chat-adapter__telegram@4.39.0.patch
+  "@chat-adapter/teams@4.39.0": patches/@chat-adapter__teams@4.39.0.patch
+  "@chat-adapter/github@4.39.0": patches/@chat-adapter__github@4.39.0.patch
+  "@discordjs/ws@1.2.3": patches/@discordjs__ws@1.2.3.patch
+
+# Agent CLIs share the current runtime used by the native provider pack.
+# pnpm patches change package files, but overrides control dependency resolution.
+overrides:
+  "@agentclientprotocol/codex-acp@1.6.2>@openai/codex": "0.153.4"
+  "@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk": "0.3.263"
+  rollup: ">=4.59.0"
+  react: "^19.2.8"
+  react-dom: "^19.2.8"
+  # Fork production dependency audit pins (#44, OXFA-27638); mirrored from
+  # package.json#pnpm.overrides.
+  "brace-expansion@<2": "1.1.18"
+  "brace-expansion@>=2 <3": "2.1.4"
+  fast-uri: "3.1.5"
+  js-yaml: "4.3.1"
+  "nanoid@<4": "3.3.18"
+  path-to-regexp: "8.4.0"
+  react-router: "7.18.2"
+  tar: "7.5.21"
+  "undici@<7": "6.28.1"
+  # CodeMirror validates extensions with instanceof, so exactly one copy of
+  # these two packages may resolve. Different CodeMirror packages pin
+  # different transitive minors, which resolves two copies and crashes the
+  # editor with "Unrecognized extension value in extension set". A shared
+  # range forces every consumer onto one resolution.
+  "@codemirror/state": "^6.7.2"
+  "@codemirror/view": "^6.43.11"

@@ -16,6 +16,21 @@ import {
   projects,
   goals,
   heartbeatRuns,
+  runIdentityContexts,
+  chatActions,
+  chatAgentRoutes,
+  chatConversations,
+  chatDeliveries,
+  chatEndpointLeases,
+  chatEndpointResources,
+  chatEndpoints,
+  chatExternalPrincipals,
+  chatIdentityLinks,
+  chatMessageLinks,
+  chatPublications,
+  chatSdkState,
+  chatTeamsFileTransfers,
+  managedAgentProfiles,
   heartbeatRunEvents,
   nativeRunFinalizations,
   statusDecisionEffects,
@@ -563,6 +578,25 @@ export function companyService(db: Db) {
         await tx.delete(completionContracts).where(eq(completionContracts.companyId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
+        await tx.delete(runIdentityContexts).where(eq(runIdentityContexts.companyId, id));
+        // Chat-channel rows (upstream 916.1) reference issues, issue_comments and
+        // agents with RESTRICT / NO ACTION foreign keys, and managed agent profiles
+        // reference company_secrets with RESTRICT, so they would block the issue,
+        // comment, agent and secret deletes below. Children before parents.
+        await tx.delete(chatActions).where(eq(chatActions.companyId, id));
+        await tx.delete(chatAgentRoutes).where(eq(chatAgentRoutes.companyId, id));
+        await tx.delete(chatMessageLinks).where(eq(chatMessageLinks.companyId, id));
+        await tx.delete(chatDeliveries).where(eq(chatDeliveries.companyId, id));
+        await tx.delete(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.companyId, id));
+        await tx.delete(chatPublications).where(eq(chatPublications.companyId, id));
+        await tx.delete(chatConversations).where(eq(chatConversations.companyId, id));
+        await tx.delete(chatEndpointLeases).where(eq(chatEndpointLeases.companyId, id));
+        await tx.delete(chatEndpointResources).where(eq(chatEndpointResources.companyId, id));
+        await tx.delete(chatIdentityLinks).where(eq(chatIdentityLinks.companyId, id));
+        await tx.delete(chatSdkState).where(eq(chatSdkState.companyId, id));
+        await tx.delete(chatEndpoints).where(eq(chatEndpoints.companyId, id));
+        await tx.delete(chatExternalPrincipals).where(eq(chatExternalPrincipals.companyId, id));
+        await tx.delete(managedAgentProfiles).where(eq(managedAgentProfiles.companyId, id));
         await tx.delete(costEvents).where(eq(costEvents.companyId, id));
         await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
         await tx.delete(decisionTriageEvents).where(eq(decisionTriageEvents.companyId, id));

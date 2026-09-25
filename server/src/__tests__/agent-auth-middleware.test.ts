@@ -264,9 +264,11 @@ describe("agent auth middleware", () => {
   });
 
   it.each(["authenticated", "local_trusted"] as const)(
-    "leaves pcgw_ bearers on the id-addressed runtime MCP gateway endpoint to the gateway in %s mode",
+    "keeps actor authentication for pcgw_ bearers on the id-addressed /api gateway MCP endpoint in %s mode",
     async (deploymentMode) => {
-      // Fork heartbeat runtime MCP delivery points adapters at this endpoint.
+      // Runtime MCP delivery uses /mcp/gateways/<publicId> since upstream #12345,
+      // so the fork's former bypass for this /api endpoint was dropped in the
+      // v2026.916.1 upgrade. The endpoint keeps normal actor authentication.
       const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
 
       const res = await request(createApp(db, deploymentMode))
@@ -274,37 +276,10 @@ describe("agent auth middleware", () => {
         .set("Authorization", `Bearer pcgw_${randomUUID()}.runtimeSecret`)
         .send({ jsonrpc: "2.0", id: 1, method: "initialize" });
 
-      expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({ reachedGatewayProtocol: true });
+      expect(res.status).toBe(401);
+      expect(res.body.error).toContain("Agent token did not verify");
     },
   );
-
-  it.each([
-    ["non-pcgw bearer", () => `/api/tool-gateway/gateways/${randomUUID()}/mcp`, "Bearer not-a-token"],
-    ["non-uuid gateway id", () => "/api/tool-gateway/gateways/not-a-uuid/mcp", "Bearer pcgw_x.y"],
-    ["suffixed path", () => `/api/tool-gateway/gateways/${randomUUID()}/mcp/extra`, "Bearer pcgw_x.y"],
-  ])("does not bypass actor authentication on the API gateway endpoint for a %s", async (_label, path, authorization) => {
-    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
-
-    const res = await request(createApp(db, "local_trusted"))
-      .post(path())
-      .set("Authorization", authorization)
-      .send({ jsonrpc: "2.0", id: 1, method: "initialize" });
-
-    expect(res.status).toBe(401);
-    expect(res.body.error).toContain("Agent token did not verify");
-  });
-
-  it("does not bypass actor authentication for non-POST requests to the API gateway endpoint", async () => {
-    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
-
-    const res = await request(createApp(db, "local_trusted"))
-      .get(`/api/tool-gateway/gateways/${randomUUID()}/mcp`)
-      .set("Authorization", `Bearer pcgw_${randomUUID()}.runtimeSecret`);
-
-    expect(res.status).toBe(401);
-    expect(res.body.error).toContain("Agent token did not verify");
-  });
 
   it.each([
     ["terminated", "Agent is terminated"],
