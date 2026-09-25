@@ -47,7 +47,6 @@ import {
   environmentLeases,
   issueDocuments,
   executionWorkspaces,
-  environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
   issueApprovals,
