@@ -258,8 +258,22 @@ function readRecoveryRunErrorFamily(latestRun: LatestIssueRun) {
 function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
   if (latestRun?.errorCode === "provider_quota") return true;
   if (readRecoveryRunErrorFamily(latestRun) === "provider_quota") return true;
-  if (latestRun?.errorCode !== "adapter_failed") return false;
-  return /(?:usage|rate|quota) limit|quota (?:exceeded|reset)|try again after/i.test(latestRun.error ?? "");
+  if (!isGenericAdapterFailureErrorCode(latestRun?.errorCode)) return false;
+  if (
+    latestRun?.errorCode === "adapter_failed" &&
+    /(?:usage|rate|quota) limit|quota (?:exceeded|reset)|try again after/i.test(latestRun.error ?? "")
+  ) {
+    return true;
+  }
+  return classifyProviderQuotaErrorMessage(latestRun?.error) !== null;
+}
+
+function isProviderBalanceExhaustedRun(latestRun: LatestIssueRun) {
+  const resultJson = parseObject(latestRun?.resultJson);
+  if (readNonEmptyString(resultJson.providerQuotaKind)) {
+    return readNonEmptyString(resultJson.providerQuotaKind) === "balance_exhausted";
+  }
+  return classifyProviderQuotaErrorMessage(latestRun?.error) === "balance_exhausted";
 }
 
 function resolveStrandedRecoveryCause(
@@ -381,6 +395,121 @@ const PROVIDER_QUOTA_ERROR_RE =
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
+// Provider account balance / credit / spend-cap exhaustion. Unlike a usage
+// window this never self-resets: it waits on a human top-up, so it is only
+// ever deferred by the default backoff (bounded by the retry caps).
+const PROVIDER_BALANCE_EXHAUSTED_RE = new RegExp([
+  String.raw`insufficient[\s_-]+(?:account[\s_-]+)?(?:balance|credits?|funds)`, // DeepSeek, OpenRouter
+  String.raw`\binsufficient_quota\b`, // OpenAI billing quota
+  String.raw`exceeded your current quota`,
+  String.raw`credit balance is too low`, // Anthropic API
+  String.raw`(?:requires|need) more credits`, // OpenRouter 402
+  String.raw`\bout of credits\b`,
+  String.raw`\bspend(?:ing)? limit\b`, // Claude "monthly spend limit"
+  String.raw`payment[\s_-]+required`,
+  String.raw`(?:status(?:[\s_-]?code)?|http|error)[\s:"=]*402\b`,
+].join("|"), "i");
+// Provider usage windows and rate limits (Claude session/weekly limits, Kimi
+// 5-hour limit, Codex usage limit, account rate limits).
+const PROVIDER_USAGE_LIMIT_RE = new RegExp([
+  String.raw`you(?:'|’)ve (?:hit|reached|exceeded) your\b[^\n]{0,60}?\blimit\b`,
+  // "rate limited" (a transient 429 throttle) stays on the transient path.
+  String.raw`\b(?:usage|session|rate|quota)[\s_-]limit(?!ed)`,
+  String.raw`\b(?:5|five)[\s-]?hour limit`,
+  String.raw`\bweekly limit (?:reached|exceeded)`,
+  String.raw`quota (?:limit )?(?:exceeded|reset)`,
+  String.raw`\bresource[_\s]exhausted\b`,
+  String.raw`provider quota`,
+  String.raw`usage cap reached`,
+].join("|"), "i");
+// Genuine credential failures must stay auth failures (they need a login or
+// key fix, not a wait), even when the provider text also mentions a limit.
+const PROVIDER_AUTH_FAILURE_RE =
+  /(?:\b401\b|unauthori[sz]ed|authentication[\s_-](?:error|failed|required)|invalid[\s_-]+(?:x-)?api[\s_-]?key|incorrect api key|api key (?:is )?(?:invalid|expired|revoked)|invalid (?:access |bearer |auth(?:entication)? )?token|not logged in|please (?:run \/login|log ?in)|login required|requires login|invalid_grant)/i;
+
+export type ProviderQuotaKind = "balance_exhausted" | "usage_limit";
+
+// Classifies only the adapter's own error message, never the run's stdout:
+// agent output can legitimately talk about rate limits or balances.
+export function classifyProviderQuotaErrorMessage(message: string | null | undefined): ProviderQuotaKind | null {
+  const text = message?.trim();
+  if (!text) return null;
+  if (PROVIDER_AUTH_FAILURE_RE.test(text)) return null;
+  if (PROVIDER_BALANCE_EXHAUSTED_RE.test(text)) return "balance_exhausted";
+  if (PROVIDER_USAGE_LIMIT_RE.test(text)) return "usage_limit";
+  return null;
+}
+
+// Failure codes an adapter returns when it did not recognise the provider
+// error itself: adapter_failed (opencode_local and the server default),
+// acpx_turn_failed (shared ACP engine lanes) and <plugin>_execution_failed.
+function isGenericAdapterFailureErrorCode(errorCode: string | null | undefined) {
+  if (!errorCode) return false;
+  return errorCode === "adapter_failed" ||
+    errorCode === "acpx_turn_failed" ||
+    /^[a-z0-9]+(?:_[a-z0-9]+)*_execution_failed$/.test(errorCode);
+}
+
+type ProviderQuotaNormalizableResult = {
+  exitCode: number | null;
+  timedOut: boolean;
+  errorMessage?: string | null;
+  errorCode?: string | null;
+  errorFamily?: string | null;
+  retryNotBefore?: string | null;
+  resultJson?: Record<string, unknown> | null;
+};
+
+// Adapters without their own quota mapping (opencode_local, the claude_local
+// ACP lane, plugins) report provider quota/balance exhaustion under a generic
+// failure code, so it was retried as a transient blip and then stranded.
+// Reclassify such results as provider_quota at run finalization so they take
+// the same deferred path as adapter-classified quota failures: the provider
+// reset time when the message carries one, otherwise the default backoff.
+export function normalizeProviderQuotaAdapterResult<T extends ProviderQuotaNormalizableResult>(
+  result: T,
+  now = new Date(),
+): T {
+  if (result.timedOut) return result;
+  if ((result.exitCode ?? 0) === 0 && !result.errorMessage) return result;
+  if (result.errorFamily) return result;
+  if (result.errorCode && !isGenericAdapterFailureErrorCode(result.errorCode)) return result;
+  const quotaKind = classifyProviderQuotaErrorMessage(result.errorMessage);
+  if (!quotaKind) return result;
+
+  const resultJson = result.resultJson ?? {};
+  const parsedResetAt = parseProviderQuotaResetTime(result.errorMessage ?? "", now) ??
+    withinProviderQuotaResetHorizon(parseProviderQuotaRetryAfter(JSON.stringify(resultJson), now), now);
+  // A reset already in the past on a fresh failure is stale or misparsed;
+  // never let it turn into an immediate retry.
+  const futureResetAt = parsedResetAt && parsedResetAt.getTime() > now.getTime() ? parsedResetAt : null;
+  const defaultRetryAt = new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS);
+  // Balance exhaustion waits on a human top-up: a provider hint (e.g. a short
+  // Retry-After) may push the retry later, never earlier than the default.
+  const providerResetAt =
+    futureResetAt && (quotaKind !== "balance_exhausted" || futureResetAt.getTime() > defaultRetryAt.getTime())
+      ? futureResetAt
+      : null;
+  const retryAt = providerResetAt ?? defaultRetryAt;
+  const retryNotBefore = retryAt.toISOString();
+  return {
+    ...result,
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    retryNotBefore,
+    resultJson: {
+      ...resultJson,
+      errorFamily: "provider_quota",
+      retryNotBefore,
+      transientRetryNotBefore: retryNotBefore,
+      providerQuotaRetryNotBefore: retryNotBefore,
+      providerQuotaKind: quotaKind,
+      providerQuotaResetSource: providerResetAt ? "provider" : "default",
+      originalErrorCode: result.errorCode ?? null,
+    },
+  } as T;
+}
+
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
   | { kind: "configuration_incomplete" }
@@ -435,23 +564,42 @@ function resolveWallClockInTimeZone(
 }
 
 // Matches an absolute reset date+time, e.g. Codex's
-// "try again at Sep 15th, 2026 1:24 AM". Tried before the bare-clock pattern
-// below since it is the more specific match.
+// "try again at Sep 15th, 2026 1:24 AM" or Claude's weekly
+// "resets Oct 2, 5pm (UTC)" (no year: the next such date). Tried before the
+// bare-clock pattern below since it is the more specific match.
 const PROVIDER_QUOTA_ABSOLUTE_RESET_RE =
-  /try again at\s+([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4}),?\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i;
+  /(?:try again at|\bresets?(?:\s+at)?)\s+([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:(\d{4}),?\s+)?(?:at\s+)?(\d{1,2})(?!\d)(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i;
 
-// Matches a bare clock time with no date, e.g. Claude's
-// "resets at 4:30 PM (America/Chicago)".
+// Matches a bare clock time with no date, e.g. "try again at 4:30 PM
+// (America/Chicago)" or Claude's "You've hit your session limit · resets
+// 3:10am (UTC)".
 const PROVIDER_QUOTA_CLOCK_RESET_RE =
-  /try again at\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i;
+  /(try again at|\bresets?(?:\s+at)?)\s+(\d{1,2})(?!\d)(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i;
 
-function parseProviderQuotaAbsoluteReset(error: string): Date | null {
+// "try again after 2026-09-25T15:00:00Z" style ISO timestamps (no offset: UTC).
+const PROVIDER_QUOTA_ISO_RESET_RE =
+  /\b(?:try again|retry|resets?)\s+(?:after|at|on)\s+(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|[+-]\d{2}:?\d{2})?/i;
+
+// "try again in 20 minutes", "resets in 2h 30m", "retry after 45 seconds".
+const PROVIDER_QUOTA_RELATIVE_RESET_RE =
+  /\b(?:try again|retry|resets?)\s+(?:in|after)\s+(?:about\s+|approximately\s+|~)?((?:\d+(?:\.\d+)?\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b[\s,]*(?:and\s+)?){1,3})/i;
+
+// Claude CLI's machine form: "Claude AI usage limit reached|<epoch seconds>".
+const PROVIDER_QUOTA_EPOCH_RESET_RE = /usage limit reached\|(\d{10})(?!\d)/i;
+
+// HTTP Retry-After header (delta-seconds or HTTP-date), including the
+// JSON-escaped form found in adapter stdout/responseHeaders.
+const PROVIDER_QUOTA_RETRY_AFTER_SECONDS_RE = /\bretry[-_]after\b[\\"'\s]*[:=][\\"'\s]*(\d{1,7})(?![\d.:])/i;
+const PROVIDER_QUOTA_RETRY_AFTER_DATE_RE =
+  /\bretry[-_]after\b[\\"'\s]*[:=][\\"'\s]*((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{1,2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT)/i;
+
+function parseProviderQuotaAbsoluteReset(error: string, now: Date): Date | null {
   const match = error.match(PROVIDER_QUOTA_ABSOLUTE_RESET_RE);
   if (!match) return null;
 
   const monthIndex = PROVIDER_QUOTA_MONTH_INDEX[(match[1] ?? "").slice(0, 3).toLowerCase()];
   const day = Number.parseInt(match[2] ?? "", 10);
-  const year = Number.parseInt(match[3] ?? "", 10);
+  const explicitYear = match[3] ? Number.parseInt(match[3], 10) : null;
   const hourValue = Number.parseInt(match[4] ?? "", 10);
   const minute = Number.parseInt(match[5] ?? "0", 10);
   const meridiem = (match[6] ?? "").toLowerCase();
@@ -459,7 +607,7 @@ function parseProviderQuotaAbsoluteReset(error: string): Date | null {
 
   if (monthIndex === undefined) return null;
   if (!Number.isInteger(day) || day < 1 || day > 31) return null;
-  if (!Number.isInteger(year)) return null;
+  if (explicitYear !== null && !Number.isInteger(explicitYear)) return null;
   if (!Number.isInteger(hourValue)) return null;
   if (meridiem ? hourValue < 1 || hourValue > 12 : hourValue < 0 || hourValue > 23) return null;
   if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
@@ -467,27 +615,32 @@ function parseProviderQuotaAbsoluteReset(error: string): Date | null {
   let hour = meridiem ? hourValue % 12 : hourValue;
   if (meridiem === "p") hour += 12;
 
-  if (!timeZone) return new Date(Date.UTC(year, monthIndex, day, hour, minute));
-  return resolveWallClockInTimeZone(year, monthIndex, day, hour, minute, timeZone);
+  const resolve = (year: number) => timeZone
+    ? resolveWallClockInTimeZone(year, monthIndex, day, hour, minute, timeZone)
+    : new Date(Date.UTC(year, monthIndex, day, hour, minute));
+  if (explicitYear !== null) return resolve(explicitYear);
+  const thisYear = resolve(now.getUTCFullYear());
+  if (!thisYear) return null;
+  return thisYear.getTime() > now.getTime() ? thisYear : resolve(now.getUTCFullYear() + 1);
 }
 
 function parseProviderQuotaClockReset(error: string, now: Date) {
-  const absoluteReset = parseProviderQuotaAbsoluteReset(error);
-  if (absoluteReset) return absoluteReset;
-
   const match = error.match(PROVIDER_QUOTA_CLOCK_RESET_RE);
   if (!match) return null;
 
-  const hourValue = Number.parseInt(match[1] ?? "", 10);
-  const minute = Number.parseInt(match[2] ?? "0", 10);
-  const meridiem = (match[3] ?? "").toLowerCase();
+  const hourValue = Number.parseInt(match[2] ?? "", 10);
+  const minute = Number.parseInt(match[3] ?? "0", 10);
+  const meridiem = (match[4] ?? "").toLowerCase();
+  // "resets 5 …" alone is too ambiguous (could be a duration); Claude always
+  // prints either minutes or am/pm.
+  if (/^reset/i.test(match[1] ?? "") && !match[3] && !meridiem) return null;
   if (!Number.isInteger(hourValue)) return null;
   if (meridiem ? hourValue < 1 || hourValue > 12 : hourValue < 0 || hourValue > 23) return null;
   if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
 
   let hour = meridiem ? hourValue % 12 : hourValue;
   if (meridiem === "p") hour += 12;
-  const timeZone = (match[4] ?? match[5])?.trim();
+  const timeZone = (match[5] ?? match[6])?.trim();
   if (!timeZone) {
     const retryAt = new Date(now);
     retryAt.setUTCHours(hour, minute, 0, 0);
@@ -525,6 +678,82 @@ function parseProviderQuotaClockReset(error: string, now: Date) {
   return sameDay.getTime() > now.getTime() ? sameDay : buildRetryAt(1);
 }
 
+function parseProviderQuotaIsoReset(error: string): Date | null {
+  const match = error.match(PROVIDER_QUOTA_ISO_RESET_RE);
+  if (!match) return null;
+  const offset = match[2] ?? "Z";
+  const parsed = new Date(`${(match[1] ?? "").replace(" ", "T")}${offset}`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function parseProviderQuotaRelativeReset(error: string, now: Date): Date | null {
+  const match = error.match(PROVIDER_QUOTA_RELATIVE_RESET_RE);
+  if (!match) return null;
+  let totalMs = 0;
+  for (const part of (match[1] ?? "").matchAll(/(\d+(?:\.\d+)?)\s*([a-z]+)/gi)) {
+    const amount = Number.parseFloat(part[1] ?? "");
+    const unit = (part[2] ?? "").toLowerCase();
+    const unitMs = unit.startsWith("d")
+      ? 24 * 60 * 60 * 1000
+      : unit.startsWith("h")
+        ? 60 * 60 * 1000
+        : unit.startsWith("m")
+          ? 60 * 1000
+          : 1000;
+    if (Number.isFinite(amount)) totalMs += amount * unitMs;
+  }
+  return totalMs > 0 ? new Date(now.getTime() + Math.round(totalMs)) : null;
+}
+
+function parseProviderQuotaEpochReset(error: string): Date | null {
+  const match = error.match(PROVIDER_QUOTA_EPOCH_RESET_RE);
+  if (!match) return null;
+  const parsed = new Date(Number.parseInt(match[1] ?? "", 10) * 1000);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function parseProviderQuotaRetryAfter(text: string, now: Date): Date | null {
+  const seconds = text.match(PROVIDER_QUOTA_RETRY_AFTER_SECONDS_RE);
+  if (seconds) {
+    const value = Number.parseInt(seconds[1] ?? "", 10);
+    if (Number.isInteger(value) && value > 0) return new Date(now.getTime() + value * 1000);
+  }
+  const httpDate = text.match(PROVIDER_QUOTA_RETRY_AFTER_DATE_RE);
+  if (httpDate) {
+    const parsed = new Date(httpDate[1] ?? "");
+    if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > now.getTime()) return parsed;
+  }
+  return null;
+}
+
+// The longest provider window is a week (Claude/Codex weekly limits); allow
+// slack for that. A parsed reset further out is almost certainly matched from
+// unrelated text (e.g. a Retry-After in agent stdout) and would silently park
+// the issue, so it is discarded in favour of the bounded default backoff.
+const PROVIDER_QUOTA_MAX_RESET_HORIZON_MS = 14 * 24 * 60 * 60 * 1000;
+
+function withinProviderQuotaResetHorizon(resetAt: Date | null, now: Date): Date | null {
+  if (!resetAt) return null;
+  return resetAt.getTime() - now.getTime() > PROVIDER_QUOTA_MAX_RESET_HORIZON_MS ? null : resetAt;
+}
+
+// Every reset-time shape providers are known to print, most specific first.
+function parseProviderQuotaResetTime(error: string, now: Date): Date | null {
+  const parsers: Array<() => Date | null> = [
+    () => parseProviderQuotaIsoReset(error),
+    () => parseProviderQuotaAbsoluteReset(error, now),
+    () => parseProviderQuotaClockReset(error, now),
+    () => parseProviderQuotaRelativeReset(error, now),
+    () => parseProviderQuotaEpochReset(error),
+    () => parseProviderQuotaRetryAfter(error, now),
+  ];
+  for (const parse of parsers) {
+    const resetAt = withinProviderQuotaResetHorizon(parse(), now);
+    if (resetAt) return resetAt;
+  }
+  return null;
+}
+
 // Shared by classifyAdapterFailureForRecovery and the continuation-retry and
 // stranded-recovery monitor paths so every provider_quota consumer defers to
 // the same parsed provider reset time instead of independently falling back
@@ -539,13 +768,18 @@ function resolveProviderQuotaRetryAt(
     readNonEmptyString(resultJson.providerQuotaRetryNotBefore);
   const parsedPersistedRetryAt = persistedRetryAt ? new Date(persistedRetryAt) : null;
   if (parsedPersistedRetryAt && !Number.isNaN(parsedPersistedRetryAt.getTime()) && parsedPersistedRetryAt > now) {
-    return { retryAt: parsedPersistedRetryAt, parsedResetTime: true };
+    // normalizeProviderQuotaAdapterResult persists the default backoff too;
+    // it marks that case so the monitor notes don't claim a provider reset.
+    return {
+      retryAt: parsedPersistedRetryAt,
+      parsedResetTime: readNonEmptyString(resultJson.providerQuotaResetSource) !== "default",
+    };
   }
 
   const error = [latestRun?.errorCode ?? "", latestRun?.error ?? "", JSON.stringify(resultJson)].join("\n");
-  const parsedClockReset = parseProviderQuotaClockReset(error, now);
-  if (parsedClockReset) {
-    return { retryAt: parsedClockReset, parsedResetTime: true };
+  const parsedReset = parseProviderQuotaResetTime(error, now);
+  if (parsedReset) {
+    return { retryAt: parsedReset, parsedResetTime: true };
   }
   return {
     retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
@@ -557,19 +791,33 @@ export function classifyAdapterFailureForRecovery(
   latestRun: Pick<NonNullable<LatestIssueRun>, "error" | "errorCode" | "resultJson">,
   now = new Date(),
 ): AdapterFailureRecoveryClassification {
+  const legacyClassifiable =
+    latestRun.errorCode === "adapter_failed" ||
+    latestRun.errorCode === "provider_quota" ||
+    latestRun.errorCode === "configuration_incomplete";
+  // Other generic adapter failure codes (e.g. acpx_turn_failed) are only
+  // reclassified as quota: from an adapter-reported provider_quota family, or
+  // from the adapter's own error message.
+  const quotaFromMessage = isGenericAdapterFailureErrorCode(latestRun.errorCode) && (
+    readNonEmptyString(parseObject(latestRun.resultJson).errorFamily) === "provider_quota" ||
+    classifyProviderQuotaErrorMessage(latestRun.error) !== null
+  );
+  if (!legacyClassifiable && !quotaFromMessage) return null;
+  const resultJson = parseObject(latestRun.resultJson);
+  const error = [latestRun.errorCode ?? "", latestRun.error ?? "", JSON.stringify(resultJson)].join("\n");
   if (
-    latestRun.errorCode !== "adapter_failed" &&
+    legacyClassifiable &&
+    (latestRun.errorCode === "configuration_incomplete" || CONFIGURATION_INCOMPLETE_ERROR_RE.test(error))
+  ) {
+    return { kind: "configuration_incomplete" };
+  }
+  if (
     latestRun.errorCode !== "provider_quota" &&
-    latestRun.errorCode !== "configuration_incomplete"
+    !quotaFromMessage &&
+    !PROVIDER_QUOTA_ERROR_RE.test(error)
   ) {
     return null;
   }
-  const resultJson = parseObject(latestRun.resultJson);
-  const error = [latestRun.errorCode ?? "", latestRun.error ?? "", JSON.stringify(resultJson)].join("\n");
-  if (latestRun.errorCode === "configuration_incomplete" || CONFIGURATION_INCOMPLETE_ERROR_RE.test(error)) {
-    return { kind: "configuration_incomplete" };
-  }
-  if (latestRun.errorCode !== "provider_quota" && !PROVIDER_QUOTA_ERROR_RE.test(error)) return null;
 
   const { retryAt, parsedResetTime } = resolveProviderQuotaRetryAt(latestRun, now);
   return { kind: "provider_quota", retryAt, parsedResetTime };
@@ -3697,7 +3945,9 @@ export function recoveryService(
       ...(previousPolicy ?? { mode: "normal" as const, commentRequired: true, stages: [] }),
       monitor: {
         nextCheckAt: input.classification.retryAt.toISOString(),
-        notes: input.classification.parsedResetTime
+        notes: isProviderBalanceExhaustedRun(input.latestRun)
+          ? `Provider account balance/credits exhausted (does not reset on its own); top up the provider account. Retry ${retryTargetDescription} after the default recovery backoff.`
+          : input.classification.parsedResetTime
           ? `Provider usage quota reached; retry ${retryTargetDescription} at the provider reset time.`
           : `Provider usage quota reached; retry ${retryTargetDescription} after the default recovery backoff.`,
         scheduledBy: "assignee" as const,
