@@ -58,6 +58,7 @@ import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildSuccessfulRunHandoffExhaustedNotice,
+  isPluginManagedIssueLifecycle,
   noticeMetadataReferencesRecoveryAction,
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
@@ -4504,6 +4505,10 @@ export function recoveryService(
       }
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
       if (handoffEvidence) {
+        if (isPluginManagedIssueLifecycle(issue)) {
+          result.skipped += 1;
+          continue;
+        }
         if (!handoffEvidence.exhausted) {
           result.skipped += 1;
           continue;

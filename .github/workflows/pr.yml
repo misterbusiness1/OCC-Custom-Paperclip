@@ -302,14 +302,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Round-robin over 128 route/authz suites (server/src/__tests__), not
-          # duration-weighted. Real suite total is ~922s as of 2026-09-10 (run
-          # 34533751794, up from 739s on 2026-08-04) -- five shards still split
-          # that to a ~230s worst shard, inside the ~150-250s/shard headroom
-          # this lane targets. This count was already correct; shards were
-          # blowing past timeout because a stray "--" in the invocation below
-          # silently dropped --shard-index/--shard-count and every "shard" ran
-          # all 128 suites. See that step's comment and OXFA-31270.
+          # A successful PR run on 2026-08-17 (32012408876) spent 291s in
+          # serialized shard 1/5 while its siblings ran 170-201s: round-robin
+          # clustered the heavy suites on one runner. Shards are now balanced
+          # by recorded duration (scripts/serialized-shard-durations.json),
+          # which levels the measured 968s suite total to about 194s per
+          # runner before setup overhead. (Fork note, OXFA-31270: shards had
+          # also been blowing past timeout because a stray "--" in the
+          # invocation below silently dropped --shard-index/--shard-count and
+          # every "shard" ran every suite. See that step's comment.)
           - shard_index: 0
             shard_count: 5
             shard_label: 1/5

@@ -24,6 +24,11 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("company secret proposals migration", () => {
   afterEach(async () => Promise.all(cleanups.splice(0).map((cleanup) => cleanup())));
 
+  // Starting an embedded Postgres and replaying a migration against it does not
+  // fit vitest's 5s default: the neighbouring replay suites measure 7-12s on
+  // CI. Every other embedded-Postgres migration test in this package carries an
+  // explicit timeout for that reason; this one did not, so it failed on any
+  // runner that was not unusually fast.
   it("can be reapplied after its migration journal entry is removed", async () => {
     const database = await startEmbeddedPostgresTestDatabase("paperclip-secret-proposals-migration-");
     cleanups.push(database.cleanup);
@@ -44,5 +49,5 @@ describeEmbeddedPostgres("company secret proposals migration", () => {
     await expect(applyPendingMigrations(database.connectionString)).resolves.toBeUndefined();
 
     expect(await readSchemaCounts()).toEqual(before);
-  });
+  }, 30_000);
 });

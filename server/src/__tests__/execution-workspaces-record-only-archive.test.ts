@@ -9,6 +9,10 @@ import { executionWorkspaceRoutes } from "../routes/execution-workspaces.js";
 
 const mocks = vi.hoisted(() => ({
   getById: vi.fn(), getCloseReadiness: vi.fn(), update: vi.fn(),
+  // Upstream v2026.824.1 archives under the per-workspace lifecycle lock; these
+  // stand in for the lock/fence/outcome gateway on the in-memory row.
+  archiveWorkspaceUnderLifecycleLock: vi.fn(), fenceClosedWorkspaceDestruction: vi.fn(),
+  applyClosedWorkspaceCleanupOutcome: vi.fn(), releaseRuntimeLease: vi.fn(),
   decide: vi.fn(), logActivity: vi.fn(), stop: vi.fn(), destroyLeases: vi.fn(),
   cleanup: vi.fn(), detach: vi.fn(),
 }));
@@ -18,6 +22,8 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => ({ wakeup: vi.fn() }),
   logActivity: mocks.logActivity,
   workspaceOperationService: () => ({ createRecorder: () => null }),
+  workspaceRuntimeLeaseService: () => ({ release: mocks.releaseRuntimeLease, claim: vi.fn(), get: vi.fn() }),
+  LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart"],
 }));
 vi.mock("../services/environment-runtime.js", () => ({
   environmentRuntimeService: () => ({ destroyReusableSandboxLeases: mocks.destroyLeases }),
@@ -51,6 +57,17 @@ async function fixture(mode: string, status = "idle", createdByRuntime = false) 
     repoUrl: null, baseRef: null, metadata: { createdByRuntime }, cleanupReason: null };
   mocks.getById.mockImplementation(async () => state);
   mocks.update.mockImplementation(async (_id, patch) => { state = { ...state, ...patch }; return state; });
+  mocks.archiveWorkspaceUnderLifecycleLock.mockImplementation(async ({ patch, closedAt, retryCleanupFailed }) => {
+    if (state.status === "archived" || (state.status === "cleanup_failed" && !retryCleanupFailed)) return null;
+    state = { ...state, ...patch, status: "archived", closedAt, cleanupReason: null } as typeof state;
+    return { outcome: "archived", workspace: state, capturedGeneration: 1 };
+  });
+  mocks.fenceClosedWorkspaceDestruction.mockImplementation(async ({ destroy }) =>
+    ({ skippedReopened: false, result: await destroy() }));
+  mocks.applyClosedWorkspaceCleanupOutcome.mockImplementation(async ({ closedAt, cleanupReason, markCleanupFailed }) => {
+    state = { ...state, closedAt, cleanupReason, ...(markCleanupFailed ? { status: "cleanup_failed" } : {}) } as typeof state;
+    return state;
+  });
   mocks.getCloseReadiness.mockResolvedValue({ state: "ready_with_warnings", blockingReasons: [],
     warnings: ["Preserve underlying workspace"], plannedActions: [{ kind: "archive_record" }] });
   return { cwd, state: () => state };
@@ -63,6 +80,7 @@ describe.sequential("record-only execution workspace archive", () => {
     mocks.stop.mockResolvedValue(undefined);
     mocks.destroyLeases.mockResolvedValue(undefined);
     mocks.detach.mockResolvedValue(undefined);
+    mocks.releaseRuntimeLease.mockResolvedValue({ released: false, ownerKey: null });
     const actual = await vi.importActual<typeof import("../services/workspace-runtime.js")>("../services/workspace-runtime.js");
     mocks.cleanup.mockImplementation(actual.cleanupExecutionWorkspaceArtifacts);
   });
@@ -136,6 +154,7 @@ describe.sequential("record-only execution workspace archive", () => {
     expect(res.status).toBe(409);
     expect(f.state().status).toBe("idle");
     expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.archiveWorkspaceUnderLifecycleLock).not.toHaveBeenCalled();
     expect(mocks.stop).not.toHaveBeenCalled();
     expect(mocks.destroyLeases).not.toHaveBeenCalled();
     expect(mocks.cleanup).not.toHaveBeenCalled();
@@ -147,6 +166,7 @@ describe.sequential("record-only execution workspace archive", () => {
     const res = await request(app()).patch("/api/execution-workspaces/workspace-1").send({ status: "archived" });
     expect(res.status).toBe(403);
     expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.archiveWorkspaceUnderLifecycleLock).not.toHaveBeenCalled();
     expect(mocks.cleanup).not.toHaveBeenCalled();
   });
 

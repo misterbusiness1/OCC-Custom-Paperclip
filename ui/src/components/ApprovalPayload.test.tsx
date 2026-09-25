@@ -12,6 +12,7 @@ import {
   approvalLabel,
   isEmailReplyPayload,
 } from "./ApprovalPayload";
+import { ThemeProvider } from "../context/ThemeContext";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -138,19 +139,21 @@ describe("ApprovalPayloadRenderer", () => {
 
     act(() => {
       root.render(
-        <ApprovalPayloadRenderer
-          type="request_board_approval"
-          payload={{
-            title: "Reply with an ASCII frog",
-            summary: "Board asked for approval before posting the frog.",
-            reasoning: "The bounded reply is reversible and has no external side effects.",
-            recommendedAction: "Approve the frog reply.",
-            nextActionOnApproval: "Post the frog comment on the issue.",
-            pros: ["The reply is clear and scoped."],
-            risks: "The frog might be too powerful.",
-            proposedComment: "(o)<",
-          }}
-        />,
+        <ThemeProvider>
+          <ApprovalPayloadRenderer
+            type="request_board_approval"
+            payload={{
+              title: "Reply with an ASCII frog",
+              summary: "Board asked for approval before posting the frog.",
+              reasoning: "The bounded reply is reversible and has no external side effects.",
+              recommendedAction: "Approve the frog reply.",
+              nextActionOnApproval: "Post the frog comment on the issue.",
+              pros: ["The reply is clear and scoped."],
+              risks: "The frog might be too powerful.",
+              proposedComment: "(o)<",
+            }}
+          />
+        </ThemeProvider>,
       );
     });
 
@@ -176,22 +179,24 @@ describe("ApprovalPayloadRenderer", () => {
 
     act(() => {
       root.render(
-        <ApprovalPayloadRenderer
-          type="request_board_approval"
-          payload={{
-            title: "Gate B approval: info@ reply for order #90210",
-            channel: "email from info@",
-            recipient: "Marcus Bellweather <m@example.com>",
-            subject: "Update on Oxford Cigar order #90210",
-            threadOrOrderRef: "WooCommerce order #90210",
-            gate: "Gate B",
-            intent: "Hold-vs-cancel choice for backordered Padrón lines.",
-            recommendedAction: "Send as written.",
-            pros: ["The customer gets a direct choice."],
-            risks: "Customer may expect a firm restock date.",
-            body: "Hi Marcus,\n\nThank you for your order #90210. The three boxes are briefly on backorder.",
-          }}
-        />,
+        <ThemeProvider>
+          <ApprovalPayloadRenderer
+            type="request_board_approval"
+            payload={{
+              title: "Gate B approval: info@ reply for order #90210",
+              channel: "email from info@",
+              recipient: "Marcus Bellweather <m@example.com>",
+              subject: "Update on Oxford Cigar order #90210",
+              threadOrOrderRef: "WooCommerce order #90210",
+              gate: "Gate B",
+              intent: "Hold-vs-cancel choice for backordered Padrón lines.",
+              recommendedAction: "Send as written.",
+              pros: ["The customer gets a direct choice."],
+              risks: "Customer may expect a firm restock date.",
+              body: "Hi Marcus,\n\nThank you for your order #90210. The three boxes are briefly on backorder.",
+            }}
+          />
+        </ThemeProvider>,
       );
     });
 
@@ -214,19 +219,141 @@ describe("ApprovalPayloadRenderer", () => {
     });
   });
 
+  it("renders markdown in board approval prose fields", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ThemeProvider>
+          <ApprovalPayloadRenderer
+            type="request_board_approval"
+            payload={{
+              title: "Reply with an ASCII frog",
+              summary: "**Bold** and `code` and [a link](https://example.com).",
+              recommendedAction: "Approve the **frog** reply.",
+              nextActionOnApproval: "Post the `frog` comment.",
+              risks: ["The **frog** might be too powerful."],
+            }}
+          />
+        </ThemeProvider>,
+      );
+    });
+
+    const bodies = container.querySelectorAll(".paperclip-markdown");
+    expect(bodies.length).toBe(4);
+
+    const summary = bodies[0];
+    expect(summary.querySelector("strong")?.textContent).toBe("Bold");
+    expect(summary.querySelector("code")?.textContent).toBe("code");
+    const link = summary.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("https://example.com");
+    expect(link?.textContent).toBe("a link");
+
+    // The raw markdown characters must not survive into the rendered text.
+    expect(container.textContent).not.toContain("**Bold**");
+    expect(container.textContent).not.toContain("[a link](https://example.com)");
+
+    // Fork layout order: recommendation, "Cons & risks" list, then "On approval".
+    expect(bodies[1].querySelector("strong")?.textContent).toBe("frog");
+    expect(bodies[2].querySelector("strong")?.textContent).toBe("frog");
+    expect(bodies[3].querySelector("code")?.textContent).toBe("frog");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not nest a second bullet when a risk is authored as a markdown list item", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ThemeProvider>
+          <ApprovalPayloadRenderer
+            type="request_board_approval"
+            payload={{
+              title: "Reply with an ASCII frog",
+              risks: [
+                "- **Leading dash** risk.",
+                "* Leading star risk.",
+                "• Leading dot risk.",
+                "1. Leading number risk.",
+                "2) Leading paren risk.",
+              ],
+            }}
+          />
+        </ThemeProvider>,
+      );
+    });
+
+    const bodies = container.querySelectorAll(".paperclip-markdown");
+    expect(bodies.length).toBe(5);
+    for (const body of bodies) {
+      expect(body.querySelector("ul")).toBeNull();
+      expect(body.querySelector("ol")).toBeNull();
+      expect(body.querySelector("li")).toBeNull();
+    }
+
+    expect(bodies[0].querySelector("strong")?.textContent).toBe("Leading dash");
+    expect(container.textContent).toContain("Leading star risk.");
+    expect(container.textContent).toContain("Leading dot risk.");
+    expect(container.textContent).toContain("Leading number risk.");
+    expect(container.textContent).toContain("Leading paren risk.");
+    expect(container.textContent).not.toContain("- **Leading dash**");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders every risk when two entries collapse to the same text after marker stripping", () => {
+    const root = createRoot(container);
+    const errors: unknown[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+
+    try {
+      act(() => {
+        root.render(
+          <ThemeProvider>
+            <ApprovalPayloadRenderer
+              type="request_board_approval"
+              payload={{
+                title: "Reply with an ASCII frog",
+                risks: ["- Low probability", "* Low probability"],
+              }}
+            />
+          </ThemeProvider>,
+        );
+      });
+
+      expect(container.querySelectorAll(".paperclip-markdown").length).toBe(2);
+      expect(errors).toEqual([]);
+    } finally {
+      console.error = originalError;
+      act(() => {
+        root.unmount();
+      });
+    }
+  });
+
   it("can hide the repeated title when the card header already shows it", () => {
     const root = createRoot(container);
 
     act(() => {
       root.render(
-        <ApprovalPayloadRenderer
-          type="request_board_approval"
-          hidePrimaryTitle
-          payload={{
-            title: "Reply with an ASCII frog",
-            summary: "Board asked for approval before posting the frog.",
-          }}
-        />,
+        <ThemeProvider>
+          <ApprovalPayloadRenderer
+            type="request_board_approval"
+            hidePrimaryTitle
+            payload={{
+              title: "Reply with an ASCII frog",
+              summary: "Board asked for approval before posting the frog.",
+            }}
+          />
+        </ThemeProvider>,
       );
     });
 

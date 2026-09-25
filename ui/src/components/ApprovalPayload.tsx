@@ -1,4 +1,5 @@
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { MarkdownBody } from "./MarkdownBody";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
@@ -243,6 +244,15 @@ export function BoardApprovalPayload({
   );
 }
 
+/**
+ * Decision-list items (pros, cons & risks) render inside a custom bullet row,
+ * so a leading markdown list marker would nest a second bullet inside the
+ * first. Strip one leading marker.
+ */
+function stripLeadingListMarker(value: string): string {
+  return value.replace(/^(?:[-*•]|\d+[.)])\s+/, "");
+}
+
 function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unknown> }) {
   const brief = approvalDecisionBrief(payload);
   const title = firstNonEmptyString(payload.title);
@@ -261,7 +271,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
       {summary && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Summary</p>
-          <p className="leading-6 text-foreground/90">{summary}</p>
+          <MarkdownBody className="leading-6 text-foreground/90">{summary}</MarkdownBody>
         </div>
       )}
       {brief.recommendation && (
@@ -269,13 +279,13 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-amber-700 dark:text-amber-300">
             Recommended action
           </p>
-          <p className="mt-1 leading-6 text-foreground">{brief.recommendation}</p>
+          <MarkdownBody className="mt-1 leading-6 text-foreground">{brief.recommendation}</MarkdownBody>
         </div>
       )}
       {reasoning && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Why</p>
-          <p className="leading-6 text-foreground/90">{reasoning}</p>
+          <MarkdownBody className="leading-6 text-foreground/90">{reasoning}</MarkdownBody>
         </div>
       )}
       {(brief.pros.length > 0 || brief.cons.length > 0) && (
@@ -287,7 +297,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
       {brief.nextAction && (
         <div className="rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">On approval</p>
-          <p className="mt-1 leading-6 text-foreground">{brief.nextAction}</p>
+          <MarkdownBody className="mt-1 leading-6 text-foreground">{brief.nextAction}</MarkdownBody>
         </div>
       )}
       {proposedComment && (
@@ -322,12 +332,16 @@ function DecisionList({ label, items }: { label: string; items: string[] }) {
     <div className="space-y-1.5">
       <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">{label}</p>
       <ul className="space-y-1 text-sm text-muted-foreground">
-        {items.map((item) => (
-          <li key={item} className="flex items-start gap-2">
-            <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
-            <span className="leading-6">{item}</span>
-          </li>
-        ))}
+        {items.map((item, index) => {
+          const text = stripLeadingListMarker(item);
+          if (!text) return null;
+          return (
+            <li key={`${index}-${text}`} className="flex items-start gap-2">
+              <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
+              <MarkdownBody className="leading-6">{text}</MarkdownBody>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

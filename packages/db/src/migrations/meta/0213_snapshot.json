@@ -1,6 +1,6 @@
 {
-  "id": "c6bfb90f-7232-410e-b44a-5e82d7e33c89",
-  "prevId": "f9e2ad98-bada-4dca-899e-40126f9623d9",
+  "id": "a6ef2ecf-123a-4ff1-b602-50a0de2514ef",
+  "prevId": "c56d3441-2ed4-4249-a115-99d55d395899",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2739,7 +2739,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         },
         "budget_incidents_policy_id_budget_policies_id_fk": {
@@ -2752,7 +2752,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         },
         "budget_incidents_approval_id_approvals_id_fk": {
@@ -2765,7 +2765,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -2991,7 +2991,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -8063,6 +8063,200 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.company_transfer_runs": {
+      "name": "company_transfer_runs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "direction": {
+          "name": "direction",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "actor_key": {
+          "name": "actor_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "container_ref": {
+          "name": "container_ref",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "manifest_sha256": {
+          "name": "manifest_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "manifest": {
+          "name": "manifest",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "chunk_count": {
+          "name": "chunk_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "blob_count": {
+          "name": "blob_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "completed_parts": {
+          "name": "completed_parts",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "company_transfer_runs_company_idx": {
+          "name": "company_transfer_runs_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "company_transfer_runs_idempotency_direction_idx": {
+          "name": "company_transfer_runs_idempotency_direction_idx",
+          "columns": [
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "direction",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "company_transfer_runs_actor_status_idx": {
+          "name": "company_transfer_runs_actor_status_idx",
+          "columns": [
+            {
+              "expression": "actor_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "company_transfer_runs_company_id_companies_id_fk": {
+          "name": "company_transfer_runs_company_id_companies_id_fk",
+          "tableFrom": "company_transfer_runs",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.company_user_sidebar_preferences": {
       "name": "company_user_sidebar_preferences",
       "schema": "",
@@ -8423,21 +8617,6 @@
             },
             {
               "expression": "heartbeat_run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "cost_events_issue_idx": {
-          "name": "cost_events_issue_idx",
-          "columns": [
-            {
-              "expression": "issue_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -13156,21 +13335,6 @@
           "method": "btree",
           "with": {}
         },
-        "environment_leases_issue_idx": {
-          "name": "environment_leases_issue_idx",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "environment_leases_heartbeat_run_idx": {
           "name": "environment_leases_heartbeat_run_idx",
           "columns": [
@@ -13659,21 +13823,6 @@
               "asc": true,
               "nulls": "last"
             },
-            {
-              "expression": "source_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "execution_workspaces_source_issue_idx": {
-          "name": "execution_workspaces_source_issue_idx",
-          "columns": [
             {
               "expression": "source_issue_id",
               "isExpression": false,
@@ -18274,21 +18423,6 @@
           "method": "btree",
           "with": {}
         },
-        "issue_attachments_issue_idx": {
-          "name": "issue_attachments_issue_idx",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "issue_attachments_issue_comment_idx": {
           "name": "issue_attachments_issue_comment_idx",
           "columns": [
@@ -18976,21 +19110,6 @@
           "method": "btree",
           "with": {}
         },
-        "issue_documents_issue_idx": {
-          "name": "issue_documents_issue_idx",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "issue_documents_company_issue_updated_idx": {
           "name": "issue_documents_company_issue_updated_idx",
           "columns": [
@@ -19336,21 +19455,6 @@
               "asc": true,
               "nulls": "last"
             },
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issue_inbox_archives_issue_idx": {
-          "name": "issue_inbox_archives_issue_idx",
-          "columns": [
             {
               "expression": "issue_id",
               "isExpression": false,
@@ -19954,21 +20058,6 @@
           "method": "btree",
           "with": {}
         },
-        "issue_read_states_issue_idx": {
-          "name": "issue_read_states_issue_idx",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "issue_read_states_company_user_idx": {
           "name": "issue_read_states_company_user_idx",
           "columns": [
@@ -20296,36 +20385,6 @@
           "method": "btree",
           "with": {}
         },
-        "issue_recovery_actions_source_issue_idx": {
-          "name": "issue_recovery_actions_source_issue_idx",
-          "columns": [
-            {
-              "expression": "source_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issue_recovery_actions_recovery_issue_idx": {
-          "name": "issue_recovery_actions_recovery_issue_idx",
-          "columns": [
-            {
-              "expression": "recovery_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "issue_recovery_actions_active_source_uq": {
           "name": "issue_recovery_actions_active_source_uq",
           "columns": [
@@ -20568,36 +20627,6 @@
               "asc": true,
               "nulls": "last"
             },
-            {
-              "expression": "target_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issue_reference_mentions_source_issue_idx": {
-          "name": "issue_reference_mentions_source_issue_idx",
-          "columns": [
-            {
-              "expression": "source_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issue_reference_mentions_target_issue_idx": {
-          "name": "issue_reference_mentions_target_issue_idx",
-          "columns": [
             {
               "expression": "target_issue_id",
               "isExpression": false,
@@ -22410,21 +22439,6 @@
           "method": "btree",
           "with": {}
         },
-        "issue_work_products_issue_idx": {
-          "name": "issue_work_products_issue_idx",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "issue_work_products_company_execution_workspace_type_idx": {
           "name": "issue_work_products_company_execution_workspace_type_idx",
           "columns": [
@@ -23053,21 +23067,6 @@
           "method": "btree",
           "with": {}
         },
-        "issues_parent_id_idx": {
-          "name": "issues_parent_id_idx",
-          "columns": [
-            {
-              "expression": "parent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "issues_company_project_idx": {
           "name": "issues_company_project_idx",
           "columns": [
@@ -23537,6 +23536,22 @@
           ],
           "isUnique": true,
           "where": "\"issues\".\"origin_kind\" = 'stranded_issue_recovery'\n          and \"issues\".\"origin_id\" is not null\n          and \"issues\".\"hidden_at\" is null\n          and \"issues\".\"status\" not in ('done', 'cancelled')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issues_onboarding_first_task_uq": {
+          "name": "issues_onboarding_first_task_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"issues\".\"origin_kind\" = 'onboarding_first_task'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -30614,21 +30629,6 @@
             },
             {
               "expression": "consumer_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "secret_access_events_issue_idx": {
-          "name": "secret_access_events_issue_idx",
-          "columns": [
-            {
-              "expression": "issue_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -38410,21 +38410,6 @@
             },
             {
               "expression": "started_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "workspace_operations_issue_idx": {
-          "name": "workspace_operations_issue_idx",
-          "columns": [
-            {
-              "expression": "issue_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
