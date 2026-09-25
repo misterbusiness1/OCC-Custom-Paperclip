@@ -792,7 +792,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       // the close-readiness plan actually schedules a destructive action. A
       // record-only archive (plannedActions = [archive_record]) must leave the
       // workspace contents on disk, even for legacy runtime-created metadata.
-      const requiresArtifactCleanup = readiness.plannedActions.some((action) =>
+      // A missing plan is treated as record-only (fail closed: no artifact cleanup).
+      const requiresArtifactCleanup = (readiness.plannedActions ?? []).some((action) =>
         ["cleanup_command", "teardown_command", "git_worktree_remove", "git_branch_delete", "remove_local_directory"]
           .includes(action.kind),
       );
