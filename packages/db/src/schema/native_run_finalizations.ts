@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   check,
   foreignKey,
+  index,
   pgTable,
   uuid,
   text,
@@ -83,6 +84,11 @@ export const nativeRunFinalizations = pgTable(
       ],
       name: "native_run_finalizations_decision_owner_fk",
     }),
+    runOwnerForeignKeyIdx: index("native_run_finalizations_run_owner_fk_idx").on(
+      table.companyId,
+      table.issueId,
+      table.runId,
+    ),
     assessmentRequiresResultCheck: check(
       "native_run_finalizations_assessment_requires_result_check",
       sql`${table.assessmentId} is null or ${table.resultId} is not null`,

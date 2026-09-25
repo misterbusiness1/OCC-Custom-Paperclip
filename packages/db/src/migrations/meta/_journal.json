@@ -1639,6 +1639,13 @@
       "when": 1790323520456,
       "tag": "9004_removal_parent_fk_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 9005,
+      "version": "7",
+      "when": 1790331036412,
+      "tag": "9005_native_runner_fk_indexes",
+      "breakpoints": true
     }
   ]
 }

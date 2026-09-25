@@ -53,6 +53,9 @@ export const issueQuestionResponseDeliveries = pgTable(
       table.issueId,
       table.createdAt,
     ),
+    issueIdForeignKeyIdx: index("issue_question_response_deliveries_issue_id_fk_idx").on(table.issueId),
+    sourceRunIdForeignKeyIdx: index("issue_question_response_deliveries_source_run_id_fk_idx").on(table.sourceRunId),
+    targetRunIdForeignKeyIdx: index("issue_question_response_deliveries_target_run_id_fk_idx").on(table.targetRunId),
     statusCheck: check(
       "issue_question_response_deliveries_status_check",
       sql`${table.status} IN ('pending', 'delivering', 'delivered', 'fallback_queued', 'failed')`,

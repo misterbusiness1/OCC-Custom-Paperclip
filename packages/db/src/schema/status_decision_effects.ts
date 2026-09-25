@@ -1,5 +1,6 @@
 import {
   foreignKey,
+  index,
   pgTable,
   uuid,
   text,
@@ -44,6 +45,7 @@ export const statusDecisionEffects = pgTable(
       foreignColumns: [statusDecisions.companyId, statusDecisions.issueId, statusDecisions.id],
       name: "status_decision_effects_decision_owner_fk",
     }),
+    issueCompanyForeignKeyIdx: index("status_decision_effects_issue_company_fk_idx").on(table.companyId, table.issueId),
     decisionOrdinalUq: uniqueIndex("status_decision_effects_decision_ordinal_uq").on(
       table.decisionId,
       table.ordinal,

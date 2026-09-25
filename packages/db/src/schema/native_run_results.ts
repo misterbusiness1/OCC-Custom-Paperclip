@@ -1,5 +1,6 @@
 import {
   foreignKey,
+  index,
   pgTable,
   uuid,
   text,
@@ -67,6 +68,12 @@ export const nativeRunResults = pgTable(
       ],
       name: "native_run_results_completion_contract_owner_fk",
     }),
+    runContractOwnerForeignKeyIdx: index("native_run_results_run_contract_owner_fk_idx").on(
+      table.companyId,
+      table.issueId,
+      table.runId,
+      table.completionContractId,
+    ),
     runFingerprintUq: uniqueIndex("native_run_results_run_fingerprint_uq").on(
       table.runId,
       table.serverFingerprint,
