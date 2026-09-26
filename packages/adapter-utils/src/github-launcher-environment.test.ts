@@ -236,12 +236,19 @@ describe("managed GitHub launcher environment", () => {
 
   it("checks command availability with the launch environment, not the provider default", async () => {
     const fixture = await sandbox("nvm/bin");
+    // A real adapter CLI can also be installed in /usr/bin on deployment images.
+    // Use a fixture-only command so the requested PATH actually excludes it.
+    const command = "paperclip-fixture-provider-cli";
+    await writeFile(path.join(fixture.bin, command), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await ensureAdapterExecutionTargetCommandResolvable(
+      command, fixture.target, fixture.root, { PATH: fixture.remotePath },
+    );
     const env = { PATH: "/usr/bin:/bin" };
     // The binary exists on the provider PATH, but the requested launch excludes it.
     await expect(ensureAdapterExecutionTargetCommandResolvable(
-      "claude", fixture.target, fixture.root, env,
-    )).rejects.toThrow('Command "claude" is not installed or not on PATH');
-    const result = await runAdapterExecutionTargetProcess("run-missing", fixture.target, "sh", ["-c", "claude"], {
+      command, fixture.target, fixture.root, env,
+    )).rejects.toThrow(`Command "${command}" is not installed or not on PATH`);
+    const result = await runAdapterExecutionTargetProcess("run-missing", fixture.target, "sh", ["-c", command], {
       cwd: fixture.root, env, timeoutSec: 5, graceSec: 1, onLog: async () => {},
     });
     expect(result.exitCode).toBe(127);

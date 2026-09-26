@@ -18,7 +18,7 @@ const serializedShardDurations = loadShardDurations(
 );
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
-const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
+const serverScriptsDir = path.join(serverRoot, "scripts");
 const nonServerProjects = [
   "@paperclipai/shared",
   "@paperclipai/skills-catalog",
@@ -323,6 +323,10 @@ function runVitest(args, label, { watch = false, testShard = null } = {}) {
   delete env.PAPERCLIP_WORKTREE_NAME;
   delete env.PAPERCLIP_WORKTREE_COLOR;
   delete env.PAPERCLIP_WORKTREES_DIR;
+  // Source tests resolve their own build identity; container image stamps
+  // otherwise override the version fixtures.
+  delete env.PAPERCLIP_BUILD_COMMIT;
+  delete env.PAPERCLIP_BUILD_VERSION;
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
   if (testShard) {
@@ -463,7 +467,13 @@ function runSerializedSuites(routeTests, shardIndex, shardCount) {
   }
 }
 
-const routeTests = walk(serverTestsDir)
+// Match server/vitest.config.ts before partitioning so files outside __tests__
+// and the server's script tests cannot fall between the two lanes.
+const serverTestFiles = [
+  ...walk(serverSrcDir).filter((file) => file.endsWith(".test.ts")),
+  ...walk(serverScriptsDir).filter((file) => file.endsWith(".test.mjs")),
+];
+const routeTests = serverTestFiles
   .filter((file) => isRouteOrAuthzTest(toRepoPath(file)))
   .map((file) => ({
     repoPath: toRepoPath(file),
@@ -478,9 +488,8 @@ const routeTests = walk(serverTestsDir)
 // config pins maxWorkers to 1, so the only way to parallelize is across jobs.
 // Suites are partitioned by recorded duration (scripts/general-server-shard.mjs)
 // rather than round-robin, so one slow suite cluster can't stretch a single shard.
-const generalServerTestFiles = walk(serverSrcDir)
+const generalServerTestFiles = serverTestFiles
   .map((file) => toRepoPath(file))
-  .filter((repoPath) => repoPath.endsWith(".test.ts"))
   .filter((repoPath) => !isRouteOrAuthzTest(repoPath))
   .sort((a, b) => a.localeCompare(b));
 

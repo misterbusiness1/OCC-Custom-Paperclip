@@ -6,7 +6,7 @@ FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f281
 ARG USER_UID=1000
 ARG USER_GID=1000
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 util-linux tini \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 util-linux tini lsof \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 

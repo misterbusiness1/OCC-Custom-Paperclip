@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +39,19 @@ function dryRunJson(args) {
 
 const SHARD_COUNT = 5;
 const SERIALIZED_SHARD_COUNT = 5;
+
+test("server lanes cover every configured source and script test exactly once", () => {
+  const plan = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", "1"]);
+  const expected = [
+    ...readdirSync(path.join(repoRoot, "server/src"), { recursive: true })
+      .filter((file) => file.endsWith(".test.ts")).map((file) => `server/src/${file}`),
+    ...readdirSync(path.join(repoRoot, "server/scripts"), { recursive: true })
+      .filter((file) => file.endsWith(".test.mjs")).map((file) => `server/scripts/${file}`),
+  ].map((file) => file.replaceAll(path.sep, "/")).sort();
+  const selected = [...plan.selectedSerializedSuites, ...plan.selectedGeneralServerSuites];
+  assert.deepEqual(selected.sort(), expected);
+  assert.equal(new Set(selected).size, selected.length);
+});
 
 
 test("the serialized shards form a complete, non-overlapping partition", () => {
@@ -120,6 +133,8 @@ test("vitest subprocesses cannot inherit a live config or worktree identity", { 
         PAPERCLIP_WORKTREE_NAME: "production-worktree",
         PAPERCLIP_WORKTREE_COLOR: "#123456",
         PAPERCLIP_WORKTREES_DIR: "/production/worktrees",
+        PAPERCLIP_BUILD_COMMIT: "production-image-commit",
+        PAPERCLIP_BUILD_VERSION: "production-image-version",
       },
     });
     assert.equal(result.status, 0, result.stderr);
@@ -137,6 +152,8 @@ test("vitest subprocesses cannot inherit a live config or worktree identity", { 
       "PAPERCLIP_WORKTREE_NAME",
       "PAPERCLIP_WORKTREE_COLOR",
       "PAPERCLIP_WORKTREES_DIR",
+      "PAPERCLIP_BUILD_COMMIT",
+      "PAPERCLIP_BUILD_VERSION",
     ]) {
       assert.equal(captured[key], undefined, `${key} must not reach Vitest`);
     }
