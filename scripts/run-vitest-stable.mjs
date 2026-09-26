@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -471,7 +471,8 @@ function runSerializedSuites(routeTests, shardIndex, shardCount) {
 // and the server's script tests cannot fall between the two lanes.
 const serverTestFiles = [
   ...walk(serverSrcDir).filter((file) => file.endsWith(".test.ts")),
-  ...walk(serverScriptsDir).filter((file) => file.endsWith(".test.mjs")),
+  ...(existsSync(serverScriptsDir) ? walk(serverScriptsDir) : [])
+    .filter((file) => file.endsWith(".test.mjs")),
 ];
 const routeTests = serverTestFiles
   .filter((file) => isRouteOrAuthzTest(toRepoPath(file)))
