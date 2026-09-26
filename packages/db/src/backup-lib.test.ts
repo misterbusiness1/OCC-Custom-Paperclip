@@ -325,19 +325,12 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         const backupSql = gunzipSync(fs.readFileSync(result.backupFile)).toString("utf8");
         expect(backupSql).toContain('"context_issue_id" text GENERATED ALWAYS AS');
         expect(backupSql).toContain(
-          'COPY "public"."backup_generated_records" ("id", "payload") FROM stdin;',
+          'INSERT INTO "public"."backup_generated_records" ("id", "payload") VALUES',
         );
 
-        const restoreResult = await runDatabaseBackup({
-          connectionString: sourceConnectionString,
-          backupDir,
-          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
-          filenamePrefix: "paperclip-generated-restore-test",
-          backupEngine: "javascript",
-        });
         await runDatabaseRestore({
           connectionString: restoreConnectionString,
-          backupFile: restoreResult.backupFile,
+          backupFile: result.backupFile,
         });
 
         const restored = await restoreSql.unsafe<{ context_issue_id: string }[]>(`

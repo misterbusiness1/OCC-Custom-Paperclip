@@ -40,6 +40,19 @@ function dryRunJson(args) {
 const SHARD_COUNT = 5;
 const SERIALIZED_SHARD_COUNT = 5;
 
+test("workspace lanes include every project registered in the root Vitest config", () => {
+  const config = readFileSync(path.join(repoRoot, "vitest.config.ts"), "utf8");
+  const projectDirs = [...config.matchAll(/^\s+"([^"]+)",$/gm)].map((match) => match[1]);
+  const expected = projectDirs.filter((dir) => dir !== "server").map((dir) =>
+    JSON.parse(readFileSync(path.join(repoRoot, dir, "package.json"), "utf8")).name,
+  );
+  const selected = ["general-workspaces-a", "general-workspaces-b"].flatMap((group) =>
+    dryRunJson(["--mode", "general", "--group", group]).workspaceProjects,
+  );
+  assert.deepEqual(selected.sort(), expected.sort());
+  assert.equal(new Set(selected).size, selected.length);
+});
+
 test("server lanes cover every configured source and script test exactly once", () => {
   const plan = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", "1"]);
   const expected = [

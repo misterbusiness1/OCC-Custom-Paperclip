@@ -399,11 +399,15 @@ describe("Teams opt-in file-consent runtime", () => {
 
   it("withholds ACK while receipt persistence waits and returns a retryable deadline without posting a card", async () => {
     const h = await harness(true, 25);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let release!: () => void;
+    let entered!: () => void;
+    const callbackEntered = new Promise<void>((resolve) => { entered = resolve; });
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
     h.callback.mockImplementationOnce(async () => {
+      entered();
       await held;
       return "recorded";
     });
@@ -413,14 +417,15 @@ describe("Teams opt-in file-consent runtime", () => {
       return response;
     });
     try {
-      await vi.waitFor(() => expect(h.callback).toHaveBeenCalledTimes(1), {
-        interval: 1,
-      });
+      await callbackEntered;
+      expect(h.callback).toHaveBeenCalledTimes(1);
       expect(responded).toBe(false);
+      await vi.advanceTimersByTimeAsync(25);
       expect((await pending).status).toBe(503);
       expect(h.post).not.toHaveBeenCalled();
     } finally {
       release();
+      vi.useRealTimers();
       await pending;
     }
   });
