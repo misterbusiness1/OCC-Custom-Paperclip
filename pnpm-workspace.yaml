@@ -43,8 +43,8 @@ overrides:
   # package.json#pnpm.overrides.
   "brace-expansion@<2": "1.1.18"
   "brace-expansion@>=2 <3": "2.1.4"
-  fast-uri: "3.1.5"
-  js-yaml: "4.3.1"
+  fast-uri: "3.1.6"
+  js-yaml: "4.3.2"
   "nanoid@<4": "3.3.18"
   path-to-regexp: "8.4.0"
   react-router: "7.18.2"
@@ -57,3 +57,10 @@ overrides:
   # range forces every consumer onto one resolution.
   "@codemirror/state": "^6.7.2"
   "@codemirror/view": "^6.43.11"
+
+  # Security fixes; keep legacy protocol bridge pins above unchanged.
+  "qs": "6.16.0"
+  "body-parser": "2.3.0"
+  "hono": "4.13.5"
+  "svix@1.76.1>uuid": "11.1.1"
+  "@esbuild-kit/core-utils@3.3.2>esbuild": "0.25.12"

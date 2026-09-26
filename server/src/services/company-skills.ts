@@ -1,3 +1,4 @@
+import { publishRuntimeSkillSnapshot, resolvePublishedRuntimeSkillSnapshot } from "./skill-runtime-snapshot.js";
 import { logger } from "../middleware/logger.js";
 import { removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheSpec } from "./runtime-skill-cache.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -5675,119 +5676,26 @@ export function companySkillService(db: Db) {
   }
 
   async function materializeRuntimeSkillFiles(companyId: string, skill: CompanySkill) {
-    const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__");
-    const skillDir = path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
-    await fs.rm(skillDir, { recursive: true, force: true });
-    await fs.mkdir(skillDir, { recursive: true });
-
-    let wroteSkillFile = false;
+    const files: Array<{ path: string; content: string }> = [];
     for (const entry of skill.fileInventory) {
       const normalizedPath = normalizePortablePath(entry.path);
       const detail = await readLoadedSkillFile(skill, normalizedPath);
       const content = detail?.content ?? (normalizedPath === "SKILL.md" ? skill.markdown : null);
       if (content === null) throw unprocessable("Declared skill file is unavailable");
-      const resolved = resolveVersionSnapshotPath(skillDir, entry.path);
-      if (!resolved) throw unprocessable("Invalid skill file path");
-      const targetPath = resolved.targetPath;
-      await fs.mkdir(path.dirname(targetPath), { recursive: true });
-      await fs.writeFile(targetPath, content, "utf8");
-      if (normalizedPath === "SKILL.md") wroteSkillFile = true;
+      files.push({ path: normalizedPath, content });
     }
-
-    if (!wroteSkillFile) {
-      await fs.rm(skillDir, { recursive: true, force: true });
+    if (!files.some((file) => file.path === "SKILL.md")) {
       throw unprocessable("Company skill could not be materialized because its stored SKILL.md copy is missing.");
     }
-
-    return skillDir;
-  }
-
-  function resolveVersionSnapshotPath(skillDir: string, relativePath: string) {
-    const normalizedPath = normalizePortablePath(relativePath);
-    if (!normalizedPath) return null;
-    const targetPath = path.resolve(skillDir, normalizedPath);
-    if (targetPath !== skillDir && !targetPath.startsWith(`${skillDir}${path.sep}`)) {
-      throw unprocessable(`Skill version file path is invalid: ${relativePath}`);
-    }
-    return { normalizedPath, targetPath };
-  }
-
-  async function listMaterializedFiles(root: string): Promise<string[] | null> {
-    async function walk(dir: string, base: string): Promise<string[]> {
-      const entries = await fs.readdir(dir, { withFileTypes: true });
-      const out: string[] = [];
-      for (const entry of entries) {
-        const relativePath = base ? path.posix.join(base, entry.name) : entry.name;
-        const absolutePath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          out.push(...await walk(absolutePath, relativePath));
-        } else if (entry.isFile()) {
-          out.push(normalizePortablePath(relativePath));
-        } else {
-          out.push(normalizePortablePath(relativePath));
-        }
-      }
-      return out;
-    }
-
-    try {
-      return await walk(root, "");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    }
-  }
-
-  async function materializedVersionSnapshotMatches(skillDir: string, version: CompanySkillVersion) {
-    const expected = new Map<string, string>();
-    let sawSkillFile = false;
-    for (const entry of version.fileInventory) {
-      const resolved = resolveVersionSnapshotPath(skillDir, entry.path);
-      if (!resolved) continue;
-      expected.set(resolved.normalizedPath, entry.content);
-      if (resolved.normalizedPath === "SKILL.md") sawSkillFile = true;
-    }
-    if (!sawSkillFile) {
-      throw unprocessable("Company skill version could not be materialized because its SKILL.md snapshot is missing.");
-    }
-
-    const existingFiles = await listMaterializedFiles(skillDir);
-    if (!existingFiles || existingFiles.length !== expected.size) return false;
-    for (const relativePath of existingFiles) {
-      if (!expected.has(relativePath)) return false;
-    }
-    for (const [relativePath, content] of expected.entries()) {
-      const existingContent = await fs.readFile(path.resolve(skillDir, relativePath), "utf8").catch(() => null);
-      if (existingContent !== content) return false;
-    }
-    return true;
+    return publishRuntimeSkillSnapshot(resolveRuntimeSkillMaterializedPath(companyId, skill), files);
   }
 
   async function materializeVersionSnapshot(companyId: string, skill: CompanySkill, version: CompanySkillVersion) {
     const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__versions__");
-    const skillDir = path.resolve(runtimeRoot, skill.id, version.id);
-    if (await materializedVersionSnapshotMatches(skillDir, version)) {
-      return skillDir;
-    }
-    await fs.rm(skillDir, { recursive: true, force: true });
-    await fs.mkdir(skillDir, { recursive: true });
-
-    let wroteSkillFile = false;
-    for (const entry of version.fileInventory) {
-      const resolved = resolveVersionSnapshotPath(skillDir, entry.path);
-      if (!resolved) continue;
-      const { normalizedPath, targetPath } = resolved;
-      await fs.mkdir(path.dirname(targetPath), { recursive: true });
-      await fs.writeFile(targetPath, entry.content, "utf8");
-      if (normalizedPath === "SKILL.md") wroteSkillFile = true;
-    }
-
-    if (!wroteSkillFile) {
-      await fs.rm(skillDir, { recursive: true, force: true });
+    if (!version.fileInventory.some((file) => normalizePortablePath(file.path) === "SKILL.md")) {
       throw unprocessable("Company skill version could not be materialized because its SKILL.md snapshot is missing.");
     }
-
-    return skillDir;
+    return publishRuntimeSkillSnapshot(path.resolve(runtimeRoot, skill.id, version.id), version.fileInventory);
   }
 
   function resolveRuntimeSkillMaterializedPath(companyId: string, skill: Pick<CompanySkill, "key" | "slug">) {
@@ -5850,7 +5758,8 @@ export function companySkillService(db: Db) {
 
     if (options.materializeMissing === false) {
       const materializedPath = resolveRuntimeSkillMaterializedPath(companyId, skill);
-      const materializedSource = await resolveExistingSkillDirectory(materializedPath);
+      const publishedPath = await resolvePublishedRuntimeSkillSnapshot(materializedPath);
+      const materializedSource = await resolveExistingSkillDirectory(publishedPath);
       if (materializedSource) return { status: "available", source: materializedSource };
       return {
         status: "missing",

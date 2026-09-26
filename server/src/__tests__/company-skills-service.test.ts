@@ -2071,6 +2071,17 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await expect(fs.readFile(path.join(entry!.source, "SKILL.md"), "utf8")).resolves.toBe(
       "# Runtime Coach\n\nRecovered from DB.\n",
     );
+    const repeated = await Promise.all(Array.from({ length: 8 }, () => svc.listRuntimeSkillEntries(companyId)));
+    for (const listing of repeated) {
+      expect(listing.find((candidate) => candidate.key === skillKey)?.source).toBe(entry!.source);
+    }
+    const readOnly = await svc.listRuntimeSkillEntries(companyId, { materializeMissing: false });
+    expect(readOnly.find((candidate) => candidate.key === skillKey)?.source).toBe(entry!.source);
+    await db.update(companySkills).set({ markdown: "# Updated Runtime Coach\n" }).where(eq(companySkills.id, skillId));
+    const changed = (await svc.listRuntimeSkillEntries(companyId)).find((candidate) => candidate.key === skillKey)!;
+    expect(changed.source).not.toBe(entry!.source);
+    expect(await fs.readFile(path.join(changed.source, "SKILL.md"), "utf8")).toBe("# Updated Runtime Coach\n");
+    expect(await fs.readFile(path.join(entry!.source, "SKILL.md"), "utf8")).toBe("# Runtime Coach\n\nRecovered from DB.\n");
   });
 
   it("surfaces a failed runtime materialization as a missing entry instead of dropping the skill", async () => {
