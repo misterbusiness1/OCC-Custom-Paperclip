@@ -9,10 +9,14 @@ import {
   defaultTypeIcon,
   ApprovalPayloadRenderer,
   typeLabel,
+  extractApprovalMeta,
+  GateBadge,
+  RiskBadge,
 } from "./ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
 import type { Approval, Agent } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
+import { FeatureFlags, useFeatureFlag } from "../lib/featureFlags";
 import { Card } from "@/components/ui/card";
 
 function statusIcon(status: string) {
@@ -42,10 +46,17 @@ export function ApprovalCard({
   isPending?: boolean;
   pendingAction?: "approve" | "reject" | null;
 }) {
+  const decisionCard = useFeatureFlag(FeatureFlags.approvalsDecisionCard);
   const payload = approval.payload as Record<string, unknown> | null;
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
   const subject = approvalSubject(payload);
+  const meta = extractApprovalMeta({
+    payload,
+    requestedByAgentId: approval.requestedByAgentId,
+    createdAt: approval.createdAt,
+    decidedAt: approval.decidedAt,
+  });
   const showResolutionButtons =
     Boolean(onApprove && onReject) &&
     approval.type !== "budget_override_required" &&
@@ -68,6 +79,13 @@ export function ApprovalCard({
                 >
                   {kindLabel}
                 </Badge>
+                {decisionCard && <GateBadge gate={meta.gate} />}
+                {decisionCard && <RiskBadge risk={meta.risk} />}
+                {decisionCard && meta.slaLabel && (
+                  <span className="inline-flex items-center rounded-full border border-border/70 bg-background/70 px-2 py-0.5 text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+                    {meta.slaLabel}
+                  </span>
+                )}
                 {requesterAgent && (
                   <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                     <span>Requested by</span>

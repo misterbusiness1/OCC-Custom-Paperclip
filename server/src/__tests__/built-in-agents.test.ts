@@ -1238,7 +1238,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       permissions: {},
     });
     const created = await builtInAgentService(db).ensure(companyId, "reflection-coach");
-    const coach = created.agent!;
+    const coach = (await agentsSvc.update(created.agent!.id, { status: "idle" }))!;
     const instructionsSvc = agentInstructionsService();
     const originalInstructions = "# Target Coder\n\nWork from the assigned issue.\n";
     const prepared = await instructionsSvc.writeFile(target, "AGENTS.md", originalInstructions);

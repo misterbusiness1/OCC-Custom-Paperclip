@@ -1349,6 +1349,12 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
 
   let socket: net.Socket | null = null;
   let stopping = false;
+  let remoteTerminated = false;
+  let stdinEndAcknowledged = false;
+  let resolveStdinEndAcknowledged: (() => void) | null = null;
+  const stdinEndAcknowledgedPromise = new Promise<void>((resolve) => {
+    resolveStdinEndAcknowledged = resolve;
+  });
   let stdinSeq = 0;
   let pollTimer: NodeJS.Timeout | null = null;
   const pendingRemoteEvents: Array<{
@@ -1376,6 +1382,13 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   };
 
   const deliverRemoteEvent = (event: (typeof pendingRemoteEvents)[number]) => {
+    if (event.type === "stdinEndAck") {
+      stdinEndAcknowledged = true;
+      resolveStdinEndAcknowledged?.();
+    }
+    if (event.type === "exit" || event.type === "error") {
+      remoteTerminated = true;
+    }
     if (socket) {
       writeRemoteEventToSocket(event);
       return;
@@ -1493,14 +1506,25 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   return {
     agentCommand,
     stop: async () => {
-      stopping = true;
-      if (pollTimer) clearTimeout(pollTimer);
       for (const liveSocket of liveSockets) liveSocket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
-      await client.writeTextFile(
-        path.posix.join(stdinDir, `${String(stdinSeq + 1).padStart(12, "0")}.json`),
-        jsonLine({ type: "stdinEnd" }),
-      ).catch(() => undefined);
+      if (!remoteTerminated) {
+        await client.writeTextFile(
+          path.posix.join(stdinDir, `${String(stdinSeq + 1).padStart(12, "0")}.json`),
+          jsonLine({ type: "stdinEnd" }),
+        ).catch(() => undefined);
+        if (!stdinEndAcknowledged) {
+          await Promise.race([
+            stdinEndAcknowledgedPromise,
+            new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, PROCESS_SESSION_AUTH_TIMEOUT_MS);
+              timer.unref?.();
+            }),
+          ]);
+        }
+      }
+      stopping = true;
+      if (pollTimer) clearTimeout(pollTimer);
       await client.remove(sessionDir).catch(() => undefined);
       await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
     },
@@ -1600,7 +1624,20 @@ child.on("close", (code, signal) => void writeEvent({ type: "exit", code, signal
 
 async function pollStdin() {
   while (!stdinClosed) {
-    const entries = (await fs.readdir(stdinDir).catch(() => [])).filter((name) => name.endsWith(".json")).sort();
+    let entries;
+    try {
+      entries = (await fs.readdir(stdinDir)).filter((name) => name.endsWith(".json")).sort();
+    } catch (error) {
+      // The host removes the session directory during bridge teardown. If that
+      // races delivery of the queued stdinEnd message, treat the removed queue
+      // as EOF instead of polling a path that can never reappear forever.
+      if (error && error.code === "ENOENT") {
+        stdinClosed = true;
+        child.stdin.end();
+        break;
+      }
+      throw error;
+    }
     for (const name of entries) {
       const file = path.posix.join(stdinDir, name);
       const raw = await fs.readFile(file, "utf8").catch(() => null);
@@ -1612,6 +1649,7 @@ async function pollStdin() {
       } else if (message.type === "stdinEnd") {
         stdinClosed = true;
         child.stdin.end();
+        await writeEvent({ type: "stdinEndAck" });
         break;
       }
     }

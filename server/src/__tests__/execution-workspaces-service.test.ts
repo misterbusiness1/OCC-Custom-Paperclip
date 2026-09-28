@@ -317,6 +317,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       isDestructiveCloseAllowed: true,
     });
     expect(readiness?.blockingReasons).toEqual([]);
+    expect(readiness?.plannedActions.map((action) => action.kind)).toEqual(["archive_record"]);
     expect(readiness?.warnings).toEqual(expect.arrayContaining([
       "This workspace is still linked to an open issue. Archiving it will detach this shared workspace session from those issues, but keep the underlying project workspace available.",
       "This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.",
@@ -2525,5 +2526,50 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "git_worktree_remove",
       "git_branch_delete",
     ]));
+  }, 20_000);
+
+  it("streams oversized git status output into exact bounded counts", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    for (let index = 0; index < 150; index += 1) {
+      await fs.writeFile(path.join(repoRoot, `untracked-${String(index).padStart(4, "0")}.txt`), "dirty\n", "utf8");
+    }
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Large status project",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "directory",
+      name: "Large dirty workspace",
+      status: "idle",
+      providerType: "local_fs",
+      cwd: repoRoot,
+      metadata: { createdByRuntime: false },
+    });
+
+    const readiness = await svc.getCloseReadiness(workspaceId);
+
+    expect(readiness?.state).toBe("ready_with_warnings");
+    expect(readiness?.git).toMatchObject({
+      hasUntrackedFiles: true,
+      untrackedEntryCount: 150,
+      statusEntriesTruncated: true,
+    });
+    expect(readiness?.blockingReasons).toEqual([]);
   }, 20_000);
 });

@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
+  buildHydratedApprovalDetail,
   createApprovalSchema,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
@@ -19,6 +21,7 @@ import {
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { badRequest } from "../errors.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -37,6 +40,22 @@ function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
     context.allowDeliverableWork === false &&
     context.allowDocumentUpdates === false &&
     context.resumeRequiresNormalModel === true;
+}
+
+function verifyGateBBodyHash(payload: Record<string, unknown>) {
+  if (payload.gate !== "gate_b") return;
+  if (payload.bodyHash === undefined) return;
+  const body = typeof payload.body === "string" ? payload.body : "";
+  const expectedHash = `sha256:${createHash("sha256").update(body, "utf8").digest("hex")}`;
+  if (payload.bodyHash !== expectedHash) {
+    throw badRequest("Validation error", [
+      {
+        code: "custom",
+        message: "bodyHash must match sha256(body)",
+        path: ["payload", "bodyHash"],
+      },
+    ]);
+  }
 }
 
 export function approvalRoutes(
@@ -118,7 +137,12 @@ export function approvalRoutes(
     const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!approval) return;
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
-    res.json(redactApprovalPayload(approval));
+    const redacted = redactApprovalPayload(approval);
+    if (req.query.v === "2") {
+      res.json(buildHydratedApprovalDetail(redacted));
+      return;
+    }
+    res.json(redacted);
   });
 
   router.post("/companies/:companyId/approvals", validate(createApprovalSchema), async (req, res) => {
@@ -130,30 +154,47 @@ export function approvalRoutes(
     const issueIds = Array.isArray(rawIssueIds)
       ? rawIssueIds.filter((value: unknown): value is string => typeof value === "string")
       : [];
-    const uniqueIssueIds = Array.from(new Set(issueIds));
-    const { issueIds: _issueIds, ...approvalInput } = req.body;
-    const normalizedPayload =
-      approvalInput.type === "hire_agent"
-        ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
-            companyId,
-            approvalInput.payload,
-            { strictMode: strictSecretsMode },
-          )
-        : approvalInput.payload;
+    const uniqueIssueIds = Array.from(new Set(issueIds)).sort();
+    const { issueIds: _issueIds, idempotencyKey: bodyIdempotencyKey, ...approvalInput } = req.body;
+    const headerIdempotencyKey = req.header("idempotency-key")?.trim();
+    const idempotencyKey = headerIdempotencyKey || bodyIdempotencyKey || null;
 
     const actor = getActorInfo(req);
-    const approval = await svc.create(companyId, {
+    const requestedByAgentId =
+      approvalInput.requestedByAgentId ?? (actor.actorType === "agent" ? actor.actorId : null);
+    const requestedByUserId = actor.actorType === "user" ? actor.actorId : null;
+
+    let normalizedPayload: Record<string, unknown> = approvalInput.payload;
+    if (approvalInput.type === "hire_agent") {
+      normalizedPayload = await secretsSvc.normalizeHireApprovalPayloadForPersistence(
+        companyId,
+        approvalInput.payload,
+        { strictMode: strictSecretsMode },
+      );
+    } else if (approvalInput.type === "request_board_approval") {
+      normalizedPayload = {
+        ...approvalInput.payload,
+        requestedByAgentId: requestedByAgentId ?? approvalInput.payload.requestedByAgentId,
+      };
+      verifyGateBBodyHash(normalizedPayload);
+    }
+
+    const approvalData = {
       ...approvalInput,
       payload: normalizedPayload,
-      requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
-      requestedByAgentId:
-        approvalInput.requestedByAgentId ?? (actor.actorType === "agent" ? actor.actorId : null),
-      status: "pending",
+      requestedByUserId,
+      requestedByAgentId,
+      status: "pending" as const,
       decisionNote: null,
       decidedByUserId: null,
       decidedAt: null,
       updatedAt: new Date(),
-    });
+    };
+
+    const creation = idempotencyKey
+      ? await svc.createWithIdempotency(companyId, approvalData, idempotencyKey, uniqueIssueIds)
+      : { approval: await svc.create(companyId, approvalData), replayed: false };
+    const { approval, replayed } = creation;
 
     if (uniqueIssueIds.length > 0) {
       await issueApprovalsSvc.linkManyForApproval(approval.id, uniqueIssueIds, {
@@ -162,18 +203,20 @@ export function approvalRoutes(
       });
     }
 
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "approval.created",
-      entityType: "approval",
-      entityId: approval.id,
-      details: { type: approval.type, issueIds: uniqueIssueIds },
-    });
+    if (!replayed) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "approval.created",
+        entityType: "approval",
+        entityId: approval.id,
+        details: { type: approval.type, issueIds: uniqueIssueIds },
+      });
+    }
 
-    res.status(201).json(redactApprovalPayload(approval));
+    res.status(replayed ? 200 : 201).json(redactApprovalPayload(approval));
   });
 
   router.get("/approvals/:id/issues", async (req, res) => {

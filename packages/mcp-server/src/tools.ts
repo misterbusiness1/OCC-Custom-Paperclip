@@ -25,11 +25,15 @@ export interface ToolDefinition {
   }>;
 }
 
-function makeTool<TSchema extends z.ZodRawShape>(
+function makeTool<
+  TSchema extends z.ZodRawShape,
+  TInput = z.infer<z.ZodObject<TSchema>>,
+>(
   name: string,
   description: string,
   schema: z.ZodObject<TSchema>,
-  execute: (input: z.infer<typeof schema>) => Promise<unknown>,
+  execute: (input: TInput) => Promise<unknown>,
+  inputSchema: z.ZodType<TInput> = schema as unknown as z.ZodType<TInput>,
 ): ToolDefinition {
   return {
     name,
@@ -37,7 +41,7 @@ function makeTool<TSchema extends z.ZodRawShape>(
     schema,
     execute: async (input) => {
       try {
-        const parsed = schema.parse(input);
+        const parsed = inputSchema.parse(input);
         return formatTextResponse(await execute(parsed));
       } catch (error) {
         return formatErrorResponse(error);
@@ -166,7 +170,21 @@ const approvalDecisionSchema = z.object({
 
 const createApprovalToolSchema = z.object({
   companyId: companyIdOptional,
-}).merge(createApprovalSchema);
+  type: z.enum([
+    "request_board_approval",
+    "hire_agent",
+    "approve_ceo_strategy",
+    "budget_override_required",
+  ]),
+  requestedByAgentId: z.string().uuid().optional().nullable(),
+  payload: z.record(z.string(), z.unknown()),
+  issueIds: z.array(z.string().uuid()).optional(),
+  idempotencyKey: z.string().trim().min(1).max(255).optional(),
+});
+
+const createApprovalToolInputSchema = z.object({
+  companyId: companyIdOptional,
+}).and(createApprovalSchema);
 
 const apiRequestSchema = z.object({
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
@@ -435,6 +453,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/approvals`, {
           body,
         }),
+      createApprovalToolInputSchema,
     ),
     makeTool(
       "paperclipGetApproval",

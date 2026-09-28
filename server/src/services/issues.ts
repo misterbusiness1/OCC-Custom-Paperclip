@@ -91,6 +91,9 @@ import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import {
+  assertIssueAssigneeExecutableState,
+} from "./issue-mutation-guards.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import {
   assertAgentCapacityForAssignment,
@@ -604,6 +607,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  assignmentGuardBlockerComment?: string | null;
   skipExecutionWorkspaceInheritance?: boolean;
   watchdog?: { agentId: string; instructions?: string | null } | null;
   watchdogActorRunId?: string | null;
@@ -1201,6 +1205,30 @@ async function listUnresolvedBlockerIssueIds(
       ),
     )
     .then((rows) => rows.map((row) => row.id));
+}
+
+async function assertValidUnresolvedBlockerIssueIds(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  blockerIssueIds: string[],
+) {
+  const uniqueBlockerIssueIds = [...new Set(blockerIssueIds)];
+  if (uniqueBlockerIssueIds.length === 0 || uniqueBlockerIssueIds.some((id) => !id)) {
+    throw unprocessable("Blocked assignment to a paused agent requires an unresolved blocker issue");
+  }
+  const rows = await dbOrTx
+    .select({ id: issues.id, status: issues.status })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, uniqueBlockerIssueIds)))
+    .orderBy(asc(issues.id))
+    .for("update");
+  if (
+    rows.length !== uniqueBlockerIssueIds.length
+    || rows.some((row) => row.status === "done" || row.status === "cancelled")
+  ) {
+    throw unprocessable("Blocked-by issues must exist in the same company and remain unresolved");
+  }
+  return true;
 }
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
@@ -6193,6 +6221,7 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        assignmentGuardBlockerComment: _assignmentGuardBlockerComment,
         skipExecutionWorkspaceInheritance,
         watchdog,
         watchdogActorRunId,
@@ -6223,6 +6252,28 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      const nextStatus = issueData.status ?? "todo";
+      const nextAssigneeAgent = issueData.assigneeAgentId
+        ? await db
+          .select({ id: agents.id, status: agents.status })
+          .from(agents)
+          .where(eq(agents.id, issueData.assigneeAgentId))
+          .then((rows: Array<{ id: string; status: string }>) => rows[0] ?? null)
+        : null;
+      const requiresLiveBlockerValidation = nextAssigneeAgent?.status === "paused" && nextStatus === "blocked";
+      if (
+        requiresLiveBlockerValidation
+        && (!(blockedByIssueIds?.length) || blockedByIssueIds.some((blockerIssueId) => !blockerIssueId))
+      ) {
+        throw unprocessable("Blocked assignment to a paused agent requires an unresolved blocker issue");
+      }
+      const hasUnresolvedBlocker = requiresLiveBlockerValidation && (blockedByIssueIds?.length ?? 0) > 0;
+      assertIssueAssigneeExecutableState({
+        status: nextStatus,
+        assigneeAgentId: issueData.assigneeAgentId ?? null,
+        assigneeStatus: nextAssigneeAgent?.status ?? null,
+        hasUnresolvedBlocker,
+      });
       const created = await db.transaction(async (tx) => {
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
@@ -6535,6 +6586,13 @@ export function issueService(db: Db) {
             tx,
           );
         }
+        if (requiresLiveBlockerValidation) {
+          // syncBlockedByIssueIds locks the blocker rows through commit. Validate
+          // only after that lock is held so a concurrent completion either wins
+          // first (and this mutation rolls back) or observes the committed edge
+          // and can emit issue_blockers_resolved.
+          await assertValidUnresolvedBlockerIssueIds(tx, companyId, blockedByIssueIds ?? []);
+        }
         const [enriched] = await withIssueLabels(tx, [issue]);
         const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
         return withRelations;
@@ -6554,6 +6612,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        assignmentGuardBlockerComment?: string | null;
         actorRunId?: string | null;
         capacityOverride?: AgentCapacityOverride | null;
       },
@@ -6571,6 +6630,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        assignmentGuardBlockerComment: _assignmentGuardBlockerComment,
         actorRunId,
         capacityOverride,
         ...issueData
@@ -6624,6 +6684,32 @@ export function issueService(db: Db) {
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
+      const nextStatus = issueData.status ?? existing.status;
+      const nextAssigneeAgent = nextAssigneeAgentId
+        ? await dbOrTx
+          .select({ id: agents.id, status: agents.status })
+          .from(agents)
+          .where(eq(agents.id, nextAssigneeAgentId))
+          .then((rows: Array<{ id: string; status: string }>) => rows[0] ?? null)
+        : null;
+      let hasUnresolvedBlocker = false;
+      if (nextAssigneeAgent?.status === "paused" && nextStatus === "blocked") {
+        if (blockedByIssueIds !== undefined) {
+          // The status check is repeated inside runUpdate after relation sync
+          // has locked the blocker rows. Here only preserve the shape guard for
+          // the executable-state assertion.
+          hasUnresolvedBlocker = blockedByIssueIds.length > 0;
+        } else {
+          const readiness = await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id]);
+          hasUnresolvedBlocker = (readiness.get(id)?.unresolvedBlockerIssueIds.length ?? 0) > 0;
+        }
+      }
+      assertIssueAssigneeExecutableState({
+        status: nextStatus,
+        assigneeAgentId: nextAssigneeAgentId,
+        assigneeStatus: nextAssigneeAgent?.status ?? null,
+        hasUnresolvedBlocker,
+      });
       let nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
@@ -6767,6 +6853,31 @@ export function issueService(db: Db) {
               userId: actorUserId ?? null,
             },
             tx,
+          );
+        }
+        if (nextAssigneeAgent?.status === "paused" && nextStatus === "blocked") {
+          const effectiveBlockerIssueIds = blockedByIssueIds !== undefined
+            ? blockedByIssueIds
+            : await tx
+              .select({ issueId: issueRelations.issueId })
+              .from(issueRelations)
+              .where(
+                and(
+                  eq(issueRelations.companyId, existing.companyId),
+                  eq(issueRelations.relatedIssueId, id),
+                  eq(issueRelations.type, "blocks"),
+                ),
+              )
+              .orderBy(asc(issueRelations.issueId))
+              .then((rows: Array<{ issueId: string }>) => rows.map((row) => row.issueId));
+          // Resolve existing relations only after the issue update has taken its
+          // row lock, then lock blockers in a stable order through commit. This
+          // closes the gap where a blocker could finish and emit its wake before
+          // a paused-agent blocked assignment committed.
+          await assertValidUnresolvedBlockerIssueIds(
+            tx,
+            existing.companyId,
+            effectiveBlockerIssueIds,
           );
         }
         if (

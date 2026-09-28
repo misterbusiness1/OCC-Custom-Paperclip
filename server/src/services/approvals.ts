@@ -1,13 +1,23 @@
+import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
+
+const APPROVAL_IDEMPOTENCY_CONSTRAINT = "approvals_company_idempotency_key_uq";
+
+function isApprovalIdempotencyConflict(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const err = error as { code?: string; constraint?: string; constraint_name?: string };
+  const constraint = err.constraint ?? err.constraint_name;
+  return err.code === "23505" && constraint === APPROVAL_IDEMPOTENCY_CONSTRAINT;
+}
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
@@ -17,6 +27,7 @@ export function approvalService(db: Db) {
   const resolvableStatuses = Array.from(canResolveStatuses);
   type ApprovalRecord = typeof approvals.$inferSelect;
   type ResolutionResult = { approval: ApprovalRecord; applied: boolean };
+  type CreationResult = { approval: ApprovalRecord; replayed: boolean };
 
   function redactApprovalComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
     return {
@@ -40,6 +51,44 @@ export function approvalService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!existing) throw notFound("Approval not found");
     return existing;
+  }
+
+  function stableJson(value: unknown): string {
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => stableJson(item)).join(",")}]`;
+    }
+    if (value && typeof value === "object") {
+      const entries = Object.entries(value as Record<string, unknown>)
+        .filter(([, entryValue]) => entryValue !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right));
+      return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJson(entryValue)}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  function hashApprovalCreateRequest(
+    companyId: string,
+    data: Omit<typeof approvals.$inferInsert, "companyId">,
+    issueIds: string[],
+  ): string {
+    const request = {
+      companyId,
+      type: data.type,
+      requestedByAgentId: data.requestedByAgentId ?? null,
+      requestedByUserId: data.requestedByUserId ?? null,
+      payload: data.payload,
+      status: data.status ?? "pending",
+      issueIds,
+    };
+    return createHash("sha256").update(stableJson(request)).digest("hex");
+  }
+
+  async function findByIdempotencyKey(companyId: string, idempotencyKey: string) {
+    return db
+      .select()
+      .from(approvals)
+      .where(and(eq(approvals.companyId, companyId), eq(approvals.idempotencyKey, idempotencyKey)))
+      .then((rows) => rows[0] ?? null);
   }
 
   async function resolveApproval(
@@ -121,6 +170,47 @@ export function approvalService(db: Db) {
         .values({ ...data, companyId })
         .returning()
         .then((rows) => rows[0]),
+
+    createWithIdempotency: async (
+      companyId: string,
+      data: Omit<typeof approvals.$inferInsert, "companyId" | "idempotencyKey" | "idempotencyRequestHash">,
+      idempotencyKey: string,
+      issueIds: string[] = [],
+    ): Promise<CreationResult> => {
+      const canonicalIssueIds = Array.from(new Set(issueIds)).sort();
+      const requestHash = hashApprovalCreateRequest(companyId, data, canonicalIssueIds);
+      const existing = await findByIdempotencyKey(companyId, idempotencyKey);
+      if (existing) {
+        if (existing.idempotencyRequestHash !== requestHash) {
+          throw conflict("Approval idempotency key already exists for a different request", {
+            idempotencyKey,
+          });
+        }
+        return { approval: existing, replayed: true };
+      }
+
+      let inserted: ApprovalRecord;
+      try {
+        inserted = await db
+          .insert(approvals)
+          .values({ ...data, companyId, idempotencyKey, idempotencyRequestHash: requestHash })
+          .returning()
+          .then((rows) => rows[0]);
+      } catch (error) {
+        if (!isApprovalIdempotencyConflict(error)) throw error;
+
+        const winner = await findByIdempotencyKey(companyId, idempotencyKey);
+        if (!winner) throw error;
+        if (winner.idempotencyRequestHash !== requestHash) {
+          throw conflict("Approval idempotency key already exists for a different request", {
+            idempotencyKey,
+          });
+        }
+        return { approval: winner, replayed: true };
+      }
+
+      return { approval: inserted, replayed: false };
+    },
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const { approval: updated, applied } = await resolveApproval(

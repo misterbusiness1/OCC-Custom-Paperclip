@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "occ-fleet-cqe/2.0.0",
+  "title": "OCC fleet CQE report v2",
+  "type": "object",
+  "required": ["schema_version", "schema_id", "collector_sha", "run_issue", "repositories"],
+  "properties": {
+    "schema_version": { "const": "2.0.0" },
+    "schema_id": { "const": "occ-fleet-cqe/2.0.0" },
+    "collector_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "run_issue": { "type": "string" },
+    "repositories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["repository", "merged_pr_reviews", "dependency_advisories"],
+        "properties": {
+          "repository": { "type": "string" },
+          "dependency_advisories": { "$ref": "#/$defs/advisoryEvidence" },
+          "merged_pr_reviews": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["number", "head_sha", "cqe_latency", "static_analysis"],
+              "properties": {
+                "number": { "type": "integer" },
+                "head_sha": { "type": "string" },
+                "cqe_latency": { "$ref": "#/$defs/latencyEvidence" },
+                "static_analysis": {
+                  "type": "object",
+                  "required": ["phpstan", "phpcs"],
+                  "properties": {
+                    "phpstan": { "$ref": "#/$defs/staticEvidence" },
+                    "phpcs": { "$ref": "#/$defs/staticEvidence" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "evidenceStatus": { "enum": ["measured", "denied", "unavailable", "unsupported", "missing"] },
+    "latencyEvidence": {
+      "type": "object",
+      "required": ["repository", "number", "created_at", "head_sha", "first_cqe_at", "latency_seconds", "evidence_status"],
+      "properties": { "evidence_status": { "$ref": "#/$defs/evidenceStatus" } }
+    },
+    "staticEvidence": {
+      "type": "object",
+      "required": ["evidence_status", "error_delta", "baseline_delta", "changed_file_errors", "check_count"],
+      "properties": { "evidence_status": { "$ref": "#/$defs/evidenceStatus" } }
+    },
+    "advisoryEvidence": {
+      "type": "object",
+      "required": ["evidence_status", "actionable_count", "severity"],
+      "properties": { "evidence_status": { "$ref": "#/$defs/evidenceStatus" } }
+    }
+  }
+}

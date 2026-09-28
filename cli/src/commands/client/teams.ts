@@ -412,7 +412,8 @@ async function requestInstallApproval(
         "Catalog team installation can create agents, projects, tasks, routines, skills, and secret bindings.",
         "Only approve after checking the catalog source, selected files, target manager, and collision strategy.",
       ],
-      installAttempt: {
+      context: {
+        kind: "catalog_team_install",
         companyId: ctx.companyId,
         catalogRef: trimmedRef,
         options: approvalInstallOptions,

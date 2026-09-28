@@ -128,6 +128,106 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     res.json(readiness);
   });
 
+  router.post("/companies/:companyId/execution-workspaces/reconcile-cleanup-failures", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const dryRun = req.body?.dryRun !== false;
+    const requestedLimit = Number.isFinite(req.body?.limit) ? Math.trunc(req.body.limit) : 25;
+    const limit = Math.min(100, Math.max(1, requestedLimit));
+    const candidates = (await svc.list(companyId, { status: "cleanup_failed" })).slice(0, limit);
+    const result = {
+      dryRun,
+      limit,
+      examined: candidates.length,
+      archiveRecordOnly: 0,
+      cleanupRetried: 0,
+      archived: 0,
+      blocked: 0,
+      failed: 0,
+      reasons: {} as Record<string, number>,
+    };
+    const addReason = (reason: string) => {
+      result.reasons[reason] = (result.reasons[reason] ?? 0) + 1;
+    };
+
+    for (const candidate of candidates) {
+      const readiness = await svc.getCloseReadiness(candidate.id);
+      if (!readiness || readiness.state === "blocked") {
+        result.blocked += 1;
+        addReason("current_readiness_blocked");
+        continue;
+      }
+      const artifactActions = readiness.plannedActions.filter((action) =>
+        ["cleanup_command", "teardown_command", "git_worktree_remove", "git_branch_delete", "remove_local_directory"]
+          .includes(action.kind),
+      );
+      if (artifactActions.length === 0) {
+        result.archiveRecordOnly += 1;
+        addReason("archive_record_only");
+        if (!dryRun) {
+          await svc.update(candidate.id, { status: "archived", closedAt: new Date(), cleanupReason: null });
+          if (candidate.mode === "shared_workspace") {
+            await db.update(issues).set({ executionWorkspaceId: null, updatedAt: new Date() }).where(and(
+              eq(issues.companyId, companyId),
+              eq(issues.executionWorkspaceId, candidate.id),
+            ));
+          }
+          result.archived += 1;
+        }
+        continue;
+      }
+
+      result.cleanupRetried += 1;
+      addReason("artifact_cleanup_authorized");
+      if (dryRun) continue;
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: candidate.id,
+        workspaceCwd: candidate.cwd,
+      });
+      const projectWorkspace = candidate.projectWorkspaceId
+        ? await db.select({ cwd: projectWorkspaces.cwd, cleanupCommand: projectWorkspaces.cleanupCommand })
+          .from(projectWorkspaces)
+          .where(and(eq(projectWorkspaces.id, candidate.projectWorkspaceId), eq(projectWorkspaces.companyId, companyId)))
+          .then((rows) => rows[0] ?? null)
+        : null;
+      const cleanup = await cleanupExecutionWorkspaceArtifacts({
+        workspace: candidate,
+        projectWorkspace,
+        cleanupCommand: readExecutionWorkspaceConfig(candidate.metadata)?.cleanupCommand ?? null,
+        teardownCommand: readExecutionWorkspaceConfig(candidate.metadata)?.teardownCommand ?? null,
+        recorder: workspaceOperationsSvc.createRecorder({ companyId, executionWorkspaceId: candidate.id }),
+      });
+      if (cleanup.cleaned) {
+        await svc.update(candidate.id, { status: "archived", closedAt: new Date(), cleanupReason: null });
+        result.archived += 1;
+      } else {
+        await svc.update(candidate.id, {
+          status: "cleanup_failed",
+          cleanupReason: "artifact_cleanup_incomplete: an authorized cleanup action did not remove its expected artifact",
+        });
+        result.failed += 1;
+        addReason("artifact_cleanup_incomplete");
+      }
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "execution_workspace.cleanup_failures_reconciled",
+      entityType: "company",
+      entityId: companyId,
+      details: result,
+    });
+    res.json(result);
+  });
+
   router.get("/execution-workspaces/:id/workspace-operations", async (req, res) => {
     const id = req.params.id as string;
     const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
@@ -637,6 +737,11 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       }
       workspace = archivedWorkspace;
 
+      const requiresArtifactCleanup = readiness.plannedActions.some((action) =>
+        ["cleanup_command", "teardown_command", "git_worktree_remove", "git_branch_delete", "remove_local_directory"]
+          .includes(action.kind),
+      );
+
       await environmentRuntime.destroyReusableSandboxLeases({
         companyId: existing.companyId,
         executionWorkspaceId: existing.id,
@@ -664,6 +769,18 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           executionWorkspaceId: existing.id,
           workspaceCwd: existing.cwd,
         });
+      } catch {
+        const failureReason = "runtime_service_stop_exception: an attached runtime service could not be stopped";
+        workspace = (await svc.update(id, {
+          status: "cleanup_failed",
+          closedAt,
+          cleanupReason: failureReason,
+        })) ?? workspace;
+        res.status(500).json({ error: "Failed to stop attached runtime services while archiving workspace" });
+        return;
+      }
+
+      if (requiresArtifactCleanup) try {
         const projectWorkspace = existing.projectWorkspaceId
           ? await db
               .select({
@@ -701,16 +818,19 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         cleanupWarnings = cleanupResult.warnings;
         const cleanupPatch: Record<string, unknown> = {
           closedAt,
-          cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
+          cleanupReason: cleanupWarnings.length > 0
+            ? "artifact_cleanup_warning: one or more cleanup actions reported a warning"
+            : null,
         };
         if (!cleanupResult.cleaned) {
           cleanupPatch.status = "cleanup_failed";
+          cleanupPatch.cleanupReason ??= "artifact_cleanup: expected workspace artifact still exists after cleanup";
         }
         if (cleanupResult.warnings.length > 0 || !cleanupResult.cleaned) {
           workspace = (await svc.update(id, cleanupPatch)) ?? workspace;
         }
       } catch (error) {
-        const failureReason = error instanceof Error ? error.message : String(error);
+        const failureReason = "artifact_cleanup_exception: cleanup raised an unexpected error; inspect workspace operation records";
         workspace =
           (await svc.update(id, {
             status: "cleanup_failed",
@@ -718,7 +838,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             cleanupReason: failureReason,
           })) ?? workspace;
         res.status(500).json({
-          error: `Failed to archive execution workspace: ${failureReason}`,
+          error: "Failed to archive execution workspace; inspect workspace operation records",
         });
         return;
       }

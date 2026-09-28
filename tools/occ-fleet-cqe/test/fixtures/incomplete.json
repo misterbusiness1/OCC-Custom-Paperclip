@@ -1,0 +1,18 @@
+{
+  "bounded_reviews": {
+    "state": "bounded",
+    "status": 0,
+    "data": []
+  },
+  "bounded_checks": {
+    "state": "bounded",
+    "status": 0,
+    "data": null
+  },
+  "malformed_check_payloads": [
+    null,
+    {},
+    { "check_runs": null },
+    { "check_runs": {} }
+  ]
+}

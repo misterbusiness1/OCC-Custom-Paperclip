@@ -87,6 +87,70 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it.each([
+    {
+      label: "generic",
+      payload: {
+        title: "Approve monthly hosting spend",
+        summary: "Estimated cost is $42/month for provider X.",
+        recommendedAction: "Approve provider X and continue setup.",
+        risks: ["Costs may increase with usage."],
+      },
+    },
+    {
+      label: "Gate A",
+      payload: {
+        gate: "gate_a",
+        orderId: "1001",
+        customerId: "2002",
+        amountUsd: 42.5,
+        actionType: "refund_full",
+        reason: "Customer requested a full refund before fulfillment.",
+      },
+    },
+    {
+      label: "Gate B",
+      payload: {
+        gate: "gate_b",
+        recipient: "customer@example.com",
+        channel: "email",
+        subject: "Your order update",
+        body: "Send the approved customer response.",
+        threadOrOrderRef: "ticket-1001",
+      },
+    },
+  ])("validates and submits $label board approvals through the MCP schema", async ({ payload }) => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ id: "approval-1" }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateApproval");
+    await tool.execute({ type: "request_board_approval", payload });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/approvals",
+    );
+    expect(JSON.parse(String(init.body))).toEqual({
+      type: "request_board_approval",
+      payload,
+    });
+  });
+
+  it("rejects an incomplete generic board approval before the MCP client sends it", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateApproval");
+    const response = await tool.execute({
+      type: "request_board_approval",
+      payload: { title: "Approve something" },
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.content[0]?.text).toContain("recommendedAction");
+  });
+
   it("allows create issue requests to omit status so the API applies assignee defaults", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ id: "issue-1", status: "todo" }),
@@ -110,6 +174,7 @@ describe("paperclip MCP tools", () => {
       priority: "medium",
       assigneeAgentId: "22222222-2222-2222-2222-222222222222",
       requestDepth: 0,
+      allowDuplicate: false,
     });
   });
 

@@ -1817,6 +1817,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
     const { runId, issueId, companyId } = await seedRunFixture({
+      agentStatus: "idle",
       processPid: 999_999_999,
     });
     const { leaseId } = await seedEnvironmentLeaseFixture({

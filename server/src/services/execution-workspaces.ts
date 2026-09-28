@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -46,6 +46,9 @@ const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
+const GIT_STATUS_TIMEOUT_MS = 30_000;
+const GIT_STATUS_SUMMARY_LIMIT = 100;
+const GIT_STATUS_STDERR_LIMIT = 4_096;
 
 export type ExecutionWorkspaceBranchReconcileMode = "forward" | "override" | "quarantine_restore";
 
@@ -175,6 +178,79 @@ async function pathExists(value: string | null | undefined) {
 
 async function runGit(args: string[], cwd: string) {
   return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+}
+
+async function inspectGitStatusBounded(cwd: string): Promise<{
+  dirtyEntryCount: number;
+  untrackedEntryCount: number;
+  statusEntriesTruncated: boolean;
+}> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn("git", ["-C", cwd, "status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let pending = Buffer.alloc(0);
+    let stderr = "";
+    let dirtyEntryCount = 0;
+    let untrackedEntryCount = 0;
+    let statusEntryCount = 0;
+    let skipRenameSource = false;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, GIT_STATUS_TIMEOUT_MS);
+
+    const countRecord = (record: Buffer) => {
+      if (skipRenameSource) {
+        skipRenameSource = false;
+        return;
+      }
+      if (record.length < 3) return;
+      const x = record[0];
+      const y = record[1];
+      if (x === 63 && y === 63) untrackedEntryCount += 1;
+      else dirtyEntryCount += 1;
+      statusEntryCount += 1;
+      skipRenameSource = x === 82 || x === 67 || y === 82 || y === 67;
+    };
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      pending = Buffer.concat([pending, chunk]);
+      let separator = pending.indexOf(0);
+      while (separator >= 0) {
+        countRecord(pending.subarray(0, separator));
+        pending = pending.subarray(separator + 1);
+        separator = pending.indexOf(0);
+      }
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (stderr.length < GIT_STATUS_STDERR_LIMIT) {
+        stderr += chunk.toString("utf8", 0, GIT_STATUS_STDERR_LIMIT - stderr.length);
+      }
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error(`git status timed out after ${GIT_STATUS_TIMEOUT_MS}ms`));
+        return;
+      }
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `git status failed with exit code ${code ?? "unknown"}`));
+        return;
+      }
+      resolve({
+        dirtyEntryCount,
+        untrackedEntryCount,
+        statusEntriesTruncated: statusEntryCount > GIT_STATUS_SUMMARY_LIMIT,
+      });
+    });
+  });
 }
 
 async function readGitStdout(args: string[], cwd: string): Promise<string | null> {
@@ -550,6 +626,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
         hasUntrackedFiles: false,
         dirtyEntryCount: 0,
         untrackedEntryCount: 0,
+        statusEntriesTruncated: false,
         aheadCount: null,
         behindCount: null,
         isMergedIntoBase: null,
@@ -579,17 +656,13 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
 
   let dirtyEntryCount = 0;
   let untrackedEntryCount = 0;
+  let statusEntriesTruncated = false;
   if (repoRoot) {
     try {
-      const statusOutput = (await runGit(["status", "--porcelain=v1", "--untracked-files=all"], workspacePath)).stdout;
-      for (const line of statusOutput.split(/\r?\n/)) {
-        if (!line) continue;
-        if (line.startsWith("??")) {
-          untrackedEntryCount += 1;
-          continue;
-        }
-        dirtyEntryCount += 1;
-      }
+      const status = await inspectGitStatusBounded(workspacePath);
+      dirtyEntryCount = status.dirtyEntryCount;
+      untrackedEntryCount = status.untrackedEntryCount;
+      statusEntriesTruncated = status.statusEntriesTruncated;
     } catch (error) {
       warnings.push(
         `Could not read git working tree status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,
@@ -638,6 +711,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
       hasUntrackedFiles: untrackedEntryCount > 0,
       dirtyEntryCount,
       untrackedEntryCount,
+      statusEntriesTruncated,
       aheadCount,
       behindCount,
       isMergedIntoBase,
@@ -1415,6 +1489,7 @@ export function executionWorkspaceService(db: Db) {
         && resolvedWorkspacePath != null
         && resolvedPrimaryWorkspacePath != null
         && resolvedWorkspacePath === resolvedPrimaryWorkspacePath;
+      const preserveWorkspaceContents = isSharedWorkspace || isProjectPrimaryWorkspace;
 
       const linkedIssueSummaries = linkedIssues.map((issue) => ({
         ...issue,
@@ -1496,7 +1571,7 @@ export function executionWorkspaceService(db: Db) {
         });
       }
 
-      const configuredCleanupCommands = [
+      const configuredCleanupCommands = preserveWorkspaceContents ? [] : [
         {
           kind: "cleanup_command" as const,
           label: "Run workspace cleanup command",
@@ -1515,7 +1590,9 @@ export function executionWorkspaceService(db: Db) {
         plannedActions.push(action);
       }
 
-      const teardownCommand = config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
+      const teardownCommand = preserveWorkspaceContents
+        ? null
+        : config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
       if (teardownCommand) {
         plannedActions.push({
           kind: "teardown_command",
@@ -1525,7 +1602,7 @@ export function executionWorkspaceService(db: Db) {
         });
       }
 
-      if (executionWorkspace.providerType === "git_worktree" && workspacePath) {
+      if (!preserveWorkspaceContents && executionWorkspace.providerType === "git_worktree" && workspacePath) {
         plannedActions.push({
           kind: "git_worktree_remove",
           label: "Remove git worktree",
@@ -1534,7 +1611,7 @@ export function executionWorkspaceService(db: Db) {
         });
       }
 
-      if (git?.createdByRuntime && executionWorkspace.branchName) {
+      if (!preserveWorkspaceContents && git?.createdByRuntime && executionWorkspace.branchName) {
         plannedActions.push({
           kind: "git_branch_delete",
           label: "Delete runtime-created branch",
@@ -1543,7 +1620,7 @@ export function executionWorkspaceService(db: Db) {
         });
       }
 
-      if (executionWorkspace.providerType === "local_fs" && git?.createdByRuntime && workspacePath) {
+      if (!preserveWorkspaceContents && executionWorkspace.providerType === "local_fs" && git?.createdByRuntime && workspacePath) {
         const resolvedWorkspacePath = path.resolve(workspacePath);
         const resolvedProjectWorkspacePath = projectWorkspace?.cwd ? path.resolve(projectWorkspace.cwd) : null;
         const containsProjectWorkspace = resolvedProjectWorkspacePath

@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0.0",
+  "evidence_captured_at": "2026-09-07T16:56:17.000Z",
+  "routine": {
+    "id": "d346fd46-927a-47fa-86f4-5bc3ac9aca75",
+    "title": "OCC PR Review Queue and Weekly Quality Sweep",
+    "status": "active",
+    "assignee_agent_id": "1e207779-b845-4e20-a62a-f33c3a09c483",
+    "latest_revision_id": "2b8da2f8-1d26-4e90-ac41-b9970816529a",
+    "latest_revision_number": 5,
+    "concurrency_policy": "coalesce_if_active",
+    "monday_leg": "On the Monday 09:00 ET leg only, after the normal sweep, run from the immutable merged collector checkout with COLLECTOR_SHA set to that merged commit and RUN_ISSUE set to the execution issue: /usr/local/bin/onecli run -- node tools/occ-fleet-cqe/src/collect.mjs --collector-sha \"$COLLECTOR_SHA\" --run-issue \"$RUN_ISSUE\" --repository-owner misterbusiness1 --output fleet-cqe-coverage.v1.json --summary fleet-cqe-coverage.md. Upload fleet-cqe-coverage.v1.json and fleet-cqe-coverage.md to the execution issue and retain both for 13 months. This collector is report-only. Rollback is invocation-only: remove this collector invocation from the Monday leg without deleting, disabling, or otherwise changing the existing routine; retain historical artifacts as audit evidence."
+  },
+  "architecture_approval": {
+    "issue": "OXFA-30639",
+    "comment_id": "7dba7416-c02c-4a6b-8cbf-02ddfd2151a7",
+    "decision": "APPROVED for report-only v1",
+    "execution_surface": "existing Monday 09:00 ET quality-sweep leg",
+    "connection_id": "d26cdfbb-fa91-458f-b76f-1556918c427e"
+  },
+  "invocation": {
+    "working_directory": "misterbusiness1/paperclip",
+    "command": "/usr/local/bin/onecli run -- node tools/occ-fleet-cqe/src/collect.mjs --collector-sha $COLLECTOR_SHA --run-issue $RUN_ISSUE --repository-owner misterbusiness1 --output fleet-cqe-coverage.v1.json --summary fleet-cqe-coverage.md",
+    "collector_sha_contract": "COLLECTOR_SHA must be the immutable merged commit containing this collector",
+    "artifact_contract": [
+      "fleet-cqe-coverage.v1.json",
+      "fleet-cqe-coverage.md"
+    ],
+    "retention_months": 13
+  },
+  "live_readback": {
+    "endpoint": "/api/routines/d346fd46-927a-47fa-86f4-5bc3ac9aca75",
+    "observed_at": "2026-09-07T16:56:17.000Z",
+    "latest_revision_id": "2b8da2f8-1d26-4e90-ac41-b9970816529a",
+    "latest_revision_number": 5,
+    "invocation_present_in_description": true,
+    "schedule_trigger_id": "2d5a9b64-5349-4d41-a076-b29779af882a",
+    "schedule": "0 9,15 * * 1-5",
+    "timezone": "America/New_York",
+    "additional_schedule_created": false
+  },
+  "reversibility": {
+    "routine_change": "Remove only the collector invocation from the existing Monday quality-sweep leg; do not delete or disable the routine.",
+    "source_change": "Revert tools/occ-fleet-cqe/ in a later repository commit.",
+    "target_repository_cleanup": "none",
+    "historical_artifacts": "retain as audit evidence"
+  }
+}

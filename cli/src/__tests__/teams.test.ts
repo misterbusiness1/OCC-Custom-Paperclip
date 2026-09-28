@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { createApprovalSchema } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerTeamCommands } from "../commands/client/teams.js";
 
@@ -422,12 +423,14 @@ describe("teams CLI commands", () => {
       }),
     );
     const approvalPayload = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(createApprovalSchema.safeParse(approvalPayload).success).toBe(true);
     expect(approvalPayload).toMatchObject({
       type: "request_board_approval",
       issueIds: ["11111111-1111-4111-8111-111111111111"],
       payload: {
         title: "Approve catalog team install: product-engineering",
-        installAttempt: {
+        context: {
+          kind: "catalog_team_install",
           companyId: "company-1",
           catalogRef: "product-engineering",
           deniedReason: "Missing permission: can create agents",
@@ -504,7 +507,8 @@ describe("teams CLI commands", () => {
       type: "request_board_approval",
       issueIds: ["11111111-1111-4111-8111-111111111111"],
       payload: {
-        installAttempt: {
+        context: {
+          kind: "catalog_team_install",
           companyId: "company-1",
           catalogRef: "product-engineering",
           deniedReason: "Missing permission: can create agents",

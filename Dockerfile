@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.20
-FROM node:lts-trixie-slim AS base
+FROM mcr.microsoft.com/playwright:v1.61.1-noble@sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48 AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
 RUN apt-get update \
@@ -7,8 +7,10 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 
-# Modify the existing node user/group to have the specified UID/GID to match host user
-RUN usermod -u $USER_UID --non-unique node \
+# Keep Paperclip's expected account name while reusing Playwright's unprivileged account.
+RUN usermod -l node pwuser \
+  && groupmod -n node pwuser \
+  && usermod -u $USER_UID --non-unique node \
   && groupmod -g $USER_GID --non-unique node \
   && usermod -g $USER_GID -d /paperclip node
 

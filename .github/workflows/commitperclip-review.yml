@@ -37,15 +37,22 @@ jobs:
       - name: Generate commitperclip token
         id: token
         run: |
+          if [ -z "${COMMITPERCLIP_KEY:-}" ]; then
+            echo "COMMITPERCLIP_KEY not configured for this repo; commitperclip gates are not wired here. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           TOKEN=$(node .github/scripts/get-bot-token.mjs)
           echo "::add-mask::$TOKEN"
-          echo "value=$TOKEN" >> $GITHUB_OUTPUT
+          echo "value=$TOKEN" >> "$GITHUB_OUTPUT"
         env:
           COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
 
       - name: Run quality gates
         id: quality
-        if: github.event.pull_request.user.login != 'dependabot[bot]'
+        if: >-
+          github.event.pull_request.user.login != 'dependabot[bot]' &&
+          steps.token.outputs.skip != 'true'
         run: node .github/scripts/run-quality-gates.mjs
         continue-on-error: true
         env:
@@ -56,6 +63,7 @@ jobs:
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
 
       - name: Run security gates
+        if: steps.token.outputs.skip != 'true'
         run: node .github/scripts/check-pr-security.mjs
         continue-on-error: true
         timeout-minutes: 3
@@ -68,6 +76,7 @@ jobs:
       - name: Fail if quality gates failed
         if: >-
           github.event.pull_request.user.login != 'dependabot[bot]' &&
+          steps.token.outputs.skip != 'true' &&
           steps.quality.outcome == 'failure'
         run: |
           echo "One or more quality gates failed. See commitperclip comment on the PR for details."

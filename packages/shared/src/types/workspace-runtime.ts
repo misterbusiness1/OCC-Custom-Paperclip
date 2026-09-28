@@ -125,6 +125,8 @@ export interface ExecutionWorkspaceCloseGitReadiness {
   hasUntrackedFiles: boolean;
   dirtyEntryCount: number;
   untrackedEntryCount: number;
+  /** True when the deterministic status summary exceeded the bounded detail threshold. Counts remain exact. */
+  statusEntriesTruncated: boolean;
   aheadCount: number | null;
   behindCount: number | null;
   isMergedIntoBase: boolean | null;

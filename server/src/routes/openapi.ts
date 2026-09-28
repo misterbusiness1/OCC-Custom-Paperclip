@@ -516,6 +516,34 @@ const jsonBody = (schema: z.ZodTypeAny) => ({
 
 const r = responses;
 
+const retryBlockedTasksRequestSchema = z.object({
+  dryRun: z.boolean().optional(),
+  agentId: z.string().optional(),
+  priority: z.string().optional(),
+  max: z.number().int().positive().optional(),
+  limit: z.number().int().positive().optional(),
+  maxRetries: z.number().int().positive().optional(),
+}).passthrough();
+
+const retryBlockedTaskCandidateSchema = z.object({
+  issueId: z.string(),
+  identifier: z.string().nullable(),
+  title: z.string(),
+  assigneeAgentId: z.string().nullable(),
+  eligible: z.boolean(),
+  reason: z.string(),
+  retryCount: z.number().int().nonnegative(),
+  maxRetries: z.number().int().positive(),
+}).strict();
+
+const retryBlockedTasksResponseSchema = z.object({
+  dryRun: z.boolean(),
+  evaluated: z.number().int().nonnegative(),
+  eligible: z.number().int().nonnegative(),
+  queued: z.array(z.string()),
+  candidates: z.array(retryBlockedTaskCandidateSchema),
+}).strict();
+
 const externalObjectSummariesBodySchema = z.object({
   issueIds: z.array(z.string().uuid()).max(1000),
 }).strict();
@@ -707,6 +735,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies",
   "GET /api/companies/stats",
   "GET /api/companies/issues",
+  "POST /api/companies/{companyId}/issues/admin/retry-blocked-tasks",
   "POST /api/board-claim/{token}/claim",
   "GET /api/cli-auth/me",
   "POST /api/companies/{companyId}/invites",
@@ -3832,6 +3861,26 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/issues/admin/retry-blocked-tasks",
+  tags: ["issues"],
+  summary: "Preview or queue retries for eligible blocked issues (admin)",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: {
+      content: { "application/json": { schema: retryBlockedTasksRequestSchema } },
+      required: false,
+    },
+  },
+  responses: {
+    200: r.ok(retryBlockedTasksResponseSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    500: r.serverError,
+  },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/issues/{id}/tree-control/state",
   tags: ["issues"],
@@ -4296,6 +4345,21 @@ registry.registerPath({
   summary: "List execution workspaces for a company",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/execution-workspaces/reconcile-cleanup-failures",
+  tags: ["execution-workspaces"],
+  summary: "Reconcile cleanup-failed execution workspaces in a bounded batch",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({
+      dryRun: z.boolean().optional().default(true),
+      limit: z.number().int().min(1).max(100).optional().default(25),
+    })),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({

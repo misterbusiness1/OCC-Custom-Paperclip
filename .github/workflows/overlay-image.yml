@@ -1,0 +1,156 @@
+name: Build and push paperclip-prod overlay image
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Exact Paperclip commit to use as the build context'
+        required: true
+        type: string
+      upstream_image:
+        description: 'Upstream image tag or digest'
+        required: false
+        default: 'ghcr.io/misterbusiness1/paperclip:latest'
+        type: string
+      playwright_version:
+        description: 'Playwright version (must match upstream)'
+        required: false
+        default: '1.58.2'
+        type: string
+      use_cache:
+        description: 'Use the GitHub Actions build cache'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/paperclip-prod
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate dispatch inputs
+        id: validate
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PLAYWRIGHT_VERSION: ${{ inputs.playwright_version }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || {
+            echo "source_sha must be a full 40-character hexadecimal commit ID" >&2
+            exit 1
+          }
+          [[ "$PLAYWRIGHT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "playwright_version must be a numeric semantic version" >&2
+            exit 1
+          }
+          echo "source_sha=${SOURCE_SHA,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.validate.outputs.source_sha }}
+
+      - name: Verify exact source commit
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.validate.outputs.source_sha }}
+          USE_CACHE: ${{ inputs.use_cache }}
+        run: |
+          set -euo pipefail
+          RESOLVED_SHA="$(git rev-parse --verify "${SOURCE_SHA}^{commit}")"
+          test "$RESOLVED_SHA" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          echo "Building exact source SHA: $SOURCE_SHA"
+          echo "Cache enabled: $USE_CACHE"
+
+      - name: Set image tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHORT_SHA="$(git rev-parse --short=12 HEAD)"
+          echo "image=ghcr.io/${{ github.repository_owner }}/paperclip-prod:${SHORT_SHA}-pwfix" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push overlay image with cache
+        if: ${{ inputs.use_cache }}
+        id: build-cached
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.overlay
+          push: true
+          tags: ${{ steps.tag.outputs.image }}
+          build-args: |
+            UPSTREAM_IMAGE=${{ inputs.upstream_image }}
+            PLAYWRIGHT_VERSION=${{ inputs.playwright_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push overlay image without cache
+        if: ${{ !inputs.use_cache }}
+        id: build-uncached
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.overlay
+          push: true
+          tags: ${{ steps.tag.outputs.image }}
+          build-args: |
+            UPSTREAM_IMAGE=${{ inputs.upstream_image }}
+            PLAYWRIGHT_VERSION=${{ inputs.playwright_version }}
+          no-cache: true
+
+      - name: Record immutable image reference
+        id: image
+        shell: bash
+        env:
+          CACHED_DIGEST: ${{ steps.build-cached.outputs.digest }}
+          UNCACHED_DIGEST: ${{ steps.build-uncached.outputs.digest }}
+        run: |
+          set -euo pipefail
+          DIGEST="${CACHED_DIGEST:-${UNCACHED_DIGEST:-}}"
+          test -n "$DIGEST"
+          IMMUTABLE_IMAGE="ghcr.io/${{ github.repository_owner }}/paperclip-prod@${DIGEST}"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "immutable_image=${IMMUTABLE_IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-test immutable overlay image
+        env:
+          IMMUTABLE_IMAGE: ${{ steps.image.outputs.immutable_image }}
+          PLAYWRIGHT_VERSION: ${{ inputs.playwright_version }}
+        run: |
+          docker run --rm \
+            --user root \
+            "$IMMUTABLE_IMAGE" \
+            node -e "
+              const { chromium } = require('/app/node_modules/.pnpm/playwright@${PLAYWRIGHT_VERSION}/node_modules/playwright');
+              chromium.launch({args:['--no-sandbox','--disable-setuid-sandbox']}).then(b=>b.close()).then(()=>{ console.log('OK'); process.exit(0); }).catch(e=>{ console.error(e); process.exit(1); });
+            "
+
+      - name: Output image reference
+        env:
+          SOURCE_SHA: ${{ steps.validate.outputs.source_sha }}
+          USE_CACHE: ${{ inputs.use_cache }}
+          IMMUTABLE_IMAGE: ${{ steps.image.outputs.immutable_image }}
+        run: |
+          echo "::notice title=Overlay source SHA::$SOURCE_SHA"
+          echo "::notice title=Overlay cache enabled::$USE_CACHE"
+          echo "::notice title=Overlay image published::$IMMUTABLE_IMAGE"

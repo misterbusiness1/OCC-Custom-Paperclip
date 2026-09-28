@@ -1,4 +1,5 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export { buildHydratedApprovalDetail } from "./approval-hydration.js";
 export {
   getAgentOrgChainHealth,
   getAgentWorkEligibility,

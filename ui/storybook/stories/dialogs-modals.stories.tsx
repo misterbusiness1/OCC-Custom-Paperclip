@@ -191,6 +191,7 @@ const closeReadinessReady: ExecutionWorkspaceCloseReadiness = {
     hasUntrackedFiles: false,
     dirtyEntryCount: 3,
     untrackedEntryCount: 0,
+    statusEntriesTruncated: false,
     aheadCount: 2,
     behindCount: 0,
     isMergedIntoBase: false,

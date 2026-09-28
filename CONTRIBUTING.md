@@ -186,3 +186,62 @@ This should include details about what you did, why you did it, why it matters &
 Questions? Just ask in #dev — we're happy to help.
 
 Happy hacking!
+
+---
+
+## Operational discipline (added 2026-05-16)
+
+### Before starting a perf PR
+
+1. Sync local DB to current master schema: `pnpm db:reset && pnpm db:migrate`.
+2. If you touch raw SQL (`db.execute(sql\`...\`)`), verify every column
+   referenced exists in master's schema. Local A/B against your own DB
+   proves only "matches my DB" — not "exists upstream."
+3. Capture `EXPLAIN (ANALYZE, BUFFERS)` before/after; include in commit body.
+
+### Lockfile discipline
+
+- `refresh-lockfile.yml` auto-refreshes `pnpm-lock.yaml` on every push to
+  master. If your branch is behind, you'll see `ERR_PNPM_OUTDATED_LOCKFILE`.
+  Fix: `git fetch origin master && git rebase origin/master`.
+- CI runs `pnpm install --frozen-lockfile`. The pre-commit hook
+  (`.husky/pre-commit`) blocks staging `pnpm-lock.yaml` without a
+  matching `package.json` change.
+- Intentionally bumping a dependency: edit `package.json` only. The PR policy
+  check rejects `pnpm-lock.yaml`; CI regenerates the lockfile for verification.
+- Do not alias `pnpm` to `pnpm --frozen-lockfile`. That flag is only
+  valid for `install`, not `add`/`exec`/etc., and breaks every other
+  subcommand with `Unknown option: 'frozen-lockfile'`.
+
+### CI coverage gaps
+
+`pr.yml` runs `policy`, `verify`, `e2e` only on `pull_request` events.
+These do not run on direct pushes to master. Use a PR for all changes;
+branch protection enforces this.
+
+### PR metadata
+
+Prefer `gh api -X PATCH /repos/{owner}/{repo}/pulls/{N}` over
+`gh pr edit` for title/body. The latter hits a deprecated GraphQL
+`projectCards` field that can silently 422.
+
+### Admin-merge policy
+
+`gh pr merge N --admin` is allowed only when all three hold:
+
+1. The failing check is reproducibly pre-existing on master HEAD.
+2. The PR diff doesn't touch the failing test's code paths.
+3. A follow-up ticket is filed for the failing check.
+
+Document the justification in the merge commit body.
+
+### Activating the pre-commit hook locally
+
+The `.husky/pre-commit` script is checked in. Activate it without
+adding husky as a dev dependency:
+
+```
+git config core.hooksPath .husky
+```
+
+Git then runs `.husky/pre-commit` before every commit.

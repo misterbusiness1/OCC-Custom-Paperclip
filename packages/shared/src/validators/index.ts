@@ -548,11 +548,16 @@ export {
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
+  approvalDetailV2Schema,
+  hydratedApprovalSideEffectSchema,
+  hydratedApprovalRefundDetailSchema,
+  hydratedApprovalReplyDetailSchema,
   type CreateApproval,
   type ResolveApproval,
   type RequestApprovalRevision,
   type ResubmitApproval,
   type AddApprovalComment,
+  type ApprovalDetailV2Shape,
 } from "./approval.js";
 
 export {

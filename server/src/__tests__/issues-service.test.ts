@@ -832,7 +832,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       status: "todo",
       priority: "medium",
     });
-
     await expect(
       svc.list(companyId, { assigneeAgentId: "not-a-uuid" }),
     ).rejects.toThrow(/assigneeAgentId/i);
@@ -6267,5 +6266,329 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
     const comment = await svc.addComment(issueId, "hello from a live run", { runId });
 
     expect(await createdByRunIdFor(comment.id)).toBe(runId);
+  });
+});
+
+describeEmbeddedPostgres("issueService mutation guardrails", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-guardrails-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedMutationGuardFixture() {
+    const companyId = randomUUID();
+    const pausedAgentId = randomUUID();
+    const terminatedAgentId = randomUUID();
+    const pendingApprovalAgentId = randomUUID();
+    const activeAgentId = randomUUID();
+    const issueId = randomUUID();
+    const blockerId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: pausedAgentId,
+        companyId,
+        name: "PausedAgent",
+        role: "engineer",
+        status: "paused",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: terminatedAgentId,
+        companyId,
+        name: "TerminatedAgent",
+        role: "engineer",
+        status: "terminated",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: pendingApprovalAgentId,
+        companyId,
+        name: "PendingApprovalAgent",
+        role: "engineer",
+        status: "pending_approval",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: activeAgentId,
+        companyId,
+        name: "ActiveAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Guarded issue",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: activeAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      title: "Live blocker",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: activeAgentId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+
+    return {
+      companyId,
+      issueId,
+      pausedAgentId,
+      terminatedAgentId,
+      pendingApprovalAgentId,
+      activeAgentId,
+      blockerId,
+    };
+  }
+
+  it("rejects executable work assigned to paused agents", async () => {
+    const { issueId, pausedAgentId } = await seedMutationGuardFixture();
+
+    await expect(svc.update(issueId, {
+      assigneeAgentId: pausedAgentId,
+      status: "todo",
+    })).rejects.toThrow(/Cannot assign todo work to paused agents/);
+  });
+
+  it("allows blocked assignment to paused agents only with a live dependency", async () => {
+    const { issueId, pausedAgentId, blockerId } = await seedMutationGuardFixture();
+
+    await expect(svc.update(issueId, {
+      assigneeAgentId: pausedAgentId,
+      status: "blocked",
+    })).rejects.toThrow(/Cannot assign blocked work to paused agents/);
+
+    await expect(svc.update(issueId, {
+      assigneeAgentId: pausedAgentId,
+      status: "blocked",
+      assignmentGuardBlockerComment: "Blocked while the assigned agent is paused pending recovery.",
+    })).rejects.toThrow(/Cannot assign blocked work to paused agents/);
+
+    const updated = await svc.update(issueId, {
+      assigneeAgentId: pausedAgentId,
+      status: "blocked",
+      blockedByIssueIds: [blockerId],
+      assignmentGuardBlockerComment: "Explanatory metadata only.",
+    });
+
+    expect(updated?.status).toBe("blocked");
+    expect(updated?.assigneeAgentId).toBe(pausedAgentId);
+  });
+
+  it.each([
+    ["terminated", "terminatedAgentId", /Cannot assign work to terminated agents/],
+    ["pending_approval", "pendingApprovalAgentId", /Cannot assign work to pending approval agents/],
+  ] as const)("rejects blocked update assignment with a blocker comment to %s agents", async (_status, agentKey, expectedError) => {
+    const fixture = await seedMutationGuardFixture();
+
+    await expect(svc.update(fixture.issueId, {
+      assigneeAgentId: fixture[agentKey],
+      status: "blocked",
+      assignmentGuardBlockerComment: "This comment must not bypass the non-executable assignee guard.",
+    })).rejects.toThrow(expectedError);
+  });
+
+  it.each([
+    ["paused", "pausedAgentId", /Cannot assign todo work to paused agents/],
+    ["terminated", "terminatedAgentId", /Cannot assign work to terminated agents/],
+    ["pending_approval", "pendingApprovalAgentId", /Cannot assign work to pending approval agents/],
+  ] as const)("rejects create-time executable work assigned to %s agents", async (_status, agentKey, expectedError) => {
+    const fixture = await seedMutationGuardFixture();
+
+    await expect(svc.create(fixture.companyId, {
+      title: `Create-path executable assignment for ${agentKey}`,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: fixture[agentKey],
+    })).rejects.toThrow(expectedError);
+  });
+
+  it("allows blocked create-time assignment to a paused agent only with a live dependency", async () => {
+    const { companyId, pausedAgentId, blockerId } = await seedMutationGuardFixture();
+
+    await expect(svc.create(companyId, {
+      title: "Blocked create-path assignment without comment",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: pausedAgentId,
+    })).rejects.toThrow(/requires an unresolved blocker issue/);
+
+    await expect(svc.create(companyId, {
+      title: "Blocked create-path assignment with comment",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: pausedAgentId,
+      assignmentGuardBlockerComment: "Blocked while the assigned agent is paused pending recovery.",
+    })).rejects.toThrow(/requires an unresolved blocker issue/);
+
+    const created = await svc.create(companyId, {
+      title: "Blocked create-path assignment with dependency",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: pausedAgentId,
+      blockedByIssueIds: [blockerId],
+      assignmentGuardBlockerComment: "Explanatory metadata only.",
+    });
+
+    expect(created.status).toBe("blocked");
+    expect(created.assigneeAgentId).toBe(pausedAgentId);
+  });
+
+  it("rejects a blocked create when its blocker completes before relation synchronization", async () => {
+    const { companyId, pausedAgentId, blockerId } = await seedMutationGuardFixture();
+    const blockerLocked = deferred<void>();
+    const completionCanCommit = deferred<void>();
+
+    const concurrentCompletion = db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${blockerId} for update`);
+      blockerLocked.resolve();
+      await completionCanCommit.promise;
+      await tx.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, blockerId));
+    });
+
+    await blockerLocked.promise;
+    const createPromise = svc.create(companyId, {
+      title: "Create racing blocker completion",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: pausedAgentId,
+      blockedByIssueIds: [blockerId],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    completionCanCommit.resolve();
+    await concurrentCompletion;
+
+    await expect(createPromise).rejects.toThrow(/remain unresolved/);
+    const created = await db.select({ id: issues.id }).from(issues)
+      .where(eq(issues.title, "Create racing blocker completion"));
+    expect(created).toHaveLength(0);
+  });
+
+  it("rejects a blocked update when its blocker completes before relation synchronization", async () => {
+    const { issueId, pausedAgentId, blockerId } = await seedMutationGuardFixture();
+    const blockerLocked = deferred<void>();
+    const completionCanCommit = deferred<void>();
+
+    const concurrentCompletion = db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${blockerId} for update`);
+      blockerLocked.resolve();
+      await completionCanCommit.promise;
+      await tx.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, blockerId));
+    });
+
+    await blockerLocked.promise;
+    const updatePromise = svc.update(issueId, {
+      assigneeAgentId: pausedAgentId,
+      status: "blocked",
+      blockedByIssueIds: [blockerId],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    completionCanCommit.resolve();
+    await concurrentCompletion;
+
+    await expect(updatePromise).rejects.toThrow(/remain unresolved/);
+    const unchanged = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(unchanged).toMatchObject({ status: "todo" });
+    expect(unchanged?.assigneeAgentId).not.toBe(pausedAgentId);
+  });
+
+  it("rejects a blocked update with an existing relation when its blocker completes concurrently", async () => {
+    const { issueId, pausedAgentId, blockerId } = await seedMutationGuardFixture();
+    await svc.update(issueId, { blockedByIssueIds: [blockerId] });
+    const blockerLocked = deferred<void>();
+    const completionCanCommit = deferred<void>();
+
+    const concurrentCompletion = db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${blockerId} for update`);
+      blockerLocked.resolve();
+      await completionCanCommit.promise;
+      await tx.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, blockerId));
+    });
+
+    await blockerLocked.promise;
+    const updatePromise = svc.update(issueId, {
+      assigneeAgentId: pausedAgentId,
+      status: "blocked",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    completionCanCommit.resolve();
+    await concurrentCompletion;
+
+    await expect(updatePromise).rejects.toThrow(/remain unresolved/);
+    const unchanged = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(unchanged).toMatchObject({ status: "todo" });
+    expect(unchanged?.assigneeAgentId).not.toBe(pausedAgentId);
+  });
+
+  it.each([
+    ["terminated", "terminatedAgentId", /Cannot assign work to terminated agents/],
+    ["pending_approval", "pendingApprovalAgentId", /Cannot assign work to pending approval agents/],
+  ] as const)("rejects blocked create-time assignment with a blocker comment to %s agents", async (_status, agentKey, expectedError) => {
+    const fixture = await seedMutationGuardFixture();
+
+    await expect(svc.create(fixture.companyId, {
+      title: `Blocked create-path assignment for ${agentKey}`,
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: fixture[agentKey],
+      assignmentGuardBlockerComment: "This comment must not bypass the non-executable assignee guard.",
+    })).rejects.toThrow(expectedError);
   });
 });

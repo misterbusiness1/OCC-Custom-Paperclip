@@ -173,7 +173,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
   afterAll(async () => {
     await closeDbClient(db);
     await tempDb?.cleanup();
-  });
+  }, 120_000);
 
   afterEach(() => {
     runningProcesses.clear();

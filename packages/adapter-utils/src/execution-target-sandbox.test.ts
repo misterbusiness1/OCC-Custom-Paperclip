@@ -96,10 +96,14 @@ describe("sandbox adapter execution targets", () => {
     ].join("\n");
   }
 
-  async function waitForCondition(predicate: () => boolean, message: string, timeoutMs = 1000): Promise<void> {
+  async function waitForCondition(
+    predicate: () => boolean | Promise<boolean>,
+    message: string,
+    timeoutMs = 1000,
+  ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (predicate()) return;
+      if (await predicate()) return;
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     throw new Error(message);
@@ -331,6 +335,57 @@ describe("sandbox adapter execution targets", () => {
     } finally {
       await bridge?.stop();
     }
+  });
+
+  it("ends the remote child when bridge stop removes stdin before queued EOF is consumed", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stop-race-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "stop-race-acp-child.mjs");
+    const eofMarkerPath = path.join(rootDir, "stdin-ended");
+    await writeFile(
+      childPath,
+      [
+        "import { writeFile } from 'node:fs/promises';",
+        `const marker = ${JSON.stringify(eofMarkerPath)};`,
+        "process.stdin.resume();",
+        "process.stdin.on('end', async () => {",
+        "  await writeFile(marker, 'ended\\n', 'utf8');",
+        "  process.exit(0);",
+        "});",
+      ].join("\n"),
+      "utf8",
+    );
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-stop-race",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    await bridge!.stop();
+
+    await waitForCondition(
+      async () => await readFile(eofMarkerPath, "utf8").then(() => true, () => false),
+      "Timed out waiting for the remote child to receive EOF after bridge teardown.",
+      3000,
+    );
+    await expect(readFile(eofMarkerPath, "utf8")).resolves.toBe("ended\n");
   });
 
   it("ignores unauthenticated connections to the process session bridge", async () => {
