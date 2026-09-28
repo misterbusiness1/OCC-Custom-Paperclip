@@ -12,6 +12,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
+  list: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
 }));
@@ -215,6 +216,7 @@ describe("agent live run routes", () => {
       issueId: "issue-1",
     });
     mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue(null);
+    mockHeartbeatService.list.mockResolvedValue([]);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
@@ -238,6 +240,29 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
     });
   });
+
+  it("defaults heartbeat history listings to 200 runs", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/heartbeat-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", undefined, 200, { summary: false });
+  }, 10_000);
+
+  it.each([
+    ["25", 25],
+    ["5000", 1000],
+  ])("preserves explicit heartbeat history limit %s as %i", async (requestedLimit, expectedLimit) => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get(`/api/companies/company-1/heartbeat-runs?limit=${requestedLimit}&summary=true`),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", undefined, expectedLimit, { summary: true });
+  }, 10_000);
 
   it("returns a compact active run payload for issue polling", async () => {
     const res = await requestApp(
