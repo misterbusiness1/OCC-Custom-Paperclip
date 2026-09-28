@@ -4,9 +4,45 @@ import { describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 import {
   buildHeartbeatProgressLogLine,
+  heartbeatHistoryHasNextPage,
   heartbeatProgressLogLineKey,
+  mergeHeartbeatRunPages,
+  scopedDeepLinkedRun,
   syncAgentRouteAfterRename,
 } from "./AgentDetail";
+import type { HeartbeatRun } from "@paperclipai/shared";
+
+function run(id: string, companyId = "company-1", agentId = "agent-1"): HeartbeatRun {
+  return { id, companyId, agentId } as HeartbeatRun;
+}
+
+describe("heartbeat history paging", () => {
+  it("appends pages with id deduplication", () => {
+    expect(
+      mergeHeartbeatRunPages([
+        [run("run-3"), run("run-2")],
+        [run("run-2"), run("run-1")],
+      ]).map((item) => item.id),
+    ).toEqual(["run-3", "run-2", "run-1"]);
+  });
+
+  it("stops paging when a page is shorter than the requested limit", () => {
+    expect(heartbeatHistoryHasNextPage([run("run-2"), run("run-1")], 2)).toBe(true);
+    expect(heartbeatHistoryHasNextPage([run("run-1")], 2)).toBe(false);
+  });
+
+  it("adds an older targeted run only when company and agent scope match", () => {
+    const olderRun = run("older-run");
+
+    expect(scopedDeepLinkedRun(olderRun, "company-1", "agent-1")).toBe(olderRun);
+    expect(mergeHeartbeatRunPages([[run("recent-run")]], olderRun).map((item) => item.id)).toEqual([
+      "recent-run",
+      "older-run",
+    ]);
+    expect(scopedDeepLinkedRun(olderRun, "company-2", "agent-1")).toBeNull();
+    expect(scopedDeepLinkedRun(olderRun, "company-1", "agent-2")).toBeNull();
+  });
+});
 
 describe("buildHeartbeatProgressLogLine", () => {
   it("renders progress messages with phase prefixes as system log lines", () => {

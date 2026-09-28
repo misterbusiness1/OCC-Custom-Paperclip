@@ -12,6 +12,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
+  list: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
 }));
@@ -215,6 +216,7 @@ describe("agent live run routes", () => {
       issueId: "issue-1",
     });
     mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue(null);
+    mockHeartbeatService.list.mockResolvedValue([]);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
@@ -238,6 +240,48 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
     });
   });
+
+  it("defaults heartbeat history listings to 200 runs", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/heartbeat-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", undefined, 200, { summary: false, offset: 0 });
+  }, 10_000);
+
+  it.each([
+    ["25", 25],
+    ["5000", 1000],
+    ["0", 1],
+    ["invalid", 200],
+  ])("preserves explicit heartbeat history limit %s as %i", async (requestedLimit, expectedLimit) => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get(`/api/companies/company-1/heartbeat-runs?limit=${requestedLimit}&summary=true`),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", undefined, expectedLimit, { summary: true, offset: 0 });
+  }, 10_000);
+
+  it.each([
+    ["17", 17],
+    ["-4", 0],
+    ["invalid", 0],
+  ])("normalizes heartbeat history offset %s as %i", async (requestedOffset, expectedOffset) => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get(`/api/companies/company-1/heartbeat-runs?offset=${requestedOffset}`),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", undefined, 200, {
+      summary: false,
+      offset: expectedOffset,
+    });
+  }, 10_000);
 
   it("returns a compact active run payload for issue polling", async () => {
     const res = await requestApp(
