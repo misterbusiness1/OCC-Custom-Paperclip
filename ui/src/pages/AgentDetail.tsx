@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
   type AgentKey,
@@ -131,6 +131,31 @@ const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string 
 };
 
 const RUN_LOG_PAGE_BYTES = 256_000;
+const HEARTBEAT_HISTORY_PAGE_SIZE = 200;
+
+export function mergeHeartbeatRunPages(
+  pages: HeartbeatRun[][],
+  targetedRun?: HeartbeatRun | null,
+): HeartbeatRun[] {
+  const runsById = new Map<string, HeartbeatRun>();
+  for (const page of pages) {
+    for (const run of page) runsById.set(run.id, run);
+  }
+  if (targetedRun) runsById.set(targetedRun.id, targetedRun);
+  return [...runsById.values()];
+}
+
+export function heartbeatHistoryHasNextPage(page: HeartbeatRun[], requestedLimit: number): boolean {
+  return page.length === requestedLimit;
+}
+
+export function scopedDeepLinkedRun(
+  run: HeartbeatRun | null | undefined,
+  companyId: string | null | undefined,
+  agentId: string | null | undefined,
+): HeartbeatRun | null {
+  return run && run.companyId === companyId && run.agentId === agentId ? run : null;
+}
 
 const REDACTED_ENV_VALUE = "***REDACTED***";
 const SECRET_ENV_KEY_RE =
@@ -813,11 +838,36 @@ export function AgentDetail() {
     enabled: Boolean(resolvedAgentId) && needsDashboardData,
   });
 
-  const { data: heartbeats } = useQuery({
-    queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
-    queryFn: () => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined),
+  const heartbeatHistory = useInfiniteQuery({
+    queryKey: [
+      ...queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
+      "paged-summary",
+      HEARTBEAT_HISTORY_PAGE_SIZE,
+    ],
+    queryFn: ({ pageParam }) =>
+      heartbeatsApi.list(
+        resolvedCompanyId!,
+        agent?.id ?? undefined,
+        HEARTBEAT_HISTORY_PAGE_SIZE,
+        { summary: true, offset: pageParam },
+      ),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, _pages, lastPageParam) =>
+      heartbeatHistoryHasNextPage(lastPage, HEARTBEAT_HISTORY_PAGE_SIZE)
+        ? lastPageParam + HEARTBEAT_HISTORY_PAGE_SIZE
+        : undefined,
     enabled: !!resolvedCompanyId && !!agent?.id && shouldLoadHeartbeats,
   });
+  const { data: deepLinkedRun } = useQuery({
+    queryKey: queryKeys.runDetail(urlRunId ?? "__none__"),
+    queryFn: () => heartbeatsApi.get(urlRunId!),
+    enabled: Boolean(urlRunId && resolvedCompanyId && agent?.id && shouldLoadHeartbeats),
+  });
+  const scopedLinkedRun = scopedDeepLinkedRun(deepLinkedRun, resolvedCompanyId, agent?.id);
+  const heartbeats = useMemo(
+    () => mergeHeartbeatRunPages(heartbeatHistory.data?.pages ?? [], scopedLinkedRun),
+    [heartbeatHistory.data?.pages, scopedLinkedRun],
+  );
 
   const { data: allIssues } = useQuery({
     queryKey: [...queryKeys.issues.list(resolvedCompanyId!), "participant-agent", resolvedAgentId ?? "__none__"],
@@ -1379,6 +1429,9 @@ export function AgentDetail() {
           selectedRunId={urlRunId ?? null}
           adapterType={agent.adapterType}
           adapterConfig={agent.adapterConfig}
+          hasOlderRuns={heartbeatHistory.hasNextPage}
+          isLoadingOlderRuns={heartbeatHistory.isFetchingNextPage}
+          onLoadOlderRuns={() => heartbeatHistory.fetchNextPage()}
         />
       )}
 
@@ -2872,6 +2925,9 @@ function RunsTab({
   selectedRunId,
   adapterType,
   adapterConfig,
+  hasOlderRuns,
+  isLoadingOlderRuns,
+  onLoadOlderRuns,
 }: {
   runs: HeartbeatRun[];
   companyId: string;
@@ -2880,6 +2936,9 @@ function RunsTab({
   selectedRunId: string | null;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
+  hasOlderRuns: boolean;
+  isLoadingOlderRuns: boolean;
+  onLoadOlderRuns: () => void;
 }) {
   const { isMobile } = useSidebar();
 
@@ -2917,6 +2976,18 @@ function RunsTab({
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={false} agentId={agentRouteId} />
         ))}
+        {hasOlderRuns && (
+          <div className="p-2 border-t border-border">
+            <Button
+              variant="outline"
+              className="w-full"
+              disabled={isLoadingOlderRuns}
+              onClick={onLoadOlderRuns}
+            >
+              {isLoadingOlderRuns ? "Loading…" : "Load older runs"}
+            </Button>
+          </div>
+        )}
       </div>
     );
   }
@@ -2933,6 +3004,18 @@ function RunsTab({
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
         ))}
+        {hasOlderRuns && (
+          <div className="p-2 border-t border-border">
+            <Button
+              variant="outline"
+              className="w-full"
+              disabled={isLoadingOlderRuns}
+              onClick={onLoadOlderRuns}
+            >
+              {isLoadingOlderRuns ? "Loading…" : "Load older runs"}
+            </Button>
+          </div>
+        )}
         </div>
       </div>
 

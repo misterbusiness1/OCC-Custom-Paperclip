@@ -27,6 +27,14 @@ describe("heartbeatsApi.list", () => {
 
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/heartbeat-runs?agentId=agent-1&limit=25");
   });
+
+  it("serializes an explicit offset", async () => {
+    await heartbeatsApi.list("company-1", "agent-1", 200, { summary: true, offset: 400 });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/heartbeat-runs?agentId=agent-1&limit=200&offset=400&summary=true",
+    );
+  });
 });
 
 describe("heartbeatsApi.liveRunsForCompany", () => {

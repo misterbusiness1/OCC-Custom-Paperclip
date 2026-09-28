@@ -248,12 +248,14 @@ describe("agent live run routes", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", undefined, 200, { summary: false });
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", undefined, 200, { summary: false, offset: 0 });
   }, 10_000);
 
   it.each([
     ["25", 25],
     ["5000", 1000],
+    ["0", 1],
+    ["invalid", 200],
   ])("preserves explicit heartbeat history limit %s as %i", async (requestedLimit, expectedLimit) => {
     const res = await requestApp(
       await createApp(),
@@ -261,7 +263,24 @@ describe("agent live run routes", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", undefined, expectedLimit, { summary: true });
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", undefined, expectedLimit, { summary: true, offset: 0 });
+  }, 10_000);
+
+  it.each([
+    ["17", 17],
+    ["-4", 0],
+    ["invalid", 0],
+  ])("normalizes heartbeat history offset %s as %i", async (requestedOffset, expectedOffset) => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get(`/api/companies/company-1/heartbeat-runs?offset=${requestedOffset}`),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", undefined, 200, {
+      summary: false,
+      offset: expectedOffset,
+    });
   }, 10_000);
 
   it("returns a compact active run payload for issue polling", async () => {
