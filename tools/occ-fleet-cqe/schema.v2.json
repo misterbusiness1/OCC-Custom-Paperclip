@@ -13,9 +13,10 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["repository", "merged_pr_reviews", "dependency_advisories"],
+        "required": ["repository", "occ_review_bot_ruleset", "merged_pr_reviews", "dependency_advisories"],
         "properties": {
           "repository": { "type": "string" },
+          "occ_review_bot_ruleset": { "$ref": "#/$defs/rulesetEvidence" },
           "dependency_advisories": { "$ref": "#/$defs/advisoryEvidence" },
           "merged_pr_reviews": {
             "type": "array",
@@ -43,6 +44,16 @@
   },
   "$defs": {
     "evidenceStatus": { "enum": ["measured", "denied", "unavailable", "unsupported", "missing"] },
+    "rulesetEvidence": {
+      "type": "object",
+      "required": ["repository", "state", "ruleset_id", "deltas"],
+      "properties": {
+        "repository": { "type": "string" },
+        "state": { "enum": ["pass", "fail"] },
+        "ruleset_id": { "type": ["integer", "null"] },
+        "deltas": { "type": "array" }
+      }
+    },
     "latencyEvidence": {
       "type": "object",
       "required": ["repository", "number", "created_at", "head_sha", "first_cqe_at", "latency_seconds", "evidence_status"],
