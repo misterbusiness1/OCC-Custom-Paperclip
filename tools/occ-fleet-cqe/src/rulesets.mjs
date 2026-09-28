@@ -32,6 +32,10 @@ export function validateOccReviewBotRuleset(repository, effectiveRulesets) {
     if (includes.length !== 1 || includes[0] !== "~DEFAULT_BRANCH") {
       deltas.push(delta("conditions.ref_name.include", ["~DEFAULT_BRANCH"], includes));
     }
+    const excludes = ruleset.conditions?.ref_name?.exclude ?? [];
+    if (excludes.length !== 0) {
+      deltas.push(delta("conditions.ref_name.exclude", [], excludes));
+    }
 
     if (statusRules.length !== 1) {
       deltas.push(delta("rules.required_status_checks.count", 1, statusRules.length));

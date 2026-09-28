@@ -45,6 +45,16 @@ test("reports disabled enforcement", () => {
   assert.deepEqual(result.deltas, [{ field: "enforcement", expected: "active", actual: "disabled" }]);
 });
 
+test("fails closed when the ruleset excludes a branch", () => {
+  const ruleset = clone(fixture.compliant);
+  ruleset.conditions.ref_name.exclude = ["refs/heads/master"];
+  const result = validateOccReviewBotRuleset("misterbusiness1/excluded", [ruleset]);
+  assert.equal(result.state, "fail");
+  assert.deepEqual(result.deltas, [
+    { field: "conditions.ref_name.exclude", expected: [], actual: ["refs/heads/master"] },
+  ]);
+});
+
 test("reads effective rulesets and exact detail without mutation", () => {
   const calls = [];
   const api = (endpoint) => {
