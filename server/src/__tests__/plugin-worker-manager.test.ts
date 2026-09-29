@@ -164,17 +164,15 @@ describe("TypeSafe worker OneCLI launcher boundary", () => {
 
   it("removes the temporary CA directory when worker startup fails", async () => {
     const before = await oneCliCaDirectories();
+    const getOneCliContainerConfig = vi.fn(async () => containerConfig);
     const manager = createPluginWorkerManager({
-      getOneCliContainerConfig: vi.fn(async () => containerConfig),
+      getOneCliContainerConfig,
     });
     const start = manager.startWorker("typesafe", workerOptions("/missing/plugin-worker.cjs"));
-    await vi.waitFor(() => expect(manager.getWorker("typesafe")).toBeDefined());
-    const during = await oneCliCaDirectories();
-    const created = [...during].filter((name) => !before.has(name));
-    expect(created).toHaveLength(1);
     await expect(start).rejects.toThrow();
+    expect(getOneCliContainerConfig).toHaveBeenCalledOnce();
     expect(manager.getWorker("typesafe")).toBeUndefined();
-    await expect(access(path.join(tmpdir(), created[0]!))).rejects.toThrow();
+    expect(await oneCliCaDirectories()).toEqual(before);
   });
 
   it("removes the temporary CA file on worker stop", async () => {

@@ -244,6 +244,16 @@ describe("TypeSafe task routing pilot", () => {
     expect(decide).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["Investigate payment gateway outage", "Find the root cause of failed authorizations."],
+    ["Review email campaign performance", "Compare open and click rates."],
+  ])("keeps analysis work eligible when it only mentions a gated topic: %s", async (title, description) => {
+    const { harness, client, decide } = setup(decision());
+    harness.seed({ issues: [issue({ title, description })] });
+    expect(await evaluateIssue(harness.ctx, "issue-1", COMPANY_ID, client)).toBe("engineering");
+    expect(decide).toHaveBeenCalledOnce();
+  });
+
   it("refuses enablement outside the OCC company", async () => {
     const { harness, client, decide } = setup(decision());
     expect(await evaluateIssue(harness.ctx, "issue-1", "other-company", client)).toBe("wrong_company");
@@ -329,6 +339,22 @@ describe("TypeSafe task routing pilot", () => {
     const { harness, client } = setup(decision({ usage }));
     expect(await evaluateIssue(harness.ctx, "issue-1", COMPANY_ID, client)).toBe("needs_triage");
     expect((await records(harness))[0]?.data.reason).toBe("invalid_probabilities");
+  });
+
+  it.each([
+    ["department", { ...decision(), department: undefined }],
+    ["usage", { ...decision(), usage: undefined }],
+  ])("records malformed %s responses as needs-triage recommendations", async (_field, malformed) => {
+    const { harness, client } = setup(malformed as unknown as RoutingDecision);
+    expect(await evaluateIssue(harness.ctx, "issue-1", COMPANY_ID, client)).toBe("needs_triage");
+    expect((await records(harness))[0]?.data).toMatchObject({
+      status: "recommended",
+      effectiveDecision: "needs_triage",
+      reason: "invalid_response_type",
+    });
+    expect((await records(harness))[0]?.data.usage).toEqual(
+      _field === "usage" ? null : { inputTokens: 420, outputTokens: 60 },
+    );
   });
 
   it("defaults disabled and makes no request", async () => {

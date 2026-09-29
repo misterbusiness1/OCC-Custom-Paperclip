@@ -17,7 +17,24 @@ import {
 } from "./policy.js";
 
 const TERMINAL_STATUSES = new Set(["done", "cancelled"]);
-const GATED_ACTION_PATTERN = /\b(refund|capture|void|authorize|re-?auth|store credit|gift card|payment|gateway|send|email|text|sms|publish|public reply|direct message)\b/i;
+const GATED_ACTION_PATTERN = new RegExp(
+  String.raw`\b(?:${[
+    String.raw`refund\s+(?:the\s+)?(?:order|payment|customer)`,
+    String.raw`(?:issue|process)\s+(?:a\s+)?refund`,
+    String.raw`capture\s+(?:the\s+)?(?:payment|card)`,
+    String.raw`void\s+(?:the\s+)?(?:payment|transaction|order)`,
+    String.raw`authori[sz]e\s+(?:the\s+)?(?:payment|card)`,
+    String.raw`re-?authori[sz]e\s+(?:the\s+)?(?:payment|card)`,
+    String.raw`(?:issue|create)\s+(?:a\s+)?(?:store credit|gift card)`,
+    String.raw`charge\s+(?:the\s+)?(?:customer|card|payment)`,
+    String.raw`send\s+(?:an?\s+)?(?:email|text|sms|direct message)`,
+    String.raw`publish\s+(?:an?\s+)?(?:post|reply|message)`,
+    String.raw`post\s+(?:an?\s+)?(?:update|message)`,
+    String.raw`reply\s+to\s+(?:the\s+)?(?:customer|review)`,
+    String.raw`direct message\s+(?:the\s+)?(?:customer|user)`,
+  ].join("|")})\b`,
+  "i",
+);
 const ROUTING_ENTITY_TYPE = "typesafe-routing-recommendation";
 const OCC_COMPANY_ID = "a07c1334-f3d6-446e-9aab-349cca2e5a9a";
 const AVAILABLE_AGENT_STATUSES = new Set(["active", "idle", "running"]);
@@ -170,17 +187,22 @@ function isDestination(value: string): value is DestinationKey {
   return Object.prototype.hasOwnProperty.call(DESTINATIONS, value);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!isRecord(value)) return false;
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
-function resolveDecision(decision: RoutingDecision): { destination: DestinationKey; reason: string } {
-  if (!hasExactKeys(decision, ["model", "department", "sufficiency", "usage"])) {
+function resolveDecision(response: unknown): { destination: DestinationKey; reason: string } {
+  if (!hasExactKeys(response, ["model", "department", "sufficiency", "usage"])) {
     return { destination: "needs_triage", reason: "invalid_response_schema" };
   }
+  const decision = response as RoutingDecision;
   if (decision.model !== MODEL_VERSION) return { destination: "needs_triage", reason: "unexpected_model" };
   if (
     !hasExactKeys(decision.department, ["type", "choice", "confidence", "probabilities"]) ||
@@ -223,6 +245,36 @@ function resolveDecision(decision: RoutingDecision): { destination: DestinationK
     return { destination: "needs_triage", reason: "low_confidence" };
   }
   return { destination: decision.department.choice, reason: "policy_match" };
+}
+
+function decisionEvidence(decision: unknown): Pick<RecommendationRecord,
+  "returnedModelVersion" | "rawDecision" | "confidence" | "probabilities" | "sufficiencyProbability" | "usage"
+> {
+  const response = isRecord(decision) ? decision : {};
+  const department = isRecord(response.department) ? response.department : {};
+  const sufficiency = isRecord(response.sufficiency) ? response.sufficiency : {};
+  const usage = isRecord(response.usage) ? response.usage : {};
+  const probabilities = isRecord(department.probabilities) && Object.values(department.probabilities).every(
+    (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1,
+  ) ? department.probabilities as Record<string, number> : null;
+  const inputTokens = usage.input_tokens;
+  const outputTokens = usage.output_tokens;
+
+  return {
+    returnedModelVersion: typeof response.model === "string" ? response.model : null,
+    rawDecision: typeof department.choice === "string" ? department.choice : null,
+    confidence: typeof department.confidence === "number" && Number.isFinite(department.confidence)
+      ? department.confidence
+      : null,
+    probabilities,
+    sufficiencyProbability: typeof sufficiency.noul === "number" && Number.isFinite(sufficiency.noul)
+      ? sufficiency.noul
+      : null,
+    usage: Number.isInteger(inputTokens) && Number.isInteger(outputTokens)
+      && (inputTokens as number) >= 0 && (outputTokens as number) >= 0
+      ? { inputTokens: inputTokens as number, outputTokens: outputTokens as number }
+      : null,
+  };
 }
 
 async function record(ctx: PluginContext, issue: Issue, revision: string, recommendation: RecommendationRecord) {
@@ -280,16 +332,11 @@ async function evaluateAndRecord(
       policyVersion: POLICY_VERSION,
       questionVersion: QUESTION_VERSION,
       requestedModelVersion: MODEL_VERSION,
-      returnedModelVersion: decision.model,
-      rawDecision: decision.department.choice,
+      ...decisionEvidence(decision),
       effectiveDecision: destination,
       recommendedAgentId: DESTINATIONS[destination],
-      confidence: decision.department.confidence,
-      probabilities: decision.department.probabilities,
-      sufficiencyProbability: decision.sufficiency.noul,
       latencyMs,
       attempts: attempt,
-      usage: { inputTokens: decision.usage.input_tokens, outputTokens: decision.usage.output_tokens },
       status: "recommended",
       reason,
     });
