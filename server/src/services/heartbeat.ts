@@ -12324,6 +12324,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       versionSelections: skillVersionSelectionMap(runtimeSkillPreference.desiredSkillEntries),
     });
     let skillSuggestionShadow: SkillSuggestionShadowObservation | null = null;
+    let skillActuallyLoaded: string | null = null;
+    const runtimeSkillNames = new Set(runtimeSkillEntries.flatMap((entry) => [entry.key, entry.runtimeName]));
     try {
       skillSuggestionShadow = await observeSkillSuggestion({
         env: runtimeEnv,
@@ -13385,6 +13387,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const onAdapterEvent = async (event: AdapterRuntimeEvent) => {
         const eventType = event.eventType.trim();
         if (!eventType) return;
+        if (/skill.*(load|read)|(?:load|read).*skill/i.test(eventType)) {
+          const payload = parseObject(event.payload);
+          const candidate = readNonEmptyString(payload.skillName) ?? readNonEmptyString(payload.skill) ?? readNonEmptyString(payload.name);
+          if (candidate && runtimeSkillNames.has(candidate)) skillActuallyLoaded ??= candidate;
+        }
         await appendRunEvent(currentRun, seq++, {
           eventType: eventType.slice(0, 120),
           stream: event.stream,
@@ -13917,7 +13924,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: {
             contractVersion: "skill-suggestion-shadow.v1",
             suggestedSkill: skillSuggestionShadow?.suggestion ?? null,
-            skillActuallyLoaded: skillSuggestionShadow?.skillActuallyLoaded ?? null,
+            skillActuallyLoaded,
           },
         });
         try {
