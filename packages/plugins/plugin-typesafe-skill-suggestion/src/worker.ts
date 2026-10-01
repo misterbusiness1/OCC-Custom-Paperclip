@@ -22,11 +22,12 @@ type SkillSuggestionPluginOptions = {
   issueClassificationClientFactory?: (apiKey: string, timeoutMs: number, maxRetries: number) => ClassificationClient;
 };
 
-function mandatorySkillNames(event: PluginEvent): string[] {
-  if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) return [];
-  const value = (event.payload as Record<string, unknown>).mandatorySkillNames;
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.filter((name): name is string => typeof name === "string").map((name) => name.trim()).filter(Boolean))];
+function mandatorySkillNames(event: PluginEvent): string[] | null {
+  if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) return null;
+  const payload = event.payload as Record<string, unknown>;
+  if (payload.mandatorySkillNamesAvailable !== true || !Array.isArray(payload.mandatorySkillNames)) return null;
+  if (!payload.mandatorySkillNames.every((name) => typeof name === "string")) return null;
+  return [...new Set(payload.mandatorySkillNames.map((name) => name.trim()).filter(Boolean))];
 }
 
 function revisionState(issue: { assigneeAgentId?: string | null; assigneeUserId?: string | null }, title: string, summary: string,
@@ -79,6 +80,7 @@ export function createSkillSuggestionPlugin(options: SkillSuggestionPluginOption
         if (!issue) return;
         const summary = issue.description ?? "";
         const requiredSkills = mandatorySkillNames(event);
+        if (!requiredSkills) return;
         const guards = revisionState(issue, issue.title, summary, requiredSkills);
         const revision = issueInputRevision(issue.title, summary, guards);
         const ref = config.apiKeyRef as EnvSecretRefBinding | undefined;

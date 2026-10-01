@@ -43,7 +43,7 @@ describe("issue classification worker guards", () => {
     const classify = vi.fn(async () => validResponse());
     const { harness, issue } = await setup(classify);
 
-    await harness.emit("issue.updated", { mandatorySkillNames: ["paperclip"] }, {
+    await harness.emit("issue.updated", { mandatorySkillNamesAvailable: true, mandatorySkillNames: ["paperclip"] }, {
       companyId: COMPANY_ID,
       entityId: issue.id,
       entityType: "issue",
@@ -58,6 +58,23 @@ describe("issue classification worker guards", () => {
     })).toMatchObject({ fallbackReason: "mandatory_skill_precedence:paperclip" });
   });
 
+  it.each([
+    ["omitted", {}],
+    ["unavailable", { mandatorySkillNamesAvailable: false, mandatorySkillNames: [] }],
+    ["malformed", { mandatorySkillNamesAvailable: true, mandatorySkillNames: ["paperclip", 7] }],
+  ])("fails closed when the mandatory-skill source is %s", async (_label, payload) => {
+    const classify = vi.fn(async () => validResponse());
+    const { harness, issue } = await setup(classify);
+
+    await harness.emit("issue.updated", payload, {
+      companyId: COMPANY_ID,
+      entityId: issue.id,
+      entityType: "issue",
+    });
+
+    expect(classify).not.toHaveBeenCalled();
+  });
+
   it("does not persist a delayed unassigned response after assignment", async () => {
     let release!: () => void;
     let markStarted!: () => void;
@@ -70,14 +87,14 @@ describe("issue classification worker guards", () => {
     });
     const { harness, issue } = await setup(classify);
 
-    const observation = harness.emit("issue.updated", {}, {
+    const observation = harness.emit("issue.updated", { mandatorySkillNamesAvailable: true, mandatorySkillNames: [] }, {
       companyId: COMPANY_ID,
       entityId: issue.id,
       entityType: "issue",
     });
     await started;
     await harness.ctx.issues.update(issue.id, { assigneeAgentId: "agent-1" }, COMPANY_ID);
-    await harness.emit("issue.updated", {}, {
+    await harness.emit("issue.updated", { mandatorySkillNamesAvailable: true, mandatorySkillNames: [] }, {
       companyId: COMPANY_ID,
       entityId: issue.id,
       entityType: "issue",
