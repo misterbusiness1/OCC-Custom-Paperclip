@@ -15,6 +15,7 @@ export type IssueClassificationInput = {
   summary: string;
   inputRevision: string;
   explicitlyAssigned: boolean;
+  mandatorySkillNames: string[];
   mandatoryPolicyRule: string | null;
   humanAuthorityRule: string | null;
 };
@@ -38,7 +39,7 @@ export type IssueClassificationRecommendation = {
   reviewerOverride: WorkType | null;
 };
 
-type ClassificationClient = {
+export type ClassificationClient = {
   classify(state: Record<string, JsonValue>): Promise<{
     model: string;
     label: string;
@@ -58,11 +59,25 @@ export function sanitizeIssueText(value: string, limit: number): string {
     .replace(LONG_ID, "[id]").replace(/\s+/g, " ").trim().slice(0, limit);
 }
 
-export function issueInputRevision(title: string, summary: string): string {
-  return createHash("sha256").update(JSON.stringify({ title: sanitizeIssueText(title, 200), summary: sanitizeIssueText(summary, 500) })).digest("hex");
+export type IssueClassificationRevisionState = {
+  explicitlyAssigned?: boolean;
+  mandatorySkillNames?: string[];
+  mandatoryPolicyRule?: string | null;
+  humanAuthorityRule?: string | null;
+};
+
+export function issueInputRevision(title: string, summary: string, state: IssueClassificationRevisionState = {}): string {
+  return createHash("sha256").update(JSON.stringify({
+    title: sanitizeIssueText(title, 200),
+    summary: sanitizeIssueText(summary, 500),
+    explicitlyAssigned: state.explicitlyAssigned ?? false,
+    mandatorySkillNames: [...new Set(state.mandatorySkillNames ?? [])].sort(),
+    mandatoryPolicyRule: state.mandatoryPolicyRule ?? null,
+    humanAuthorityRule: state.humanAuthorityRule ?? null,
+  })).digest("hex");
 }
-export function isCurrentIssueRevision(inputRevision: string, title: string, summary: string): boolean {
-  return issueInputRevision(title, summary) === inputRevision;
+export function isCurrentIssueRevision(inputRevision: string, title: string, summary: string, state: IssueClassificationRevisionState = {}): boolean {
+  return issueInputRevision(title, summary, state) === inputRevision;
 }
 
 export function createIssueClassificationClient(apiKey: string, timeoutMs: number, maxRetries: number): ClassificationClient {
@@ -98,13 +113,24 @@ function empty(input: IssueClassificationInput, started: number, fallbackReason:
 }
 
 function validate(result: Awaited<ReturnType<ClassificationClient["classify"]>>) {
-  if (!WORK_TYPES.includes(result.label as WorkType) || !Number.isFinite(result.confidence)
-    || !Number.isFinite(result.requiresHumanDecision) || !result.model
-    || !Number.isFinite(result.usage.input_tokens) || !Number.isFinite(result.usage.output_tokens)) {
+  if (!result || typeof result !== "object" || !result.usage || typeof result.usage !== "object"
+    || !result.probabilities || typeof result.probabilities !== "object" || Array.isArray(result.probabilities)
+    || !WORK_TYPES.includes(result.label as WorkType) || !Number.isFinite(result.confidence)
+    || result.confidence < 0 || result.confidence > 1
+    || !Number.isFinite(result.requiresHumanDecision) || result.requiresHumanDecision < 0 || result.requiresHumanDecision > 1
+    || typeof result.model !== "string" || !result.model.trim()
+    || !Number.isFinite(result.usage.input_tokens) || result.usage.input_tokens < 0
+    || !Number.isFinite(result.usage.output_tokens) || result.usage.output_tokens < 0) {
     throw Object.assign(new Error("Invalid issue classification response"), { name: "InvalidResponseError" });
   }
-  for (const [label, probability] of Object.entries(result.probabilities)) {
-    if (!WORK_TYPES.includes(label as WorkType) || !Number.isFinite(probability) || probability < 0 || probability > 1) {
+  const probabilityKeys = Object.keys(result.probabilities);
+  if (probabilityKeys.length !== WORK_TYPES.length) {
+    throw Object.assign(new Error("Invalid issue classification probabilities"), { name: "InvalidResponseError" });
+  }
+  for (const label of WORK_TYPES) {
+    const probability = result.probabilities[label];
+    if (!Object.prototype.hasOwnProperty.call(result.probabilities, label)
+      || !Number.isFinite(probability) || probability < 0 || probability > 1) {
       throw Object.assign(new Error("Invalid issue classification probabilities"), { name: "InvalidResponseError" });
     }
   }
@@ -122,6 +148,7 @@ export async function classifyIssue(input: IssueClassificationInput, client: Cla
   const started = performance.now();
   if (!sanitizeIssueText(input.title, 200) && !sanitizeIssueText(input.summary, 500)) return empty(input, started, "missing_candidates");
   if (input.explicitlyAssigned) return empty(input, started, "explicit_assignment_precedence");
+  if (input.mandatorySkillNames.length) return empty(input, started, `mandatory_skill_precedence:${input.mandatorySkillNames[0]}`);
   if (input.mandatoryPolicyRule) return empty(input, started, `mandatory_policy_precedence:${input.mandatoryPolicyRule}`);
   if (input.humanAuthorityRule) return empty(input, started, `human_authority_precedence:${input.humanAuthorityRule}`);
   const key = cacheKey(input);

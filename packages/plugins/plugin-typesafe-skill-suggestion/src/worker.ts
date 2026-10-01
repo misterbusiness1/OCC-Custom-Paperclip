@@ -1,7 +1,7 @@
 import { definePlugin, runWorker, type EnvSecretRefBinding, type PluginEvent } from "@paperclipai/plugin-sdk";
 import { CONTRACT_VERSION, createDecisionClient, suggest, type SuggestionRequest } from "./selector.js";
 import { classifyIssue, createIssueClassificationClient, ISSUE_CLASSIFICATION_STATE_KEY, isCurrentIssueRevision, issueInputRevision,
-  type IssueClassificationRecommendation, type WorkType } from "./issue-classifier.js";
+  type ClassificationClient, type IssueClassificationRecommendation, type IssueClassificationRevisionState, type WorkType } from "./issue-classifier.js";
 
 function configuredNumber(value: unknown, fallback: number, min: number, max: number) {
   return typeof value === "number" ? Math.min(max, Math.max(min, value)) : fallback;
@@ -18,7 +18,29 @@ function humanAuthorityRule(title: string, summary: string): string | null {
   return null;
 }
 
-export function createSkillSuggestionPlugin() {
+type SkillSuggestionPluginOptions = {
+  issueClassificationClientFactory?: (apiKey: string, timeoutMs: number, maxRetries: number) => ClassificationClient;
+};
+
+function mandatorySkillNames(event: PluginEvent): string[] {
+  if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) return [];
+  const value = (event.payload as Record<string, unknown>).mandatorySkillNames;
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((name): name is string => typeof name === "string").map((name) => name.trim()).filter(Boolean))];
+}
+
+function revisionState(issue: { assigneeAgentId?: string | null; assigneeUserId?: string | null }, title: string, summary: string,
+  requiredSkills: string[]): IssueClassificationRevisionState {
+  return {
+    explicitlyAssigned: Boolean(issue.assigneeAgentId || issue.assigneeUserId),
+    mandatorySkillNames: requiredSkills,
+    mandatoryPolicyRule: mandatoryRule(title, summary),
+    humanAuthorityRule: humanAuthorityRule(title, summary),
+  };
+}
+
+export function createSkillSuggestionPlugin(options: SkillSuggestionPluginOptions = {}) {
+  const classificationClientFactory = options.issueClassificationClientFactory ?? createIssueClassificationClient;
   return definePlugin({
     async setup(ctx) {
       ctx.actions.register("skill-suggestion-shadow-v1", async (params, actionContext) => {
@@ -56,16 +78,21 @@ export function createSkillSuggestionPlugin() {
         const issue = await ctx.issues.get(issueId, event.companyId);
         if (!issue) return;
         const summary = issue.description ?? "";
-        const revision = issueInputRevision(issue.title, summary);
+        const requiredSkills = mandatorySkillNames(event);
+        const guards = revisionState(issue, issue.title, summary, requiredSkills);
+        const revision = issueInputRevision(issue.title, summary, guards);
         const ref = config.apiKeyRef as EnvSecretRefBinding | undefined;
         if (!ref || ref.type !== "secret_ref") return;
         const apiKey = await ctx.secrets.resolve(ref, { companyId: event.companyId, configPath: "apiKeyRef" });
         const recommendation = await classifyIssue({ issueId, title: issue.title, summary, inputRevision: revision,
-          explicitlyAssigned: Boolean(issue.assigneeAgentId || issue.assigneeUserId), mandatoryPolicyRule: mandatoryRule(issue.title, summary),
-          humanAuthorityRule: humanAuthorityRule(issue.title, summary) },
-          createIssueClassificationClient(apiKey, configuredNumber(config.timeoutMs, 5_000, 1_000, 15_000), configuredNumber(config.maxRetries, 1, 0, 2)));
+          explicitlyAssigned: guards.explicitlyAssigned ?? false, mandatorySkillNames: requiredSkills,
+          mandatoryPolicyRule: guards.mandatoryPolicyRule ?? null, humanAuthorityRule: guards.humanAuthorityRule ?? null },
+          classificationClientFactory(apiKey, configuredNumber(config.timeoutMs, 5_000, 1_000, 15_000), configuredNumber(config.maxRetries, 1, 0, 2)));
         const fresh = await ctx.issues.get(issueId, event.companyId);
-        if (!fresh || !isCurrentIssueRevision(revision, fresh.title, fresh.description ?? "")) return;
+        if (!fresh) return;
+        const freshSummary = fresh.description ?? "";
+        const freshGuards = revisionState(fresh, fresh.title, freshSummary, requiredSkills);
+        if (!isCurrentIssueRevision(revision, fresh.title, freshSummary, freshGuards)) return;
         await ctx.state.set({ scopeKind: "issue", scopeId: issueId, namespace: "issue-classification-shadow", stateKey: ISSUE_CLASSIFICATION_STATE_KEY }, recommendation);
       };
       ctx.events.on("issue.created", observe);

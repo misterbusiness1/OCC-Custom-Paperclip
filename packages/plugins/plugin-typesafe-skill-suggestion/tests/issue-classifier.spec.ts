@@ -5,7 +5,7 @@ import { classifyIssue, clearIssueClassificationCache, isCurrentIssueRevision, i
 const input = (overrides: Partial<IssueClassificationInput> = {}): IssueClassificationInput => ({
   issueId: "issue-1", title: "Build an inventory dashboard", summary: "Create a reusable scheduled dashboard",
   inputRevision: issueInputRevision("Build an inventory dashboard", "Create a reusable scheduled dashboard"),
-  explicitlyAssigned: false, mandatoryPolicyRule: null, humanAuthorityRule: null, ...overrides,
+  explicitlyAssigned: false, mandatorySkillNames: [], mandatoryPolicyRule: null, humanAuthorityRule: null, ...overrides,
 });
 const client = (label: WorkType = "report_or_dashboard_build", confidence = 0.9) => ({
   classify: vi.fn(async () => ({ model: "jev-1.13.0", label, confidence,
@@ -24,6 +24,7 @@ describe("issue classification shadow", () => {
   });
   it.each([
     [{ explicitlyAssigned: true }, "explicit_assignment_precedence"],
+    [{ mandatorySkillNames: ["paperclip"] as string[] }, "mandatory_skill_precedence:paperclip"],
     [{ mandatoryPolicyRule: "mandatory" }, "mandatory_policy_precedence:mandatory"],
     [{ humanAuthorityRule: "board" }, "human_authority_precedence:board"],
   ] as const)("applies deterministic precedence before inference", async (overrides, reason) => {
@@ -33,6 +34,24 @@ describe("issue classification shadow", () => {
   it("fails open on malformed output", async () => {
     const c = { classify: vi.fn(async () => ({ model: "jev-1.13.0", label: "invented", confidence: 0.9,
       probabilities: { invented: 1 }, requiresHumanDecision: 0.1, usage: { input_tokens: 1, output_tokens: 1 } })) };
+    expect(await classifyIssue(input(), c)).toMatchObject({ label: null, fallbackReason: "InvalidResponseError" });
+  });
+  it.each([
+    ["confidence below zero", { confidence: -0.01 }],
+    ["confidence above one", { confidence: 1.01 }],
+    ["human-decision probability below zero", { requiresHumanDecision: -0.01 }],
+    ["human-decision probability above one", { requiresHumanDecision: 1.01 }],
+    ["negative input usage", { usage: { input_tokens: -1, output_tokens: 1 } }],
+    ["negative output usage", { usage: { input_tokens: 1, output_tokens: -1 } }],
+    ["empty probabilities", { probabilities: {} }],
+    ["incomplete probabilities", { probabilities: { bug_fix: 1 } }],
+    ["incorrect probability key", { probabilities: { ...Object.fromEntries(WORK_TYPES.map((label) => [label, 0.1])), invented: 0.1 } }],
+    ["selected label missing from probabilities", { label: "bug_fix", probabilities: Object.fromEntries(WORK_TYPES.filter((label) => label !== "bug_fix").map((label) => [label, 0.1])) }],
+    ["probability below zero", { probabilities: Object.fromEntries(WORK_TYPES.map((label) => [label, label === "bug_fix" ? -0.01 : 0.1])) }],
+    ["probability above one", { probabilities: Object.fromEntries(WORK_TYPES.map((label) => [label, label === "bug_fix" ? 1.01 : 0.1])) }],
+  ])("rejects malformed output: %s", async (_name, patch) => {
+    const valid = await client().classify();
+    const c = { classify: vi.fn(async () => ({ ...valid, ...patch })) };
     expect(await classifyIssue(input(), c)).toMatchObject({ label: null, fallbackReason: "InvalidResponseError" });
   });
   it("fails open below the confidence threshold", async () => {
@@ -47,6 +66,8 @@ describe("issue classification shadow", () => {
     const revision = issueInputRevision("Before", "Summary");
     expect(isCurrentIssueRevision(revision, "Before", "Summary")).toBe(true);
     expect(isCurrentIssueRevision(revision, "After", "Summary")).toBe(false);
+    const guarded = issueInputRevision("Before", "Summary", { explicitlyAssigned: false, mandatorySkillNames: [] });
+    expect(isCurrentIssueRevision(guarded, "Before", "Summary", { explicitlyAssigned: true, mandatorySkillNames: [] })).toBe(false);
   });
   it.each(["TimeoutError", "RateLimitError", "ConnectionError"])("fails open on %s", async (name) => {
     const c = { classify: vi.fn().mockRejectedValue(Object.assign(new Error(name), { name })) };
@@ -55,7 +76,8 @@ describe("issue classification shadow", () => {
   it("coalesces duplicates and reports incremental usage", async () => {
     let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; }); const c = client();
     c.classify.mockImplementationOnce(async () => { await gate; return { model: "jev-1.13.0", label: "bug_fix", confidence: 0.9,
-      probabilities: { bug_fix: 0.9 }, requiresHumanDecision: 0.1, usage: { input_tokens: 100, output_tokens: 4 } }; });
+      probabilities: Object.fromEntries(WORK_TYPES.map((item) => [item, item === "bug_fix" ? 0.9 : 0.02])),
+      requiresHumanDecision: 0.1, usage: { input_tokens: 100, output_tokens: 4 } }; });
     const first = classifyIssue(input(), c); const second = classifyIssue(input(), c); release();
     expect(await second).toMatchObject({ cache: "coalesced", usage: { inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 } });
     expect((await first).usage.inputTokens).toBe(100); expect(c.classify).toHaveBeenCalledTimes(1);
