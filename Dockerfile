@@ -43,13 +43,13 @@ COPY packages/plugins/sdk/package.json packages/plugins/sdk/
 COPY --parents packages/plugins/sandbox-providers/./*/package.json packages/plugins/sandbox-providers/
 COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugins/paperclip-plugin-fake-sandbox/
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
-COPY packages/plugins/plugin-typesafe-skill-suggestion/package.json packages/plugins/plugin-typesafe-skill-suggestion/
+COPY packages/plugins/plugin-typesafe-skill-suggestion/package.json packages/plugins/plugin-typesafe-skill-suggestion/pnpm-lock.yaml packages/plugins/plugin-typesafe-skill-suggestion/
 COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
 COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
 RUN pnpm install --frozen-lockfile
-RUN pnpm --dir packages/plugins/plugin-typesafe-skill-suggestion install --ignore-workspace --no-lockfile \
+RUN pnpm --dir packages/plugins/plugin-typesafe-skill-suggestion install --ignore-workspace --frozen-lockfile \
   && node scripts/link-plugin-dev-sdk.mjs
 
 FROM base AS build
@@ -58,6 +58,9 @@ COPY --from=deps /app /app
 COPY . .
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
+RUN pnpm --dir packages/plugins/plugin-typesafe-skill-suggestion build \
+  && test -f packages/plugins/plugin-typesafe-skill-suggestion/dist/manifest.js \
+  && test -f packages/plugins/plugin-typesafe-skill-suggestion/dist/worker.js
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 

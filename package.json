@@ -107,10 +107,10 @@
       "postcss": ">=8.5.18 <9",
       "react-router": ">=7.18.2 <8",
       "tar": ">=7.5.19 <8",
-      "undici": ">=7.29.0 <8",
+      "undici": ">=7.29.1 <8",
       "vite": ">=6.4.3 <7",
-      "brace-expansion@<2.0.0": "1.1.18",
-      "brace-expansion@>=2.0.0 <3.0.0": "2.1.4"
+      "brace-expansion@<2.0.0": "1.1.20",
+      "brace-expansion@>=2.0.0 <3.0.0": "2.1.6"
     }
   }
 }
