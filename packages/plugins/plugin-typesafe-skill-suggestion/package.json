@@ -19,6 +19,7 @@
     "@typesafe-ai/sdk": "0.6.0"
   },
   "devDependencies": {
+    "@paperclipai/plugin-sdk": "2026.916.1",
     "@types/node": "22.19.21",
     "esbuild": "0.28.1",
     "typescript": "5.9.3",
