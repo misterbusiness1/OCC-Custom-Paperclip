@@ -72,6 +72,7 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { observeSkillSuggestion, type SkillSuggestionShadowObservation } from "./skill-suggestion-shadow.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -12322,6 +12323,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
       versionSelections: skillVersionSelectionMap(runtimeSkillPreference.desiredSkillEntries),
     });
+    let skillSuggestionShadow: SkillSuggestionShadowObservation | null = null;
+    try {
+      skillSuggestionShadow = await observeSkillSuggestion({
+        env: runtimeEnv,
+        workerManager: options.pluginWorkerManager,
+        companyId: agent.companyId,
+        request: `${issueRef?.title ?? ""}\n${issueRef?.description ?? ""}`,
+        skills: runtimeSkillEntries,
+        explicitSkillNames: runScopedMentionedSkillKeys,
+        mandatorySkillNames: runScopedMentionedSkillKeys,
+      });
+    } catch {
+      // Shadow selection is fail-open and can never prevent the current turn.
+    }
     let runtimeConfig: Record<string, unknown> = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
@@ -13165,6 +13180,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         level: "info",
         message: "run started",
       });
+      if (skillSuggestionShadow) {
+        await appendRunEvent(currentRun, seq++, {
+          eventType: "skill.suggestion.shadow",
+          stream: "system",
+          level: skillSuggestionShadow.status === "failed_open" ? "warn" : "info",
+          message: "sanitized skill suggestion shadow observation",
+          payload: skillSuggestionShadow,
+        });
+      }
 
       handle = await runLogStore.begin({
         companyId: run.companyId,
@@ -13883,6 +13907,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: {
             status,
             exitCode: adapterResult.exitCode,
+          },
+        });
+        await appendRunEvent(finalizedRun, seq++, {
+          eventType: "skill.load.attribution",
+          stream: "system",
+          level: "info",
+          message: "terminal skill load attribution",
+          payload: {
+            contractVersion: "skill-suggestion-shadow.v1",
+            suggestedSkill: skillSuggestionShadow?.suggestion ?? null,
+            skillActuallyLoaded: skillSuggestionShadow?.skillActuallyLoaded ?? null,
           },
         });
         try {
