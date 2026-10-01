@@ -1,8 +1,10 @@
 # TypeSafe skill-suggestion shadow evaluation
 
-Frozen fixture version: `occ-skill-shadow-2026-10-01.v1`  
-Contract: `skill-suggestion-shadow.v1`  
-Question: `occ-skill-suggestion.2026-10-01`  
+Frozen fixture version: `occ-skill-shadow-2026-10-01.v1`
+
+Contract: `skill-suggestion-shadow.v1`
+
+Question: `occ-skill-suggestion.2026-10-01`
 Model: `jev-1.13.0`
 
 ## Scope and safety
