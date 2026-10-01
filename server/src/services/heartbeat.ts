@@ -1023,6 +1023,18 @@ export function applyRunScopedMentionedSkillKeys(
   ]);
 }
 
+export function partitionSkillSuggestionTriggers(
+  mandatorySkillNames: string[],
+  mentionedSkillNames: string[],
+) {
+  const mandatory = [...new Set(mandatorySkillNames)];
+  const mandatorySet = new Set(mandatory);
+  return {
+    mandatorySkillNames: mandatory,
+    explicitSkillNames: [...new Set(mentionedSkillNames)].filter((key) => !mandatorySet.has(key)),
+  };
+}
+
 export function computeBoundedTransientHeartbeatRetrySchedule(
   attempt: number,
   now = new Date(),
@@ -12315,6 +12327,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipSecrets;
     }
+    const { mandatorySkillNames, explicitSkillNames } = partitionSkillSuggestionTriggers(
+      readPaperclipSkillSyncPreference(resolvedConfig).desiredSkills,
+      runScopedMentionedSkillKeys,
+    );
     const effectiveResolvedConfig = applyRunScopedMentionedSkillKeys(
       resolvedConfig,
       runScopedMentionedSkillKeys,
@@ -12333,8 +12349,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         companyId: agent.companyId,
         request: `${issueRef?.title ?? ""}\n${issueRef?.description ?? ""}`,
         skills: runtimeSkillEntries,
-        explicitSkillNames: runScopedMentionedSkillKeys,
-        mandatorySkillNames: runScopedMentionedSkillKeys,
+        explicitSkillNames,
+        mandatorySkillNames,
       });
     } catch {
       // Shadow selection is fail-open and can never prevent the current turn.

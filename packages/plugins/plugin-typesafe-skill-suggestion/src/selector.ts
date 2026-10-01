@@ -90,9 +90,11 @@ export async function suggest(input: SuggestionRequest, client: DecisionClient):
     latencyMs: Math.round(performance.now() - started), usage: { inputTokens: 0, outputTokens: 0 }, outcome: "no_match", cache: "miss" };
   const key = cacheKey(input);
   const hit = cache.get(key);
-  if (hit && hit.expires > Date.now()) return { ...hit.value, cache: "hit" };
+  if (hit && hit.expires > Date.now()) return { ...hit.value, cache: "hit",
+    latencyMs: Math.round(performance.now() - started), usage: { inputTokens: 0, outputTokens: 0 } };
   const pending = inflight.get(key);
-  if (pending) return { ...(await pending), cache: "coalesced" };
+  if (pending) return { ...(await pending), cache: "coalesced",
+    latencyMs: Math.round(performance.now() - started), usage: { inputTokens: 0, outputTokens: 0 } };
   const work = (async () => {
     const roster = input.skills.map(bounded);
     const request = normalizeRequest(input.request);

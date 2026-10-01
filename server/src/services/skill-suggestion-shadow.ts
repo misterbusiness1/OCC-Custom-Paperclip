@@ -45,6 +45,43 @@ function failOpen(catalogVersion: string, started: number, error: unknown): Skil
     errorClass: error instanceof Error ? error.name : "UnknownError", cache: null, skillActuallyLoaded: null };
 }
 
+function finiteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function parseResult(result: Record<string, unknown>, catalogVersion: string, started: number): SkillSuggestionShadowObservation {
+  const shortlist = result.shortlist;
+  const usage = result.usage;
+  if (
+    (result.suggestion !== null && typeof result.suggestion !== "string")
+    || !Array.isArray(shortlist)
+    || !shortlist.every((item) => item && typeof item === "object"
+      && typeof (item as Record<string, unknown>).name === "string"
+      && finiteNumber((item as Record<string, unknown>).probability))
+    || (result.confidence !== null && !finiteNumber(result.confidence))
+    || (result.neededProbability !== null && !finiteNumber(result.neededProbability))
+    || typeof result.questionVersion !== "string"
+    || typeof result.modelVersion !== "string"
+    || !finiteNumber(result.latencyMs)
+    || !usage || typeof usage !== "object"
+    || !finiteNumber((usage as Record<string, unknown>).inputTokens)
+    || !finiteNumber((usage as Record<string, unknown>).outputTokens)
+    || typeof result.outcome !== "string"
+    || !["hit", "miss", "coalesced"].includes(String(result.cache))
+  ) throw Object.assign(new Error("Malformed skill suggestion plugin output"), { name: "InvalidResponseError" });
+  return { contractVersion: SKILL_SUGGESTION_CONTRACT_VERSION, status: "observed",
+    suggestion: result.suggestion as string | null,
+    shortlist: shortlist as Array<{ name: string; probability: number }>,
+    confidence: result.confidence as number | null,
+    neededProbability: result.neededProbability as number | null,
+    catalogVersion, questionVersion: result.questionVersion as string,
+    modelVersion: result.modelVersion as string,
+    latencyMs: result.latencyMs as number,
+    usage: usage as { inputTokens: number; outputTokens: number },
+    outcome: result.outcome as string, errorClass: null,
+    cache: result.cache as string, skillActuallyLoaded: null };
+}
+
 export async function observeSkillSuggestion(input: {
   env: Record<string, string | undefined>;
   workerManager?: PluginWorkerManager;
@@ -68,16 +105,6 @@ export async function observeSkillSuggestion(input: {
         skills, explicitSkillNames: input.explicitSkillNames, mandatorySkillNames: input.mandatorySkillNames },
     }, 16_000) as Record<string, unknown>;
     if (result.disabled === true) return { ...failOpen(catalogVersion, started, new Error("disabled")), status: "disabled", outcome: "disabled", errorClass: null };
-    return { contractVersion: SKILL_SUGGESTION_CONTRACT_VERSION, status: "observed",
-      suggestion: typeof result.suggestion === "string" ? result.suggestion : null,
-      shortlist: Array.isArray(result.shortlist) ? result.shortlist as Array<{ name: string; probability: number }> : [],
-      confidence: typeof result.confidence === "number" ? result.confidence : null,
-      neededProbability: typeof result.neededProbability === "number" ? result.neededProbability : null,
-      catalogVersion, questionVersion: typeof result.questionVersion === "string" ? result.questionVersion : null,
-      modelVersion: typeof result.modelVersion === "string" ? result.modelVersion : null,
-      latencyMs: typeof result.latencyMs === "number" ? result.latencyMs : Math.round(performance.now() - started),
-      usage: result.usage && typeof result.usage === "object" ? result.usage as { inputTokens: number; outputTokens: number } : null,
-      outcome: typeof result.outcome === "string" ? result.outcome : "invalid_response", errorClass: null,
-      cache: typeof result.cache === "string" ? result.cache : null, skillActuallyLoaded: null };
+    return parseResult(result, catalogVersion, started);
   } catch (error) { return failOpen(catalogVersion, started, error); }
 }

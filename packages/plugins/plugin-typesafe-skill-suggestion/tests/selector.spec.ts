@@ -22,6 +22,10 @@ describe("skill suggestion selector", () => {
     expect(value.outcome).toBe("explicit_precedence"); expect(value.suggestion).toBe("docs"); expect(c.rank).not.toHaveBeenCalled();
   });
   it("preserves mandatory precedence", async () => expect((await suggest(request({ mandatorySkillNames: ["qa"] }), client())).outcome).toBe("mandatory_precedence"));
+  it("gives mandatory triggers precedence over explicit mentions", async () => {
+    const value = await suggest(request({ explicitSkillNames: ["docs"], mandatorySkillNames: ["qa"] }), client());
+    expect(value).toMatchObject({ outcome: "mandatory_precedence", suggestion: "qa" });
+  });
   it("returns no match for an empty roster", async () => expect((await suggest(request({ skills: [] }), client())).suggestion).toBeNull());
   it("invalidates cache when catalog version changes", async () => {
     const c = client(); await suggest(request(), c); await suggest(request({ catalogVersion: "catalog-b" }), c); expect(c.rank).toHaveBeenCalledTimes(2);
@@ -31,6 +35,13 @@ describe("skill suggestion selector", () => {
     c.rank.mockImplementationOnce(async () => { await gate; return { model: "jev-1.13.0", name: "php", confidence: 0.8,
       probabilities: { php: 0.7, docs: 0.2, qa: 0.1 }, needed: 0.9, usage: { input_tokens: 10, output_tokens: 2 } }; });
     const first = suggest(request(), c); const second = suggest(request(), c); release();
-    expect((await second).cache).toBe("coalesced"); await first; expect(c.rank).toHaveBeenCalledTimes(1);
+    expect(await second).toMatchObject({ cache: "coalesced", usage: { inputTokens: 0, outputTokens: 0 } });
+    await first; expect(c.rank).toHaveBeenCalledTimes(1);
+  });
+  it("reports cache hits as zero incremental tokens with fresh latency", async () => {
+    const c = client(); const first = await suggest(request(), c); const hit = await suggest(request(), c);
+    expect(first.usage).toEqual({ inputTokens: 15, outputTokens: 3 });
+    expect(hit).toMatchObject({ cache: "hit", usage: { inputTokens: 0, outputTokens: 0 } });
+    expect(hit.latencyMs).toBeLessThanOrEqual(first.latencyMs);
   });
 });
