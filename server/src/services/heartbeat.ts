@@ -306,6 +306,13 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
 ];
+const LIVENESS_BOOKKEEPING_RUN_EVENT_TYPES = [
+  "lifecycle",
+  "adapter.invoke",
+  "error",
+  "skill.suggestion.shadow",
+  "skill.load.attribution",
+];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
@@ -11303,11 +11310,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const [eventStats] = await db
       .select({
-        count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
-        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))`,
+        count: sql<number>`count(*)::int`,
+        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt})`,
       })
       .from(heartbeatRunEvents)
-      .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id)));
+      .where(
+        and(
+          eq(heartbeatRunEvents.companyId, run.companyId),
+          eq(heartbeatRunEvents.runId, run.id),
+          notInArray(heartbeatRunEvents.eventType, LIVENESS_BOOKKEEPING_RUN_EVENT_TYPES),
+        ),
+      );
 
     return {
       runStatus: run.status,
