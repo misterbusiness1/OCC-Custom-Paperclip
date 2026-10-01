@@ -16,7 +16,6 @@
     "worker": "./dist/worker.js"
   },
   "dependencies": {
-    "@paperclipai/plugin-sdk": "workspace:*",
     "@typesafe-ai/sdk": "0.6.0"
   },
   "devDependencies": {

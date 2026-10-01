@@ -49,6 +49,8 @@ COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
 RUN pnpm install --frozen-lockfile
+RUN pnpm --dir packages/plugins/plugin-typesafe-skill-suggestion install --ignore-workspace --no-lockfile \
+  && node scripts/link-plugin-dev-sdk.mjs
 
 FROM base AS build
 WORKDIR /app

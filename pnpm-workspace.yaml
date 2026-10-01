@@ -9,6 +9,9 @@ packages:
   # Keep this smoke fixture installable as a local plugin example without
   # forcing PRs to commit pnpm-lock.yaml for a new workspace importer.
   - "!packages/plugins/examples/plugin-orchestration-smoke-example"
+  # This internal shadow plugin owns TypeSafe dependencies and is installed in
+  # its package directory so PRs never need to modify the root lockfile.
+  - "!packages/plugins/plugin-typesafe-skill-suggestion"
   - server
   - ui
   - cli
