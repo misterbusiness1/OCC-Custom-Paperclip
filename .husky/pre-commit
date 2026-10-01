@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+staged_paths="$(git diff --cached --name-only)"
+
+if printf '%s\n' "$staged_paths" | grep -qx 'pnpm-lock.yaml' &&
+  ! printf '%s\n' "$staged_paths" | grep -qx 'package.json'; then
+  echo "pnpm-lock.yaml is staged without package.json."
+  echo
+  echo "Stage the matching package.json change, or unstage the lockfile:"
+  echo "    git restore --staged pnpm-lock.yaml"
+  exit 1
+fi

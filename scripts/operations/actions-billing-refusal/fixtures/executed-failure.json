@@ -1,0 +1,16 @@
+{
+  "repository": "misterbusiness1/paperclip-minimax-local",
+  "workflowName": "review",
+  "runId": 33078491252,
+  "attempt": 6,
+  "jobId": 98538944295,
+  "pullRequestNumbers": [],
+  "conclusion": "failure",
+  "startedAt": "2026-08-27T14:00:00Z",
+  "completedAt": "2026-08-27T14:02:00Z",
+  "runnerName": "GitHub Actions 1000000000",
+  "stepCount": 10,
+  "logAvailability": "present",
+  "annotationAvailability": "available",
+  "annotationMessages": []
+}

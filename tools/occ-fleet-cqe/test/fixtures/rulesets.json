@@ -1,0 +1,30 @@
+{
+  "compliant": {
+    "id": 24119098,
+    "name": "Require exact-head OCC Review Bot",
+    "target": "branch",
+    "enforcement": "active",
+    "bypass_actors": [],
+    "conditions": {
+      "ref_name": {
+        "include": ["~DEFAULT_BRANCH"],
+        "exclude": []
+      }
+    },
+    "rules": [
+      {
+        "type": "required_status_checks",
+        "parameters": {
+          "required_status_checks": [
+            { "context": "OCC Review Bot", "integration_id": 3604655 }
+          ],
+          "strict_required_status_checks_policy": true,
+          "do_not_enforce_on_create": false
+        }
+      }
+    ]
+  },
+  "altered_integration": 999999,
+  "bypass_actor": { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" },
+  "disabled_enforcement": "disabled"
+}

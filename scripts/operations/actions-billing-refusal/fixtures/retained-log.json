@@ -1,0 +1,18 @@
+{
+  "repository": "misterbusiness1/paperclip-minimax-local",
+  "workflowName": "review",
+  "runId": 33078491253,
+  "attempt": 1,
+  "jobId": 98538944296,
+  "pullRequestNumbers": [75],
+  "conclusion": "failure",
+  "startedAt": "2026-08-27T13:45:17Z",
+  "completedAt": "2026-08-27T13:45:20Z",
+  "runnerName": null,
+  "stepCount": 0,
+  "logAvailability": "present",
+  "annotationAvailability": "available",
+  "annotationMessages": [
+    "The job was not started because recent payments failed."
+  ]
+}
