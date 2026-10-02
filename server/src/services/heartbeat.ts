@@ -19817,8 +19817,8 @@ export function heartbeatService(
     const actorId = readNonEmptyString(marker.actorId);
     const receiptIssueId = readNonEmptyString(receipt.payload?.issueId);
     const receiptCommentIds = queuedCommentIdsFromWakePayload(receipt.payload);
-    const recovery = parseObject(sourceRun.resultJson?.executionRecovery);
     const cancellation = parseObject(sourceRun.resultJson?.executionCancellation);
+    const cancellationAcknowledgedAt = dateValue(cancellation.acknowledgedAt);
     if (
       !issueId ||
       !actorId ||
@@ -19828,10 +19828,10 @@ export function heartbeatService(
       receiptCommentIds.length === 0 ||
       !receiptCommentIds.every((id) => deliveredCommentIds.includes(id)) ||
       cancellation.state !== "acknowledged" ||
-      recovery.kind !== "interrupted" ||
-      recovery.providerStopped !== true ||
-      recovery.sessionPreserved !== true ||
-      recovery.actionOutcomes !== "settled" ||
+      cancellation.forced !== false ||
+      !cancellationAcknowledgedAt ||
+      !sourceRun.finishedAt ||
+      cancellationAcknowledgedAt.getTime() > sourceRun.finishedAt.getTime() ||
       !hasConversationContinuationPolicy(sourceRun.resultJson) ||
       activeRunExecutions.has(sourceRun.id) ||
       adapterExecutionControls.has(sourceRun.id) ||

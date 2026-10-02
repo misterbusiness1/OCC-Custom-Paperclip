@@ -231,12 +231,14 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
         requestedByActorType: "system", payload: { issueId, commentId,
           queuedCommentInterrupt: { actorId: valid ? actorId : "wrong-user", requestedAt: new Date().toISOString() },
           _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [commentId] } } });
+      const acknowledgedAt = new Date();
+      const finishedAt = new Date(acknowledgedAt.getTime() + 77);
       await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, status: "cancelled",
-        runtimeMode: "legacy", contextSnapshot: { issueId }, finishedAt: new Date(),
+        runtimeMode: "legacy", contextSnapshot: { issueId }, finishedAt,
         resultJson: { queuedCommentInterruptQueueId: receiptId,
           conversationContinuation: "continue_conversation_v1",
-          executionCancellation: { state: "acknowledged" },
-          executionRecovery: { kind: "interrupted", providerStopped: true, sessionPreserved: true, actionOutcomes: "settled" } } });
+          executionCancellation: { state: "acknowledged", forced: false,
+            acknowledgedAt: acknowledgedAt.toISOString() } } });
       await db.insert(agentWakeupRequests).values({ id: requestId, companyId, agentId,
         source: "on_demand", triggerDetail: "manual", reason: "issue_commented", status: "queued",
         requestedByActorType: "user", requestedByActorId: actorId,
@@ -255,9 +257,10 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     await heartbeat.resumeQueuedRuns();
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
 
-    const [invalidRun, validRun, invalidReceipt, validReceipt] = await Promise.all([
+    const [invalidRun, validRun, validSourceRun, invalidReceipt, validReceipt] = await Promise.all([
       heartbeat.getRun(invalid.successorRunId),
       heartbeat.getRun(valid.successorRunId),
+      heartbeat.getRun(valid.sourceRunId),
       db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, invalid.receiptId)).then(rows => rows[0]),
       db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, valid.receiptId)).then(rows => rows[0]),
     ]);
@@ -268,6 +271,11 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     expect(invalidReceipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
     expect(validRun).toMatchObject({ status: "succeeded", responsibleUserId: valid.actorId });
     expect(validRun?.contextSnapshot?.wakeCommentIds).toEqual([valid.commentId]);
+    expect(validSourceRun?.resultJson).toMatchObject({
+      conversationContinuation: "continue_conversation_v1",
+      executionCancellation: { state: "acknowledged", forced: false },
+    });
+    expect(validSourceRun?.resultJson?.executionRecovery).toBeUndefined();
     expect(validReceipt).toMatchObject({ status: "coalesced", runId: valid.successorRunId });
     expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
     const recoveryAudit = await db.select().from(activityLog).where(and(
