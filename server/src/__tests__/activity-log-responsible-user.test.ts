@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
+import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import {
   activityLog,
   agentApiKeys,
@@ -14,8 +15,10 @@ import {
 import {
   logActivity,
   resolveResponsibleUserIdForActivity,
+  setPluginEventBus,
   type LogActivityInput,
 } from "../services/activity-log.js";
+import { createPluginEventBus } from "../services/plugin-event-bus.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -230,5 +233,61 @@ describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
       .then((rows) => rows[0]);
 
     expect(row?.responsibleUserId).toBe("key-user");
+  });
+
+  it("emits authoritative mandatory skills for a real assigned issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Mandatory skill event",
+      issuePrefix: `S${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Skilled agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {
+        paperclipSkillSync: { desiredSkills: ["paperclip", { key: "typesafe-ai", versionId: "v1" }] },
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Use mandatory skills",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    const bus = createPluginEventBus();
+    setPluginEventBus(bus);
+    let resolveEvent!: (event: PluginEvent) => void;
+    const delivered = new Promise<PluginEvent>((resolve) => { resolveEvent = resolve; });
+    bus.forPlugin("mandatory-skill-test").subscribe("issue.updated", async (event) => resolveEvent(event));
+
+    await logActivity(db, activityInput({
+      companyId,
+      actorId: agentId,
+      agentId,
+      entityId: issueId,
+      details: { mandatorySkillNames: ["spoofed"] },
+    }));
+
+    await expect(delivered).resolves.toMatchObject({
+      companyId,
+      entityId: issueId,
+      payload: {
+        mandatorySkillNamesAvailable: true,
+        mandatorySkillNames: ["paperclip", "typesafe-ai"],
+      },
+    });
   });
 });
