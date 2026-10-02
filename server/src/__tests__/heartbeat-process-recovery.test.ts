@@ -6879,15 +6879,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { companyId, agentId, issueId, runId } = await seedRunFixture({
       runtimeMode: "legacy", adapterType: "codex_local", agentStatus: "idle", runStatus: "cancelled",
     });
-    const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "responsible-user", body: "retry this input" }).returning();
+    const [comment] = await db.insert(issueComments).values({
+      companyId, issueId, authorType: "user", authorUserId: "responsible-user", body: "retry this input",
+    }).returning();
     const [wake] = await db.insert(agentWakeupRequests).values({
       companyId, agentId, source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
       requestedByActorType: "user", requestedByActorId: "responsible-user",
       payload: { issueId, commentId: comment!.id, _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment!.id] } },
     }).returning();
-    await db.update(heartbeatRuns).set({ resultJson: {
+    const acknowledgedAt = new Date();
+    await db.update(heartbeatRuns).set({ finishedAt: acknowledgedAt, resultJson: {
       queuedCommentInterruptQueueId: wake!.id,
-      executionCancellation: { state: "acknowledged" },
+      executionCancellation: { state: "acknowledged", acknowledgedAt: acknowledgedAt.toISOString(), forced: false },
       conversationContinuation: "continue_conversation_v1",
     } }).where(eq(heartbeatRuns.id, runId));
     const failedPromotion = vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("temporary queue promotion outage"));
