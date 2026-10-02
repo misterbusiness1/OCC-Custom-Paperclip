@@ -88,6 +88,7 @@ import { questionResponseDeliveryService } from "./services/question-response-de
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
 import { createSecretProposalsService } from "./services/secret-proposals.js";
+import { createDatabaseBackupScheduler } from "./services/database-backup-scheduler.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { createDbAdapterAuthSessionStore } from "./services/device-login-service.js";
 import {
@@ -1853,11 +1854,14 @@ async function startServerWithDatabaseTeardown(
       },
       "Automatic database backups enabled",
     );
-    setInterval(() => {
-      void runServerDatabaseBackup("scheduled").catch(() => {
-        // runServerDatabaseBackup already logs the failure with context.
-      });
-    }, backupIntervalMs);
+    createDatabaseBackupScheduler({
+      backupDir: config.databaseBackupDir,
+      intervalMs: backupIntervalMs,
+      runBackup: () => runServerDatabaseBackup("scheduled"),
+      onError: () => {
+        // runServerDatabaseBackup already logs backup failures with context.
+      },
+    }).start();
   }
   
   // Wait for external adapters to finish loading before accepting requests.
