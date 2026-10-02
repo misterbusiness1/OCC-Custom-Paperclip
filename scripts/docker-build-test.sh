@@ -43,6 +43,9 @@ echo "==> Verifying key binaries in image"
   claude --version 2>/dev/null || echo "claude CLI not found (OK in minimal builds)"
 '
 
+echo "==> Verifying managed port owner detection as the runtime user"
+"$RUNTIME" run --rm "$IMAGE_TAG" node scripts/assert-container-port-owner.mjs
+
 echo "==> Verifying PID 1 is an init that reaps adopted orphans"
 # Piped in as CMD (`sh -s`) rather than `--entrypoint`, so the image's real
 # ENTRYPOINT still runs and PID 1 is exactly what a production container gets.
