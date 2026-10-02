@@ -250,6 +250,10 @@ import {
   providerTraceStore,
   PROVIDER_TRACE_MAX_BYTES,
 } from "./provider-trace-store.js";
+import {
+  observeSkillSuggestion,
+  type SkillSuggestionShadowObservation,
+} from "./skill-suggestion-shadow.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -1925,6 +1929,20 @@ export function applyRunScopedMentionedSkillKeys(
     ...existingPreference.desiredSkillEntries,
     ...normalizedSkillKeys,
   ]);
+}
+
+export function partitionSkillSuggestionTriggers(
+  mandatorySkillNames: string[],
+  mentionedSkillNames: string[],
+) {
+  const mandatory = [...new Set(mandatorySkillNames)];
+  const mandatorySet = new Set(mandatory);
+  return {
+    mandatorySkillNames: mandatory,
+    explicitSkillNames: [...new Set(mentionedSkillNames)].filter(
+      (key) => !mandatorySet.has(key),
+    ),
+  };
 }
 
 export function computeBoundedTransientHeartbeatRetrySchedule(
@@ -21110,6 +21128,11 @@ export function heartbeatService(
       } else {
         delete context.paperclipSecrets;
       }
+      const { mandatorySkillNames, explicitSkillNames } =
+        partitionSkillSuggestionTriggers(
+          readPaperclipSkillSyncPreference(resolvedConfig).desiredSkills,
+          runScopedSkillKeys,
+        );
       const effectiveResolvedConfig = applyRunScopedMentionedSkillKeys(
         resolvedConfig,
         runScopedSkillKeys,
@@ -21144,6 +21167,24 @@ export function heartbeatService(
           throw error;
         }
       })();
+      let skillSuggestionShadow: SkillSuggestionShadowObservation | null = null;
+      let skillActuallyLoaded: string | null = null;
+      const runtimeSkillNames = new Set(
+        runtimeSkillEntries.flatMap((entry) => [entry.key, entry.runtimeName]),
+      );
+      try {
+        skillSuggestionShadow = await observeSkillSuggestion({
+          env: runtimeEnv,
+          workerManager: options.pluginWorkerManager,
+          companyId: agent.companyId,
+          request: `${issueRef?.title ?? ""}\n${issueRef?.description ?? ""}`,
+          skills: runtimeSkillEntries,
+          explicitSkillNames,
+          mandatorySkillNames,
+        });
+      } catch {
+        // Shadow selection is fail-open and can never prevent the current turn.
+      }
       nativeRunnerPreparationSpans.push({
         name: "skills.prepare",
         parentName: "task.prepare",
@@ -22593,6 +22634,16 @@ export function heartbeatService(
           level: "info",
           message: "run started",
         });
+        if (skillSuggestionShadow) {
+          await appendRunEvent(currentRun, {
+            eventType: "skill.suggestion.shadow",
+            stream: "system",
+            level:
+              skillSuggestionShadow.status === "failed_open" ? "warn" : "info",
+            message: "sanitized skill suggestion shadow observation",
+            payload: skillSuggestionShadow,
+          });
+        }
 
         handle = await runLogStore.begin({
           companyId: run.companyId,
@@ -22791,6 +22842,16 @@ export function heartbeatService(
         const onAdapterEvent = async (event: AdapterRuntimeEvent) => {
           const eventType = event.eventType.trim();
           if (!eventType) return;
+          if (/skill.*(load|read)|(?:load|read).*skill/i.test(eventType)) {
+            const payload = parseObject(event.payload);
+            const candidate =
+              readNonEmptyString(payload.skillName) ??
+              readNonEmptyString(payload.skill) ??
+              readNonEmptyString(payload.name);
+            if (candidate && runtimeSkillNames.has(candidate)) {
+              skillActuallyLoaded ??= candidate;
+            }
+          }
           await appendRunEvent(currentRun, {
             eventType: eventType.slice(0, 120),
             stream: event.stream,
@@ -24757,6 +24818,17 @@ export function heartbeatService(
             payload: {
               status,
               exitCode: adapterResult.exitCode,
+            },
+          });
+          await appendRunEvent(finalizedRun, {
+            eventType: "skill.load.attribution",
+            stream: "system",
+            level: "info",
+            message: "terminal skill load attribution",
+            payload: {
+              contractVersion: "skill-suggestion-shadow.v1",
+              suggestedSkill: skillSuggestionShadow?.suggestion ?? null,
+              skillActuallyLoaded,
             },
           });
           try {

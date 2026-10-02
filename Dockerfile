@@ -50,11 +50,14 @@ COPY packages/plugins/sdk/package.json packages/plugins/sdk/
 COPY --parents packages/plugins/sandbox-providers/./*/package.json packages/plugins/sandbox-providers/
 COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugins/paperclip-plugin-fake-sandbox/
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
+COPY packages/plugins/plugin-typesafe-skill-suggestion/package.json packages/plugins/plugin-typesafe-skill-suggestion/pnpm-lock.yaml packages/plugins/plugin-typesafe-skill-suggestion/
 COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
 COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
 RUN pnpm install --frozen-lockfile
+RUN pnpm --dir packages/plugins/plugin-typesafe-skill-suggestion install --ignore-workspace --frozen-lockfile \
+  && node scripts/link-plugin-dev-sdk.mjs
 
 FROM base AS rust-toolchain
 WORKDIR /app
@@ -139,6 +142,9 @@ RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -ty
   && touch -d @0 packages/paperclip-runner/rust-toolchain.toml
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
+RUN pnpm --dir packages/plugins/plugin-typesafe-skill-suggestion build \
+  && test -f packages/plugins/plugin-typesafe-skill-suggestion/dist/manifest.js \
+  && test -f packages/plugins/plugin-typesafe-skill-suggestion/dist/worker.js
 # The server build runs scripts/write-build-stamp.mjs, which stamps the built
 # commit into dist/build-info.json. The build context has no .git, so the
 # script reads PAPERCLIP_BUILD_COMMIT instead. Docker exposes an ARG to the
