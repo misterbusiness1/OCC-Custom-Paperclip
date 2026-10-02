@@ -6,9 +6,33 @@ FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f281
 ARG USER_UID=1000
 ARG USER_GID=1000
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 util-linux tini lsof \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl git wget ripgrep python3 util-linux tini \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
+
+# Keep the runtime GitHub CLI independent from Ubuntu's moving apt version.
+# The package and installed binary checksums are both verified so a rebuild
+# reproduces the qualified runtime tool rather than silently accepting drift.
+ARG GH_VERSION=2.102.0
+ARG GH_DEB_SHA256_AMD64=7e54a307f90afdc59796c325ec0c49fb09e6c18537727207a8ac7513584ea5b0
+ARG GH_BINARY_SHA256_AMD64=7469124f706944133d6a169691dd1c6c3511b12e85878d255e044e2948df4c9b
+ARG GH_DEB_SHA256_ARM64=5006962696f01e1624b3fcf1f9d8e1a11547f24bf067dd2a0371b7b421945237
+ARG GH_BINARY_SHA256_ARM64=93308395c2d296a63a662742c6366e4db413d2a4870d07bd9b84e491c065d65d
+RUN set -eu; \
+  arch="$(dpkg --print-architecture)"; \
+  case "$arch" in \
+    amd64) gh_arch=amd64; gh_deb_sha="$GH_DEB_SHA256_AMD64"; gh_binary_sha="$GH_BINARY_SHA256_AMD64" ;; \
+    arm64) gh_arch=arm64; gh_deb_sha="$GH_DEB_SHA256_ARM64"; gh_binary_sha="$GH_BINARY_SHA256_ARM64" ;; \
+    *) echo "FATAL: no pinned gh package for architecture $arch" >&2; exit 1 ;; \
+  esac; \
+  curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${gh_arch}.deb" -o /tmp/gh.deb; \
+  printf '%s  /tmp/gh.deb\n' "$gh_deb_sha" | sha256sum -c -; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends /tmp/gh.deb; \
+  printf '%s  /usr/bin/gh\n' "$gh_binary_sha" | sha256sum -c -; \
+  gh --version | grep -F "gh version ${GH_VERSION}"; \
+  rm -f /tmp/gh.deb; \
+  rm -rf /var/lib/apt/lists/*
 
 # Keep Paperclip's expected account name while reusing Playwright's unprivileged account.
 RUN usermod -l node pwuser \
@@ -50,11 +74,14 @@ COPY packages/plugins/sdk/package.json packages/plugins/sdk/
 COPY --parents packages/plugins/sandbox-providers/./*/package.json packages/plugins/sandbox-providers/
 COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugins/paperclip-plugin-fake-sandbox/
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
+COPY packages/plugins/plugin-typesafe-skill-suggestion/package.json packages/plugins/plugin-typesafe-skill-suggestion/pnpm-lock.yaml packages/plugins/plugin-typesafe-skill-suggestion/
 COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
 COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
 RUN pnpm install --frozen-lockfile
+RUN pnpm --dir packages/plugins/plugin-typesafe-skill-suggestion install --ignore-workspace --frozen-lockfile \
+  && node scripts/link-plugin-dev-sdk.mjs
 
 FROM base AS rust-toolchain
 WORKDIR /app
@@ -139,6 +166,9 @@ RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -ty
   && touch -d @0 packages/paperclip-runner/rust-toolchain.toml
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
+RUN pnpm --dir packages/plugins/plugin-typesafe-skill-suggestion build \
+  && test -f packages/plugins/plugin-typesafe-skill-suggestion/dist/manifest.js \
+  && test -f packages/plugins/plugin-typesafe-skill-suggestion/dist/worker.js
 # The server build runs scripts/write-build-stamp.mjs, which stamps the built
 # commit into dist/build-info.json. The build context has no .git, so the
 # script reads PAPERCLIP_BUILD_COMMIT instead. Docker exposes an ARG to the

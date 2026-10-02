@@ -336,6 +336,19 @@ export async function openQualifiedAcpxRuntime(
           }
         : {}),
     }),
+    // ACP terminal processes need Claude's isolated-context and authenticated
+    // task bridge hints. Keep this channel separate from provider env so
+    // credential-fenced provider secrets never reach model-created shells.
+    terminalEnvironment: (): Record<string, string> => {
+      if (options.profile.agent !== "claude") return {};
+      const bridge = options.mcpServers.find(
+        (server) => server.runnerOwned && server.name === "paperclip",
+      );
+      return {
+        PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+        PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: bridge?.url ?? "",
+      };
+    },
     spawnCwd: options.cwd,
     spawnAgent: (input) => {
       // ACPX can invoke this callback after its handshake caller has already

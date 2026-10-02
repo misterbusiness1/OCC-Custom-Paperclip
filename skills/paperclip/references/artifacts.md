@@ -12,6 +12,15 @@ bash scripts/paperclip-upload-artifact.sh path/to/output.webm \
 
 The helper uses `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_TASK_ID`, and `PAPERCLIP_RUN_ID`. It uploads the file as an issue attachment, creates an attachment-backed artifact work product by default, and prints issue-safe markdown links for your final comment.
 
+## Read Existing Attachments
+
+List an issue's attachment metadata with `GET /api/issues/{issueId}/attachments`
+and select the record whose `id` matches the attachment ID. Use the issue ID in
+that list route. Download the file through the record's `contentPath`, or
+`GET /api/attachments/{attachmentId}/content`. Authenticate both requests with
+the normal Paperclip bearer token. The metadata includes the filename, byte
+size and SHA-256 for verifying the downloaded file.
+
 ## Workspace-Only File References
 
 Use a workspace-only reference only when the file should stay in the project or

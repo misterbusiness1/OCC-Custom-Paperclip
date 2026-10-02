@@ -20,6 +20,16 @@ const object = (v: unknown): Record<string, unknown> =>
     : {};
 const string = (v: unknown) =>
   typeof v === "string" && v.length > 0 ? v : null;
+
+/** The task changed after a run was queued; no provider work is authorized. */
+export class ExecutionContinuationScopeChangedError extends Error {
+  constructor(
+    readonly code: "issue_not_found" | "issue_assignee_changed" | "issue_terminal_status",
+  ) {
+    super("continuation_task_ownership_changed");
+    this.name = "ExecutionContinuationScopeChangedError";
+  }
+}
 export function continuationOriginCommentIds(context: unknown): string[] {
   const c = object(context);
   const prior = object(c.executionContinuation);
@@ -86,12 +96,11 @@ export async function buildExecutionContinuation(input: {
     .select()
     .from(issues)
     .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
-  if (
-    !issue ||
-    issue.assigneeAgentId !== input.agentId ||
-    ["done", "cancelled"].includes(issue.status)
-  )
-    throw new Error("continuation_task_ownership_changed");
+  if (!issue) throw new ExecutionContinuationScopeChangedError("issue_not_found");
+  if (issue.assigneeAgentId !== input.agentId)
+    throw new ExecutionContinuationScopeChangedError("issue_assignee_changed");
+  if (["done", "cancelled"].includes(issue.status))
+    throw new ExecutionContinuationScopeChangedError("issue_terminal_status");
   const rows = await db
     .select()
     .from(issueComments)

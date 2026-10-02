@@ -12,6 +12,7 @@ import {
   createDb,
   heartbeatRuns,
   issueApprovals,
+  issueComments,
   issueRelations,
   issues,
 } from "@paperclipai/db";
@@ -21,6 +22,9 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { approvalRoutes } from "../routes/approvals.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
 // Fork (PR #97 / PR #104) acceptance test with real services: a board decision
 // on the approval route reaches the requesting agent through heartbeat
@@ -29,7 +33,7 @@ import { approvalRoutes } from "../routes/approvals.js";
 // mock the heartbeat and issue services.
 
 const mockAdapterExecute = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (_ctx: { runId: string }) => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -79,11 +83,13 @@ describeEmbeddedPostgres("approval decisions reach the requesting agent (fork PR
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-approval-decision-delivery-");
     db = createDb(tempDb.connectionString);
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
   }, 30_000);
 
   afterEach(async () => {
     // Decision runs finish asynchronously inside the route's heartbeat
     // service; let them settle before truncating.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await waitFor(async () => {
       const live = await db
         .select({ id: heartbeatRuns.id })
@@ -147,6 +153,7 @@ describeEmbeddedPostgres("approval decisions reach the requesting agent (fork PR
     issueStatus: "in_review" | "done" | "blocked";
     humanOwned?: boolean;
     blocked?: boolean;
+    conversation?: boolean;
   }) {
     const companyId = randomUUID();
     const requesterAgentId = randomUUID();
@@ -186,6 +193,11 @@ describeEmbeddedPostgres("approval decisions reach the requesting agent (fork PR
       assigneeAgentId: input.humanOwned ? null : requesterAgentId,
       assigneeUserId: input.humanOwned ? BOARD_USER_ID : null,
       responsibleUserId: BOARD_USER_ID,
+      ...(input.conversation ? {
+        conversationAgentId: requesterAgentId,
+        conversationUserId: BOARD_USER_ID,
+        conversationState: "waiting",
+      } : {}),
       ...(input.issueStatus === "done" ? { completedAt: new Date() } : {}),
     });
     if (input.blocked) {
@@ -245,6 +257,164 @@ describeEmbeddedPostgres("approval decisions reach the requesting agent (fork PR
         sql`${activityLog.action} like 'approval.requester_wakeup_%'`,
       ));
   }
+
+  function replyToConversation(fixture: Awaited<ReturnType<typeof seed>>) {
+    // Chat completion requires a durable assistant reply, as a real provider
+    // supplies. A process exit alone must not mark an unanswered chat settled.
+    mockAdapterExecute.mockImplementationOnce(async ({ runId }) => {
+      await db.insert(issueComments).values({
+        companyId: fixture.companyId, issueId: fixture.issueId,
+        authorAgentId: fixture.requesterAgentId, createdByRunId: runId,
+        body: "Board decision received.",
+      });
+      return {
+        exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "Board decision received.", provider: "test", model: "test-model",
+      };
+    });
+  }
+
+  it.each([
+    ["approve", "approval_approved", "approved"],
+    ["reject", "approval_rejected", "rejected"],
+    ["request-revision", "approval_revision_requested", "revision_requested"],
+  ])("%s resumes a waiting chat without another user message", async (action, wakeReason, approvalStatus) => {
+    const fixture = await seed({ issueStatus: "in_review", conversation: true });
+    replyToConversation(fixture);
+    const app = createApp(fixture.companyId);
+    const res = await request(app)
+      .post(`/api/approvals/${fixture.approvalId}/${action}`)
+      .send({ decisionNote: "Neutral chat delivery regression check" });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await requesterWakeActivity(fixture.approvalId)).map((row) => row.action))
+      .toEqual(["approval.requester_wakeup_queued"]);
+
+    const run = await waitForDecisionRun(fixture.requesterAgentId, wakeReason);
+    expect(run).toMatchObject({ status: "succeeded", errorCode: null });
+    expect(run.contextSnapshot).toMatchObject({
+      issueId: fixture.issueId, approvalId: fixture.approvalId, approvalStatus,
+      conversationSessionGeneration: 0,
+    });
+    expect(mockAdapterExecute.mock.calls.filter(([ctx]) => (ctx as any)?.runId === run.id)).toHaveLength(1);
+
+    const chat = await waitFor(async () => {
+      const [current] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+      return current?.conversationState === "waiting" && current.executionRunId === null ? current : null;
+    });
+    expect(chat).toMatchObject({
+      status: "in_review", conversationState: "waiting",
+      conversationAgentId: fixture.requesterAgentId, executionRunId: null,
+    });
+
+    if (action !== "request-revision") {
+      const repeated = await request(app)
+        .post(`/api/approvals/${fixture.approvalId}/${action}`)
+        .send({ decisionNote: "Repeated delivery must not create another run" });
+      expect(repeated.status).toBe(200);
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, fixture.requesterAgentId));
+      expect(runs).toHaveLength(1);
+    }
+  }, 30_000);
+
+  it.each([
+    "pending decision",
+    "wrong decision status",
+    "missing approval",
+    "unlinked approval",
+    "another chat",
+    "another company",
+    "another requester",
+    "another chat owner",
+    "agent-supplied event",
+    "decision predating chat reset",
+  ])("does not wake a waiting chat for %s", async (scenario) => {
+    const fixture = await seed({ issueStatus: "in_review", conversation: true });
+    await db.update(approvals).set({
+      status: "approved", decidedByUserId: BOARD_USER_ID, decidedAt: new Date(),
+      createdAt: new Date(Date.now() - 60_000),
+    }).where(eq(approvals.id, fixture.approvalId));
+    let approvalId = fixture.approvalId;
+    let approvalStatus = "approved";
+    let actorType: "user" | "agent" = "user";
+    let actorId = BOARD_USER_ID;
+
+    if (scenario === "pending decision") {
+      await db.update(approvals).set({ status: "pending", decidedAt: null })
+        .where(eq(approvals.id, approvalId));
+    } else if (scenario === "wrong decision status") {
+      approvalStatus = "rejected";
+    } else if (scenario === "missing approval") {
+      approvalId = randomUUID();
+    } else if (scenario === "unlinked approval" || scenario === "another chat") {
+      await db.delete(issueApprovals).where(eq(issueApprovals.approvalId, approvalId));
+      if (scenario === "another chat") {
+        const otherIssueId = randomUUID();
+        await db.insert(issues).values({
+          id: otherIssueId, companyId: fixture.companyId, title: "Another person's chat",
+          status: "in_review", conversationState: "waiting",
+          assigneeAgentId: fixture.requesterAgentId, conversationAgentId: fixture.requesterAgentId,
+          conversationUserId: "another-user", responsibleUserId: BOARD_USER_ID,
+        });
+        await db.insert(issueApprovals).values({
+          companyId: fixture.companyId, issueId: otherIssueId, approvalId,
+        });
+      }
+    } else if (scenario === "another company") {
+      approvalId = (await seed({ issueStatus: "in_review", conversation: true })).approvalId;
+      await db.update(approvals).set({ status: "approved", decidedByUserId: BOARD_USER_ID, decidedAt: new Date() })
+        .where(eq(approvals.id, approvalId));
+    } else if (scenario === "another requester") {
+      const otherAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: otherAgentId, companyId: fixture.companyId, name: "Other Planner", role: "engineer",
+        status: "idle", adapterType: "process",
+      });
+      await db.update(approvals).set({ requestedByAgentId: otherAgentId }).where(eq(approvals.id, approvalId));
+    } else if (scenario === "another chat owner") {
+      actorId = "another-board-user";
+      await db.update(approvals).set({ decidedByUserId: actorId }).where(eq(approvals.id, approvalId));
+    } else if (scenario === "agent-supplied event") {
+      actorType = "agent";
+    } else if (scenario === "decision predating chat reset") {
+      const boundaryId = randomUUID();
+      await db.insert(issueComments).values({
+        id: boundaryId, companyId: fixture.companyId, issueId: fixture.issueId,
+        authorUserId: BOARD_USER_ID, body: "/new",
+      });
+      await db.update(issues).set({ conversationBoundaryCommentId: boundaryId, conversationSessionGeneration: 1 })
+        .where(eq(issues.id, fixture.issueId));
+    }
+
+    const wakeReason = `approval_${approvalStatus}`;
+    const run = await heartbeatService(db).wakeup(fixture.requesterAgentId, {
+      source: "automation", triggerDetail: "system", reason: wakeReason,
+      requestedByActorType: actorType, requestedByActorId: actorId,
+      idempotencyKey: `chat-boundary-regression:${randomUUID()}`,
+      payload: { issueId: fixture.issueId, approvalId, approvalStatus },
+      contextSnapshot: { issueId: fixture.issueId, approvalId, approvalStatus, wakeReason },
+    });
+    expect(run).toBeNull();
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("delivers a new decision in the current reset chat session", async () => {
+    const fixture = await seed({ issueStatus: "in_review", conversation: true });
+    replyToConversation(fixture);
+    const boundaryId = randomUUID();
+    await db.insert(issueComments).values({
+      id: boundaryId, companyId: fixture.companyId, issueId: fixture.issueId,
+      authorUserId: BOARD_USER_ID, body: "/new", createdAt: new Date(Date.now() - 60_000),
+    });
+    await db.update(issues).set({ conversationBoundaryCommentId: boundaryId, conversationSessionGeneration: 1 })
+      .where(eq(issues.id, fixture.issueId));
+    const res = await request(createApp(fixture.companyId))
+      .post(`/api/approvals/${fixture.approvalId}/approve`).send({});
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const run = await waitForDecisionRun(fixture.requesterAgentId, "approval_approved");
+    expect(run).toMatchObject({ status: "succeeded", errorCode: null });
+    expect(run.contextSnapshot?.conversationSessionGeneration).toBe(1);
+  }, 30_000);
 
   it("approve hands a human-parked in_review issue back to the requester and runs the decision", async () => {
     const fixture = await seed({ issueStatus: "in_review", humanOwned: true });

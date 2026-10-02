@@ -173,6 +173,7 @@ async function runExecutor(
   const runtimeOptions: Record<string, unknown>[] = [];
   const configOptions: Array<{ key: string; value: string }> = [];
   const sessionInputs: Record<string, unknown>[] = [];
+  const terminalEnvs: Array<Record<string, string>> = [];
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
   const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
@@ -182,10 +183,15 @@ async function runExecutor(
       : {}),
     createRuntime: (options) => {
       runtimeOptions.push(options as unknown as Record<string, unknown>);
-      return buildRuntime(
-        ({ key, value }) => configOptions.push({ key, value }),
-        (input) => sessionInputs.push(input),
-      ) as never;
+      return {
+        ...buildRuntime(
+          ({ key, value }) => configOptions.push({ key, value }),
+          (input) => sessionInputs.push(input),
+        ),
+        setTerminalEnv: async ({ env }: { env: Record<string, string> }) => {
+          terminalEnvs.push({ ...env });
+        },
+      } as never;
     },
   });
 
@@ -215,8 +221,27 @@ async function runExecutor(
   } as never);
 
   expect(result.exitCode).toBe(0);
-  return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, result };
+  return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, terminalEnvs, result };
 }
+
+it("passes the current Paperclip run environment to ACP terminal shells", async () => {
+  const result = await runExecutor(
+    { agent: "custom", agentCommand: "node ./fake-acp.js", env: { PAPERCLIP_TEST_MARKER: "from-config" } },
+    { authToken: "run-token-1" },
+  );
+
+  expect(result.runtimeOptions[0]?.terminalEnv).toMatchObject({
+    PAPERCLIP_API_KEY: "run-token-1",
+    PAPERCLIP_RUN_ID: "run-1",
+    PAPERCLIP_TEST_MARKER: "from-config",
+  });
+  expect(result.terminalEnvs).toHaveLength(1);
+  expect(result.terminalEnvs[0]).toMatchObject({
+    PAPERCLIP_API_KEY: "run-token-1",
+    PAPERCLIP_RUN_ID: "run-1",
+    PAPERCLIP_TEST_MARKER: "from-config",
+  });
+});
 
 // Under `vi.useFakeTimers()`, setup before `ensureSession` still performs real
 // filesystem work. Advancing the fake clock before that work reaches the

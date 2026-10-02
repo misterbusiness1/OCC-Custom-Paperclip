@@ -8,6 +8,7 @@ import {
   documentRevisions,
   documents,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueComments,
   issueDocuments,
   issues,
@@ -58,6 +59,7 @@ describeEmbeddedPostgres("activity service", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -306,6 +308,165 @@ describeEmbeddedPostgres("activity service", () => {
       livenessReason: "Issue is done",
       continuationAttempt: 0,
       lastUsefulActionAt: completedAt,
+    });
+  });
+
+  it.each([
+    { status: "disabled", summary: "Next steps:\n- inspect files", expectedState: "plan_only" },
+    { status: "observed", summary: null, expectedState: "empty_response" },
+    { status: "failed_open", summary: "Next steps:\n- inspect files", expectedState: "plan_only" },
+  ])(
+    "does not backfill $status skill-suggestion shadow telemetry as action evidence",
+    async ({ status, summary, expectedState }) => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const finishedAt = new Date("2026-04-18T20:06:00.000Z");
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Continue implementation",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        startedAt: new Date("2026-04-18T20:05:00.000Z"),
+        finishedAt,
+        contextSnapshot: { issueId },
+        resultJson: summary === null ? null : { summary },
+        livenessState: null,
+        livenessReason: null,
+      });
+      await db.insert(heartbeatRunEvents).values({
+        companyId,
+        runId,
+        agentId,
+        seq: 1,
+        eventType: "skill.suggestion.shadow",
+        payload: { status },
+        createdAt: finishedAt,
+      });
+
+      const service = activityService(db);
+      const { run } = await waitForIssueRun(
+        service,
+        companyId,
+        issueId,
+        (entry) => entry.runId === runId && entry.livenessState === expectedState,
+      );
+
+      expect(run).toMatchObject({
+        runId,
+        livenessState: expectedState,
+        lastUsefulActionAt: null,
+      });
+    },
+  );
+
+  it("uses real work, not newer shadow telemetry, as latest action evidence", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const realWorkAt = new Date("2026-04-18T20:06:00.000Z");
+    const shadowAt = new Date("2026-04-18T20:07:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Continue implementation",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      startedAt: new Date("2026-04-18T20:05:00.000Z"),
+      finishedAt: shadowAt,
+      contextSnapshot: { issueId },
+      resultJson: { summary: "Executed the requested tool." },
+      livenessState: null,
+      livenessReason: null,
+    });
+    await db.insert(heartbeatRunEvents).values([
+      {
+        companyId,
+        runId,
+        agentId,
+        seq: 1,
+        eventType: "tool.call.completed",
+        payload: { toolName: "read_file" },
+        createdAt: realWorkAt,
+      },
+      {
+        companyId,
+        runId,
+        agentId,
+        seq: 2,
+        eventType: "skill.suggestion.shadow",
+        payload: { status: "observed" },
+        createdAt: shadowAt,
+      },
+    ]);
+
+    const service = activityService(db);
+    const { run } = await waitForIssueRun(
+      service,
+      companyId,
+      issueId,
+      (entry) => entry.runId === runId && entry.livenessState === "advanced",
+    );
+
+    expect(run).toMatchObject({
+      runId,
+      livenessState: "advanced",
+      lastUsefulActionAt: realWorkAt,
     });
   });
 

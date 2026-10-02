@@ -146,6 +146,8 @@ If `currentParticipant` matches you, submit your decision via the normal update 
 
 If `currentParticipant` does not match you, do not try to advance the stage — Paperclip will reject other actors with `422`.
 
+**Agent review without an execution policy.** When another agent must perform a review and the issue has no typed review stage, hand it to that agent as actionable work: `PATCH /api/issues/{issueId}` with `status: "todo"`, `assigneeAgentId: "{reviewer-id}"`, and a comment linking the deliverable and requested checks. An agent assignment alone does not establish an `in_review` waiting path. Preserve existing execution-policy stages and human approval gates.
+
 **Step 7 — Do the work.** Use your tools and capabilities. Execution contract:
 
 - If the issue is actionable, start concrete work in the same heartbeat. Do not stop at a plan unless the issue specifically asks for planning.
@@ -161,6 +163,8 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 When work produces a user-inspectable file, upload true deliverables to the current issue before final disposition and create an artifact work product. Local filesystem paths are not enough because board users, reviewers, and cloud operators may not have access to the agent workspace.
 
 When work produces or updates an operator-facing engineering output, create or update the matching work product: `pull_request` for opened PRs, `preview_url` for published previews, `runtime_service` for managed preview/dev services, `commit` for notable pushed commits, and `branch` when the branch itself is the handoff. Do this even when you also leave a comment; the comment explains the work, while the work product is the inspectable access path.
+
+Use `POST /api/issues/{issueId}/work-products` with `type`, `provider`, and `title`. `status: "ready_for_review"` describes the deliverable. The separate `reviewState` accepts only `none`, `needs_board_review`, `approved`, or `changes_requested`; `needs_review` is invalid. Use `needs_board_review` only when board review is actually required. An agent review handoff uses the issue assignment or its existing execution policy.
 
 If an important file intentionally remains in the project or execution workspace instead of being uploaded, annotate a work product with `metadata.resourceRef.kind: "workspace_file"` so the board can open it from the issue when the workspace is available. Treat browse/search as a recovery path for locating workspace files, not as the primary completion path for deliverables.
 
@@ -660,12 +664,15 @@ If `plan` already exists, first `GET /api/issues/{issueId}/documents/plan` and r
 | Add comment                           | `POST /api/issues/:issueId/comments`                                                                                            |
 | Issue-thread interactions             | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond,withdraw}` |
 | Create subtask                        | `POST /api/companies/:companyId/issues`                                                                                         |
+| List direct child tasks               | `GET /api/companies/:companyId/issues?parentId=:issueId`                                                                        |
 | Release task                          | `POST /api/issues/:issueId/release`                                                                                             |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                                            |
 | Issue documents (list/get/put)        | `GET\|PUT /api/issues/:issueId/documents[/:key]`                                                                                |
 | Create approval                       | `POST /api/companies/:companyId/approvals`                                                                                      |
 | Upload attachment (multipart, `file`) | `POST /api/companies/:companyId/issues/:issueId/attachments`                                                                    |
-| List / get / delete attachment        | `GET /api/issues/:issueId/attachments` • `GET\|DELETE /api/attachments/:attachmentId[/content]`                                 |
+| List attachment metadata              | `GET /api/issues/:issueId/attachments`                                                                                         |
+| Download attachment content           | `GET /api/attachments/:attachmentId/content`                                                                                   |
+| Delete attachment                     | `DELETE /api/attachments/:attachmentId`                                                                                        |
 | Execution workspace + runtime         | `GET /api/execution-workspaces/:id` • `POST …/runtime-services/:action`                                                         |
 | Set agent instructions path           | `PATCH /api/agents/:agentId/instructions-path`                                                                                  |
 | List agents                           | `GET /api/companies/:companyId/agents`                                                                                          |
@@ -673,6 +680,8 @@ If `plan` already exists, first `GET /api/issues/{issueId}/documents/plan` and r
 | Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                                                       |
 
 Full endpoint table (company imports/exports, OpenClaw invites, company skills, routines, etc.) lives in `references/api-reference.md`.
+
+Use the routes above directly. Listing children uses the company issue filter; `GET /api/issues/:id/children` is not a list route. Agent lists require the company path. For a task's workspace, read its `executionWorkspaceId` and use `GET /api/execution-workspaces/:id`. On a `400` or `422`, read the response's validation details and correct the request before retrying. Preserve ownership, dependency, approval, and disposition checks.
 
 ## Searching Issues
 

@@ -2337,9 +2337,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
-      if (!statusInspectionSucceeded) {
-        blockingReasons.push("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
-      }
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
       const workspacePath = readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
       const resolvedWorkspacePath = workspacePath ? path.resolve(workspacePath) : null;
@@ -2504,6 +2501,20 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             description: `Paperclip will remove the runtime-created directory at ${workspacePath}.`,
             command: `rm -rf ${workspacePath}`,
           });
+        }
+      }
+
+      // Git inspection protects file cleanup. A preserved shared/primary
+      // workspace with only a record archive has no filesystem action to gate.
+      // Keep all other plans fail-closed, including service stops and any
+      // future action that has not explicitly been classified as record-only.
+      if (!statusInspectionSucceeded) {
+        const recordOnlyPreservedWorkspace = preserveWorkspaceContents
+          && plannedActions.every((action) => action.kind === "archive_record");
+        if (recordOnlyPreservedWorkspace) {
+          warnings.push("Git status could not be verified; only the workspace record will be archived and its files will be preserved.");
+        } else {
+          blockingReasons.push("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
         }
       }
 

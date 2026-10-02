@@ -6,6 +6,7 @@ import { buildSkillMentionHref } from "@paperclipai/shared";
 import {
   LOW_TRUST_REVIEW_PRESET,
   applyRunScopedMentionedSkillKeys,
+  partitionSkillSuggestionTriggers,
   buildReferencedProjectRunObservability,
   buildRunWorkspaceHints,
   extractMentionedSkillIdsFromSources,
@@ -802,6 +803,20 @@ describe("extractMentionedSkillIdsFromSources", () => {
         `Use [/greploop](${legacyHref}) and [/prcheckloop](${validHref})`,
       ]),
     ).toEqual([validSkillId]);
+  });
+});
+
+describe("partitionSkillSuggestionTriggers", () => {
+  it("keeps configured mandatory triggers distinct from explicit mentions", () => {
+    expect(
+      partitionSkillSuggestionTriggers(
+        ["paperclip", "policy"],
+        ["php", "paperclip", "php"],
+      ),
+    ).toEqual({
+      mandatorySkillNames: ["paperclip", "policy"],
+      explicitSkillNames: ["php"],
+    });
   });
 });
 

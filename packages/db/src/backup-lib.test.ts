@@ -327,10 +327,20 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(backupSql).toContain(
           'INSERT INTO "public"."backup_generated_records" ("id", "payload") VALUES',
         );
+        expect(backupSql).not.toContain(
+          'INSERT INTO "public"."backup_generated_records" ("id", "payload", "context_issue_id")',
+        );
 
+        const restoreResult = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-generated-restore-test",
+          backupEngine: "javascript",
+        });
         await runDatabaseRestore({
           connectionString: restoreConnectionString,
-          backupFile: result.backupFile,
+          backupFile: restoreResult.backupFile,
         });
 
         const restored = await restoreSql.unsafe<{ context_issue_id: string }[]>(`

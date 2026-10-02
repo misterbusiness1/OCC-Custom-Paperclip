@@ -133,6 +133,9 @@ describe("Codex ACPX runtime adapter", () => {
       CODEX_HOME: "/runtime/agent-home",
       OPENAI_API_KEY: "credential-secret",
     });
+    // Provider credentials are authorized for the provider process only.
+    // The terminal callback must not copy that process's launch environment.
+    expect(runtimeOptions?.terminalEnvironment?.()).toEqual({});
     expect(runtimeOptions?.spawnCwd).toBe("/workspace");
     expect(runtimeOptions?.elicitationModes).toEqual(["form"]);
     expect(await port.identity()).toEqual({
@@ -150,7 +153,10 @@ describe("Codex ACPX runtime adapter", () => {
       const options = openOptions(command);
       let runtimeOptions: AcpRuntimeOptions | undefined;
       options.profile = resolveQualifiedAcpxProfile(agent, model);
-      options.launchEnvironment = { PATH: "/verified/bin" };
+      options.launchEnvironment = {
+        PATH: "/verified/bin",
+        OPENAI_API_KEY: "provider-secret-must-stay-out-of-terminal",
+      };
 
       await openCodexAcpxRuntime(options, {
         createRegistry: ({ overrides }) => {
@@ -168,6 +174,11 @@ describe("Codex ACPX runtime adapter", () => {
 
       expect(runtimeOptions?.spawnEnvironment?.()).toEqual({
         PATH: "/verified/bin",
+        OPENAI_API_KEY: "provider-secret-must-stay-out-of-terminal",
+        PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+        PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: "",
+      });
+      expect(runtimeOptions?.terminalEnvironment?.()).toEqual({
         PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
         PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: "",
       });
@@ -200,6 +211,10 @@ describe("Codex ACPX runtime adapter", () => {
         },
       });
       expect(runtimeOptions?.spawnEnvironment?.()).toEqual({
+        PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+        PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: binding === "runner-owned" ? "http://127.0.0.1:3210/mcp" : "",
+      });
+      expect(runtimeOptions?.terminalEnvironment?.()).toEqual({
         PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
         PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: binding === "runner-owned" ? "http://127.0.0.1:3210/mcp" : "",
       });

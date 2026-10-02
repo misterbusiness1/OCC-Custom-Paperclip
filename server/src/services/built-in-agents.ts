@@ -2039,11 +2039,19 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
   let reconciled = 0;
   let unknown = 0;
   let duplicates = 0;
+  let pendingApprovalSkipped = 0;
 
   for (const row of rows) {
     const marker = readBuiltInAgentMarker(row.metadata);
     if (!marker) continue;
     scanned += 1;
+    // Pending hires are frozen until board approval. Startup default
+    // reconciliation must not attempt a mutation that the approval guard
+    // correctly rejects.
+    if (row.status === "pending_approval") {
+      pendingApprovalSkipped += 1;
+      continue;
+    }
     if (!getBuiltInAgentDefinition(marker.key)) {
       unknown += 1;
       continue;
@@ -2066,5 +2074,15 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
     }
   }
 
-  return { scanned, reconciled, unknown, duplicates, autoEnsured, pendingApprovals, defaultGrantsEnsured, companyFailures };
+  return {
+    scanned,
+    reconciled,
+    unknown,
+    duplicates,
+    pendingApprovalSkipped,
+    autoEnsured,
+    pendingApprovals,
+    defaultGrantsEnsured,
+    companyFailures,
+  };
 }

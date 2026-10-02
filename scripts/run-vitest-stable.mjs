@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,7 @@ const serializedShardDurations = loadShardDurations(
 );
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
-const serverScriptsDir = path.join(serverRoot, "scripts");
+const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
 const nonServerProjects = [
   "@paperclipai/shared",
   "@paperclipai/skills-catalog",
@@ -26,14 +26,9 @@ const nonServerProjects = [
   "@paperclipai/adapter-utils",
   "@paperclipai/adapter-claude-local",
   "@paperclipai/adapter-codex-local",
-  "@paperclipai/adapter-cursor-cloud",
-  "@paperclipai/adapter-cursor-local",
-  "@paperclipai/adapter-gemini-local",
   "@paperclipai/adapter-grok-local",
-  "@paperclipai/adapter-kimi-local",
   "@paperclipai/adapter-openclaw-gateway",
   "@paperclipai/adapter-opencode-local",
-  "@paperclipai/adapter-pi-local",
   "@paperclipai/plugin-daytona",
   "@paperclipai/plugin-sdk",
   "@paperclipai/create-paperclip-plugin",
@@ -328,10 +323,6 @@ function runVitest(args, label, { watch = false, testShard = null } = {}) {
   delete env.PAPERCLIP_WORKTREE_NAME;
   delete env.PAPERCLIP_WORKTREE_COLOR;
   delete env.PAPERCLIP_WORKTREES_DIR;
-  // Source tests resolve their own build identity; container image stamps
-  // otherwise override the version fixtures.
-  delete env.PAPERCLIP_BUILD_COMMIT;
-  delete env.PAPERCLIP_BUILD_VERSION;
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
   if (testShard) {
@@ -472,14 +463,7 @@ function runSerializedSuites(routeTests, shardIndex, shardCount) {
   }
 }
 
-// Match server/vitest.config.ts before partitioning so files outside __tests__
-// and the server's script tests cannot fall between the two lanes.
-const serverTestFiles = [
-  ...walk(serverSrcDir).filter((file) => file.endsWith(".test.ts")),
-  ...(existsSync(serverScriptsDir) ? walk(serverScriptsDir) : [])
-    .filter((file) => file.endsWith(".test.mjs")),
-];
-const routeTests = serverTestFiles
+const routeTests = walk(serverTestsDir)
   .filter((file) => isRouteOrAuthzTest(toRepoPath(file)))
   .map((file) => ({
     repoPath: toRepoPath(file),
@@ -494,8 +478,9 @@ const routeTests = serverTestFiles
 // config pins maxWorkers to 1, so the only way to parallelize is across jobs.
 // Suites are partitioned by recorded duration (scripts/general-server-shard.mjs)
 // rather than round-robin, so one slow suite cluster can't stretch a single shard.
-const generalServerTestFiles = serverTestFiles
+const generalServerTestFiles = walk(serverSrcDir)
   .map((file) => toRepoPath(file))
+  .filter((repoPath) => repoPath.endsWith(".test.ts"))
   .filter((repoPath) => !isRouteOrAuthzTest(repoPath))
   .sort((a, b) => a.localeCompare(b));
 

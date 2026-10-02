@@ -132,6 +132,26 @@ export function buildKimiAcpConfig(config: Record<string, unknown>): Record<stri
   return next;
 }
 
+/**
+ * Paperclip run credentials are minted for one heartbeat. Resuming a prior
+ * Kimi session can carry a stale PAPERCLIP_API_KEY in the ACP agent's saved
+ * conversation/process context while the current run supplies a new
+ * PAPERCLIP_RUN_ID. Start task heartbeats with a clean session so all Paperclip
+ * API calls use the current run identity. External chat turns keep their
+ * conversation session because their continuation is managed separately.
+ */
+export function prepareKimiRunContext(ctx: AdapterExecutionContext): AdapterExecutionContext {
+  if (ctx.context.conversationMode === true) return ctx;
+  return {
+    ...ctx,
+    runtime: {
+      ...ctx.runtime,
+      sessionId: null,
+      sessionParams: null,
+    },
+  };
+}
+
 function withKimiAcpDefaults(options: KimiAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     ...options,
@@ -144,6 +164,7 @@ function withKimiAcpDefaults(options: KimiAcpExecutorOptions): AcpxEngineExecuto
 export function createKimiAcpExecutor(options: KimiAcpExecutorOptions = {}): KimiAcpExecutor {
   let executor: KimiAcpExecutor | null = null;
   return async (ctx) => {
+    const runContext = prepareKimiRunContext(ctx);
     let currentExecutor = executor;
     if (!currentExecutor) {
       const { createAcpxEngineExecutor } = await import("@paperclipai/adapter-utils/acpx-engine/execute");
@@ -151,8 +172,8 @@ export function createKimiAcpExecutor(options: KimiAcpExecutorOptions = {}): Kim
       executor = currentExecutor;
     }
     return currentExecutor({
-      ...ctx,
-      config: buildKimiAcpConfig(ctx.config),
+      ...runContext,
+      config: buildKimiAcpConfig(runContext.config),
     });
   };
 }

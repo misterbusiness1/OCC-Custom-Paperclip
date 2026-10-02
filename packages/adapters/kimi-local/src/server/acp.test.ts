@@ -1,9 +1,41 @@
 import { describe, expect, it } from "vitest";
+import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import {
   buildKimiAcpConfig,
   nodeVersionMeetsKimiAcpMinimum,
+  prepareKimiRunContext,
   resolveKimiExecutionEngine,
 } from "./acp.js";
+
+describe("prepareKimiRunContext", () => {
+  it("clears a saved ACP session for a task heartbeat", () => {
+    const ctx = {
+      context: { conversationMode: false },
+      runtime: {
+        sessionId: "session-from-an-earlier-run",
+        sessionParams: { sessionId: "session-from-an-earlier-run", cwd: "/work" },
+      },
+    } as unknown as AdapterExecutionContext;
+
+    const prepared = prepareKimiRunContext(ctx);
+
+    expect(prepared.runtime?.sessionId).toBeNull();
+    expect(prepared.runtime?.sessionParams).toBeNull();
+    expect(ctx.runtime?.sessionId).toBe("session-from-an-earlier-run");
+  });
+
+  it("preserves the ACP session for an external conversation", () => {
+    const ctx = {
+      context: { conversationMode: true },
+      runtime: {
+        sessionId: "conversation-session",
+        sessionParams: { sessionId: "conversation-session" },
+      },
+    } as unknown as AdapterExecutionContext;
+
+    expect(prepareKimiRunContext(ctx)).toBe(ctx);
+  });
+});
 
 describe("resolveKimiExecutionEngine", () => {
   it("defaults to ACP (non-explicit) when engine is unset", () => {

@@ -10430,7 +10430,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBeNull();
   });
 
-  it.each([false, true])("enqueues one bounded plan-only continuation with legacy productivity review present: %s", async (withLegacyReview) => {
+  it.each(
+    ["disabled", "observed", "failed_open"].flatMap((shadowStatus) =>
+      [false, true].map((withLegacyReview) => ({ shadowStatus, withLegacyReview })),
+    ),
+  )("enqueues one bounded plan-only continuation with $shadowStatus shadow telemetry and legacy review=$withLegacyReview", async ({ shadowStatus, withLegacyReview }) => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
@@ -10453,7 +10457,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const legacyReviewBefore = withLegacyReview
       ? await db.select().from(issues).where(eq(issues.id, legacyReviewId))
       : [];
-    mockAdapterExecute.mockImplementationOnce(async () => {
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db.insert(heartbeatRunEvents).values({
+        companyId,
+        runId: ctx.runId,
+        agentId,
+        seq: 9_000,
+        eventType: "skill.suggestion.shadow",
+        payload: { status: shadowStatus },
+        createdAt: new Date(),
+      });
       if (withLegacyReview) {
         // These pre-dispatch cancellations used to satisfy both the no-comment
         // and churn thresholds and suppress an otherwise valid continuation.

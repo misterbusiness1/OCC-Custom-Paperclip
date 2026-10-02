@@ -1,5 +1,5 @@
 import { executionProjectionsForRuns } from "./execution-projection.js";
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -18,7 +18,10 @@ import {
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { classifyRunLiveness } from "./run-liveness.js";
+import {
+  classifyRunLiveness,
+  LIVENESS_BOOKKEEPING_RUN_EVENT_TYPES,
+} from "./run-liveness.js";
 
 export interface ActivityFilters {
   companyId: string;
@@ -266,8 +269,8 @@ export function activityService(db: Db) {
 
       const [eventStats] = await db
         .select({
-          count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
-          latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))`,
+          count: sql<number>`count(*) filter (where ${notInArray(heartbeatRunEvents.eventType, LIVENESS_BOOKKEEPING_RUN_EVENT_TYPES)})::int`,
+          latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${notInArray(heartbeatRunEvents.eventType, LIVENESS_BOOKKEEPING_RUN_EVENT_TYPES)})`,
         })
         .from(heartbeatRunEvents)
         .where(and(eq(heartbeatRunEvents.companyId, companyId), eq(heartbeatRunEvents.runId, run.id)));

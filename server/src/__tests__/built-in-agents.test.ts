@@ -758,6 +758,8 @@ describeEmbeddedPostgres("built-in agents", () => {
 
     const pendingReconcile = await reconcileBuiltInAgentsOnStartup(db);
     expect(pendingReconcile.pendingApprovals).toBe(1);
+    expect(pendingReconcile.pendingApprovalSkipped).toBe(1);
+    expect(pendingReconcile.companyFailures).toBe(0);
     const stillPending = await builtInAgentService(db).get(companyId, "reflection-coach");
     expect(stillPending).toMatchObject({
       status: "pending_approval",
@@ -789,7 +791,8 @@ describeEmbeddedPostgres("built-in agents", () => {
       "stock_current",
     ]);
 
-    await reconcileBuiltInAgentsOnStartup(db);
+    const approvedReconcile = await reconcileBuiltInAgentsOnStartup(db);
+    expect(approvedReconcile.pendingApprovalSkipped).toBe(0);
     const agentRows = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(agentRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
     const approvalRows = await db.select().from(approvals).where(eq(approvals.companyId, companyId));

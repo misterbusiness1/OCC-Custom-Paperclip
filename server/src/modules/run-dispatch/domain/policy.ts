@@ -49,6 +49,7 @@ export type ReviewParticipantFacts = {
 };
 
 export type ScheduledRetryGateErrorCode =
+  | "issue_interaction_changed"
   | "agent_not_invokable"
   | "heartbeat_wake_on_demand_disabled"
   | "budget_blocked"
@@ -76,6 +77,7 @@ export type GateDecision =
     };
 
 export type ScheduledRetryFacts = {
+  pendingInteractionWake?: "authorized" | "invalid" | null;
   runId: string;
   runAgentId: string;
   issueId: string | null;
@@ -108,6 +110,7 @@ export type ScheduledRetryFacts = {
 };
 
 export type QueuedRunStalenessErrorCode =
+  | "issue_interaction_changed"
   | "execution_reconciliation_required"
   | "issue_dependencies_blocked"
   | "issue_not_found"
@@ -129,6 +132,7 @@ export type StalenessDecision =
     };
 
 export type QueuedRunFacts = {
+  pendingInteractionWake?: "authorized" | "invalid" | null;
   /** Rechecked for automatic native replacements immediately before dispatch. */
   dependenciesBlocked?: DependencyBlockFacts | null;
   runId: string;
@@ -175,6 +179,7 @@ export type QueuedRunFacts = {
 };
 
 type OwnershipFacts = {
+  pendingInteractionWake?: "authorized" | "invalid" | null;
   runAgentId: string;
   issueAssigneeAgentId: string | null;
   isNonAssigneeWorkspaceBusyRetry: boolean;
@@ -193,6 +198,7 @@ type OwnershipOutcome = "current_owner" | "reassigned";
  * not as granted.
  */
 function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
+  if (facts.pendingInteractionWake === "authorized") return "current_owner";
   if (facts.issueAssigneeAgentId === facts.runAgentId) return "current_owner";
   if (facts.isNonAssigneeWorkspaceBusyRetry) return "current_owner";
   if (facts.isInteractionWake) return "current_owner";
@@ -349,7 +355,13 @@ export function decideScheduledRetryGate(
     }
   }
 
+  if (facts.pendingInteractionWake === "invalid") {
+    return { allowed: false, errorCode: "issue_interaction_changed", issueId: facts.issueId,
+      reason: "Scheduled review retry suppressed because its pending interaction no longer authorizes this agent",
+      details: { issueId: facts.issueId } };
+  }
   const ownership = decideIssueOwnership({
+    pendingInteractionWake: facts.pendingInteractionWake,
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
@@ -420,7 +432,8 @@ export function decideScheduledRetryGate(
   const lockOutcome = decideExecutionLock({
     requiresExecutionLock:
       (requiresInProgress ||
-        (facts.retryReasonKind === "ai_connection_wait" && !facts.isNonAssigneeWorkspaceBusyRetry)) &&
+        (facts.retryReasonKind === "ai_connection_wait" && !facts.isNonAssigneeWorkspaceBusyRetry
+          && facts.pendingInteractionWake !== "authorized")) &&
       facts.enforceIssueExecutionLock,
     runId: facts.runId,
     issueExecutionRunId: facts.issueExecutionRunId,
@@ -519,6 +532,12 @@ export function decideQueuedRunStaleness(
     };
   }
 
+  if (facts.pendingInteractionWake === "invalid") {
+    return { stale: true, errorCode: "issue_interaction_changed",
+      reason: "Cancelled because the pending interaction no longer authorizes this reviewer",
+      details: { issueId: facts.issueId } };
+  }
+
   if (facts.isResolvedInteractionContinuation || facts.isConnectionContinuation) {
     const earlyStatus = decideIssueStatus({
       status: facts.issueStatus,
@@ -574,6 +593,7 @@ export function decideQueuedRunStaleness(
   }
 
   const ownership = decideIssueOwnership({
+    pendingInteractionWake: facts.pendingInteractionWake,
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
@@ -628,9 +648,12 @@ export function decideQueuedRunStaleness(
     requiresInProgress,
     // Fork (PR #104): a verified board decision still reaches the requester
     // after it closed the linked issue; the run does not reopen the issue.
+    // A resume/comment marker records the earlier request, not authority to
+    // execute an assigned task that has since closed. Non-assignee comment
+    // notifications and verified approval-result delivery remain informational.
     terminalBypass:
-      facts.resumeIntent ||
-      facts.wakeCommentIdPresent ||
+      ((facts.resumeIntent || facts.wakeCommentIdPresent) &&
+        facts.issueAssigneeAgentId !== facts.runAgentId) ||
       facts.isVerifiedApprovalDecisionWakeForRequester === true,
   });
   if (statusOutcome === "terminal") {
@@ -657,7 +680,8 @@ export function decideQueuedRunStaleness(
   const lockOutcome = decideExecutionLock({
     // A server-recorded non-assignee wake never held the task execution lock.
     requiresExecutionLock: requiresInProgress ||
-      (facts.retryReasonKind === "ai_connection_wait" && !facts.isNonAssigneeWorkspaceBusyRetry),
+      (facts.retryReasonKind === "ai_connection_wait" && !facts.isNonAssigneeWorkspaceBusyRetry
+        && facts.pendingInteractionWake !== "authorized"),
     runId: facts.runId,
     issueExecutionRunId: facts.issueExecutionRunId,
   });

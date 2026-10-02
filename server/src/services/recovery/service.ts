@@ -2777,6 +2777,7 @@ export function recoveryService(
     previousStatus: StrandedPreviousStatus;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    suppressProviderQuotaWait?: boolean;
   }) {
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
@@ -2786,7 +2787,7 @@ export function recoveryService(
       issue: input.issue,
       latestRun: input.latestRun,
     });
-    const isProviderQuotaWait = recoveryCause === "provider_quota";
+    const isProviderQuotaWait = recoveryCause === "provider_quota" && !input.suppressProviderQuotaWait;
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
@@ -2796,7 +2797,7 @@ export function recoveryService(
       // distinct blocker, so it must get a new recovery action and notify the
       // operator, not overwrite the active action of the prior ref.
       supersedeOnIdentityChange: recoveryCause === "configuration_incomplete",
-      preserveExistingOwner: true,
+      preserveExistingOwner: !input.suppressProviderQuotaWait,
       kind: strandedRecoveryActionKind(recoveryCause),
       ownerType: isProviderQuotaWait ? "system" : "board",
       ownerAgentId: null,
@@ -2819,6 +2820,9 @@ export function recoveryService(
         }),
         failureSummary:
           summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
+        ...(input.suppressProviderQuotaWait
+          ? { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY }
+          : {}),
       },
       evidenceOnCreate: isProviderQuotaWait
         ? {}
@@ -2829,7 +2833,9 @@ export function recoveryService(
           : recoveryCause === "process_lost"
             ? "Board operator: inspect the retry history, then explicitly retry the original owner, reassign, or intentionally resolve the task."
             : recoveryCause === "provider_quota"
-              ? "Wait for provider quota recovery, then retry the original assignee; do not wake a takeover owner."
+              ? input.suppressProviderQuotaWait
+                ? "Board operator: restore provider quota or choose an available provider, then explicitly retry the original recovery target."
+                : "Wait for provider quota recovery, then retry the original assignee; do not wake a takeover owner."
               : recoveryCause === "codex_output_inactivity_monitor"
                 ? "Board operator: inspect the inactivity evidence, then explicitly retry the original owner, reassign, or intentionally resolve the task."
                 : recoveryCause === "workspace_validation_failed"
@@ -4094,6 +4100,7 @@ export function recoveryService(
       latestRun: input.latestRun,
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      suppressProviderQuotaWait: input.suppressProviderQuotaWait,
     });
     // Once the wait_recovery chain has used up its bounded attempts, stop
     // scheduling further retries and fall through to a normal, visible
@@ -4431,11 +4438,31 @@ export function recoveryService(
       requestedStatus: input.issue.status,
       requestedAssigneePatch: {},
       actor: { agentId: null, userId: null },
-      monitorExplicitlyUpdated: true,
+      // Automatic recovery consumes the existing monitor budget. The domain
+      // transition clears exhausted monitors; explicit user edits still reject
+      // an already exhausted request with 422.
+      monitorExplicitlyUpdated: false,
     });
+    const monitorState = parseIssueExecutionState(transition.patch.executionState)?.monitor;
+    if (monitorState?.clearReason === "max_attempts_exhausted" ||
+        monitorState?.clearReason === "timeout_exceeded") {
+      const cleared = await issuesSvc.update(input.issue.id, transition.patch);
+      if (!cleared) return null;
+      const escalated = await escalateStrandedAssignedIssue({
+        issue: cleared,
+        previousStatus: input.issue.status as StrandedPreviousStatus,
+        latestRun: input.latestRun,
+        recoveryCause: "provider_quota",
+        suppressProviderQuotaWait: true,
+        comment: "Automatic provider recovery reached the issue monitor attempt limit. " +
+          "The board must restore provider quota or choose an available provider, then explicitly retry " +
+          `${retryTargetDescription}. The source assignment is unchanged.`,
+      });
+      return escalated ? { outcome: "escalated" as const, issue: escalated } : null;
+    }
     const updated = await issuesSvc.update(input.issue.id, {
-      ...transition.patch,
       executionPolicy: policy,
+      ...transition.patch,
     });
     if (!updated) return null;
 
@@ -4459,7 +4486,7 @@ export function recoveryService(
       },
     });
 
-    return updated;
+    return { outcome: "scheduled" as const, issue: updated };
   }
 
   function getAdapterFailureRecoveryTargetAgentId(
@@ -4893,7 +4920,8 @@ export function recoveryService(
               latestRun,
               adapterFailureClassification,
             );
-            result.providerQuotaMonitored += 1;
+            if (monitored.outcome === "escalated") result.escalated += 1;
+            else result.providerQuotaMonitored += 1;
             result.issueIds.push(issue.id);
             continue;
           }
@@ -5117,7 +5145,8 @@ export function recoveryService(
               participantLatestRun,
               participantAdapterFailureClassification,
             );
-            result.providerQuotaMonitored += 1;
+            if (monitored.outcome === "escalated") result.escalated += 1;
+            else result.providerQuotaMonitored += 1;
             result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;
