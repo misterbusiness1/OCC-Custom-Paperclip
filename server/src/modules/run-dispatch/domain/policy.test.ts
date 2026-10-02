@@ -427,13 +427,16 @@ describe("decideQueuedRunStaleness", () => {
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
   });
 
-  it("allows resume intent to bypass a terminal status", () => {
+  it("preserves the terminal-status guard despite stale resume intent", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),
       issueStatus: "done",
       resumeIntent: true,
     };
-    expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+    expect(decideQueuedRunStaleness(facts, NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_terminal_status",
+    });
   });
 
   it("allows a non-assignee workspace-busy retry to bypass the ownership check", () => {

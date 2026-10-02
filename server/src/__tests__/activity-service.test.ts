@@ -8,6 +8,7 @@ import {
   documentRevisions,
   documents,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueComments,
   issueDocuments,
   issues,
@@ -58,6 +59,7 @@ describeEmbeddedPostgres("activity service", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -308,6 +310,80 @@ describeEmbeddedPostgres("activity service", () => {
       lastUsefulActionAt: completedAt,
     });
   });
+
+  it.each(["disabled", "observed", "failed_open"])(
+    "does not backfill %s skill-suggestion shadow telemetry as action evidence",
+    async (status) => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const finishedAt = new Date("2026-04-18T20:06:00.000Z");
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Continue implementation",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        startedAt: new Date("2026-04-18T20:05:00.000Z"),
+        finishedAt,
+        contextSnapshot: { issueId },
+        resultJson: { summary: "Next steps:\n- inspect files" },
+        livenessState: null,
+        livenessReason: null,
+      });
+      await db.insert(heartbeatRunEvents).values({
+        companyId,
+        runId,
+        agentId,
+        seq: 1,
+        eventType: "skill.suggestion.shadow",
+        payload: { status },
+        createdAt: finishedAt,
+      });
+
+      const service = activityService(db);
+      const { run } = await waitForIssueRun(
+        service,
+        companyId,
+        issueId,
+        (entry) => entry.runId === runId && entry.livenessState === "plan_only",
+      );
+
+      expect(run).toMatchObject({
+        runId,
+        livenessState: "plan_only",
+        livenessReason: "Run described runnable future work without concrete action evidence",
+        lastUsefulActionAt: null,
+      });
+    },
+  );
 
   it("does not backfill document evidence from a different run", async () => {
     const companyId = randomUUID();

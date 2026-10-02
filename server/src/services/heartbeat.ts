@@ -342,6 +342,7 @@ import {
 } from "./chat-control-recovery-stop.js";
 import {
   classifyRunLiveness,
+  LIVENESS_BOOKKEEPING_RUN_EVENT_TYPES,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
 import {
@@ -18132,8 +18133,8 @@ export function heartbeatService(
 
     const [eventStats] = await db
       .select({
-        count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
-        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))`,
+        count: sql<number>`count(*) filter (where ${notInArray(heartbeatRunEvents.eventType, LIVENESS_BOOKKEEPING_RUN_EVENT_TYPES)})::int`,
+        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${notInArray(heartbeatRunEvents.eventType, LIVENESS_BOOKKEEPING_RUN_EVENT_TYPES)})`,
       })
       .from(heartbeatRunEvents)
       .where(
@@ -22696,11 +22697,7 @@ export function heartbeatService(
           level: "info",
           message: "run started",
         });
-        // A default-disabled shadow must not manufacture action evidence. Run
-        // liveness treats non-lifecycle events as concrete work, so recording a
-        // disabled observation here would suppress the bounded plan-only
-        // continuation even though the agent did no work.
-        if (skillSuggestionShadow && skillSuggestionShadow.status !== "disabled") {
+        if (skillSuggestionShadow) {
           await appendRunEvent(currentRun, {
             eventType: "skill.suggestion.shadow",
             stream: "system",
