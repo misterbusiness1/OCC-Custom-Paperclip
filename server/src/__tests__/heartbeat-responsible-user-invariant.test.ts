@@ -303,6 +303,185 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     expect(recoveryAudit).toHaveLength(1);
   });
 
+  it.each(["startup", "periodic"] as const)(
+    "coalesces a historical same-lineage duplicate during %s queued-run recovery",
+    async (recoveryKind) => {
+      const { companyId, agentId, ownerUserId } = await seedCompany();
+      const actorId = `operator-${randomUUID()}`;
+      const issueId = randomUUID();
+      const commentId = randomUUID();
+      const receiptId = randomUUID();
+      const siblingReceiptId = randomUUID();
+      const sourceRunId = randomUUID();
+      const successorRunId = randomUUID();
+      const requestId = randomUUID();
+      const idempotencyKey = `queued-comment-interrupt:${receiptId}`;
+      const acknowledgedAt = new Date();
+      const finishedAt = new Date(acknowledgedAt.getTime() + 50);
+      const wakeContext = {
+        issueId,
+        wakeReason: "issue_commented",
+        wakeCommentIds: [commentId],
+      };
+
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "user",
+        principalId: actorId,
+        membershipRole: "operator",
+        status: "active",
+      });
+      await instanceSettingsService(db).updateExperimental({
+        enableAgentChat: true,
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Persisted duplicate interrupt receipt",
+        status: "todo",
+        assigneeAgentId: agentId,
+        responsibleUserId: ownerUserId,
+        conversationAgentId: agentId,
+        conversationUserId: actorId,
+        conversationState: "active",
+      });
+      await db.insert(issueComments).values({
+        id: commentId,
+        companyId,
+        issueId,
+        authorType: "user",
+        authorUserId: ownerUserId,
+        body: "Recover this follow-up exactly once",
+      });
+      await db.insert(heartbeatRuns).values({
+        id: sourceRunId,
+        companyId,
+        agentId,
+        status: "cancelled",
+        runtimeMode: "legacy",
+        contextSnapshot: { issueId },
+        finishedAt,
+        resultJson: {
+          queuedCommentInterruptQueueId: receiptId,
+          conversationContinuation: "continue_conversation_v1",
+          executionCancellation: {
+            state: "acknowledged",
+            forced: false,
+            acknowledgedAt: acknowledgedAt.toISOString(),
+          },
+        },
+      });
+      await db.insert(agentWakeupRequests).values([
+        {
+          id: receiptId,
+          companyId,
+          agentId,
+          source: "automation",
+          reason: "issue_commented",
+          status: "deferred_issue_execution",
+          requestedByActorType: "system",
+          payload: {
+            issueId,
+            commentId,
+            queuedCommentInterrupt: {
+              actorId,
+              requestedAt: acknowledgedAt.toISOString(),
+            },
+            _paperclipWakeContext: wakeContext,
+          },
+        },
+        {
+          id: siblingReceiptId,
+          companyId,
+          agentId,
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: "issue_commented",
+          status: "deferred_issue_execution",
+          requestedByActorType: "user",
+          requestedByActorId: actorId,
+          idempotencyKey,
+          payload: {
+            issueId,
+            commentId,
+            _paperclipWakeContext: wakeContext,
+          },
+        },
+        {
+          id: requestId,
+          companyId,
+          agentId,
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: "issue_commented",
+          status: "queued",
+          requestedByActorType: "user",
+          requestedByActorId: actorId,
+          idempotencyKey,
+          runId: successorRunId,
+          payload: { issueId, commentId },
+        },
+      ]);
+      await db.insert(heartbeatRuns).values({
+        id: successorRunId,
+        companyId,
+        agentId,
+        status: "queued",
+        runtimeMode: "legacy",
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        wakeupRequestId: requestId,
+        responsibleUserId: ownerUserId,
+        contextSnapshot: wakeContext,
+      });
+
+      const recovery =
+        recoveryKind === "startup" ? heartbeatService(db) : heartbeat;
+      await recovery.resumeQueuedRuns();
+      await drainHeartbeatRunsToQuiescence(db, recovery);
+      await recovery.resumeQueuedRuns();
+      await drainHeartbeatRunsToQuiescence(db, recovery);
+
+      const [runs, receipts, audits] = await Promise.all([
+        db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)),
+        db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId)),
+        db.select().from(activityLog).where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "heartbeat.queued_comment_interrupt_receipt_recovered"),
+        )),
+      ]);
+      expect(runs).toHaveLength(2);
+      expect(runs).not.toContainEqual(expect.objectContaining({ status: "failed" }));
+      expect(runs.find((run) => run.id === successorRunId)).toMatchObject({
+        status: "succeeded",
+        responsibleUserId: actorId,
+        contextSnapshot: expect.objectContaining({ wakeCommentIds: [commentId] }),
+      });
+      expect(
+        receipts.filter((receipt) =>
+          [receiptId, siblingReceiptId].includes(receipt.id),
+        ),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: receiptId, status: "coalesced", runId: successorRunId }),
+          expect.objectContaining({ id: siblingReceiptId, status: "coalesced", runId: successorRunId }),
+        ]),
+      );
+      expect(
+        receipts.filter(
+          (receipt) => receipt.status === "deferred_issue_execution",
+        ),
+      ).toHaveLength(0);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]?.details).toMatchObject({
+        receiptId,
+        sourceRunId,
+        coalescedSiblingReceiptIds: [siblingReceiptId],
+      });
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("keeps a board manual wake under its caller even when it adopts someone else's queue", async () => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();

@@ -19798,8 +19798,9 @@ export function heartbeatService(
           .then((rows) => rows[0] ?? null)
       : null;
     const prefix = "queued-comment-interrupt:";
-    if (!request?.idempotencyKey?.startsWith(prefix)) return;
-    const receiptId = request.idempotencyKey.slice(prefix.length);
+    const lineageIdempotencyKey = request?.idempotencyKey;
+    if (!request || !lineageIdempotencyKey?.startsWith(prefix)) return;
+    const receiptId = lineageIdempotencyKey.slice(prefix.length);
     if (!isUuidLike(receiptId)) return;
 
     const issueId = readNonEmptyString(candidate.contextSnapshot?.issueId);
@@ -19910,6 +19911,19 @@ export function heartbeatService(
           ),
         )
         .for("update");
+      const siblingReceipts = await tx
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, candidate.companyId),
+            eq(agentWakeupRequests.agentId, candidate.agentId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            isNull(agentWakeupRequests.runId),
+            eq(agentWakeupRequests.idempotencyKey, lineageIdempotencyKey),
+          ),
+        )
+        .for("update");
       const [membership] = await tx
         .select({ id: companyMemberships.id })
         .from(companyMemberships)
@@ -19938,6 +19952,21 @@ export function heartbeatService(
             isNull(issueComments.deletedAt),
           ),
         );
+      const expectedCommentIds = [...new Set(receiptCommentIds)].sort();
+      const validatedSiblingReceipts = siblingReceipts.filter((sibling) => {
+        const siblingCommentIds = [
+          ...new Set(queuedCommentIdsFromWakePayload(sibling.payload)),
+        ].sort();
+        return (
+          sibling.requestedByActorType === "user" &&
+          sibling.requestedByActorId === actorId &&
+          readNonEmptyString(sibling.payload?.issueId) === issueId &&
+          siblingCommentIds.length === expectedCommentIds.length &&
+          siblingCommentIds.every(
+            (commentId, index) => commentId === expectedCommentIds[index],
+          )
+        );
+      });
       if (
         !issue ||
         !run ||
@@ -19953,13 +19982,14 @@ export function heartbeatService(
           deliveredCommentIds.includes(id),
         )
       ) return;
+      const recoveredAt = new Date();
       const [recovered] = await tx
         .update(agentWakeupRequests)
         .set({
           status: "coalesced",
           runId: run.id,
-          finishedAt: new Date(),
-          updatedAt: new Date(),
+          finishedAt: recoveredAt,
+          updatedAt: recoveredAt,
         })
         .where(
           and(
@@ -19970,6 +20000,29 @@ export function heartbeatService(
         )
         .returning({ id: agentWakeupRequests.id });
       if (!recovered) return;
+      const recoveredSiblingIds = validatedSiblingReceipts.map(
+        (sibling) => sibling.id,
+      );
+      if (recoveredSiblingIds.length > 0) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "coalesced",
+            runId: run.id,
+            finishedAt: recoveredAt,
+            updatedAt: recoveredAt,
+          })
+          .where(
+            and(
+              inArray(agentWakeupRequests.id, recoveredSiblingIds),
+              eq(agentWakeupRequests.companyId, candidate.companyId),
+              eq(agentWakeupRequests.agentId, candidate.agentId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              isNull(agentWakeupRequests.runId),
+              eq(agentWakeupRequests.idempotencyKey, lineageIdempotencyKey),
+            ),
+          );
+      }
       await logActivity(tx as unknown as Db, {
         companyId: candidate.companyId,
         actorType: "system",
@@ -19985,6 +20038,7 @@ export function heartbeatService(
           issueId,
           actorId,
           commentCount: receiptCommentIds.length,
+          coalescedSiblingReceiptIds: recoveredSiblingIds,
         },
       });
     });
