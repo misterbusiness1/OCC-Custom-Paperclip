@@ -195,7 +195,12 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     },
   );
 
-  it("recovers one persisted conversation successor without blocking another agent after an invalid receipt", async () => {
+  it.each([
+    "agent-authored",
+    "run-generated",
+    "blank",
+    "deleted",
+  ] as const)("rejects a persisted %s recovery comment without blocking another agent", async (invalidComment) => {
     const { companyId, agentId: invalidAgentId, ownerUserId } = await seedCompany();
     const validAgentId = randomUUID();
     await db.insert(agents).values({
@@ -211,7 +216,10 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     });
     await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
 
-    const seedPersistedSuccessor = async (agentId: string, valid: boolean) => {
+    const seedPersistedSuccessor = async (
+      agentId: string,
+      commentShape: "valid" | typeof invalidComment,
+    ) => {
       const actorId = `operator-${randomUUID()}`;
       const issueId = randomUUID();
       const commentId = randomUUID();
@@ -224,13 +232,6 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       await db.insert(issues).values({ id: issueId, companyId, title: "Persisted interrupt", status: "todo",
         assigneeAgentId: agentId, responsibleUserId: ownerUserId, conversationAgentId: agentId,
         conversationUserId: actorId, conversationState: "active" });
-      await db.insert(issueComments).values({ id: commentId, companyId, issueId,
-        authorUserId: actorId, body: "Resume this conversation" });
-      await db.insert(agentWakeupRequests).values({ id: receiptId, companyId, agentId,
-        source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
-        requestedByActorType: "system", payload: { issueId, commentId,
-          queuedCommentInterrupt: { actorId: valid ? actorId : "wrong-user", requestedAt: new Date().toISOString() },
-          _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [commentId] } } });
       const acknowledgedAt = new Date();
       const finishedAt = new Date(acknowledgedAt.getTime() + 77);
       await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, status: "cancelled",
@@ -239,6 +240,17 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
           conversationContinuation: "continue_conversation_v1",
           executionCancellation: { state: "acknowledged", forced: false,
             acknowledgedAt: acknowledgedAt.toISOString() } } });
+      await db.insert(issueComments).values({ id: commentId, companyId, issueId,
+        authorAgentId: commentShape === "agent-authored" ? agentId : null,
+        authorUserId: commentShape === "agent-authored" ? null : ownerUserId,
+        createdByRunId: commentShape === "run-generated" ? sourceRunId : null,
+        body: commentShape === "blank" ? " \n\t " : "Resume this conversation",
+        deletedAt: commentShape === "deleted" ? new Date() : null });
+      await db.insert(agentWakeupRequests).values({ id: receiptId, companyId, agentId,
+        source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+        requestedByActorType: "system", payload: { issueId, commentId,
+          queuedCommentInterrupt: { actorId, requestedAt: new Date().toISOString() },
+          _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [commentId] } } });
       await db.insert(agentWakeupRequests).values({ id: requestId, companyId, agentId,
         source: "on_demand", triggerDetail: "manual", reason: "issue_commented", status: "queued",
         requestedByActorType: "user", requestedByActorId: actorId,
@@ -252,8 +264,10 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       return { actorId, issueId, commentId, receiptId, sourceRunId, successorRunId };
     };
 
-    const invalid = await seedPersistedSuccessor(invalidAgentId, false);
-    const valid = await seedPersistedSuccessor(validAgentId, true);
+    const invalid = await seedPersistedSuccessor(invalidAgentId, invalidComment);
+    const valid = await seedPersistedSuccessor(validAgentId, "valid");
+    await heartbeat.resumeQueuedRuns();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
     await heartbeat.resumeQueuedRuns();
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
 

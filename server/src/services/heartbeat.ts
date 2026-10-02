@@ -19221,7 +19221,12 @@ export function heartbeatService(
     // is still deferred, including after a failed cleanup promotion or restart.
     // Normal admission still checks process ownership, leases, pauses, and scope.
     const interruptedQueues = await db
-      .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId })
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        issueId: sql<string | null>`${agentWakeupRequests.payload}->>'issueId'`,
+        commentIds: agentWakeupRequests.payload,
+      })
       .from(agentWakeupRequests)
       .innerJoin(heartbeatRuns, and(
         sql`${heartbeatRuns.resultJson}->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text`,
@@ -19237,6 +19242,23 @@ export function heartbeatService(
         cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
       ));
     for (const run of interruptedQueues) {
+      const issueId = readNonEmptyString(run.issueId);
+      const commentIds = queuedCommentIdsFromWakePayload(run.commentIds);
+      if (!issueId || commentIds.length === 0) continue;
+      const admissibleComments = await db
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(and(
+          eq(issueComments.companyId, run.companyId),
+          eq(issueComments.issueId, issueId),
+          inArray(issueComments.id, commentIds),
+          isNotNull(issueComments.authorUserId),
+          isNull(issueComments.authorAgentId),
+          isNull(issueComments.createdByRunId),
+          sql`length(regexp_replace(${issueComments.body}, '\\s', '', 'g')) > 0`,
+          isNull(issueComments.deletedAt),
+        ));
+      if (admissibleComments.length !== commentIds.length) continue;
       await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true }).catch((err) => {
         logger.error({ err, runId: run.id }, "failed to retry interrupted comment queue");
       });
@@ -19907,6 +19929,10 @@ export function heartbeatService(
             eq(issueComments.companyId, candidate.companyId),
             eq(issueComments.issueId, issueId),
             inArray(issueComments.id, receiptCommentIds),
+            isNotNull(issueComments.authorUserId),
+            isNull(issueComments.authorAgentId),
+            isNull(issueComments.createdByRunId),
+            sql`length(regexp_replace(${issueComments.body}, '\\s', '', 'g')) > 0`,
             isNull(issueComments.deletedAt),
           ),
         );
