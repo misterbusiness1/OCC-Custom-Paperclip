@@ -16,14 +16,20 @@ RUN apt-get update \
 ARG GH_VERSION=2.102.0
 ARG GH_DEB_SHA256_AMD64=7e54a307f90afdc59796c325ec0c49fb09e6c18537727207a8ac7513584ea5b0
 ARG GH_BINARY_SHA256_AMD64=7469124f706944133d6a169691dd1c6c3511b12e85878d255e044e2948df4c9b
+ARG GH_DEB_SHA256_ARM64=5006962696f01e1624b3fcf1f9d8e1a11547f24bf067dd2a0371b7b421945237
+ARG GH_BINARY_SHA256_ARM64=93308395c2d296a63a662742c6366e4db413d2a4870d07bd9b84e491c065d65d
 RUN set -eu; \
   arch="$(dpkg --print-architecture)"; \
-  [ "$arch" = "amd64" ] || { echo "FATAL: gh pin only covers amd64, not $arch" >&2; exit 1; }; \
-  curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb" -o /tmp/gh.deb; \
-  printf '%s  /tmp/gh.deb\n' "$GH_DEB_SHA256_AMD64" | sha256sum -c -; \
+  case "$arch" in \
+    amd64) gh_arch=amd64; gh_deb_sha="$GH_DEB_SHA256_AMD64"; gh_binary_sha="$GH_BINARY_SHA256_AMD64" ;; \
+    arm64) gh_arch=arm64; gh_deb_sha="$GH_DEB_SHA256_ARM64"; gh_binary_sha="$GH_BINARY_SHA256_ARM64" ;; \
+    *) echo "FATAL: no pinned gh package for architecture $arch" >&2; exit 1 ;; \
+  esac; \
+  curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${gh_arch}.deb" -o /tmp/gh.deb; \
+  printf '%s  /tmp/gh.deb\n' "$gh_deb_sha" | sha256sum -c -; \
   apt-get update; \
   apt-get install -y --no-install-recommends /tmp/gh.deb; \
-  printf '%s  /usr/bin/gh\n' "$GH_BINARY_SHA256_AMD64" | sha256sum -c -; \
+  printf '%s  /usr/bin/gh\n' "$gh_binary_sha" | sha256sum -c -; \
   gh --version | grep -F "gh version ${GH_VERSION}"; \
   rm -f /tmp/gh.deb; \
   rm -rf /var/lib/apt/lists/*
