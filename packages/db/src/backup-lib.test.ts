@@ -325,7 +325,10 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         const backupSql = gunzipSync(fs.readFileSync(result.backupFile)).toString("utf8");
         expect(backupSql).toContain('"context_issue_id" text GENERATED ALWAYS AS');
         expect(backupSql).toContain(
-          'COPY "public"."backup_generated_records" ("id", "payload") FROM stdin;',
+          'INSERT INTO "public"."backup_generated_records" ("id", "payload") VALUES',
+        );
+        expect(backupSql).not.toContain(
+          'INSERT INTO "public"."backup_generated_records" ("id", "payload", "context_issue_id")',
         );
 
         const restoreResult = await runDatabaseBackup({

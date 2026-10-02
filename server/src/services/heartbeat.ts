@@ -22696,7 +22696,11 @@ export function heartbeatService(
           level: "info",
           message: "run started",
         });
-        if (skillSuggestionShadow) {
+        // A default-disabled shadow must not manufacture action evidence. Run
+        // liveness treats non-lifecycle events as concrete work, so recording a
+        // disabled observation here would suppress the bounded plan-only
+        // continuation even though the agent did no work.
+        if (skillSuggestionShadow && skillSuggestionShadow.status !== "disabled") {
           await appendRunEvent(currentRun, {
             eventType: "skill.suggestion.shadow",
             stream: "system",
