@@ -6,9 +6,27 @@ FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f281
 ARG USER_UID=1000
 ARG USER_GID=1000
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 util-linux tini \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl git wget ripgrep python3 util-linux tini \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
+
+# Keep the runtime GitHub CLI independent from Ubuntu's moving apt version.
+# The package and installed binary checksums are both verified so a rebuild
+# reproduces the qualified runtime tool rather than silently accepting drift.
+ARG GH_VERSION=2.102.0
+ARG GH_DEB_SHA256_AMD64=7e54a307f90afdc59796c325ec0c49fb09e6c18537727207a8ac7513584ea5b0
+ARG GH_BINARY_SHA256_AMD64=7469124f706944133d6a169691dd1c6c3511b12e85878d255e044e2948df4c9b
+RUN set -eu; \
+  arch="$(dpkg --print-architecture)"; \
+  [ "$arch" = "amd64" ] || { echo "FATAL: gh pin only covers amd64, not $arch" >&2; exit 1; }; \
+  curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb" -o /tmp/gh.deb; \
+  printf '%s  /tmp/gh.deb\n' "$GH_DEB_SHA256_AMD64" | sha256sum -c -; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends /tmp/gh.deb; \
+  printf '%s  /usr/bin/gh\n' "$GH_BINARY_SHA256_AMD64" | sha256sum -c -; \
+  gh --version | grep -F "gh version ${GH_VERSION}"; \
+  rm -f /tmp/gh.deb; \
+  rm -rf /var/lib/apt/lists/*
 
 # Keep Paperclip's expected account name while reusing Playwright's unprivileged account.
 RUN usermod -l node pwuser \
