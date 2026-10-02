@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  classifyRunLiveness,
-  isLivenessBookkeepingRunEventType,
-} from "../services/run-liveness.ts";
+import { classifyRunLiveness } from "../services/run-liveness.ts";
 
 const baseInput = {
   runStatus: "succeeded",
@@ -21,15 +18,6 @@ const baseInput = {
 };
 
 describe("run liveness classifier", () => {
-  it.each(["disabled", "observed", "failed_open"])(
-    "treats %s skill-suggestion shadow telemetry as bookkeeping, not progress",
-    () => {
-      expect(
-        isLivenessBookkeepingRunEventType("skill.suggestion.shadow"),
-      ).toBe(true);
-      expect(isLivenessBookkeepingRunEventType("tool.call.completed")).toBe(false);
-    },
-  );
   it("classifies text-only future work as plan_only", () => {
     const classification = classifyRunLiveness({
       ...baseInput,

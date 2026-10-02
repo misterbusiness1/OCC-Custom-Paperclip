@@ -7,10 +7,6 @@ export const LIVENESS_BOOKKEEPING_RUN_EVENT_TYPES: string[] = [
   "skill.suggestion.shadow",
 ];
 
-export function isLivenessBookkeepingRunEventType(eventType: string) {
-  return LIVENESS_BOOKKEEPING_RUN_EVENT_TYPES.includes(eventType);
-}
-
 export type RunLivenessActionability =
   | "runnable"
   | "manager_review"
