@@ -27936,8 +27936,11 @@ export function heartbeatService(
                   or(isNull(heartbeatRuns.nativeIssueId), eq(heartbeatRuns.nativeIssueId, issue.id)),
                 )).then(rows => rows[0] ?? null)
               : null;
+          const explicitQueuedCommentReceiptId =
+            opts.queuedCommentInterruptId ?? opts.queuedCommentRequestId;
           const pendingComments =
-            !isConversation(issue) && opts.allowRunCoalescing !== false &&
+            (explicitQueuedCommentReceiptId ||
+              (!isConversation(issue) && opts.allowRunCoalescing !== false)) &&
             !(await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id))
               ? await tx
                   .select()
@@ -27948,6 +27951,9 @@ export function heartbeatService(
                       inArray(agentWakeupRequests.agentId, handoffSource ? [agentId, handoffSource.agentId] : [agentId]),
                       eq(agentWakeupRequests.status, "deferred_issue_execution"),
                       sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+                      explicitQueuedCommentReceiptId
+                        ? eq(agentWakeupRequests.id, explicitQueuedCommentReceiptId)
+                        : undefined,
                     ),
                   )
                   .orderBy(asc(agentWakeupRequests.requestedAt))

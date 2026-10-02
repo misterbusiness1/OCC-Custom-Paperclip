@@ -20,6 +20,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { runningProcesses } from "../adapters/index.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
@@ -92,6 +93,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
   afterEach(async () => {
     mockAdapterExecute.mockClear();
     runningProcesses.clear();
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
     // Await every in-flight background heartbeat run to quiescence before the
     // deletes below. A wakeup claims a run and dispatches its execution
     // fire-and-forget, and that run can dispatch a follow-up wakeup, so a run or
@@ -149,34 +151,49 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     return { companyId, ownerUserId, agentId };
   }
 
-  it("dispatches an interrupted queue under the clicking operator through the real startup path", async () => {
-    const { companyId, agentId, ownerUserId } = await seedCompany();
-    const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
-    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
-      membershipRole: "operator", status: "active" });
-    await db.insert(issues).values({ id: issueId, companyId, title: "Interrupted queue", status: "todo",
-      assigneeAgentId: agentId, responsibleUserId: ownerUserId });
-    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Continue the task" });
-    await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
-      source: "automation", status: "deferred_issue_execution", requestedByActorType: "system",
-      payload: { issueId, commentId, queuedCommentInterrupt: { actorId: operatorId, requestedAt: new Date().toISOString() },
-        _paperclipWakeContext: { wakeCommentIds: [commentId], responsibleUserId: ownerUserId,
-          retryOfRunId: randomUUID(), originIdentityContextId: randomUUID() } },
-    });
-    await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
-    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
-    expect(receipt.status).toBe("coalesced");
-    const completed = await waitForRun(db, receipt.runId!);
-    expect(completed).toMatchObject({ status: "succeeded", responsibleUserId: operatorId });
-    expect(completed?.activeIdentityContextId).toBeTruthy();
-    expect(completed?.contextSnapshot?.originIdentityContextId).toBeUndefined();
-    expect(completed?.contextSnapshot?.retryOfRunId).toBeUndefined();
-    expect(mockAdapterExecute).toHaveBeenCalled();
-    await drainHeartbeatRunsToQuiescence(db, heartbeat);
-    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
-    expect(runs.every(run => run.responsibleUserId === operatorId && run.status === "succeeded")).toBe(true);
-    expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0].authorUserId).toBe(ownerUserId);
-  });
+  it.each(["ordinary task", "persistent conversation"] as const)(
+    "dispatches an interrupted queue once under the clicking operator for an %s",
+    async (scope) => {
+      const { companyId, agentId, ownerUserId } = await seedCompany();
+      const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
+        membershipRole: "operator", status: "active" });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Interrupted queue", status: "todo",
+        assigneeAgentId: agentId, responsibleUserId: ownerUserId,
+        ...(scope === "persistent conversation" ? {
+          conversationAgentId: agentId,
+          conversationUserId: operatorId,
+          conversationState: "active" as const,
+        } : {}),
+      });
+      await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Continue the task" });
+      await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
+        source: "automation", status: "deferred_issue_execution", requestedByActorType: "system",
+        payload: { issueId, commentId, queuedCommentInterrupt: { actorId: operatorId, requestedAt: new Date().toISOString() },
+          _paperclipWakeContext: { wakeCommentIds: [commentId], responsibleUserId: ownerUserId,
+            retryOfRunId: randomUUID(), originIdentityContextId: randomUUID() } },
+      });
+      if (scope === "persistent conversation") {
+        await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+      }
+      await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
+      expect(receipt).toMatchObject({ status: "coalesced" });
+      expect(receipt.runId).toBeTruthy();
+      const completed = await waitForRun(db, receipt.runId!);
+      expect(completed).toMatchObject({ status: "succeeded", responsibleUserId: operatorId });
+      expect(completed?.contextSnapshot?.wakeCommentIds).toEqual([commentId]);
+      expect(completed?.activeIdentityContextId).toBeTruthy();
+      expect(completed?.contextSnapshot?.originIdentityContextId).toBeUndefined();
+      expect(completed?.contextSnapshot?.retryOfRunId).toBeUndefined();
+      expect(mockAdapterExecute).toHaveBeenCalled();
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      expect(runs.filter(run => run.contextSnapshot?.wakeCommentIds?.includes(commentId))).toHaveLength(1);
+      expect(runs.every(run => run.responsibleUserId === operatorId && run.status === "succeeded")).toBe(true);
+      expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0].authorUserId).toBe(ownerUserId);
+    },
+  );
 
   it("keeps a board manual wake under its caller even when it adopts someone else's queue", async () => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
