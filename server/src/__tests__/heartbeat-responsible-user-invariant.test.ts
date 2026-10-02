@@ -200,6 +200,8 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     "run-generated",
     "blank",
     "deleted",
+    "missing-author-type",
+    "non-user-author-type",
   ] as const)("rejects a persisted %s recovery comment without blocking another agent", async (invalidComment) => {
     const { companyId, agentId: invalidAgentId, ownerUserId } = await seedCompany();
     const validAgentId = randomUUID();
@@ -241,6 +243,8 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
           executionCancellation: { state: "acknowledged", forced: false,
             acknowledgedAt: acknowledgedAt.toISOString() } } });
       await db.insert(issueComments).values({ id: commentId, companyId, issueId,
+        authorType: commentShape === "missing-author-type" ? null
+          : commentShape === "agent-authored" || commentShape === "non-user-author-type" ? "agent" : "user",
         authorAgentId: commentShape === "agent-authored" ? agentId : null,
         authorUserId: commentShape === "agent-authored" ? null : ownerUserId,
         createdByRunId: commentShape === "run-generated" ? sourceRunId : null,
