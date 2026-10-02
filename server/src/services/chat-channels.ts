@@ -1,4 +1,5 @@
 import { takePhotonCompanion } from "./photon/attachments.js";
+import { canonicalUuidTextReference } from "./canonical-uuid-text-reference.js";
 import { writePhotonCheckpoint } from "./photon/receiver.js";
 import { PhotonState } from "./photon/state.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
@@ -13739,7 +13740,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .innerJoin(
         owner,
-        sql`${owner.id}::text = coalesce(${agentWakeupRequests.payload}->>'coalescedIntoWakeupRequestId', ${agentWakeupRequests.id}::text)`,
+        eq(owner.id, canonicalUuidTextReference(sql`coalesce(${agentWakeupRequests.payload}->>'coalescedIntoWakeupRequestId', ${agentWakeupRequests.id}::text)`)),
       )
       .where(
         and(

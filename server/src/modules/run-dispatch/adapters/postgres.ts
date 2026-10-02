@@ -1,6 +1,7 @@
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
-import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
+import { verifyPendingInteractionWake } from "../../../services/pending-interaction-wake.js";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -324,6 +325,9 @@ export function createPostgresRunDispatchAdapter(
         id: issues.id,
         companyId: issues.companyId,
         status: issues.status,
+        reviewPolicy: issues.reviewPolicy,
+        createdByAgentId: issues.createdByAgentId,
+        createdByUserId: issues.createdByUserId,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionRunId: issues.executionRunId,
@@ -349,11 +353,14 @@ export function createPostgresRunDispatchAdapter(
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
+    facts.pendingInteractionWake = await verifyPendingInteractionWake(dbOrTx, { ...input, issue });
     if (input.conversationContinuation) {
       const [interactions, linkedApprovals] = await Promise.all([
         dbOrTx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
           eq(issueThreadInteractions.companyId, input.companyId),
           eq(issueThreadInteractions.issueId, issueId), eq(issueThreadInteractions.status, "pending"),
+          facts.pendingInteractionWake === "authorized"
+            ? ne(issueThreadInteractions.id, input.contextSnapshot.interactionId as string) : undefined,
         )).limit(1),
         dbOrTx.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, and(
           eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, issueApprovals.companyId),
@@ -484,7 +491,11 @@ export function createPostgresRunDispatchAdapter(
     const issueQuery = dbOrTx
       .select({
         id: issues.id,
+        companyId: issues.companyId,
         status: issues.status,
+        reviewPolicy: issues.reviewPolicy,
+        createdByAgentId: issues.createdByAgentId,
+        createdByUserId: issues.createdByUserId,
         assigneeAgentId: issues.assigneeAgentId,
         executionRunId: issues.executionRunId,
         checkoutRunId: issues.checkoutRunId,
@@ -574,6 +585,7 @@ export function createPostgresRunDispatchAdapter(
       : null;
     return {
       runId: input.runId,
+      pendingInteractionWake: issue ? await verifyPendingInteractionWake(dbOrTx, { ...input, issue }) : null,
       runAgentId: input.agentId,
       issueId,
       retryReasonKind,

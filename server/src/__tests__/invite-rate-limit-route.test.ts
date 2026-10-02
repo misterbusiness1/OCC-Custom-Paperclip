@@ -91,9 +91,7 @@ describe("invite-token endpoint rate limiting", () => {
         details: { retryAfterSeconds: 60 },
       });
     },
-    // The first access-route import transforms a large dependency graph.
-    // Allow that cold start on the CPU-limited release qualification runner.
-    60_000,
+    20_000,
   );
 
   it(

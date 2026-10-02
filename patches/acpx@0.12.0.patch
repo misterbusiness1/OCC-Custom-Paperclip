@@ -1,5 +1,24 @@
+diff --git a/dist/client-DwNyFauq.d.ts b/dist/client-DwNyFauq.d.ts
+index 2b869bf..dc5152f 100644
+--- a/dist/client-DwNyFauq.d.ts
++++ b/dist/client-DwNyFauq.d.ts
+@@ -102,6 +102,7 @@ declare class AcpClient {
+     terminal?: boolean;
+     suppressSdkConsoleErrors?: boolean;
+     verbose?: boolean;
++    terminalEnv?: Record<string, string>;
+   }): void;
+   private refreshRuntimePermissionPolicy;
+   hasReusableSession(sessionId: string): boolean;
+@@ -189,4 +190,4 @@ declare class AcpClient {
+ }
+ //#endregion
+ export { RequestedModelUnsupportedErrorCode as a, RequestedModelUnsupportedError as i, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE as n, RequestedModelUnsupportedReason as o, REQUESTED_MODEL_UNSUPPORTED_REASONS as r, isRequestedModelUnsupportedError as s, AcpClient as t };
+-//# sourceMappingURL=client-DwNyFauq.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=client-DwNyFauq.d.ts.map
 diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
-index 243c9d13bcba520923b63adfddad75cf2d94362d..643315c1e9b529768695c863eae7a29e9f5a3dac 100644
+index 243c9d1..c6697bc 100644
 --- a/dist/live-checkpoint-ClPCSdrW.js
 +++ b/dist/live-checkpoint-ClPCSdrW.js
 @@ -1532,7 +1532,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
@@ -44,7 +63,92 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..643315c1e9b529768695c863eae7a29e
  		stdio: [
  			"pipe",
  			"pipe",
-@@ -3724,10 +3724,13 @@ function resolveClientCapabilities(params) {
+@@ -3125,13 +3125,14 @@ function toCommandLine(command, args) {
+ 	return renderedArgs.length > 0 ? `${command} ${renderedArgs}` : command;
+ }
+ function toEnvObject(env) {
+-	if (!env || env.length === 0) return;
+-	const merged = { ...process.env };
+-	for (const entry of env) merged[entry.name] = entry.value;
++	const terminalEnv = arguments.length > 1 ? arguments[1] : void 0;
++	if ((!env || env.length === 0) && (!terminalEnv || Object.keys(terminalEnv).length === 0)) return;
++	const merged = { ...process.env, ...terminalEnv };
++	for (const entry of env ?? []) merged[entry.name] = entry.value;
+ 	return merged;
+ }
+-function buildTerminalSpawnOptions(command, cwd, env, platform = process.platform) {
+-	const resolvedEnv = toEnvObject(env);
++function buildTerminalSpawnOptions(command, cwd, env, platform = process.platform, terminalEnv) {
++	const resolvedEnv = toEnvObject(env, terminalEnv);
+ 	return buildSpawnCommandOptions(command, {
+ 		cwd,
+ 		env: resolvedEnv,
+@@ -3178,6 +3179,7 @@ function waitMs(ms) {
+ }
+ var TerminalManager = class {
+ 	cwd;
++	terminalEnv;
+ 	permissionMode;
+ 	nonInteractivePermissions;
+ 	onOperation;
+@@ -3187,6 +3189,7 @@ var TerminalManager = class {
+ 	terminals = /* @__PURE__ */ new Map();
+ 	constructor(options) {
+ 		this.cwd = options.cwd;
++		this.terminalEnv = { ...options.terminalEnv };
+ 		this.permissionMode = options.permissionMode;
+ 		this.nonInteractivePermissions = options.nonInteractivePermissions ?? "deny";
+ 		this.onOperation = options.onOperation;
+@@ -3194,6 +3197,9 @@ var TerminalManager = class {
+ 		this.confirmExecute = options.confirmExecute ?? defaultConfirmExecute;
+ 		this.killGraceMs = Math.max(0, Math.round(options.killGraceMs ?? DEFAULT_KILL_GRACE_MS));
+ 	}
++	updateTerminalEnv(terminalEnv) {
++		this.terminalEnv = { ...terminalEnv };
++	}
+ 	updatePermissionPolicy(permissionMode, nonInteractivePermissions) {
+ 		this.permissionMode = permissionMode;
+ 		this.nonInteractivePermissions = nonInteractivePermissions ?? "deny";
+@@ -3210,7 +3216,7 @@ var TerminalManager = class {
+ 		try {
+ 			if (!await this.isExecuteApproved(commandLine)) throw new PermissionDeniedError("Permission denied for terminal/create");
+ 			const outputByteLimit = Math.max(0, Math.round(params.outputByteLimit ?? DEFAULT_TERMINAL_OUTPUT_LIMIT_BYTES));
+-			const { proc, spawnCommand } = await spawnTerminalProcess(params, this.cwd);
++			const { proc, spawnCommand } = await spawnTerminalProcess(params, this.cwd, this.terminalEnv);
+ 			let resolveExit = () => {};
+ 			const exitPromise = new Promise((resolve) => {
+ 				resolveExit = resolve;
+@@ -3455,24 +3461,24 @@ var TerminalManager = class {
+ 		while (hasLivePid(terminal.descendantPids)) await waitMs(25);
+ 	}
+ };
+-async function spawnTerminalProcess(params, defaultCwd) {
++async function spawnTerminalProcess(params, defaultCwd, terminalEnv) {
+ 	const directCommand = buildTerminalSpawnCommand(params.command, params.args);
+ 	try {
+ 		return {
+-			proc: await spawnAndWait(directCommand, params, defaultCwd),
++			proc: await spawnAndWait(directCommand, params, defaultCwd, terminalEnv),
+ 			spawnCommand: directCommand
+ 		};
+ 	} catch (error) {
+ 		const fallbackCommand = params.args === void 0 && isNotFoundSpawnError(error) ? buildTerminalFallbackSpawnCommand(params.command, params.cwd ?? defaultCwd) : void 0;
+ 		if (!fallbackCommand) throw error;
+ 		return {
+-			proc: await spawnAndWait(fallbackCommand, params, defaultCwd),
++			proc: await spawnAndWait(fallbackCommand, params, defaultCwd, terminalEnv),
+ 			spawnCommand: fallbackCommand
+ 		};
+ 	}
+ }
+-async function spawnAndWait(spawnCommand, params, defaultCwd) {
+-	const spawnOptions = buildTerminalSpawnOptions(spawnCommand.command, params.cwd ?? defaultCwd, params.env);
++async function spawnAndWait(spawnCommand, params, defaultCwd, terminalEnv) {
++	const spawnOptions = buildTerminalSpawnOptions(spawnCommand.command, params.cwd ?? defaultCwd, params.env, process.platform, terminalEnv);
+ 	if (spawnCommand.killProcessGroup) spawnOptions.detached = true;
+ 	const proc = spawn(spawnCommand.command, spawnCommand.args, spawnOptions);
+ 	await waitForSpawn(proc);
+@@ -3724,10 +3730,13 @@ function resolveClientCapabilities(params) {
  		},
  		terminal: params.terminal
  	};
@@ -60,7 +164,26 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..643315c1e9b529768695c863eae7a29e
  	};
  }
  function isDevinRequestDiagnosticsMethod(method) {
-@@ -3957,9 +3960,26 @@ var AcpClient = class {
+@@ -3878,6 +3887,7 @@ var AcpClient = class {
+ 		});
+ 		this.terminalManager = new TerminalManager({
+ 			cwd: this.options.cwd,
++			terminalEnv: this.options.terminalEnv,
+ 			permissionMode: this.options.permissionMode,
+ 			nonInteractivePermissions: this.options.nonInteractivePermissions,
+ 			onOperation: (operation) => {
+@@ -3931,6 +3941,10 @@ var AcpClient = class {
+ 		this.refreshRuntimePermissionPolicy(shouldRefreshPermissionPolicy);
+ 		if (options.suppressSdkConsoleErrors !== void 0) this.options.suppressSdkConsoleErrors = options.suppressSdkConsoleErrors;
+ 		if (options.verbose !== void 0) this.options.verbose = options.verbose;
++		if (options.terminalEnv !== void 0) {
++			this.options.terminalEnv = { ...options.terminalEnv };
++			this.terminalManager.updateTerminalEnv(this.options.terminalEnv);
++		}
+ 	}
+ 	refreshRuntimePermissionPolicy(enabled) {
+ 		if (!enabled) return;
+@@ -3957,9 +3971,26 @@ var AcpClient = class {
  		this.lastAgentExit = void 0;
  		this.lastKnownPid = child.pid ?? void 0;
  		this.attachAgentLifecycleObservers(child);
@@ -87,7 +210,7 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..643315c1e9b529768695c863eae7a29e
  			if (!this.options.verbose) return;
  			process.stderr.write(chunk);
  		});
-@@ -3994,7 +4014,7 @@ var AcpClient = class {
+@@ -3994,7 +4025,7 @@ var AcpClient = class {
  			geminiAcp: isGeminiAcpCommand(spawnCommand, args),
  			copilotAcp: isCopilotAcpCommand(spawnCommand, args),
  			claudeAcp: isClaudeAcpCommand(spawnCommand, args),
@@ -96,7 +219,7 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..643315c1e9b529768695c863eae7a29e
  		};
  	}
  	logAgentLaunch(plan) {
-@@ -6070,6 +6090,27 @@ async function withConnectedSession(options) {
+@@ -6070,6 +6101,27 @@ async function withConnectedSession(options) {
  //#region src/runtime/engine/prompt-turn.ts
  const SESSION_REPLY_IDLE_MS = 1e3;
  const SESSION_REPLY_DRAIN_TIMEOUT_MS = 5e3;
@@ -124,7 +247,7 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..643315c1e9b529768695c863eae7a29e
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt);
-@@ -6079,6 +6120,9 @@ async function runPromptTurn(params) {
+@@ -6079,6 +6131,9 @@ async function runPromptTurn(params) {
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
@@ -134,11 +257,26 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..643315c1e9b529768695c863eae7a29e
  		recordPromptResponseUsage(params.conversation, response.usage, params.promptMessageId);
  		return {
  			stopReason: response.stopReason,
+@@ -6153,4 +6208,4 @@ var LiveSessionCheckpoint = class {
+ //#endregion
+ export { getPerfMetricsSnapshot as $, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE as A, listBuiltInAgents as At, absolutePath as B, AUTH_POLICIES as Bt, mergeSessionOptions as C, promptToDisplayText as Ct, applyLifecycleSnapshotToRecord as D, withInterrupt as Dt, applyConversation as E, TimeoutError as Et, modelStateFromConfigOptions as F, isRetryablePromptError as Ft, listSessions as G, OUTPUT_FORMATS as Gt, findSession as H, NON_INTERACTIVE_PERMISSION_POLICIES as Ht, splitCommandLine as I, normalizeOutputError as It, pruneSessions as J, SESSION_RECORD_SCHEMA as Jt, listSessionsForAgent as K, PERMISSION_MODES as Kt, getAcpxVersion as L, extractAcpError as Lt, RequestedModelUnsupportedError as M, resolveAgentCommand as Mt, assertRequestedModelSupported as N, exitCodeForOutputErrorCode as Nt, reconcileAgentSessionId as O, withTimeout as Ot, isRequestedModelUnsupportedError as P, formatErrorMessage as Pt, formatPerfMetric as Q, QueueProtocolError as Qt, permissionModeSatisfies as R, isAcpResourceNotFoundError as Rt, advertisedModelState as S, parsePromptSource as St, sessionOptionsFromRecord as T, InterruptedError as Tt, findSessionByDirectoryWalk as U, OUTPUT_ERROR_CODES as Ut, findGitRepositoryRoot as V, EXIT_CODES as Vt, isoNow$2 as W, OUTPUT_ERROR_ORIGINS as Wt, writeSessionRecord as X, AgentSpawnError as Xt, resolveSessionRecord as Y, AcpxOperationalError as Yt, assertPersistedKeyPolicy as Z, QueueConnectionError as Zt, createSessionConversation as _, parseJsonRpcErrorMessage as _t, applyRequestedModelIfAdvertised as a, startPerfTimer as at, recordSessionUpdate as b, isPromptInput as bt, setCurrentModelId as c, normalizeRuntimeSessionId as ct, setDesiredModelId as d, sessionBaseDir$1 as dt, incrementPerfCounter as et, syncAdvertisedModelState as f, sessionEventActivePath as ft, cloneSessionConversation as g, isAcpJsonRpcMessage as gt, cloneSessionAcpxState as h, extractSessionUpdateNotification as ht, connectAndLoadSession as i, setPerfGauge as it, REQUESTED_MODEL_UNSUPPORTED_REASONS as j, normalizeAgentName$1 as jt, AcpClient as k, DEFAULT_AGENT_NAME as kt, setDesiredConfigOption as l, DEFAULT_EVENT_SEGMENT_MAX_BYTES as lt, applyConfigOptionsToState as m, sessionEventSegmentPath as mt, runPromptTurn as n, recordPerfDuration as nt, currentModelIdFromSetModelResponse as o, parseSessionRecord as ot, applyConfigOptionsToRecord as p, sessionEventLockPath as pt, normalizeName as q, PERMISSION_POLICY_ACTIONS as qt, withConnectedSession as r, resetPerfMetrics as rt, clearDesiredConfigOption as s, serializeSessionRecordForDisk as st, LiveSessionCheckpoint as t, measurePerf as tt, setDesiredModeId as u, defaultSessionEventLog as ut, recordClientOperation as v, parsePromptStopReason as vt, persistSessionOptions as w, textPrompt as wt, trimConversationForRuntime as x, mergePromptSourceWithText as xt, recordPromptSubmission as y, PromptInputValidationError as yt, DEFAULT_HISTORY_LIMIT as z, toAcpErrorPayload as zt };
+ 
+-//# sourceMappingURL=live-checkpoint-ClPCSdrW.js.map
+\ No newline at end of file
++//# sourceMappingURL=live-checkpoint-ClPCSdrW.js.map
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index ccdbe5b032521518022223733049b8b38793473b..a04948e2b1ab8e169778e0d839ab5bf680573266 100644
+index ccdbe5b..7299814 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
-@@ -266,6 +266,10 @@ type AcpRuntimeOptions = {
+@@ -236,6 +236,7 @@ interface AcpRuntime {
+     key: string;
+     value: string;
+   }): Promise<void>;
++  setTerminalEnv?(input: { env: Record<string, string> }): Promise<void>;
+   doctor?(): Promise<AcpRuntimeDoctorReport>;
+   cancel(input: {
+     handle: AcpRuntimeHandle;
+@@ -266,6 +267,11 @@ type AcpRuntimeOptions = {
    timeoutMs?: number;
    probeAgent?: string;
    verbose?: boolean;
@@ -146,28 +284,73 @@ index ccdbe5b032521518022223733049b8b38793473b..a04948e2b1ab8e169778e0d839ab5bf6
 +  onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
 +  spawnCwd?: string;
 +  inheritProcessEnv?: boolean;
++  terminalEnv?: Record<string, string>;
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
    }) => Promise<AcpPermissionDecision | undefined>;
+@@ -286,6 +292,7 @@ declare class AcpRuntimeManager {
+   private readonly closingActiveRecords;
+   constructor(options: AcpRuntimeOptions, deps?: AcpRuntimeManagerDeps);
+   private createClient;
++  setTerminalEnv(env: Record<string, string>): void;
+   private readPendingPersistentClient;
+   private closePendingPersistentClient;
+   private refreshClosedState;
+@@ -442,6 +449,7 @@ declare class AcpxRuntime implements AcpxRuntimeLike {
+     key: string;
+     value: string;
+   }): Promise<void>;
++  setTerminalEnv(input: { env: Record<string, string> }): Promise<void>;
+   cancel(input: {
+     handle: AcpRuntimeHandle;
+     reason?: string;
+@@ -462,4 +470,4 @@ declare function createRuntimeStore(options: {
+ }): AcpSessionStore;
+ //#endregion
+ export { ACPX_BACKEND_ID, type AcpAgentRegistry, type AcpFileSessionStoreOptions, type AcpPermissionDecision, type AcpPermissionRequest, type AcpRuntime, type AcpRuntimeAvailableCommand, type AcpRuntimeCapabilities, type AcpRuntimeDoctorReport, type AcpRuntimeEnsureInput, AcpRuntimeError, type AcpRuntimeErrorCode, type AcpRuntimeEvent, type AcpRuntimeHandle, type AcpRuntimeOptions, type AcpRuntimePromptMode, type AcpRuntimeSessionMode, type AcpRuntimeSessionModels, type AcpRuntimeSessionUsage, type AcpRuntimeStatus, type AcpRuntimeTurn, type AcpRuntimeTurnAttachment, type AcpRuntimeTurnInput, type AcpRuntimeTurnResult, type AcpRuntimeTurnResultError, type AcpRuntimeUsageBreakdown, type AcpRuntimeUsageCost, type AcpSessionRecord, type AcpSessionStore, type AcpSessionUpdateTag, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, type RequestedModelUnsupportedErrorCode, type RequestedModelUnsupportedReason, type SessionAgentOptions, type SystemPromptOption, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
+-//# sourceMappingURL=runtime.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=runtime.d.ts.map
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..7ec28ecf778623c6e63a2149a599172c184c49bd 100644
+index 6c9cc99..8332b31 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
-@@ -744,7 +744,8 @@ var AcpRuntimeManager = class {
+@@ -744,7 +744,12 @@ var AcpRuntimeManager = class {
  		this.deps = deps;
  	}
  	createClient(options) {
 -		return this.deps.clientFactory?.(options) ?? new AcpClient(options);
-+		const clientOptions = { ...options, onAgentStderr: this.options.onAgentStderr, onAgentSpawn: this.options.onAgentSpawn, spawnCwd: this.options.spawnCwd, inheritProcessEnv: this.options.inheritProcessEnv };
++		const clientOptions = { ...options, terminalEnv: this.options.terminalEnv, onAgentStderr: this.options.onAgentStderr, onAgentSpawn: this.options.onAgentSpawn, spawnCwd: this.options.spawnCwd, inheritProcessEnv: this.options.inheritProcessEnv };
 +		return this.deps.clientFactory?.(clientOptions) ?? new AcpClient(clientOptions);
++	}
++	setTerminalEnv(env) {
++		this.options.terminalEnv = { ...env };
++		for (const client of this.pendingPersistentClients.values()) client.updateRuntimeOptions({ terminalEnv: this.options.terminalEnv });
  	}
  	async readPendingPersistentClient(record, options) {
  		const pendingClient = this.pendingPersistentClients.get(record.acpxRecordId);
+@@ -1645,6 +1650,9 @@ var AcpxRuntime = class {
+ 		const { handle, state } = this.resolveManagerHandle(input.handle);
+ 		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
+ 	}
++	async setTerminalEnv(input) {
++		(await this.getManager()).setTerminalEnv(input.env);
++	}
+ 	async cancel(input) {
+ 		const { handle } = this.resolveManagerHandle(input.handle);
+ 		await (await this.getManager()).cancel(handle);
+@@ -1704,4 +1712,4 @@ function createRuntimeStore(options) {
+ //#endregion
+ export { ACPX_BACKEND_ID, AcpRuntimeError, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
+ 
+-//# sourceMappingURL=runtime.js.map
+\ No newline at end of file
++//# sourceMappingURL=runtime.js.map
 diff --git a/dist/session-options-jkYbBxGE.d.ts b/dist/session-options-jkYbBxGE.d.ts
-index 9d37f377fb6a0828e0d2bc5a48754f3aa71509a4..22dda59e0b7616a20ad45218913e5d8f884bae49 100644
+index 9d37f37..cb8104e 100644
 --- a/dist/session-options-jkYbBxGE.d.ts
 +++ b/dist/session-options-jkYbBxGE.d.ts
-@@ -84,6 +84,10 @@ type AcpClientOptions = {
+@@ -84,6 +84,11 @@ type AcpClientOptions = {
    terminal?: boolean;
    suppressSdkConsoleErrors?: boolean;
    verbose?: boolean;
@@ -175,6 +358,14 @@ index 9d37f377fb6a0828e0d2bc5a48754f3aa71509a4..22dda59e0b7616a20ad45218913e5d8f
 +  onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
 +  spawnCwd?: string;
 +  inheritProcessEnv?: boolean;
++  terminalEnv?: Record<string, string>;
    sessionOptions?: {
      model?: string;
      allowedTools?: string[];
+@@ -271,4 +276,4 @@ type SessionAgentOptions = {
+ };
+ //#endregion
+ export { AcpPermissionRequest as a, NonInteractivePermissionPolicy as c, PermissionStats as d, SessionRecord as f, AcpPermissionDecision as i, PermissionMode as l, SystemPromptOption as n, AuthPolicy as o, PromptInput as p, AcpClientOptions as r, McpServer$1 as s, SessionAgentOptions as t, PermissionPolicy as u };
+-//# sourceMappingURL=session-options-jkYbBxGE.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=session-options-jkYbBxGE.d.ts.map

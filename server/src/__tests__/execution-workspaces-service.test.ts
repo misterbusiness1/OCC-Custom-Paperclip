@@ -934,6 +934,48 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     }, 20_000);
   });
 
+  it.each([
+    ["shared_workspace", "no-path", false],
+    ["shared_workspace", "broken-git", false],
+    ["isolated_workspace", "no-path", true],
+    ["isolated_workspace", "broken-git", true],
+  ] as const)("applies the Git close guard to %s with %s according to file preservation", async (mode, fixtureKind, blocked) => {
+    const companyId = randomUUID();
+    const workspaceId = randomUUID();
+    const projectId = randomUUID();
+    let cwd: string | null = null;
+    if (fixtureKind === "broken-git") {
+      cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-archive-unverified-"));
+      tempDirs.add(cwd);
+      await fs.writeFile(path.join(cwd, ".git"), `gitdir: ${path.join(cwd, "missing-git-dir")}\n`);
+      await fs.writeFile(path.join(cwd, "preserved.txt"), "valuable uncommitted work\n");
+    }
+    await db.insert(companies).values({ id: companyId, name: "Close guard regression", issuePrefix: "PAP" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Retained project", status: "in_progress" });
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId, companyId, projectId, name: "Unverified Git workspace", mode,
+      strategyType: "project_primary", status: "cleanup_failed", cwd,
+      providerType: "local_fs", repoUrl: "https://github.com/example/retained-work.git",
+      metadata: { createdByRuntime: true, config: { cleanupCommand: "echo synthetic-cleanup" } },
+    });
+
+    const readiness = await svc.getCloseReadiness(workspaceId);
+
+    expect(readiness?.state).toBe(blocked ? "blocked" : "ready_with_warnings");
+    expect(readiness?.isDestructiveCloseAllowed).toBe(!blocked);
+    if (blocked) {
+      expect(readiness?.blockingReasons).toContain("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
+      expect(readiness?.plannedActions.some((action) => action.kind === "cleanup_command")).toBe(true);
+    } else {
+      expect(readiness?.blockingReasons).toEqual([]);
+      expect(readiness?.plannedActions.map((action) => action.kind)).toEqual(["archive_record"]);
+      expect(readiness?.warnings.length).toBeGreaterThan(0);
+    }
+    if (cwd) {
+      expect(await fs.readFile(path.join(cwd, "preserved.txt"), "utf8")).toBe("valuable uncommitted work\n");
+    }
+  });
+
   it("does not treat an unrelated inbound issue mention as delivery evidence", async () => {
     const seeded = await seedTerminalWorkspace();
     const unrelatedIssueId = randomUUID();

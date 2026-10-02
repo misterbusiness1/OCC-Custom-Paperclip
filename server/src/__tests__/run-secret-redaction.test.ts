@@ -83,7 +83,7 @@ const { resolveVersion } = vi.hoisted(() => ({ resolveVersion: vi.fn(async ({ ma
 vi.mock("../secrets/provider-registry.js", () => ({ getSecretProvider: () => ({ resolveVersion }) }));
 
 describe("batched run secret redaction", () => {
-  beforeEach(() => { resolveVersion.mockClear(); });
+  beforeEach(() => { resolveVersion.mockReset().mockImplementation(async ({ material }) => material.value as string); });
 
   function fixture(rows: unknown[]) {
     const where = vi.fn(async (_predicate: import("drizzle-orm").SQL | undefined) => rows);
@@ -123,5 +123,68 @@ describe("batched run secret redaction", () => {
     expect(select).not.toHaveBeenCalled();
     resolveVersion.mockRejectedValueOnce(new Error("unavailable"));
     await expect(registry.redactForRuns("company", [{ id: "a", text: secret }])).rejects.toThrow("unavailable");
+  });
+
+  it("redacts a full company history beyond SQL compiler and driver parameter limits", async () => {
+    const companyId = "a07c1334-f3d6-446e-9aab-349cca2e5a9a";
+    const createdAt = new Date("2026-10-01T04:00:00.000Z");
+    const runs = Array.from({ length: 130_001 }, (_, i) => ({
+      id: `00000000-0000-4000-8000-${i.toString(16).padStart(12, "0")}`,
+      text: secret,
+      createdAt,
+    }));
+    const registeredIds = new Set([runs[0].id, runs[1_000].id, runs.at(-1)!.id]);
+    const dialect = new PgDialect();
+    const queriedIds: string[] = [];
+    const where = vi.fn(async (predicate: import("drizzle-orm").SQL) => {
+      // Compile the real predicate: the former unbounded IN query throws here
+      // before PostgreSQL can execute it on production-sized company histories.
+      const query = dialect.sqlToQuery(predicate);
+      expect(query.sql).toContain('"company_id"');
+      expect(query.params[0]).toBe(companyId);
+      expect(query.params.length).toBeLessThanOrEqual(1_001);
+      const ids = query.params.slice(1) as string[];
+      for (const id of ids) queriedIds.push(id);
+      return ids.map(id => ({
+        id,
+        contextSnapshot: registeredIds.has(id)
+          ? { paperclipSecretRedactions: [{ fingerprintSha256: "shared", material: { value: secret } }] }
+          : null,
+      }));
+    });
+    const select = vi.fn(() => ({ from: () => ({ where }) }));
+    const registry = createRunSecretRedactionRegistry({ select } as unknown as Db);
+    const input = [...runs, runs[0]];
+    const result = await registry.redactForRuns(companyId, input);
+
+    expect(queriedIds).toEqual(runs.map(run => run.id));
+    expect(result).toHaveLength(input.length);
+    expect(result.map(run => run.id)).toEqual(input.map(run => run.id));
+    expect(result.every(run => run.createdAt === createdAt)).toBe(true);
+    expect(result.every(run => run.text === (registeredIds.has(run.id) ? REDACTED_EVENT_VALUE : secret))).toBe(true);
+    expect(resolveVersion).toHaveBeenCalledTimes(1);
+    expect(where.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it.each(["lookup", "decryption"] as const)("fails closed when a later batch has a %s failure", async (failure) => {
+    const runs = Array.from({ length: 1_001 }, (_, i) => ({ id: `run-${i}`, text: secret }));
+    const dialect = new PgDialect();
+    const where = vi.fn(async (predicate: import("drizzle-orm").SQL) => {
+      const ids = dialect.sqlToQuery(predicate).params.slice(1) as string[];
+      if (ids.includes("run-1000") && failure === "lookup") throw new Error("lookup unavailable");
+      return ids.map(id => ({
+        id,
+        contextSnapshot: { paperclipSecretRedactions: [{ fingerprintSha256: id, material: { value: secret, fail: id === "run-1000" } }] },
+      }));
+    });
+    resolveVersion.mockImplementation(async ({ material }) => {
+      if (material.fail && failure === "decryption") throw new Error("decryption unavailable");
+      return material.value as string;
+    });
+    const select = vi.fn(() => ({ from: () => ({ where }) }));
+    const registry = createRunSecretRedactionRegistry({ select } as unknown as Db);
+    await expect(registry.redactForRuns("company", runs)).rejects.toThrow(`${failure} unavailable`);
+    expect(where).toHaveBeenCalledTimes(2);
+    expect(runs.every(run => run.text === secret)).toBe(true);
   });
 });

@@ -11,7 +11,7 @@ index 5e2113a..b7b5151 100644
    private setSessionModelThroughConfig;
    private setSessionModelThroughLegacyMethod;
 diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
-index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..17f0739318e61744af3eaa760cfbdc84dc5d3c1b 100644
+index d454fd7..c94fc6b 100644
 --- a/dist/live-checkpoint-BSIrfgVo.js
 +++ b/dist/live-checkpoint-BSIrfgVo.js
 @@ -1068,6 +1068,7 @@ function serializeSessionRecordForDisk(record) {
@@ -39,7 +39,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..17f0739318e61744af3eaa760cfbdc84
  const OPAQUE_VALUE_PATHS = /* @__PURE__ */ new Set([
  	"agent_capabilities",
  	"messages.Agent.content.ToolUse.input",
-@@ -3135,8 +3135,18 @@ function promotePrefixedAuthEnvironment(env) {
+@@ -3135,8 +3137,18 @@ function promotePrefixedAuthEnvironment(env) {
  	}
  	return protectedKeys;
  }
@@ -60,7 +60,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..17f0739318e61744af3eaa760cfbdc84
  	const protectedAuthEnvKeys = promotePrefixedAuthEnvironment(env);
  	if (authCredentials) for (const [methodId, credential] of Object.entries(authCredentials)) {
  		addAuthCredentialEnvKeys(protectedAuthEnvKeys, methodId, credential);
-@@ -3178,10 +3188,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
+@@ -3178,10 +3190,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
  	const configCredentials = authCredentials ?? {};
  	return configCredentials[methodId] ?? configCredentials[toEnvToken(methodId)];
  }
@@ -73,7 +73,76 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..17f0739318e61744af3eaa760cfbdc84
  		stdio: [
  			"pipe",
  			"pipe",
-@@ -3961,10 +3971,13 @@ function resolveClientCapabilities(params) {
+@@ -3353,8 +3365,15 @@ function toEnvObject(env) {
+ 	for (const entry of env) merged[entry.name] = entry.value;
+ 	return merged;
+ }
+-function buildTerminalSpawnOptions(command, cwd, env, platform = process.platform) {
+-	const resolvedEnv = toEnvObject(env);
++function toPlainTerminalEnvironment(environment) {
++	if (environment === void 0) return {};
++	if (environment === null || typeof environment !== "object" || Array.isArray(environment)) throw new TypeError("ACPX terminal environment must be a plain record of string values");
++	const prototype = Object.getPrototypeOf(environment);
++	if (prototype !== Object.prototype && prototype !== null || !Object.values(environment).every((entry) => typeof entry === "string")) throw new TypeError("ACPX terminal environment must be a plain record of string values");
++	return environment;
++}
++function buildTerminalSpawnOptions(command, cwd, env, terminalEnvironment, platform = process.platform) {
++	const resolvedEnv = { ...process.env, ...(env?.length ? Object.fromEntries(env.map((entry) => [entry.name, entry.value])) : {}), ...toPlainTerminalEnvironment(terminalEnvironment) };
+ 	return buildSpawnCommandOptions(command, {
+ 		cwd,
+ 		env: resolvedEnv,
+@@ -3408,9 +3427,11 @@ var TerminalManager = class {
+ 	confirmExecute;
+ 	killGraceMs;
+ 	processHelperTimeoutMs;
++	terminalEnvironment;
+ 	terminals = /* @__PURE__ */ new Map();
+ 	constructor(options) {
+ 		this.cwd = options.cwd;
++		this.terminalEnvironment = options.terminalEnvironment;
+ 		this.permissionMode = options.permissionMode;
+ 		this.nonInteractivePermissions = options.nonInteractivePermissions ?? "deny";
+ 		this.onOperation = options.onOperation;
+@@ -3435,7 +3456,7 @@ var TerminalManager = class {
+ 		try {
+ 			if (!await this.isExecuteApproved(commandLine)) throw new PermissionDeniedError("Permission denied for terminal/create");
+ 			const outputByteLimit = Math.max(0, Math.round(params.outputByteLimit ?? DEFAULT_TERMINAL_OUTPUT_LIMIT_BYTES));
+-			const { proc, spawnCommand } = await spawnTerminalProcess(params, this.cwd);
++			const { proc, spawnCommand } = await spawnTerminalProcess(params, this.cwd, this.terminalEnvironment?.());
+ 			let resolveExit = () => {};
+ 			const exitPromise = new Promise((resolve) => {
+ 				resolveExit = resolve;
+@@ -3681,24 +3702,24 @@ var TerminalManager = class {
+ 		while (hasLivePid(terminal.descendantPids)) await waitMs(25);
+ 	}
+ };
+-async function spawnTerminalProcess(params, defaultCwd) {
++async function spawnTerminalProcess(params, defaultCwd, terminalEnvironment) {
+ 	const directCommand = buildTerminalSpawnCommand(params.command, params.args);
+ 	try {
+ 		return {
+-			proc: await spawnAndWait(directCommand, params, defaultCwd),
++			proc: await spawnAndWait(directCommand, params, defaultCwd, terminalEnvironment),
+ 			spawnCommand: directCommand
+ 		};
+ 	} catch (error) {
+ 		const fallbackCommand = params.args === void 0 && isNotFoundSpawnError(error) ? buildTerminalFallbackSpawnCommand(params.command, params.cwd ?? defaultCwd) : void 0;
+ 		if (!fallbackCommand) throw error;
+ 		return {
+-			proc: await spawnAndWait(fallbackCommand, params, defaultCwd),
++			proc: await spawnAndWait(fallbackCommand, params, defaultCwd, terminalEnvironment),
+ 			spawnCommand: fallbackCommand
+ 		};
+ 	}
+ }
+-async function spawnAndWait(spawnCommand, params, defaultCwd) {
+-	const spawnOptions = buildTerminalSpawnOptions(spawnCommand.command, params.cwd ?? defaultCwd, params.env);
++async function spawnAndWait(spawnCommand, params, defaultCwd, terminalEnvironment) {
++	const spawnOptions = buildTerminalSpawnOptions(spawnCommand.command, params.cwd ?? defaultCwd, params.env, terminalEnvironment);
+ 	if (spawnCommand.killProcessGroup) spawnOptions.detached = true;
+ 	const proc = spawn(spawnCommand.command, spawnCommand.args, spawnOptions);
+ 	await waitForSpawn(proc);
+@@ -3961,10 +3982,13 @@ function resolveClientCapabilities(params) {
  			...params.elicitationModes.includes("url") ? { url: {} } : {}
  		} } : {}
  	};
@@ -89,7 +158,15 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..17f0739318e61744af3eaa760cfbdc84
  	};
  }
  function hasResponseField(response, field) {
-@@ -4216,9 +4229,21 @@ var AcpClient = class {
+@@ -4124,6 +4148,7 @@ var AcpClient = class {
+ 		});
+ 		this.terminalManager = new TerminalManager({
+ 			cwd: this.options.cwd,
++			terminalEnvironment: this.options.terminalEnvironment,
+ 			permissionMode: this.options.permissionMode,
+ 			nonInteractivePermissions: this.options.nonInteractivePermissions,
+ 			onOperation: (operation) => {
+@@ -4216,9 +4241,21 @@ var AcpClient = class {
  		this.lastAgentExit = void 0;
  		this.lastKnownPid = child.pid ?? void 0;
  		this.attachAgentLifecycleObservers(child);
@@ -111,7 +188,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..17f0739318e61744af3eaa760cfbdc84
  			if (!this.options.verbose) return;
  			process.stderr.write(chunk);
  		});
-@@ -4253,7 +4278,12 @@ var AcpClient = class {
+@@ -4253,7 +4290,12 @@ var AcpClient = class {
  			geminiAcp: isGeminiAcpCommand(spawnCommand, args),
  			copilotAcp: isCopilotAcpCommand(spawnCommand, args),
  			claudeAcp: isClaudeAcpCommand(spawnCommand, args),
@@ -125,7 +202,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..17f0739318e61744af3eaa760cfbdc84
  		};
  	}
  	logAgentLaunch(plan) {
-@@ -4279,10 +4309,17 @@ var AcpClient = class {
+@@ -4279,10 +4321,17 @@ var AcpClient = class {
  	}
  	async spawnAgentProcess(plan) {
  		const spawnCommand = buildAgentSpawnCommand(plan.spawnCommand, plan.args, process.platform, plan.spawnOptions.env);
@@ -145,7 +222,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..17f0739318e61744af3eaa760cfbdc84
  		try {
  			await waitForSpawn$1(spawnedChild);
  		} catch (error) {
-@@ -5028,6 +5065,12 @@ var AcpClient = class {
+@@ -5028,6 +5077,12 @@ var AcpClient = class {
  	attachAgentLifecycleObservers(child) {
  		child.once("exit", (exitCode, signal) => {
  			this.recordAgentExit("process_exit", exitCode, signal);
@@ -158,7 +235,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..17f0739318e61744af3eaa760cfbdc84
  		});
  		child.once("close", (exitCode, signal) => {
  			this.recordAgentExit("process_close", exitCode, signal);
-@@ -6435,6 +6478,27 @@ async function withConnectedSession(options) {
+@@ -6435,6 +6490,27 @@ async function withConnectedSession(options) {
  //#region src/runtime/engine/prompt-turn.ts
  const SESSION_REPLY_IDLE_MS = 1e3;
  const SESSION_REPLY_DRAIN_TIMEOUT_MS = 5e3;
@@ -186,7 +263,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..17f0739318e61744af3eaa760cfbdc84
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt, params.onPromptRequestStarted, params.onElicitation);
-@@ -6444,6 +6508,9 @@ async function runPromptTurn(params) {
+@@ -6444,6 +6520,9 @@ async function runPromptTurn(params) {
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
@@ -196,15 +273,8 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..17f0739318e61744af3eaa760cfbdc84
  		recordPromptResponseUsage(params.conversation, response.usage, params.promptMessageId);
  		return {
  			stopReason: response.stopReason,
-@@ -6518,4 +6547,4 @@ var LiveSessionCheckpoint = class {
- //#endregion
- export { writeSessionRecord as $, PERMISSION_POLICY_ACTIONS as $t, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE as A, TimeoutError as At, getAcpxVersion as B, formatErrorMessage as Bt, mergeSessionOptions as C, PromptInputValidationError as Ct, applyLifecycleSnapshotToRecord as D, promptToDisplayText as Dt, applyConversation as E, parsePromptSource as Et, modelStateFromConfigOptions as F, normalizeAgentName$1 as Ft, findSession as G, toAcpErrorPayload as Gt, DEFAULT_HISTORY_LIMIT as H, normalizeOutputError as Ht, normalizeAgentCommandInput as I, resolveAgentArgv as It, listSessions as J, NON_INTERACTIVE_PERMISSION_POLICIES as Jt, findSessionByDirectoryWalk as K, AUTH_POLICIES as Kt, renderArgvIdentity as L, resolveAgentCommand as Lt, RequestedModelUnsupportedError as M, withTimeout as Mt, assertRequestedModelSupported as N, DEFAULT_AGENT_NAME as Nt, reconcileAgentSessionId as O, textPrompt as Ot, isRequestedModelUnsupportedError as P, listBuiltInAgents as Pt, resolveSessionRecord as Q, PERMISSION_MODES as Qt, runTimedExecFile as R, resolveCanonicalAgentName as Rt, advertisedModelState as S, parsePromptStopReason as St, sessionOptionsFromRecord as T, mergePromptSourceWithText as Tt, absolutePath as U, extractAcpError as Ut, permissionModeSatisfies as V, isRetryablePromptError as Vt, findGitRepositoryRoot as W, isAcpResourceNotFoundError as Wt, normalizeName as X, OUTPUT_ERROR_ORIGINS as Xt, listSessionsForAgent as Y, OUTPUT_ERROR_CODES as Yt, pruneSessions as Z, OUTPUT_FORMATS as Zt, createSessionConversation as _, sessionEventLockPath as _t, applyRequestedModelIfAdvertised as a, measurePerf as at, recordSessionUpdate as b, isAcpJsonRpcMessage as bt, setCurrentModelId as c, setPerfGauge as ct, setDesiredModelId as d, serializeSessionRecordForDisk as dt, SESSION_RECORD_SCHEMA as en, createAtomicWriteTempPath as et, syncAdvertisedModelState as f, normalizeRuntimeSessionId as ft, cloneSessionConversation as g, sessionEventActivePath as gt, cloneSessionAcpxState as h, sessionBaseDir$1 as ht, connectAndLoadSession as i, QueueProtocolError as in, incrementPerfCounter as it, REQUESTED_MODEL_UNSUPPORTED_REASONS as j, withInterrupt as jt, AcpClient as k, InterruptedError as kt, setDesiredConfigOption as l, startPerfTimer as lt, applyConfigOptionsToState as m, defaultSessionEventLog as mt, runPromptTurn as n, AgentSpawnError as nn, formatPerfMetric as nt, currentModelIdFromSetModelResponse as o, recordPerfDuration as ot, applyConfigOptionsToRecord as p, DEFAULT_EVENT_SEGMENT_MAX_BYTES as pt, isoNow$2 as q, EXIT_CODES as qt, withConnectedSession as r, QueueConnectionError as rn, getPerfMetricsSnapshot as rt, clearDesiredConfigOption as s, resetPerfMetrics as st, LiveSessionCheckpoint as t, AcpxOperationalError as tn, assertPersistedKeyPolicy as tt, setDesiredModeId as u, parseSessionRecord as ut, recordClientOperation as v, sessionEventSegmentPath as vt, persistSessionOptions as w, isPromptInput as wt, trimConversationForRuntime as x, parseJsonRpcErrorMessage as xt, recordPromptSubmission as y, extractSessionUpdateNotification as yt, splitCommandLine as z, exitCodeForOutputErrorCode as zt };
-
--//# sourceMappingURL=live-checkpoint-BSIrfgVo.js.map
-\ No newline at end of file
-+//# sourceMappingURL=live-checkpoint-BSIrfgVo.js.map
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index e8102acb03c4c38830ad5ec22f356125eb0423b7..fa94c67bb8389437fe3ac3e8b92f56949778b1f1 100644
+index e8102ac..3c10c1f 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
 @@ -1,7 +1,8 @@
@@ -240,12 +310,14 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..fa94c67bb8389437fe3ac3e8b92f5694
  } | {
    type: "tool_call";
    text: string;
-@@ -313,6 +323,35 @@ type AcpRuntimeOptions = {
+@@ -313,6 +323,37 @@ type AcpRuntimeOptions = {
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
    }) => Promise<AcpPermissionDecision | undefined>;
 +  /** Ephemeral allowlisted environment evaluated immediately before child spawn. */
 +  spawnEnvironment?: () => Record<string, string>;
++  /** Host-owned allowlisted environment added to model-created terminal processes. */
++  terminalEnvironment?: () => Record<string, string>;
 +  /** Host-only spawn cwd; does not change the cwd advertised in session/new. */
 +  spawnCwd?: string;
 +  /** Host-owned verified executable launch. */
@@ -277,7 +349,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..fa94c67bb8389437fe3ac3e8b92f5694
  type AcpFileSessionStoreOptions = {
    stateDir: string;
 diff --git a/dist/runtime.js b/dist/runtime.js
-index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f83e5a8b5 100644
+index a1f4a70..ba26a5a 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -371,7 +371,7 @@ const PROMPT_EVENT_PARSERS = {
@@ -324,7 +396,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  function normalizeUsageCost(value) {
  	if (!isRecord(value)) return;
  	const amount = asOptionalFiniteNumber(value.amount);
-@@ -812,7 +826,17 @@ var AcpRuntimeManager = class {
+@@ -812,7 +840,18 @@ var AcpRuntimeManager = class {
  		this.deps = deps;
  	}
  	createClient(options) {
@@ -333,6 +405,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
 +			...options,
 +			spawnCwd: this.options.spawnCwd,
 +			spawnEnvironment: this.options.spawnEnvironment,
++			terminalEnvironment: this.options.terminalEnvironment,
 +			spawnAgent: this.options.spawnAgent,
 +			onAgentSpawn: this.options.onAgentSpawn,
 +			onAgentStderr: this.options.onAgentStderr,
@@ -343,7 +416,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  	}
  	createSessionOwner(input) {
  		const owner = {
-@@ -821,12 +845,16 @@ var AcpRuntimeManager = class {
+@@ -821,12 +860,16 @@ var AcpRuntimeManager = class {
  			pendingSessionUpdates: []
  		};
  		input.client.setEventHandlers({
@@ -360,7 +433,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  		const active = owner.activeTurn;
  		if (active) {
  			const { task, turn } = active;
-@@ -863,6 +891,9 @@ var AcpRuntimeManager = class {
+@@ -863,6 +906,9 @@ var AcpRuntimeManager = class {
  		projection.checkpoint.request();
  	}
  	routeOwnedClientOperation(owner, operation) {
@@ -370,7 +443,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  		const active = owner.activeTurn;
  		if (!active) return;
  		const { task, turn } = active;
-@@ -1008,6 +1062,8 @@ var AcpRuntimeManager = class {
+@@ -1008,6 +1054,8 @@ var AcpRuntimeManager = class {
  		record.closedAt = void 0;
  		record.protocolVersion = owner.client.initializeResult?.protocolVersion;
  		record.agentCapabilities = owner.client.initializeResult?.agentCapabilities;
@@ -379,7 +452,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  		applyLifecycleSnapshotToRecord(record, owner.client.getAgentLifecycleSnapshot());
  	}
  	async finishBufferedOwnerControl(owner, record) {
-@@ -1086,6 +1142,11 @@ var AcpRuntimeManager = class {
+@@ -1086,6 +1134,11 @@ var AcpRuntimeManager = class {
  		record.closed = false;
  		record.closedAt = void 0;
  		this.closingActiveRecords.delete(record.acpxRecordId);
@@ -391,7 +464,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  		await this.options.sessionStore.save(record);
  		return record;
  	}
-@@ -1149,6 +1210,8 @@ var AcpRuntimeManager = class {
+@@ -1149,6 +1202,8 @@ var AcpRuntimeManager = class {
  		this.closingActiveRecords.delete(record.acpxRecordId);
  		record.protocolVersion = client.initializeResult?.protocolVersion;
  		record.agentCapabilities = client.initializeResult?.agentCapabilities;
@@ -400,7 +473,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  		applyConfigOptionsToRecord(record, session.sessionResult);
  		const modelApplication = await applyRequestedModelIfAdvertised({
  			client,
-@@ -1469,6 +1532,10 @@ var AcpRuntimeManager = class {
+@@ -1469,6 +1524,10 @@ var AcpRuntimeManager = class {
  			setSessionConfigOption: async (configId, value) => {
  				return (await task.state.activeController.setResolvedSessionConfigOption(configId, value)).response;
  			},
@@ -411,7 +484,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  			setResolvedSessionConfigOption: async (configId, value) => await this.setRuntimeResolvedSessionConfigOption(task, turn, configId, value)
  		};
  	}
-@@ -1575,6 +1642,8 @@ var AcpRuntimeManager = class {
+@@ -1575,6 +1634,8 @@ var AcpRuntimeManager = class {
  		reconcileAgentSessionId(turn.record, turn.record.agentSessionId);
  		turn.record.protocolVersion = turn.client.initializeResult?.protocolVersion;
  		turn.record.agentCapabilities = turn.client.initializeResult?.agentCapabilities;
@@ -420,7 +493,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  		turn.record.acpx = turn.acpxState;
  		applyConversation(turn.record, turn.conversation);
  		applyLifecycleSnapshotToRecord(turn.record, turn.client.getAgentLifecycleSnapshot());
-@@ -1707,6 +1776,17 @@ var AcpRuntimeManager = class {
+@@ -1707,6 +1768,17 @@ var AcpRuntimeManager = class {
  		});
  		await this.options.sessionStore.save(result.record);
  	}
@@ -438,7 +511,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  	async cancel(handle) {
  		await this.activeControllers.get(handle.acpxRecordId ?? handle.sessionKey)?.requestCancelActivePrompt();
  	}
-@@ -2119,6 +2199,14 @@ var AcpxRuntime = class {
+@@ -2119,6 +2191,14 @@ var AcpxRuntime = class {
  		const { handle, state } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
  	}
@@ -453,15 +526,8 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  	async cancel(input) {
  		const { handle } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).cancel(handle);
-@@ -2178,4 +2266,4 @@ function createRuntimeStore(options) {
- //#endregion
- export { ACPX_BACKEND_ID, AcpRuntimeError, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
-
--//# sourceMappingURL=runtime.js.map
-\ No newline at end of file
-+//# sourceMappingURL=runtime.js.map
 diff --git a/dist/session-options-DwRDODlr.d.ts b/dist/session-options-DwRDODlr.d.ts
-index c3da1645235bbea22de3f8484149051cd7dca56b..1cd88ed98a5346a345838227e8fd9e7616d0b42b 100644
+index c3da164..4e35921 100644
 --- a/dist/session-options-DwRDODlr.d.ts
 +++ b/dist/session-options-DwRDODlr.d.ts
 @@ -1,4 +1,5 @@
@@ -470,12 +536,14 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..1cd88ed98a5346a345838227e8fd9e76
  //#region src/prompt-content.d.ts
  type PromptInput = ContentBlock[];
  //#endregion
-@@ -116,6 +117,24 @@ type AcpClientOptions = {
+@@ -116,6 +117,26 @@ type AcpClientOptions = {
      };
      env?: Record<string, string>;
    };
 +  /** Ephemeral child environment factory; its return value is never persisted. */
 +  spawnEnvironment?: () => Record<string, string>;
++  /** Host-owned allowlisted environment added to model-created terminal processes. */
++  terminalEnvironment?: () => Record<string, string>;
 +  /** Host-only child cwd, separate from the cwd advertised to ACP. */
 +  spawnCwd?: string;
 +  /** Host-owned verified executable launch. */
@@ -495,7 +563,7 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..1cd88ed98a5346a345838227e8fd9e76
    onAcpMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
    onAcpOutputMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
    onSessionUpdate?: (notification: SessionNotification) => void;
-@@ -263,6 +275,7 @@ type SessionRecord = {
+@@ -263,6 +284,7 @@ type SessionRecord = {
    lastAgentDisconnectReason?: string;
    protocolVersion?: number;
    agentCapabilities?: AgentCapabilities;
@@ -503,10 +571,3 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..1cd88ed98a5346a345838227e8fd9e76
    title?: string | null;
    messages: SessionMessage[];
    updated_at: string;
-@@ -295,4 +308,4 @@ type SessionAgentOptions = {
- };
- //#endregion
- export { SessionRecord as _, AcpElicitationHandler as a, AcpElicitationResponse as c, AuthPolicy as d, McpServer$1 as f, PermissionStats as g, PermissionPolicy as h, AcpElicitationContext as i, AcpPermissionDecision as l, PermissionMode as m, SystemPromptOption as n, AcpElicitationMode as o, NonInteractivePermissionPolicy as p, AcpClientOptions as r, AcpElicitationRequest as s, SessionAgentOptions as t, AcpPermissionRequest as u, PromptInput as v };
--//# sourceMappingURL=session-options-DwRDODlr.d.ts.map
-\ No newline at end of file
-+//# sourceMappingURL=session-options-DwRDODlr.d.ts.map

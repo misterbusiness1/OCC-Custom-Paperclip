@@ -7,6 +7,9 @@ import { getSecretProvider } from "../secrets/provider-registry.js";
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 
 const REGISTRY_KEY = "paperclipSecretRedactions";
+// Full company histories can exceed both the SQL compiler's argument limit and
+// PostgreSQL's parameter limit. Keep registry reads bounded for every caller.
+const REGISTRY_LOOKUP_BATCH_SIZE = 1_000;
 // Project only the registry: run contexts can contain megabytes of prompt data.
 const registrySnapshot = sql`jsonb_build_object('paperclipSecretRedactions', ${heartbeatRuns.contextSnapshot} -> 'paperclipSecretRedactions')`;
 
@@ -120,23 +123,30 @@ export function createRunSecretRedactionRegistry(db: Db) {
     },
     redactForRuns: async <T extends { id: string }>(companyId: string, runs: T[]): Promise<T[]> => {
       if (runs.length === 0) return [];
-      const rows = await db.select({ id: heartbeatRuns.id, contextSnapshot: registrySnapshot })
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, runs.map((run) => run.id))));
       // Resolve each encrypted value once per request, but apply only each run's
       // own registry. Do not retain plaintext secrets across requests.
       const resolved = new Map<string, Promise<string>>();
-      const valuesByRun = new Map(await Promise.all(rows.map(async (row) => {
-        const values = await Promise.all(registryEntries(row.contextSnapshot).map((entry) => {
-          let value = resolved.get(entry.fingerprintSha256);
-          if (!value) {
-            value = provider.resolveVersion({ material: entry.material, externalRef: null });
-            resolved.set(entry.fingerprintSha256, value);
-          }
-          return value;
+      const valuesByRun = new Map<string, string[]>();
+      const runIds = [...new Set(runs.map((run) => run.id))];
+      for (let offset = 0; offset < runIds.length; offset += REGISTRY_LOOKUP_BATCH_SIZE) {
+        const rows = await db.select({ id: heartbeatRuns.id, contextSnapshot: registrySnapshot })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.id, runIds.slice(offset, offset + REGISTRY_LOOKUP_BATCH_SIZE)),
+          ));
+        await Promise.all(rows.map(async (row) => {
+          const values = await Promise.all(registryEntries(row.contextSnapshot).map((entry) => {
+            let value = resolved.get(entry.fingerprintSha256);
+            if (!value) {
+              value = provider.resolveVersion({ material: entry.material, externalRef: null });
+              resolved.set(entry.fingerprintSha256, value);
+            }
+            return value;
+          }));
+          valuesByRun.set(row.id, values.sort((a, b) => b.length - a.length));
         }));
-        return [row.id, values.sort((a, b) => b.length - a.length)] as const;
-      })));
+      }
       return runs.map((run) => redactRegisteredSecretValues(run, valuesByRun.get(run.id) ?? []));
     },
     redactForRun: async <T>(companyId: string, runId: string, value: T): Promise<T> =>

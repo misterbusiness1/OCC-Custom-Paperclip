@@ -4276,6 +4276,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               startedAt: meta.startedAt,
             });
           },
+          // ACP agents may create host-side terminal processes without
+          // forwarding their launch environment. Give terminal/create the
+          // same sanitized run environment as the ACP child.
+          terminalEnv: { ...prepared.env },
           getRuntimeParentContext,
         };
         // Open Q2: split the ~7s `acp.handshake` into the two in-repo-observable
@@ -4299,6 +4303,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // The create_runtime phase runs only on a cold start.
           await emitRunPhaseTiming(ctx, "create_runtime", createRuntimeMs, "ok");
         }
+        // Warm ACP runtimes outlive a single heartbeat. Refresh the environment
+        // before each turn so host-side terminal/create receives this run's JWT,
+        // run id, task id, and scratch paths rather than the prior run's values.
+        await runtime.setTerminalEnv?.({ env: { ...prepared.env } });
         // Register the runtime composite in the ledger now that it exists. The
         // settlement `endSession` step closes it on every path the reuse decision
         // does not transfer. Registration here (before `ensureSession`) closes the

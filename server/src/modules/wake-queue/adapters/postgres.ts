@@ -2,7 +2,7 @@ import { isAcknowledgedNativeStop } from "../../../services/acknowledged-native-
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
-import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { extractIssueReferenceIdentifiers } from "@paperclipai/shared";
 import {
@@ -1102,6 +1102,14 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
               sql`${agentWakeupRequests.payload}->>'issueId' = ${issueRow.id}`,
             )).limit(1)
           : [];
+        // Reassignment cancels the old executor as part of an intentional
+        // handoff. It does not carry the operator Stop's intent to hold work.
+        // Keep native cancellation and terminal/human-owned tasks unchanged.
+        const reassignmentHandoff = run.runtimeMode === "legacy" &&
+          run.status === "cancelled" && run.errorCode === "issue_reassigned" &&
+          Boolean(issueRow?.assigneeAgentId && issueRow.assigneeAgentId !== run.agentId) &&
+          !issueRow?.assigneeUserId &&
+          ["todo", "in_progress", "in_review", "blocked"].includes(issueRow?.status ?? "");
         const preDrainFacts: PreDrainFacts = {
           issueRowPresent: issueRow !== null,
           executionRunIdMatchesRun: !issueRow || !issueRow.executionRunId || issueRow.executionRunId === run.id,
@@ -1117,7 +1125,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           executionCancellationAcknowledged:
             run.status === "cancelled" &&
             (parseObject(run.resultJson?.executionCancellation).state === "acknowledged" || isAcknowledgedNativeStop(run)) &&
-            !interruptedQueue,
+            !interruptedQueue && !reassignmentHandoff,
         };
         const preDrain = decidePreDrain(preDrainFacts);
 
@@ -1136,11 +1144,16 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         // agent's review participation retains its separate recovery path.
         const [successor] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, input.companyId),
-          eq(heartbeatRuns.agentId, run.agentId),
+          reassignmentHandoff
+            ? or(gt(heartbeatRuns.createdAt, run.createdAt),
+                and(eq(heartbeatRuns.createdAt, run.createdAt), sql`${heartbeatRuns.id} > ${run.id}`))
+            : eq(heartbeatRuns.agentId, run.agentId),
           sql`${heartbeatRuns.id} <> ${run.id}`,
           or(eq(heartbeatRuns.nativeIssueId, issueRow.id),
             sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueRow.id}`),
-          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+          // A newer terminal turn also supersedes an old handoff. In
+          // particular, late cleanup must never undo a subsequent Stop.
+          reassignmentHandoff ? undefined : inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
         )).limit(1);
         if (successor) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
 

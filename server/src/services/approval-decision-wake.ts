@@ -1,5 +1,5 @@
-import { and, eq } from "drizzle-orm";
-import { approvals, type Db } from "@paperclipai/db";
+import { and, eq, gte, isNotNull, isNull, or } from "drizzle-orm";
+import { approvals, issueApprovals, issueComments, issues, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 
 // Fork (PR #104, OXFA-31274): board decisions on an approval (approve /
@@ -61,4 +61,58 @@ export async function isVerifiedApprovalDecisionWakeForRequester(
     ))
     .then((rows) => rows[0] ?? null);
   return approval !== null;
+}
+
+/** A board decision can continue its owner's chat without a new comment.
+ * Check the recorded decision and exact conversation link before admitting it;
+ * a decision from before /new must not reopen the previous conversation topic.
+ */
+export async function isVerifiedApprovalDecisionWakeForConversation(
+  dbOrTx: Pick<Db, "select">,
+  input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    requestedByActorType?: string | null;
+    requestedByActorId?: string | null;
+    contextSnapshot: Record<string, unknown> | null | undefined;
+  },
+): Promise<boolean> {
+  if (input.requestedByActorType !== "user" || !input.requestedByActorId) return false;
+  if (!isApprovalDecisionWakeForRequester(input.contextSnapshot)) return false;
+  const approvalId = readNonEmptyString(input.contextSnapshot?.approvalId);
+  const approvalStatus = readNonEmptyString(input.contextSnapshot?.approvalStatus);
+  if (!approvalId || !isUuidLike(approvalId) || !approvalStatus ||
+      input.contextSnapshot?.wakeReason !== `approval_${approvalStatus}`) return false;
+
+  const [decision] = await dbOrTx.select({ id: approvals.id }).from(approvals)
+    .innerJoin(issueApprovals, and(
+      eq(issueApprovals.approvalId, approvals.id),
+      eq(issueApprovals.companyId, input.companyId),
+      eq(issueApprovals.issueId, input.issueId),
+    ))
+    .innerJoin(issues, and(
+      eq(issues.id, issueApprovals.issueId),
+      eq(issues.companyId, input.companyId),
+      eq(issues.conversationAgentId, input.agentId),
+      eq(issues.conversationUserId, input.requestedByActorId),
+    ))
+    .leftJoin(issueComments, and(
+      eq(issueComments.id, issues.conversationBoundaryCommentId),
+      eq(issueComments.companyId, input.companyId),
+      eq(issueComments.issueId, input.issueId),
+    ))
+    .where(and(
+      eq(approvals.id, approvalId),
+      eq(approvals.companyId, input.companyId),
+      eq(approvals.requestedByAgentId, input.agentId),
+      eq(approvals.decidedByUserId, input.requestedByActorId),
+      eq(approvals.status, approvalStatus),
+      isNotNull(approvals.decidedAt),
+      or(
+        isNull(issues.conversationBoundaryCommentId),
+        and(isNotNull(issueComments.id), gte(approvals.createdAt, issueComments.createdAt)),
+      ),
+    )).limit(1);
+  return Boolean(decision);
 }
