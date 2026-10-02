@@ -95,6 +95,7 @@ describe("database backup scheduler", () => {
     vi.setSystemTime(now);
     const dir = backupDir();
     completedBackup(dir, now, "paperclip-20261002-120000.sql.gz.partial");
+    completedBackup(dir, now, "paperclip-legacy.sql.gz");
     completedBackup(dir, now, "another-service-20261002-120000.sql.gz");
     writeFileSync(join(dir, "paperclip-20261002-120000.sql.partial"), "in-flight");
     const runBackup = vi.fn().mockResolvedValue(undefined);
@@ -103,6 +104,25 @@ describe("database backup scheduler", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(runBackup).toHaveBeenCalledTimes(1);
+  });
+
+  it("escapes a configurable prefix when matching current-format completed artifacts", async () => {
+    vi.useFakeTimers();
+    const now = new Date("2026-10-02T12:00:00Z").getTime();
+    vi.setSystemTime(now);
+    const dir = backupDir();
+    completedBackup(dir, now, "paper.clip+prod-20261002-120000.sql.gz");
+    const runBackup = vi.fn().mockResolvedValue(undefined);
+
+    createDatabaseBackupScheduler({
+      backupDir: dir,
+      intervalMs: 24 * HOUR_MS,
+      filenamePrefix: "paper.clip+prod",
+      runBackup,
+    }).start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(runBackup).not.toHaveBeenCalled();
   });
 
   it("serializes overlapping ticks and schedules once after the backup settles", async () => {

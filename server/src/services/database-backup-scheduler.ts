@@ -14,6 +14,10 @@ export type DatabaseBackupSchedulerOptions = {
   onError?: (error: unknown) => void;
 };
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * Return the newest artifact completed by runDatabaseBackup's atomic rename.
  * The backup writer uses `<prefix>-*.sql.gz.partial` while a dump is in
@@ -26,10 +30,12 @@ export function findLatestCompletedDatabaseBackupMtimeMs(
 ): number | null {
   try {
     let latest: number | null = null;
-    const completedPrefix = `${filenamePrefix}-`;
+    const completedName = new RegExp(
+      `^${escapeRegExp(filenamePrefix)}-\\d{8}-\\d{6}\\.sql\\.gz$`,
+    );
 
     for (const name of readdirSync(backupDir)) {
-      if (!name.startsWith(completedPrefix) || !name.endsWith(".sql.gz")) continue;
+      if (!completedName.test(name)) continue;
       const stat = statSync(join(backupDir, name));
       if (!stat.isFile()) continue;
       if (latest === null || stat.mtimeMs > latest) latest = stat.mtimeMs;
