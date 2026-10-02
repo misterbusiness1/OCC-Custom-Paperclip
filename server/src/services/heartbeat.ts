@@ -19221,7 +19221,12 @@ export function heartbeatService(
     // is still deferred, including after a failed cleanup promotion or restart.
     // Normal admission still checks process ownership, leases, pauses, and scope.
     const interruptedQueues = await db
-      .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId })
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        issueId: sql<string | null>`${agentWakeupRequests.payload}->>'issueId'`,
+        commentIds: agentWakeupRequests.payload,
+      })
       .from(agentWakeupRequests)
       .innerJoin(heartbeatRuns, and(
         sql`${heartbeatRuns.resultJson}->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text`,
@@ -19237,6 +19242,24 @@ export function heartbeatService(
         cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
       ));
     for (const run of interruptedQueues) {
+      const issueId = readNonEmptyString(run.issueId);
+      const commentIds = queuedCommentIdsFromWakePayload(run.commentIds);
+      if (!issueId || commentIds.length === 0) continue;
+      const admissibleComments = await db
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(and(
+          eq(issueComments.companyId, run.companyId),
+          eq(issueComments.issueId, issueId),
+          inArray(issueComments.id, commentIds),
+          eq(issueComments.authorType, "user"),
+          isNotNull(issueComments.authorUserId),
+          isNull(issueComments.authorAgentId),
+          isNull(issueComments.createdByRunId),
+          sql`length(regexp_replace(${issueComments.body}, '\\s', '', 'g')) > 0`,
+          isNull(issueComments.deletedAt),
+        ));
+      if (admissibleComments.length !== commentIds.length) continue;
       await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true }).catch((err) => {
         logger.error({ err, runId: run.id }, "failed to retry interrupted comment queue");
       });
@@ -19680,7 +19703,53 @@ export function heartbeatService(
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun, companyAgents, deferredPostCommitEffects);
+        await recoverPersistedQueuedCommentInterruptReceipt(queuedRun);
+        let claimed: typeof heartbeatRuns.$inferSelect | null;
+        try {
+          claimed = await claimQueuedRun(
+            queuedRun,
+            companyAgents,
+            deferredPostCommitEffects,
+          );
+        } catch (error) {
+          if (
+            !(error instanceof HttpError) ||
+            error.status !== 403 ||
+            error.message !== "Queued-message interrupt authority is unavailable"
+          ) throw error;
+          const failed = await db
+            .update(heartbeatRuns)
+            .set({
+              status: "failed",
+              error: error.message,
+              errorCode: "queued_comment_interrupt_authority_unavailable",
+              finishedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, queuedRun.id),
+                eq(heartbeatRuns.companyId, queuedRun.companyId),
+                eq(heartbeatRuns.status, "queued"),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (failed) {
+            await setWakeupStatus(failed.wakeupRequestId, "failed", {
+              error: error.message,
+              finishedAt: new Date(),
+            });
+            await appendRunEvent(failed, {
+              eventType: "error",
+              stream: "system",
+              level: "error",
+              message: error.message,
+              payload: { code: "queued_comment_interrupt_authority_unavailable" },
+            });
+          }
+          continue;
+        }
         if (claimed) claimedRuns.push(claimed);
       }
       if (claimedRuns.length === 0) return [];
@@ -19709,6 +19778,216 @@ export function heartbeatService(
     // Start the promoted run after releasing this agent's start lock.
     await applyWakeQueuePostCommitEffects(deferredPostCommitEffects);
     return startedRuns;
+  }
+
+  async function recoverPersistedQueuedCommentInterruptReceipt(
+    candidate: typeof heartbeatRuns.$inferSelect,
+  ) {
+    const request = candidate.wakeupRequestId
+      ? await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.id, candidate.wakeupRequestId),
+              eq(agentWakeupRequests.companyId, candidate.companyId),
+              eq(agentWakeupRequests.agentId, candidate.agentId),
+              eq(agentWakeupRequests.runId, candidate.id),
+            ),
+          )
+          .then((rows) => rows[0] ?? null)
+      : null;
+    const prefix = "queued-comment-interrupt:";
+    if (!request?.idempotencyKey?.startsWith(prefix)) return;
+    const receiptId = request.idempotencyKey.slice(prefix.length);
+    if (!isUuidLike(receiptId)) return;
+
+    const issueId = readNonEmptyString(candidate.contextSnapshot?.issueId);
+    const deliveredCommentIds = queuedCommentIdsFromRunContext(
+      candidate.contextSnapshot,
+    );
+    const [receipt, sourceRun] = await Promise.all([
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.id, receiptId),
+            eq(agentWakeupRequests.companyId, candidate.companyId),
+            eq(agentWakeupRequests.agentId, candidate.agentId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null),
+      db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, candidate.companyId),
+            eq(heartbeatRuns.agentId, candidate.agentId),
+            eq(heartbeatRuns.status, "cancelled"),
+            eq(heartbeatRuns.runtimeMode, "legacy"),
+            sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId ?? ""}`,
+            sql`${heartbeatRuns.resultJson}->>'queuedCommentInterruptQueueId' = ${receiptId}`,
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+    if (!receipt || receipt.status !== "deferred_issue_execution" || receipt.runId || !sourceRun) return;
+    const marker = parseObject(receipt.payload?.queuedCommentInterrupt);
+    const actorId = readNonEmptyString(marker.actorId);
+    const receiptIssueId = readNonEmptyString(receipt.payload?.issueId);
+    const receiptCommentIds = queuedCommentIdsFromWakePayload(receipt.payload);
+    const cancellation = parseObject(sourceRun.resultJson?.executionCancellation);
+    const cancellationAcknowledgedAt = dateValue(cancellation.acknowledgedAt);
+    if (
+      !issueId ||
+      !actorId ||
+      receiptIssueId !== issueId ||
+      request.requestedByActorType !== "user" ||
+      request.requestedByActorId !== actorId ||
+      receiptCommentIds.length === 0 ||
+      !receiptCommentIds.every((id) => deliveredCommentIds.includes(id)) ||
+      cancellation.state !== "acknowledged" ||
+      cancellation.forced !== false ||
+      !cancellationAcknowledgedAt ||
+      !sourceRun.finishedAt ||
+      cancellationAcknowledgedAt.getTime() > sourceRun.finishedAt.getTime() ||
+      !hasConversationContinuationPolicy(sourceRun.resultJson) ||
+      activeRunExecutions.has(sourceRun.id) ||
+      adapterExecutionControls.has(sourceRun.id) ||
+      (await hasLiveLegacyController(db, sourceRun))
+    ) return;
+    const unresolvedLeases = await db
+      .select({ id: environmentLeases.id })
+      .from(environmentLeases)
+      .where(
+        and(
+          eq(environmentLeases.companyId, candidate.companyId),
+          eq(environmentLeases.heartbeatRunId, sourceRun.id),
+          or(
+            isNull(environmentLeases.releasedAt),
+            eq(environmentLeases.status, "pending_cleanup"),
+            eq(environmentLeases.cleanupStatus, "failed"),
+          ),
+        ),
+      )
+      .limit(1);
+    if (unresolvedLeases.length) return;
+
+    await db.transaction(async (tx) => {
+      const [issue] = await tx
+        .select()
+        .from(issues)
+        .where(
+          and(eq(issues.id, issueId), eq(issues.companyId, candidate.companyId)),
+        )
+        .for("update");
+      const [run] = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.id, candidate.id),
+            eq(heartbeatRuns.companyId, candidate.companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            eq(heartbeatRuns.wakeupRequestId, request.id),
+          ),
+        )
+        .for("update");
+      const [lockedReceipt] = await tx
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.id, receiptId),
+            eq(agentWakeupRequests.companyId, candidate.companyId),
+            eq(agentWakeupRequests.agentId, candidate.agentId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            isNull(agentWakeupRequests.runId),
+          ),
+        )
+        .for("update");
+      const [membership] = await tx
+        .select({ id: companyMemberships.id })
+        .from(companyMemberships)
+        .where(
+          and(
+            eq(companyMemberships.companyId, candidate.companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, actorId),
+            eq(companyMemberships.status, "active"),
+          ),
+        )
+        .limit(1);
+      const comments = await tx
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, candidate.companyId),
+            eq(issueComments.issueId, issueId),
+            inArray(issueComments.id, receiptCommentIds),
+            eq(issueComments.authorType, "user"),
+            isNotNull(issueComments.authorUserId),
+            isNull(issueComments.authorAgentId),
+            isNull(issueComments.createdByRunId),
+            sql`length(regexp_replace(${issueComments.body}, '\\s', '', 'g')) > 0`,
+            isNull(issueComments.deletedAt),
+          ),
+        );
+      if (
+        !issue ||
+        !run ||
+        !lockedReceipt ||
+        !membership ||
+        !isConversation(issue) ||
+        issue.conversationAgentId !== candidate.agentId ||
+        issue.conversationUserId !== actorId ||
+        comments.length !== receiptCommentIds.length ||
+        readNonEmptyString(parseObject(lockedReceipt.payload?.queuedCommentInterrupt).actorId) !== actorId ||
+        readNonEmptyString(lockedReceipt.payload?.issueId) !== issueId ||
+        !queuedCommentIdsFromWakePayload(lockedReceipt.payload).every((id) =>
+          deliveredCommentIds.includes(id),
+        )
+      ) return;
+      const [recovered] = await tx
+        .update(agentWakeupRequests)
+        .set({
+          status: "coalesced",
+          runId: run.id,
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.id, lockedReceipt.id),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            isNull(agentWakeupRequests.runId),
+          ),
+        )
+        .returning({ id: agentWakeupRequests.id });
+      if (!recovered) return;
+      await logActivity(tx as unknown as Db, {
+        companyId: candidate.companyId,
+        actorType: "system",
+        actorId: "heartbeat-recovery",
+        agentId: candidate.agentId,
+        runId: run.id,
+        action: "heartbeat.queued_comment_interrupt_receipt_recovered",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          receiptId: lockedReceipt.id,
+          sourceRunId: sourceRun.id,
+          issueId,
+          actorId,
+          commentCount: receiptCommentIds.length,
+        },
+      });
+    });
   }
 
   // Await every background heartbeat execution that is currently in flight. A
@@ -19927,6 +20206,8 @@ export function heartbeatService(
       }
       run = claimed;
     }
+
+    await recoverPersistedQueuedCommentInterruptReceipt(run);
 
     if (
       runOptions.nativeLeaseOwner &&
@@ -27936,8 +28217,11 @@ export function heartbeatService(
                   or(isNull(heartbeatRuns.nativeIssueId), eq(heartbeatRuns.nativeIssueId, issue.id)),
                 )).then(rows => rows[0] ?? null)
               : null;
+          const explicitQueuedCommentReceiptId =
+            opts.queuedCommentInterruptId ?? opts.queuedCommentRequestId;
           const pendingComments =
-            !isConversation(issue) && opts.allowRunCoalescing !== false &&
+            (explicitQueuedCommentReceiptId ||
+              (!isConversation(issue) && opts.allowRunCoalescing !== false)) &&
             !(await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id))
               ? await tx
                   .select()
@@ -27948,6 +28232,9 @@ export function heartbeatService(
                       inArray(agentWakeupRequests.agentId, handoffSource ? [agentId, handoffSource.agentId] : [agentId]),
                       eq(agentWakeupRequests.status, "deferred_issue_execution"),
                       sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+                      explicitQueuedCommentReceiptId
+                        ? eq(agentWakeupRequests.id, explicitQueuedCommentReceiptId)
+                        : undefined,
                     ),
                   )
                   .orderBy(asc(agentWakeupRequests.requestedAt))
