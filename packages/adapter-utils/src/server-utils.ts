@@ -3444,6 +3444,22 @@ export async function prepareRunOwnedPaperclipEnv(
       if (error.code !== "EEXIST") throw error;
     }),
   ]);
+  // Linux limits each argv/environment entry to about 128 KiB. Preserve the
+  // entire wake in private run-owned storage before starting any local child,
+  // including ACP session initialization and nested commands. Use byte length
+  // and leave headroom for the variable name and other process transports.
+  const wakeJson = env.PAPERCLIP_WAKE_PAYLOAD_JSON;
+  if (wakeJson && Buffer.byteLength(wakeJson, "utf8") > 64 * 1024) {
+    const payloadDir = await fs.mkdtemp(path.join(rootDir, "wake-"));
+    const payloadFile = path.join(payloadDir, "payload.json");
+    await fs.writeFile(payloadFile, wakeJson, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    env.PAPERCLIP_WAKE_PAYLOAD_FILE = payloadFile;
+    env.PAPERCLIP_WAKE_PAYLOAD_JSON = JSON.stringify({
+      payloadFile,
+      fallbackFetchNeeded: true,
+      instructions: "Read the complete wake payload from PAPERCLIP_WAKE_PAYLOAD_FILE before acting; this object is only a transport reference.",
+    });
+  }
   for (const key of PAPERCLIP_DISCOVERY_SELECTORS) delete env[key];
   env.PAPERCLIP_HOME = homeDir;
   env.PAPERCLIP_CONFIG = configPath;
