@@ -72,6 +72,7 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { observeSkillSuggestion, type SkillSuggestionShadowObservation } from "./skill-suggestion-shadow.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -304,6 +305,13 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
+];
+const LIVENESS_BOOKKEEPING_RUN_EVENT_TYPES = [
+  "lifecycle",
+  "adapter.invoke",
+  "error",
+  "skill.suggestion.shadow",
+  "skill.load.attribution",
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
@@ -1020,6 +1028,18 @@ export function applyRunScopedMentionedSkillKeys(
     ...existingPreference.desiredSkillEntries,
     ...normalizedSkillKeys,
   ]);
+}
+
+export function partitionSkillSuggestionTriggers(
+  mandatorySkillNames: string[],
+  mentionedSkillNames: string[],
+) {
+  const mandatory = [...new Set(mandatorySkillNames)];
+  const mandatorySet = new Set(mandatory);
+  return {
+    mandatorySkillNames: mandatory,
+    explicitSkillNames: [...new Set(mentionedSkillNames)].filter((key) => !mandatorySet.has(key)),
+  };
 }
 
 export function computeBoundedTransientHeartbeatRetrySchedule(
@@ -11290,11 +11310,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const [eventStats] = await db
       .select({
-        count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
-        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))`,
+        count: sql<number>`count(*)::int`,
+        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt})`,
       })
       .from(heartbeatRunEvents)
-      .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id)));
+      .where(
+        and(
+          eq(heartbeatRunEvents.companyId, run.companyId),
+          eq(heartbeatRunEvents.runId, run.id),
+          notInArray(heartbeatRunEvents.eventType, LIVENESS_BOOKKEEPING_RUN_EVENT_TYPES),
+        ),
+      );
 
     return {
       runStatus: run.status,
@@ -12314,6 +12340,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipSecrets;
     }
+    const { mandatorySkillNames, explicitSkillNames } = partitionSkillSuggestionTriggers(
+      readPaperclipSkillSyncPreference(resolvedConfig).desiredSkills,
+      runScopedMentionedSkillKeys,
+    );
     const effectiveResolvedConfig = applyRunScopedMentionedSkillKeys(
       resolvedConfig,
       runScopedMentionedSkillKeys,
@@ -12322,6 +12352,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
       versionSelections: skillVersionSelectionMap(runtimeSkillPreference.desiredSkillEntries),
     });
+    let skillSuggestionShadow: SkillSuggestionShadowObservation | null = null;
+    let skillActuallyLoaded: string | null = null;
+    const runtimeSkillNames = new Set(runtimeSkillEntries.flatMap((entry) => [entry.key, entry.runtimeName]));
+    try {
+      skillSuggestionShadow = await observeSkillSuggestion({
+        env: runtimeEnv,
+        workerManager: options.pluginWorkerManager,
+        companyId: agent.companyId,
+        request: `${issueRef?.title ?? ""}\n${issueRef?.description ?? ""}`,
+        skills: runtimeSkillEntries,
+        explicitSkillNames,
+        mandatorySkillNames,
+      });
+    } catch {
+      // Shadow selection is fail-open and can never prevent the current turn.
+    }
     let runtimeConfig: Record<string, unknown> = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
@@ -13165,6 +13211,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         level: "info",
         message: "run started",
       });
+      if (skillSuggestionShadow) {
+        await appendRunEvent(currentRun, seq++, {
+          eventType: "skill.suggestion.shadow",
+          stream: "system",
+          level: skillSuggestionShadow.status === "failed_open" ? "warn" : "info",
+          message: "sanitized skill suggestion shadow observation",
+          payload: skillSuggestionShadow,
+        });
+      }
 
       handle = await runLogStore.begin({
         companyId: run.companyId,
@@ -13361,6 +13416,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const onAdapterEvent = async (event: AdapterRuntimeEvent) => {
         const eventType = event.eventType.trim();
         if (!eventType) return;
+        if (/skill.*(load|read)|(?:load|read).*skill/i.test(eventType)) {
+          const payload = parseObject(event.payload);
+          const candidate = readNonEmptyString(payload.skillName) ?? readNonEmptyString(payload.skill) ?? readNonEmptyString(payload.name);
+          if (candidate && runtimeSkillNames.has(candidate)) skillActuallyLoaded ??= candidate;
+        }
         await appendRunEvent(currentRun, seq++, {
           eventType: eventType.slice(0, 120),
           stream: event.stream,
@@ -13883,6 +13943,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: {
             status,
             exitCode: adapterResult.exitCode,
+          },
+        });
+        await appendRunEvent(finalizedRun, seq++, {
+          eventType: "skill.load.attribution",
+          stream: "system",
+          level: "info",
+          message: "terminal skill load attribution",
+          payload: {
+            contractVersion: "skill-suggestion-shadow.v1",
+            suggestedSkill: skillSuggestionShadow?.suggestion ?? null,
+            skillActuallyLoaded,
           },
         });
         try {
@@ -16737,7 +16808,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean } = {},
+      options: { summary?: boolean; offset?: number } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
@@ -16766,9 +16837,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
             : eq(heartbeatRuns.companyId, companyId),
         )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
 
-      const rows = limit ? await query.limit(limit) : await query;
+      const pagedQuery = limit ? query.limit(limit) : query;
+      const rows = options.offset ? await pagedQuery.offset(options.offset) : await pagedQuery;
       return rows.map((row) => {
         const {
           contextIssueId,

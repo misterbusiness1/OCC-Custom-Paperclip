@@ -3588,9 +3588,13 @@ export function agentRoutes(
     assertCompanyAccess(req, companyId);
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const parsedLimit = limitParam ? parseInt(limitParam, 10) : 200;
+    const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(1000, parsedLimit)) : 200;
+    const offsetParam = req.query.offset as string | undefined;
+    const parsedOffset = offsetParam ? parseInt(offsetParam, 10) : 0;
+    const offset = Number.isFinite(parsedOffset) ? Math.max(0, parsedOffset) : 0;
     const summary = req.query.summary === "true" || req.query.summary === "1";
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary, offset });
     res.json(runs);
   });
 

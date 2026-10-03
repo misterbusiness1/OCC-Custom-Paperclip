@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "exceptions": [
+    {
+      "advisory": "GHSA-ch52-4w7c-c8xp",
+      "module": "http-cache-semantics",
+      "severity": "high",
+      "expiresOn": "2026-10-17",
+      "rationale": "No patched release exists; the affected package is reached through sqlite3 install/build tooling rather than Paperclip HTTP caching runtime.",
+      "dependencyPath": [
+        "sqlite3@5.1.7",
+        "node-gyp@8.4.1",
+        "make-fetch-happen@9.1.0",
+        "http-cache-semantics@4.2.0"
+      ]
+    }
+  ]
+}

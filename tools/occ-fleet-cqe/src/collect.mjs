@@ -7,6 +7,7 @@ import { classifyDependencyAudit, classifyProtection, gapRecords } from "./class
 import { githubApi as gh, listInstalledRepositories } from "./github.mjs";
 import { validateInstallationInventory } from "./inventory.mjs";
 import { collectDependabotAlerts, mergedReviewRecord } from "./reviews.mjs";
+import { collectOccReviewBotRuleset, rulesetDriftMarkdown } from "./rulesets.mjs";
 import { dependencyAdvisories } from "./trends.mjs";
 
 const SCHEMA_VERSION = "2.0.0";
@@ -85,6 +86,8 @@ function mergedReviews(repo) {
 try {
   const installed = listInstalledRepositories();
   validateInstallationInventory(installed, args.repositoryOwner);
+  const rulesetDrift = installed.map((repo) => collectOccReviewBotRuleset(repo.repository, gh));
+  const rulesetByRepository = new Map(rulesetDrift.map((result) => [result.repository, result]));
 
   const repositories = installed.map((repo) => {
     const names = [...new Set([repo.default_branch, "main", "production"])];
@@ -94,7 +97,7 @@ try {
       if (exists.status === 403) return { name, protection: { state: "unknown", detail: "denied", contexts: [] } };
       return { name, protection: protection(repo.repository, name) };
     }).filter(Boolean);
-    const record = { ...repo, observed_at: observedAt, branches, merged_pr_reviews: mergedReviews(repo.repository), dependency_coverage: dependencyCoverage(repo.repository), dependency_advisories: advisoryEvidence(repo.repository), collection_errors: [] };
+    const record = { ...repo, observed_at: observedAt, branches, occ_review_bot_ruleset: rulesetByRepository.get(repo.repository), merged_pr_reviews: mergedReviews(repo.repository), dependency_coverage: dependencyCoverage(repo.repository), dependency_advisories: advisoryEvidence(repo.repository), collection_errors: [] };
     return { ...record, proposed_owner_assignments: gapRecords(record) };
   });
 
@@ -103,12 +106,17 @@ try {
     coverage_gaps: repositories.reduce((sum, repo) => sum + repo.proposed_owner_assignments.length, 0),
     unknowns: repositories.reduce((sum, repo) => sum + repo.proposed_owner_assignments.filter((gap) => gap.state === "unknown").length, 0),
     errors: repositories.reduce((sum, repo) => sum + repo.collection_errors.length, 0),
+    ruleset_drift: rulesetDrift.filter((result) => result.state !== "pass").length,
   };
-  const report = { schema_version: SCHEMA_VERSION, schema_id: "occ-fleet-cqe/2.0.0", collector_sha: args.collectorSha, run_issue: args.runIssue, started_at: startedAt, completed_at: new Date().toISOString(), observed_at: observedAt, installed_repository_count: installed.length, totals, repositories };
+  const report = { schema_version: SCHEMA_VERSION, schema_id: "occ-fleet-cqe/2.0.0", collector_sha: args.collectorSha, run_issue: args.runIssue, started_at: startedAt, completed_at: new Date().toISOString(), observed_at: observedAt, installed_repository_count: installed.length, ruleset_drift: rulesetDrift, totals, repositories };
   mkdirSync(dirname(resolve(args.output)), { recursive: true });
   writeFileSync(args.output, `${JSON.stringify(report, null, 2)}\n`);
-  const markdown = `# Fleet CQE coverage\n\n- Schema: ${SCHEMA_VERSION}\n- Collector SHA: \`${args.collectorSha}\`\n- Run issue: ${args.runIssue}\n- Installed repositories: ${totals.repositories}\n- Coverage gaps: ${totals.coverage_gaps}\n- Unknowns: ${totals.unknowns}\n- Collection errors: ${totals.errors}\n\nThe JSON artifact is canonical. Findings are report-only proposals; no tasks or repository settings were changed.\n`;
+  const markdown = `# Fleet CQE coverage\n\n- Schema: ${SCHEMA_VERSION}\n- Collector SHA: \`${args.collectorSha}\`\n- Run issue: ${args.runIssue}\n- Installed repositories: ${totals.repositories}\n- Coverage gaps: ${totals.coverage_gaps}\n- Unknowns: ${totals.unknowns}\n- Collection errors: ${totals.errors}\n- Ruleset drift: ${totals.ruleset_drift}\n\n${rulesetDriftMarkdown(rulesetDrift)}\nThe JSON artifact is canonical. Findings are report-only proposals; no tasks or repository settings were changed.\n`;
   writeFileSync(args.summary, markdown);
+  if (totals.ruleset_drift > 0) {
+    console.error(`exact-head OCC Review Bot ruleset drift detected in ${totals.ruleset_drift} repositories`);
+    process.exitCode = 2;
+  }
 } catch (error) {
   console.error(error.message);
   process.exitCode = 2;

@@ -1,6 +1,6 @@
 # OCC fleet CQE coverage collector
 
-This isolated operations tool produces a deterministic, report-only inventory for the 39 repositories installed on the governed `occ-review-bot` GitHub App. It does not import Paperclip server modules and it never mutates GitHub, repositories, workflows, dependencies, Paperclip tasks, staging, or production.
+This isolated operations tool produces a deterministic, report-only inventory for the 45 repositories installed on the governed `occ-review-bot` GitHub App. The reviewed contract is pinned by [`repository-manifest.v1.json`](repository-manifest.v1.json), so installation drift fails with named added and missing repository deltas instead of a count-only error. The same manifest drives an effective-ruleset audit that requires exactly one active `Require exact-head OCC Review Bot` rule on each default branch, with no bypass actors and the `OCC Review Bot` context pinned to GitHub App integration `3604655`. It does not import Paperclip server modules and it never mutates GitHub, repositories, workflows, dependencies, Paperclip tasks, staging, or production.
 
 ## Scheduled invocation
 
@@ -28,12 +28,13 @@ Schema `2.0.0` is defined by [`schema.v2.json`](schema.v2.json) and is additive 
 Trend evidence retrieval is paginated in bounded 100-record pages. Exhausting the bound or losing access on any page discards partial results and marks the lane non-measured. When multiple PHPStan or PHPCS checks map to one tool, annotation counts and baseline deltas are summed across the complete set; if any mapped check has incomplete annotation evidence, the whole tool result is non-measured.
 
 - Branch protection checks the default branch plus `main` and `production` when present. Required `OCC Review Bot` or `CQE` is `pass`; an accessible protection response without it is `fail`; denied access is `unknown`.
+- Exact-head ruleset drift reads effective rulesets with parent inclusion, then reads the matching ruleset detail and compares target, default-branch include, enforcement, bypass actors, required context and integration, strict policy, and create behavior. Missing, duplicate, inaccessible, or altered rules fail closed with repository names and field-level deltas in JSON and Markdown. The collector never repairs rulesets.
 - Up to 100 recently updated closed PRs per repository are inspected by default. Merged PR bot-review states are `approved`, `stale_head`, `non_approve`, `missing`, or `unknown`.
 - Dependency coverage passes only when a matching lockfile is present and the scheduled runtime successfully probes the corresponding audit command (`composer audit --help` or `npm audit --help`), or when the repository vulnerability-alert feed is verified enabled. Lockfiles alone never pass. Unavailable tooling and denied or disabled/unavailable alert access are `unknown`, never clean.
 - Dependency advisory evidence counts open, non-dismissed Dependabot alerts by severity. Audit-command availability alone never produces a zero advisory count.
 - Owner-assignment records are bounded by the inspected repositories/branches/PRs and keyed as `owner/name:kind:subject`. They are proposals only; v1 does not emit Paperclip or GitHub issues.
 
-Collector/runtime/schema failure, a repository count other than 39, duplicate repositories, or artifact-upload failure is operational failure and must exit non-zero. Coverage findings and explicit unknowns remain report findings and do not by themselves change the collector exit status. The scheduler must treat upload failure as non-zero because upload occurs outside this process.
+Collector/runtime/schema failure, any difference from the pinned 45-repository manifest, any exact-head ruleset drift or unreadable ruleset evidence, duplicate repositories, or artifact-upload failure is operational failure and must exit non-zero. A manifest mismatch names both added and missing repositories so reviewers can deliberately accept installation changes. Ruleset drift names the repository and every mismatched field. Other coverage findings and explicit unknowns remain report findings and do not by themselves change the collector exit status. The scheduler must treat upload failure as non-zero because upload occurs outside this process.
 
 ## Verification and rollback
 

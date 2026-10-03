@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agentApiKeys, companies, heartbeatRuns, issues } from "@paperclipai/db";
+import { activityLog, agentApiKeys, agents, companies, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
+import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { publishLiveEvent } from "./live-events.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { sanitizeRecord } from "../redaction.js";
@@ -124,6 +125,47 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
   return readNonEmptyString(company?.defaultResponsibleUserId);
 }
 
+export async function resolveIssueMandatorySkillNames(
+  db: Db,
+  companyId: string,
+  issueId: string,
+): Promise<{ available: boolean; names: string[] }> {
+  if (!isUuidLike(issueId)) return { available: false, names: [] };
+  const issue = await db
+    .select({
+      assigneeAgentId: issues.assigneeAgentId,
+      assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+    .then((rows) => rows[0] ?? null);
+  if (!issue) return { available: false, names: [] };
+  if (!issue.assigneeAgentId) return { available: true, names: [] };
+
+  const agent = await db
+    .select({ adapterConfig: agents.adapterConfig })
+    .from(agents)
+    .where(and(eq(agents.companyId, companyId), eq(agents.id, issue.assigneeAgentId)))
+    .then((rows) => rows[0] ?? null);
+  if (!agent) return { available: false, names: [] };
+
+  const baseConfig = agent.adapterConfig && typeof agent.adapterConfig === "object" && !Array.isArray(agent.adapterConfig)
+    ? agent.adapterConfig as Record<string, unknown>
+    : {};
+  const overrides = issue.assigneeAdapterOverrides && typeof issue.assigneeAdapterOverrides === "object"
+    && !Array.isArray(issue.assigneeAdapterOverrides)
+    ? issue.assigneeAdapterOverrides as Record<string, unknown>
+    : {};
+  const overrideConfig = overrides.adapterConfig && typeof overrides.adapterConfig === "object"
+    && !Array.isArray(overrides.adapterConfig)
+    ? overrides.adapterConfig as Record<string, unknown>
+    : {};
+  return {
+    available: true,
+    names: readPaperclipSkillSyncPreference({ ...baseConfig, ...overrideConfig }).desiredSkills,
+  };
+}
+
 export async function logActivity(db: Db, input: LogActivityInput) {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
@@ -164,6 +206,10 @@ export async function logActivity(db: Db, input: LogActivityInput) {
 
   const pluginEventType = eventTypeForActivityAction(input.action);
   if (pluginEventType) {
+    const mandatorySkills = input.entityType === "issue"
+      && (pluginEventType === "issue.created" || pluginEventType === "issue.updated")
+      ? await resolveIssueMandatorySkillNames(db, input.companyId, input.entityId)
+      : null;
     const event: PluginEvent = {
       eventId: randomUUID(),
       eventType: pluginEventType,
@@ -178,6 +224,10 @@ export async function logActivity(db: Db, input: LogActivityInput) {
         agentId: input.agentId ?? null,
         runId: input.runId ?? null,
         responsibleUserId,
+        ...(mandatorySkills ? {
+          mandatorySkillNames: mandatorySkills.names,
+          mandatorySkillNamesAvailable: mandatorySkills.available,
+        } : {}),
       },
     };
     publishPluginDomainEvent(event);

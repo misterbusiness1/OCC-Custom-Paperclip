@@ -224,6 +224,54 @@ describeEmbeddedPostgres("heartbeat list", () => {
     });
   });
 
+  it("uses id as a deterministic tie-breaker and returns disjoint offset pages", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const tiedCreatedAt = new Date("2026-09-28T12:00:00.000Z");
+    const runIds = [
+      "00000000-0000-4000-8000-000000000004",
+      "00000000-0000-4000-8000-000000000003",
+      "00000000-0000-4000-8000-000000000002",
+      "00000000-0000-4000-8000-000000000001",
+    ];
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values(
+      runIds.map((id) => ({
+        id,
+        companyId,
+        agentId,
+        invocationSource: "assignment" as const,
+        status: "succeeded" as const,
+        createdAt: tiedCreatedAt,
+      })),
+    );
+
+    const service = heartbeatService(db);
+    const firstPage = await service.list(companyId, agentId, 2, { summary: true, offset: 0 });
+    const secondPage = await service.list(companyId, agentId, 2, { summary: true, offset: 2 });
+
+    expect(firstPage.map((run) => run.id)).toEqual(runIds.slice(0, 2));
+    expect(secondPage.map((run) => run.id)).toEqual(runIds.slice(2));
+    expect(new Set([...firstPage, ...secondPage].map((run) => run.id)).size).toBe(4);
+  });
+
   it("bounds oversized legacy result json payloads on getRun", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

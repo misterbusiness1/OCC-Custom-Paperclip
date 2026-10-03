@@ -5154,6 +5154,59 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(sourceRun?.livenessState).toBe("plan_only");
   });
 
+  it("does not count observed shadow or attribution telemetry as liveness evidence", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db.insert(heartbeatRunEvents).values([
+        {
+          companyId,
+          runId: ctx.runId,
+          agentId,
+          seq: 100,
+          eventType: "skill.suggestion.shadow",
+          stream: "system",
+          message: "sanitized skill suggestion shadow observation",
+          payload: { status: "observed" },
+        },
+        {
+          companyId,
+          runId: ctx.runId,
+          agentId,
+          seq: 101,
+          eventType: "skill.load.attribution",
+          stream: "system",
+          message: "terminal skill load attribution",
+          payload: { suggestedSkill: "typesafe-ai", skillActuallyLoaded: null },
+        },
+      ]);
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "I will inspect the repo next and then implement the fix.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reconcileStrandedAssignedIssues();
+
+    const livenessWake = await waitForValue(async () => {
+      const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+      return rows.find((row) => row.reason === "run_liveness_continuation") ?? null;
+    });
+    expect(livenessWake?.payload).toMatchObject({
+      issueId,
+      livenessState: "plan_only",
+      continuationAttempt: 1,
+    });
+  });
+
   it("treats a plan document update as progress and does not enqueue liveness continuation", async () => {
     const { agentId, companyId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",

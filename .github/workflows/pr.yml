@@ -171,7 +171,53 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Audit production dependencies
-        run: pnpm audit --prod --audit-level=high
+        run: pnpm run audit:prod
+
+  typesafe_skill_suggestion:
+    name: TypeSafe skill-suggestion standalone
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install root and standalone dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir packages/plugins/plugin-typesafe-skill-suggestion install --ignore-workspace --frozen-lockfile
+          node scripts/link-plugin-dev-sdk.mjs
+          pnpm --filter @paperclipai/plugin-sdk build
+
+      - name: Audit standalone production dependencies
+        run: pnpm --ignore-workspace --dir packages/plugins/plugin-typesafe-skill-suggestion audit --prod --audit-level=high
+
+      - name: Test, typecheck, build, and verify entrypoints
+        run: |
+          pnpm --dir packages/plugins/plugin-typesafe-skill-suggestion test
+          pnpm --dir packages/plugins/plugin-typesafe-skill-suggestion typecheck
+          pnpm --dir packages/plugins/plugin-typesafe-skill-suggestion build
+          test -f packages/plugins/plugin-typesafe-skill-suggestion/dist/manifest.js
+          test -f packages/plugins/plugin-typesafe-skill-suggestion/dist/worker.js
 
   general_tests:
     name: General tests (${{ matrix.group_label }})
@@ -240,7 +286,7 @@ jobs:
     # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
     if: ${{ always() }}
-    needs: [typecheck_release_registry, dependency_audit, general_tests, build]
+    needs: [typecheck_release_registry, dependency_audit, typesafe_skill_suggestion, general_tests, build]
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -249,11 +295,13 @@ jobs:
         env:
           TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
           DEPENDENCY_AUDIT_RESULT: ${{ needs.dependency_audit.result }}
+          TYPESAFE_SKILL_SUGGESTION_RESULT: ${{ needs.typesafe_skill_suggestion.result }}
           GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
           BUILD_RESULT: ${{ needs.build.result }}
         run: |
           test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
           test "$DEPENDENCY_AUDIT_RESULT" = "success"
+          test "$TYPESAFE_SKILL_SUGGESTION_RESULT" = "success"
           test "$GENERAL_TESTS_RESULT" = "success"
           test "$BUILD_RESULT" = "success"
 
