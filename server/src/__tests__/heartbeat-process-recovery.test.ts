@@ -2722,34 +2722,33 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             .where(eq(agentWakeupRequests.companyId, companyId));
           return wakes.length >= 2 ? wakes : null;
         }, 8_000)).not.toBeNull();
-        // Restart after the source executor has durably settled. Reconciliation
-        // must promote the early deferred route wake through ordinary admission.
+        // The production teardown path must consume the receipt it just wrote;
+        // a restart must not be required to make the deferred route wake
+        // admissible. Reconciliation remains idempotent after that promotion.
         const restarted = heartbeatService(db);
         const settledSource = await restarted.getRun(runId);
         expect(settledSource).toBeTruthy();
         if (ordering === "cancellation fence wins") {
-          let failedSuccessorId: string | null = null;
-          const failingRestart = heartbeatService(db, {
-            beforeExplicitContinuationSuccessorInsert: async successorRunId => {
-              failedSuccessorId = successorRunId;
-              throw new Error("forced successor insert failure");
+          expect(settledSource).toMatchObject({
+            resultJson: { legacyPrelaunchCancellation: {
+              settledAt: expect.any(String), settledControllerBootId: expect.any(String),
+            } },
+          });
+          const [promotedWake] = await db.select().from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.reason, "issue_commented"),
+          ));
+          expect(promotedWake).toMatchObject({
+            status: "coalesced",
+            requestedByActorType: "user",
+            requestedByActorId: "responsible-user",
+            payload: {
+              interruptedRunId: runId,
+              _paperclipWakeContext: { interruptedRunId: runId },
             },
           });
-          await expect(failingRestart.resumeRemoteStopComments(settledSource!))
-            .rejects.toThrow("forced successor insert failure");
-          const [unresolved] = await db.select().from(issueRecoveryActions)
-            .where(eq(issueRecoveryActions.sourceIssueId, issueId));
-          expect(unresolved).toMatchObject({ status: "active" });
-          expect(unresolved.evidence).not.toHaveProperty("explicitUserContinuation");
-          const [deferred] = await db.select().from(agentWakeupRequests).where(and(
-            eq(agentWakeupRequests.companyId, companyId),
-            eq(agentWakeupRequests.status, "deferred_issue_execution"),
-          ));
-          expect(deferred).toMatchObject({ runId: null });
-          expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)))
-            .filter(run => run.id !== runId)).toHaveLength(0);
-          expect(failedSuccessorId).toEqual(expect.any(String));
         }
+        await restarted.resumeRemoteStopComments(settledSource!);
         await restarted.resumeRemoteStopComments(settledSource!);
         await restarted.resumeQueuedRuns();
         await restarted.drainActiveRunExecutions();
