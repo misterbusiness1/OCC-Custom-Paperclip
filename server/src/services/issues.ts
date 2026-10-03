@@ -5804,7 +5804,11 @@ export function issueService(db: Db) {
         .from(issues)
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
-      if (!parent || !parent.assigneeAgentId || ["backlog", "done", "cancelled"].includes(parent.status)) {
+      if (
+        !parent ||
+        !parent.assigneeAgentId ||
+        ["backlog", "blocked", "done", "cancelled"].includes(parent.status)
+      ) {
         return null;
       }
 

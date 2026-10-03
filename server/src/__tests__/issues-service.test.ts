@@ -4109,6 +4109,60 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       childIssueSummaryTruncated: false,
     });
   });
+
+  it("does not repeatedly select a blocked parent after all direct children are terminal", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Blocked parent issue",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      {
+        id: childId,
+        companyId,
+        parentId,
+        title: "Completed child",
+        status: "done",
+        priority: "medium",
+      },
+    ]);
+
+    await expect(svc.getWakeableParentAfterChildCompletion(parentId)).resolves.toBeNull();
+    await expect(svc.getWakeableParentAfterChildCompletion(parentId)).resolves.toBeNull();
+
+    await svc.update(parentId, { status: "todo" });
+
+    await expect(svc.getWakeableParentAfterChildCompletion(parentId)).resolves.toMatchObject({
+      id: parentId,
+      assigneeAgentId,
+      childIssueIds: [childId],
+    });
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
