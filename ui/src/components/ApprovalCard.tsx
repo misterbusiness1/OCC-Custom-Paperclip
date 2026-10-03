@@ -6,6 +6,7 @@ import {
   approvalDecisionBrief,
   approvalExcerpt,
   approvalSubject,
+  OriginalRequestBlock,
   typeLabel,
 } from "./ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
@@ -75,7 +76,7 @@ export function ApprovalCard({
       </div>
 
       {hasBrief && (
-        <div className="mt-4 grid gap-3 border-t border-border/60 pt-4 sm:grid-cols-2">
+        <div className="mt-4 space-y-3 border-t border-border/60 pt-4">
           {recommendation && (
             <div>
               <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
@@ -84,6 +85,7 @@ export function ApprovalCard({
               <p className="mt-1 text-sm leading-5 text-foreground">{recommendation}</p>
             </div>
           )}
+          {showMissingDecisionFields && <OriginalRequestBlock payload={payload} compact />}
           {reasoning && (
             <div>
               <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
@@ -92,26 +94,28 @@ export function ApprovalCard({
               <p className="mt-1 text-sm leading-5 text-foreground">{reasoning}</p>
             </div>
           )}
-          {(benefit || showMissingDecisionFields) && (
-            <div>
-              <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                Benefit
-              </p>
-              <p className={cn("mt-1 text-sm leading-5", benefit ? "text-foreground" : "text-muted-foreground")}>
-                {benefit ?? "Not supplied."}
-              </p>
-            </div>
-          )}
-          {(tradeoff || showMissingDecisionFields) && (
-            <div>
-              <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                Tradeoff
-              </p>
-              <p className={cn("mt-1 text-sm leading-5", tradeoff ? "text-foreground" : "text-muted-foreground")}>
-                {tradeoff ?? "Not supplied."}
-              </p>
-            </div>
-          )}
+          <div className="grid gap-3 sm:grid-cols-2">
+            {(benefit || showMissingDecisionFields) && (
+              <div>
+                <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+                  Benefit
+                </p>
+                <p className={cn("mt-1 text-sm leading-5", benefit ? "text-foreground" : "text-muted-foreground")}>
+                  {benefit ?? "Not supplied."}
+                </p>
+              </div>
+            )}
+            {(tradeoff || showMissingDecisionFields) && (
+              <div>
+                <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+                  Tradeoff
+                </p>
+                <p className={cn("mt-1 text-sm leading-5", tradeoff ? "text-foreground" : "text-muted-foreground")}>
+                  {tradeoff ?? "Not supplied."}
+                </p>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

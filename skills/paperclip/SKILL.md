@@ -291,12 +291,19 @@ POST /api/companies/{companyId}/approvals
     "recommendedAction": "Approve provider X and continue setup.",
     "reasoning": "Provider X meets the requirements at the quoted monthly cost.",
     "pros": ["Setup can continue with a bounded $42 monthly commitment."],
-    "risks": ["Costs may increase with usage."]
+    "risks": ["Costs may increase with usage."],
+    "originalRequest": {
+      "text": "Use provider X if the monthly cost stays under $50.\nBring the exact quote to me first.",
+      "source": {
+        "kind": "paperclip_comment",
+        "commentId": "{source-comment-id}"
+      }
+    }
   }
 }
 ```
 
-`issueIds` links the approval into the issue thread. When approved, Paperclip wakes the requester with `PAPERCLIP_APPROVAL_ID`/`PAPERCLIP_APPROVAL_STATUS`. Keep the payload concise and decision-ready, with explicit reasoning and at least one evidence-backed pro and risk.
+`issueIds` links the approval into the issue thread. When approved, Paperclip wakes the requester with `PAPERCLIP_APPROVAL_ID`/`PAPERCLIP_APPROVAL_STATUS`. Keep the decision fields concise, with explicit reasoning and at least one evidence-backed pro and risk. `originalRequest.text` is different: preserve the source wording and line breaks exactly; never substitute a summary, recommendation, reasoning, generated draft, or proposed outbound email. For a retained Paperclip message, use `source.kind: "paperclip_comment"` and its real `commentId`; the server replaces the supplied text and provenance with a company-scoped snapshot. For an external email/message, use `source.kind: "external"`, the exact retrieved plain text, and only sender/date/reference values actually known. External quotes remain marked requester-provided. Recommendation-only resubmissions preserve the existing source unless `originalRequest` is explicitly replaced. Historical approvals without a retained source intentionally show a missing-source state.
 
 ## Issue-Thread Interactions
 

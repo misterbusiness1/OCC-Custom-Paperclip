@@ -2099,6 +2099,7 @@ export {
   type ApplyOnboardingSeed,
   createApprovalInputSchema,
   createApprovalSchema,
+  approvalOriginalRequestSchema,
   decisionReadyApprovalPayloadSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,

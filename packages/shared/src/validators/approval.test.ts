@@ -53,4 +53,26 @@ describe("approval validators", () => {
       payload: { name: "Support Agent" },
     }).success).toBe(true);
   });
+
+  it("preserves verbatim original request text and validates provenance", () => {
+    const text = "Line one\n\n<script>text only</script>\n**unchanged**";
+    const parsed = createApprovalSchema.parse({
+      type: "request_board_approval",
+      payload: {
+        recommendedAction: "Approve.",
+        reasoning: "Evidence supports it.",
+        pros: ["Completes the task."],
+        risks: ["May need rollback."],
+        originalRequest: {
+          text,
+          source: {
+            kind: "external",
+            sender: "Synthetic Sender",
+            reference: "fixture-1",
+          },
+        },
+      },
+    });
+    expect(parsed.payload.originalRequest).toMatchObject({ text, source: { kind: "external" } });
+  });
 });

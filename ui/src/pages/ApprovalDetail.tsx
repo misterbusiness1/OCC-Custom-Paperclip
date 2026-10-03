@@ -12,6 +12,7 @@ import {
   approvalDecisionBrief,
   approvalExcerpt,
   approvalSubject,
+  OriginalRequestBlock,
   ApprovalPayloadRenderer,
   typeLabel,
 } from "../components/ApprovalPayload";
@@ -249,6 +250,8 @@ export function ApprovalDetail() {
               {recommendation ?? "No recommendation was supplied."}
             </p>
           </div>
+
+          {approval.type === "request_board_approval" && <OriginalRequestBlock payload={payload} />}
 
           <div>
             <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">

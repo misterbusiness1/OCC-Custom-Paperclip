@@ -89,11 +89,24 @@ function createRouteDb(contextSnapshot: Record<string, unknown> = {}, runId = "r
   return {
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          then: async (resolve: (rows: unknown[]) => unknown) => resolve(
-            Object.keys(selection).includes("contextSnapshot") ? runRows : [],
-          ),
-        })),
+        where: vi.fn(() => {
+          const rows = Object.keys(selection).includes("contextSnapshot")
+            ? runRows
+            : Object.keys(selection).includes("body")
+              ? [{
+                  id: "00000000-0000-0000-0000-000000000099",
+                  issueId: "00000000-0000-0000-0000-000000000001",
+                  body: "Exact first line\nExact second line <script>text only</script>",
+                  authorAgentId: null,
+                  authorUserId: "board-user",
+                  createdAt: new Date("2026-10-03T12:00:00.000Z"),
+                }]
+              : [];
+          return {
+            then: async (resolve: (values: unknown[]) => unknown) => resolve(rows),
+            limit: vi.fn(async () => rows),
+          };
+        }),
       })),
     })),
   } as any;
@@ -404,6 +417,53 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.create).not.toHaveBeenCalled();
   });
 
+  it("snapshots a Paperclip source comment inside the approval company", async () => {
+    mockApprovalService.create.mockImplementation(async (_companyId, input) => ({
+      id: "approval-source",
+      companyId: "company-1",
+      ...input,
+      createdAt: new Date("2026-10-03T12:01:00.000Z"),
+    }));
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        payload: {
+          title: "Approve synthetic action",
+          recommendedAction: "Approve it.",
+          reasoning: "The fixture supports it.",
+          pros: ["Completes the fixture."],
+          risks: ["May need rollback."],
+          originalRequest: {
+            text: "Agent-supplied text must be replaced",
+            source: {
+              kind: "paperclip_comment",
+              commentId: "00000000-0000-0000-0000-000000000099",
+            },
+          },
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          originalRequest: {
+            text: "Exact first line\nExact second line <script>text only</script>",
+            source: expect.objectContaining({
+              kind: "paperclip_comment",
+              commentId: "00000000-0000-0000-0000-000000000099",
+              issueId: "00000000-0000-0000-0000-000000000001",
+              snapshotOrigin: "server",
+            }),
+          },
+        }),
+      }),
+    );
+  });
+
   it("rejects incomplete board approval resubmissions", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-7",
@@ -420,6 +480,61 @@ describe("approval routes idempotent retries", () => {
 
     expect(res.status).toBe(400);
     expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+  });
+
+  it("preserves a retained original request when its source is unavailable during resubmission", async () => {
+    const originalRequest = {
+      text: "Exact retained first line\nExact retained second line <script>text only</script>",
+      source: {
+        kind: "paperclip_comment",
+        commentId: "00000000-0000-0000-0000-000000000404",
+        issueId: "00000000-0000-0000-0000-000000000001",
+        sender: "board-user",
+        sentAt: "2026-10-03T12:00:00.000Z",
+        reference: "paperclip-comment:00000000-0000-0000-0000-000000000404",
+        snapshotOrigin: "server",
+      },
+    };
+    const existing = {
+      id: "approval-7",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: {
+        title: "Approve synthetic action",
+        recommendedAction: "Use the old recommendation.",
+        reasoning: "The retained source supports it.",
+        pros: ["Completes the fixture."],
+        risks: ["May need rollback."],
+        originalRequest,
+      },
+      requestedByAgentId: "agent-1",
+    };
+    mockApprovalService.getById.mockResolvedValue(existing);
+    mockApprovalService.resubmit.mockImplementation(async (_id, payload) => ({
+      ...existing,
+      payload,
+      status: "pending",
+    }));
+
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-7/resubmit")
+      .send({
+        payload: {
+          title: "Approve synthetic action",
+          recommendedAction: "Use the revised recommendation.",
+          reasoning: "The retained source still supports it.",
+          pros: ["Completes the fixture."],
+          risks: ["May need rollback."],
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockApprovalService.resubmit).toHaveBeenCalledWith(
+      "approval-7",
+      expect.objectContaining({ originalRequest }),
+    );
+    expect(res.body.payload.originalRequest).toEqual(originalRequest);
   });
 
   it("blocks status-only recovery runs from creating approvals", async () => {

@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
-import { eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, eq, isNull } from "drizzle-orm";
+import { heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
@@ -24,6 +24,7 @@ import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
+import { unprocessable } from "../errors.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -55,6 +56,66 @@ export function approvalRoutes(
   const issuesSvc = issueService(db);
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  async function snapshotOriginalRequest(
+    companyId: string,
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const original = payload.originalRequest;
+    if (!original || typeof original !== "object" || Array.isArray(original)) return payload;
+    const source = (original as Record<string, unknown>).source;
+    if (!source || typeof source !== "object" || Array.isArray(source)) return payload;
+    const sourceRecord = source as Record<string, unknown>;
+    if (sourceRecord.kind === "external") {
+      return {
+        ...payload,
+        originalRequest: {
+          ...(original as Record<string, unknown>),
+          source: { ...sourceRecord, snapshotOrigin: "requester" },
+        },
+      };
+    }
+    if (sourceRecord.kind !== "paperclip_comment" || typeof sourceRecord.commentId !== "string") {
+      return payload;
+    }
+
+    const [comment] = await db
+      .select({
+        id: issueComments.id,
+        issueId: issueComments.issueId,
+        body: issueComments.body,
+        authorAgentId: issueComments.authorAgentId,
+        authorUserId: issueComments.authorUserId,
+        createdAt: issueComments.createdAt,
+      })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.companyId, companyId),
+        eq(issueComments.id, sourceRecord.commentId),
+        isNull(issueComments.deletedAt),
+      ))
+      .limit(1);
+    if (!comment) {
+      throw unprocessable("Original request comment not found in this company");
+    }
+
+    const sender = comment.authorUserId ?? comment.authorAgentId ?? undefined;
+    return {
+      ...payload,
+      originalRequest: {
+        text: comment.body,
+        source: {
+          kind: "paperclip_comment",
+          commentId: comment.id,
+          issueId: comment.issueId,
+          ...(sender ? { sender } : {}),
+          sentAt: comment.createdAt.toISOString(),
+          reference: `paperclip-comment:${comment.id}`,
+          snapshotOrigin: "server",
+        },
+      },
+    };
+  }
 
   async function lostReviewPathIssueIds(
     companyId: string,
@@ -464,14 +525,18 @@ export function approvalRoutes(
       : [];
     const uniqueIssueIds = Array.from(new Set(issueIds));
     const { issueIds: _issueIds, ...approvalInput } = req.body;
+    const sourceSnapshottedPayload =
+      approvalInput.type === "request_board_approval"
+        ? await snapshotOriginalRequest(companyId, approvalInput.payload)
+        : approvalInput.payload;
     const normalizedPayload =
       approvalInput.type === "hire_agent"
         ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
             companyId,
-            approvalInput.payload,
+            sourceSnapshottedPayload,
             { strictMode: strictSecretsMode },
           )
-        : approvalInput.payload;
+        : sourceSnapshottedPayload;
 
     const actor = getActorInfo(req);
     const approval = await svc.create(companyId, {
@@ -636,14 +701,30 @@ export function approvalRoutes(
       }
     }
 
-    const normalizedPayload = req.body.payload
+    const replacesOriginalRequest = Boolean(
+      req.body.payload &&
+      Object.prototype.hasOwnProperty.call(req.body.payload, "originalRequest"),
+    );
+    const requestedPayload = req.body.payload
+      ? {
+          ...req.body.payload,
+          ...(!replacesOriginalRequest && existing.payload.originalRequest
+            ? { originalRequest: existing.payload.originalRequest }
+            : {}),
+        }
+      : undefined;
+    const sourceSnapshottedPayload =
+      requestedPayload && existing.type === "request_board_approval" && replacesOriginalRequest
+        ? await snapshotOriginalRequest(existing.companyId, requestedPayload)
+        : requestedPayload;
+    const normalizedPayload = sourceSnapshottedPayload
       ? existing.type === "hire_agent"
         ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
             existing.companyId,
-            req.body.payload,
+            sourceSnapshottedPayload,
             { strictMode: strictSecretsMode },
           )
-        : req.body.payload
+        : sourceSnapshottedPayload
       : undefined;
     const approval = await svc.resubmit(id, normalizedPayload);
     const actor = getActorInfo(req);
@@ -655,7 +736,15 @@ export function approvalRoutes(
       action: "approval.resubmitted",
       entityType: "approval",
       entityId: approval.id,
-      details: { type: approval.type },
+      details: {
+        type: approval.type,
+        originalRequestChanged: Boolean(
+          requestedPayload &&
+          replacesOriginalRequest &&
+          JSON.stringify(existing.payload.originalRequest) !==
+            JSON.stringify(approval.payload.originalRequest)
+        ),
+      },
     });
     res.json(redactApprovalPayload(approval));
   });
