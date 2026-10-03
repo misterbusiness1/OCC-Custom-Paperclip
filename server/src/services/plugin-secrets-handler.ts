@@ -170,6 +170,9 @@ export interface PluginSecretsHandlerOptions {
 
 export interface PluginSecretsService {
   resolve(params: PluginSecretsResolveParams): Promise<string>;
+  resolveWithMetadata(params: PluginSecretsResolveParams): Promise<{
+    value: string; bindingId: string; bindingRevision: string; secretVersionId: string;
+  }>;
 }
 
 function createRateLimiter(maxAttempts: number, windowMs: number) {
@@ -219,8 +222,7 @@ export function createPluginSecretsHandler(
     return matchingVersion;
   }
 
-  return {
-    async resolve(params: PluginSecretsResolveParams): Promise<string> {
+  async function resolveBinding(params: PluginSecretsResolveParams) {
       if (typeof params.secretRef === "string") {
         throw invalidSecretRef(params.secretRef.trim() || "<empty>");
       }
@@ -258,7 +260,7 @@ export function createPluginSecretsHandler(
       }
 
       const binding = bindings[0]!;
-      return secretService(db).resolveSecretValue(companyId, bindingRef.secretId, versionSelector, {
+      const resolved = await secretService(db).resolveSecretValueWithMetadata(companyId, bindingRef.secretId, versionSelector, {
         bindingContext: {
           consumerType: "plugin",
           consumerId: pluginId,
@@ -280,6 +282,18 @@ export function createPluginSecretsHandler(
           pluginId,
         },
       });
+      return {
+        value: resolved.value,
+        bindingId: binding.id,
+        bindingRevision: `${binding.id}:${binding.updatedAt.toISOString()}`,
+        secretVersionId: resolved.secretVersionId,
+      };
+  }
+
+  return {
+    async resolve(params: PluginSecretsResolveParams): Promise<string> {
+      return (await resolveBinding(params)).value;
     },
+    resolveWithMetadata: resolveBinding,
   };
 }
