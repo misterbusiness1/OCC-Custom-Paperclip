@@ -742,6 +742,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async get() {
         return { ...currentConfig };
       },
+      async getWithRevision() {
+        return { value: { ...currentConfig }, revision: "test-config:1" };
+      },
     },
     localFolders: {
       declarations() {
@@ -913,6 +916,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async resolve(secretRef) {
         requireCapability(manifest, capabilitySet, "secrets.read-ref");
         return `resolved:${secretRef}`;
+      },
+      async resolveWithMetadata(secretRef) {
+        requireCapability(manifest, capabilitySet, "secrets.read-ref");
+        const secretId = typeof secretRef === "string" ? secretRef : secretRef.secretId;
+        return { value: `resolved:${secretId}`, bindingId: "test-binding", bindingRevision: "test-binding:1", secretVersionId: `${secretId}:1` };
       },
     },
     activity: {

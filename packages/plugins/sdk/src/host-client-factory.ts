@@ -104,6 +104,10 @@ export interface HostServices {
       params: WorkerToHostMethods["config.get"][0],
       context?: WorkerHostCallContext,
     ): Promise<Record<string, unknown>>;
+    getWithRevision(
+      params: WorkerToHostMethods["config.getWithRevision"][0],
+      context?: WorkerHostCallContext,
+    ): Promise<WorkerToHostMethods["config.getWithRevision"][1]>;
   };
 
   /** Provides trusted company-scoped local folder helpers. */
@@ -154,6 +158,10 @@ export interface HostServices {
       params: WorkerToHostMethods["secrets.resolve"][0],
       context?: WorkerHostCallContext,
     ): Promise<string>;
+    resolveWithMetadata(
+      params: WorkerToHostMethods["secrets.resolveWithMetadata"][0],
+      context?: WorkerHostCallContext,
+    ): Promise<WorkerToHostMethods["secrets.resolveWithMetadata"][1]>;
   };
 
   /** Provides `activity.log`. */
@@ -379,6 +387,7 @@ export type HostClientHandlers = {
 const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | null> = {
   // Config — always allowed
   "config.get": null,
+  "config.getWithRevision": null,
 
   // Trusted local folders
   "localFolders.declarations": null,
@@ -411,6 +420,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
 
   // Secrets
   "secrets.resolve": "secrets.read-ref",
+  "secrets.resolveWithMetadata": "secrets.read-ref",
 
   // Activity
   "activity.log": "activity.log.write",
@@ -709,6 +719,10 @@ export function createHostClientHandlers(
       const companyId = resolveRequiredCompanyId("config.get", params, context);
       return services.config.get({ ...params, companyId }, context);
     }),
+    "config.getWithRevision": gated("config.getWithRevision", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("config.getWithRevision", params, context);
+      return services.config.getWithRevision({ ...params, companyId }, context);
+    }),
 
     "localFolders.declarations": gated("localFolders.declarations", async (params) => {
       return services.localFolders.declarations(params);
@@ -778,6 +792,10 @@ export function createHostClientHandlers(
     "secrets.resolve": gated("secrets.resolve", async (params, context) => {
       const companyId = resolveRequiredCompanyId("secrets.resolve", params, context);
       return services.secrets.resolve({ ...params, companyId }, context);
+    }),
+    "secrets.resolveWithMetadata": gated("secrets.resolveWithMetadata", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("secrets.resolveWithMetadata", params, context);
+      return services.secrets.resolveWithMetadata({ ...params, companyId }, context);
     }),
 
     // Activity

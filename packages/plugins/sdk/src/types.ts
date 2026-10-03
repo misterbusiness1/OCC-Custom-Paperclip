@@ -447,6 +447,10 @@ export interface PluginConfigClient {
    * companyId; otherwise callers must pass it explicitly.
    */
   get(companyId?: string): Promise<Record<string, unknown>>;
+  getWithRevision(companyId?: string): Promise<{
+    value: Record<string, unknown>;
+    revision: string;
+  }>;
 }
 
 export interface PluginLocalFolderProblem {
@@ -681,6 +685,15 @@ export interface PluginSecretsClient {
     secretRef: string | EnvSecretRefBinding,
     options?: { companyId?: string; configPath?: string },
   ): Promise<string>;
+  resolveWithMetadata(
+    secretRef: string | EnvSecretRefBinding,
+    options?: { companyId?: string; configPath?: string },
+  ): Promise<{
+    value: string;
+    bindingId: string;
+    bindingRevision: string;
+    secretVersionId: string;
+  }>;
 }
 
 /**

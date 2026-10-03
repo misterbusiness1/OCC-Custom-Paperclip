@@ -1512,6 +1512,10 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
 export interface WorkerToHostMethods {
   // Config
   "config.get": [params: { companyId?: string }, result: Record<string, unknown>];
+  "config.getWithRevision": [
+    params: { companyId?: string },
+    result: { value: Record<string, unknown>; revision: string },
+  ];
 
   // Trusted local folders
   "localFolders.declarations": [
@@ -1650,6 +1654,10 @@ export interface WorkerToHostMethods {
   "secrets.resolve": [
     params: { secretRef: string | EnvSecretRefBinding; companyId?: string; configPath?: string },
     result: string,
+  ];
+  "secrets.resolveWithMetadata": [
+    params: { secretRef: string | EnvSecretRefBinding; companyId?: string; configPath?: string },
+    result: { value: string; bindingId: string; bindingRevision: string; secretVersionId: string },
   ];
 
   // Activity
