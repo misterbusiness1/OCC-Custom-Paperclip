@@ -170,6 +170,9 @@ async function runExecutor(
     authToken?: string;
     executionTarget?: Record<string, unknown>;
     runtimeMcp?: AdapterRuntimeMcpAccess;
+    runtimeTools?: AdapterExecutionContext["runtimeTools"];
+    runId?: string;
+    agent?: Partial<AdapterExecutionContext["agent"]>;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
     startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
   } = {},
@@ -202,10 +205,11 @@ async function runExecutor(
   });
 
   const result = await execute({
-    runId: "run-1",
+    runId: options.runId ?? "run-1",
     agent: {
       id: "agent-1",
       companyId: "company-1",
+      ...options.agent,
     },
       runtime: options.runtime ?? {},
       config,
@@ -214,6 +218,7 @@ async function runExecutor(
       authToken: options.authToken,
       executionTarget: options.executionTarget,
       runtimeMcp: options.runtimeMcp,
+      runtimeTools: options.runtimeTools,
       startupTraceContext: options.startupTraceContext,
       onLog: async (stream: "stdout" | "stderr", text: string) => {
         logs.push({ stream, text });
@@ -247,6 +252,99 @@ it("passes the current Paperclip run environment to ACP terminal shells", async 
     PAPERCLIP_RUN_ID: "run-1",
     PAPERCLIP_TEST_MARKER: "from-config",
   });
+});
+
+it("passes the current runtime-tool capability to ACP terminal shells", async () => {
+  const result = await runExecutor(
+    { agent: "kimi", agentCommand: "node ./fake-acp.js" },
+    {
+      runtimeTools: {
+        version: 1,
+        mcpEndpoint: "https://runtime.test/mcp/run-1",
+        bearerToken: "run-tool-token-1",
+        expiresAt: "2026-10-03T12:00:00.000Z",
+        tools: ["connections_search", "connection_request", "typesafe_judge"],
+        guidance: "Use only this run's capability.",
+        rest: {
+          connectionsSearch: "https://runtime.test/rest/run-1/connections-search",
+          connectionRequest: "https://runtime.test/rest/run-1/connection-request",
+          typesafeJudge: "https://runtime.test/rest/run-1/typesafe-judge",
+        },
+      },
+    },
+  );
+
+  expect(result.runtimeOptions[0]?.terminalEnv).toMatchObject({
+    PAPERCLIP_RUNTIME_TOOLS_MCP_URL: "https://runtime.test/mcp/run-1",
+    PAPERCLIP_RUNTIME_TOOLS_TOKEN: "run-tool-token-1",
+    PAPERCLIP_RUNTIME_TOOLS_AVAILABLE: "connections_search,connection_request,typesafe_judge",
+  });
+  expect(result.terminalEnvs[0]).toMatchObject({
+    PAPERCLIP_RUNTIME_TOOLS_MCP_URL: "https://runtime.test/mcp/run-1",
+    PAPERCLIP_RUNTIME_TOOLS_TOKEN: "run-tool-token-1",
+    PAPERCLIP_RUNTIME_TOOLS_AVAILABLE: "connections_search,connection_request,typesafe_judge",
+  });
+});
+
+it("isolates rotated runtime-tool capabilities across resumed and concurrent ACP runs", async () => {
+  const access = (run: string): NonNullable<AdapterExecutionContext["runtimeTools"]> => ({
+    version: 1,
+    mcpEndpoint: `https://runtime.test/mcp/${run}`,
+    bearerToken: `tool-token-${run}`,
+    expiresAt: "2026-10-03T12:00:00.000Z",
+    tools: ["connections_search", "connection_request", "typesafe_judge"],
+    guidance: `Capability for ${run} only.`,
+    rest: {
+      connectionsSearch: `https://runtime.test/rest/${run}/connections-search`,
+      connectionRequest: `https://runtime.test/rest/${run}/connection-request`,
+      typesafeJudge: `https://runtime.test/rest/${run}/typesafe-judge`,
+    },
+  });
+
+  const fresh = await runExecutor(
+    { agent: "kimi", agentCommand: "node ./fake-acp.js" },
+    { runId: "fresh", runtimeTools: access("fresh") },
+  );
+  const resumed = await runExecutor(
+    { agent: "kimi", agentCommand: "node ./fake-acp.js" },
+    {
+      runId: "resumed",
+      runtime: {
+        sessionId: fresh.result.sessionId,
+        sessionParams: fresh.result.sessionParams,
+      },
+      runtimeTools: access("resumed"),
+    },
+  );
+  const [companyA, companyB] = await Promise.all([
+    runExecutor(
+      { agent: "kimi", agentCommand: "node ./fake-acp.js" },
+      {
+        runId: "company-a-run",
+        agent: { id: "agent-a", companyId: "company-a" },
+        runtimeTools: access("company-a-run"),
+      },
+    ),
+    runExecutor(
+      { agent: "kimi", agentCommand: "node ./fake-acp.js" },
+      {
+        runId: "company-b-run",
+        agent: { id: "agent-b", companyId: "company-b" },
+        runtimeTools: access("company-b-run"),
+      },
+    ),
+  ]);
+
+  expect(resumed.terminalEnvs.at(-1)).toMatchObject({
+    PAPERCLIP_RUN_ID: "resumed",
+    PAPERCLIP_RUNTIME_TOOLS_TOKEN: "tool-token-resumed",
+    PAPERCLIP_RUNTIME_TOOLS_MCP_URL: "https://runtime.test/mcp/resumed",
+  });
+  expect(Object.values(resumed.terminalEnvs.at(-1) ?? {})).not.toContain("tool-token-fresh");
+  expect(companyA.terminalEnvs.at(-1)?.PAPERCLIP_RUNTIME_TOOLS_TOKEN).toBe("tool-token-company-a-run");
+  expect(companyB.terminalEnvs.at(-1)?.PAPERCLIP_RUNTIME_TOOLS_TOKEN).toBe("tool-token-company-b-run");
+  expect(companyA.terminalEnvs.at(-1)?.PAPERCLIP_COMPANY_ID).toBe("company-a");
+  expect(companyB.terminalEnvs.at(-1)?.PAPERCLIP_COMPANY_ID).toBe("company-b");
 });
 
 // Under `vi.useFakeTimers()`, setup before `ensureSession` still performs real

@@ -9,7 +9,7 @@ import { verifyRuntimeToolsToken } from "../runtime-tools-token.ts";
 import { logger } from "../middleware/logger.ts";
 
 const adapter = vi.hoisted(() => ({
-  delivery: "native_mcp" as "native_mcp" | "invocation_context",
+  delivery: "native_mcp" as "native_mcp" | "invocation_context" | "environment",
   execute: vi.fn(),
 }));
 vi.mock("../adapters/index.ts", async () => ({
@@ -81,7 +81,7 @@ describe("runtime connection tools require a task", () => {
   });
   afterAll(async () => { await temporary?.cleanup(); }, 30_000);
 
-  async function seed(bound: boolean) {
+  async function seed(bound: boolean, adapterType = "codex_local") {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = bound ? randomUUID() : null;
@@ -95,7 +95,7 @@ describe("runtime connection tools require a task", () => {
     });
     await db.insert(agents).values({
       id: agentId, companyId, name: "Worker", role: "engineer", status: "idle",
-      adapterType: "codex_local", adapterConfig: {}, permissions: {},
+      adapterType, adapterConfig: {}, permissions: {},
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
     });
     if (issueId) await db.insert(issues).values({
@@ -105,8 +105,8 @@ describe("runtime connection tools require a task", () => {
     return { companyId, agentId, issueId };
   }
 
-  async function dispatch(bound: boolean) {
-    const fixture = await seed(bound);
+  async function dispatch(bound: boolean, adapterType = "codex_local") {
+    const fixture = await seed(bound, adapterType);
     const run = await heartbeat.wakeup(fixture.agentId, {
       source: "on_demand", triggerDetail: "manual", reason: "runtime_scope_check",
       manualUserWake: true, requestedByActorType: "user", requestedByActorId: "test-operator",
@@ -119,7 +119,7 @@ describe("runtime connection tools require a task", () => {
     return deliveries[0]!;
   }
 
-  it.each(["native_mcp", "invocation_context"] as const)(
+  it.each(["native_mcp", "invocation_context", "environment"] as const)(
     "does not advertise task-only tools to an unbound %s run", async (delivery) => {
       adapter.delivery = delivery;
       const actual = await dispatch(false);
@@ -132,21 +132,36 @@ describe("runtime connection tools require a task", () => {
     },
   );
 
-  it.each(["native_mcp", "invocation_context"] as const)(
-    "preserves usable task-bound connection tools for %s delivery", async (delivery) => {
-      adapter.delivery = delivery;
-      const actual = await dispatch(true);
-      expect(actual.runtimeTools).toBeDefined();
-      expect(actual.validation).toBe("accepted");
-      if (delivery === "native_mcp") {
-        expect(actual.mcpConnectionIds).toContain("paperclip-runtime-tools");
-        expect(actual.contextTools).toBeUndefined();
-      } else {
-        expect(actual.contextTools).toBe(actual.runtimeTools);
-        expect(actual.mcpConnectionIds).not.toContain("paperclip-runtime-tools");
-      }
+  it.each(["claude_local", "codex_local"] as const)(
+    "delivers task-bound tools to %s only through native MCP", async (adapterType) => {
+      adapter.delivery = "native_mcp";
+      const actual = await dispatch(true, adapterType);
+      expect(actual.runtimeTools).toBeUndefined();
+      expect(actual.contextTools).toBeUndefined();
+      expect(actual.mcpConnectionIds).toContain("paperclip-runtime-tools");
+      expect(actual.validation).toBe("not_advertised");
     },
   );
+
+  it.each(["kimi_local", "gemini_local"] as const)(
+    "delivers task-bound tools to %s only through the environment projection", async (adapterType) => {
+      adapter.delivery = "environment";
+      const actual = await dispatch(true, adapterType);
+      expect(actual.runtimeTools).toBeDefined();
+      expect(actual.contextTools).toBeUndefined();
+      expect(actual.mcpConnectionIds).not.toContain("paperclip-runtime-tools");
+      expect(actual.validation).toBe("accepted");
+    },
+  );
+
+  it("delivers task-bound tools to invocation-context adapters only through context", async () => {
+    adapter.delivery = "invocation_context";
+    const actual = await dispatch(true, "http");
+    expect(actual.runtimeTools).toBeUndefined();
+    expect(actual.contextTools).toBeDefined();
+    expect(actual.mcpConnectionIds).not.toContain("paperclip-runtime-tools");
+    expect(actual.validation).toBe("not_advertised");
+  });
 
   it("retains a delivery warning for a bound run with no reachable API URL", async () => {
     adapter.delivery = "native_mcp";

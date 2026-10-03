@@ -24617,7 +24617,10 @@ export function heartbeatService(
                         }
                       : undefined,
                     runtimeMcp,
-                    runtimeTools,
+                    runtimeTools:
+                      runtimeToolDelivery === "environment"
+                        ? runtimeTools
+                        : undefined,
                     onLog,
                     onMeta: onAdapterMeta,
                     onEvent: onAdapterEvent,
