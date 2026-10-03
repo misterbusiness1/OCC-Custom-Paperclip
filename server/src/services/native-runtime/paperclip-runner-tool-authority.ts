@@ -3,6 +3,7 @@ import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from 
 import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../connection-tool-definitions.js";
+import { typeSafeRuntimeToolService } from "../typesafe-runtime-tool.js";
 import { connectionsSearchInputSchema, connectionRequestInputSchema, CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
 import { paperclipChatFilePreparationDelivery } from "@paperclipai/adapter-utils/chat-file-delivery";
@@ -213,6 +214,15 @@ export class PaperclipRunnerToolAuthority {
       };
       const connections = connectionIntentService(this.db);
       if (call.tool === "connections_search") return connections.search(claims, connectionsSearchInputSchema.parse(call.arguments).query);
+      if (call.tool === "typesafe_judge") {
+        return typeSafeRuntimeToolService(this.db).judge({
+          ...claims,
+          scope: "connection_intents",
+          iat: Math.floor(Date.now() / 1000),
+          exp: Math.floor(Date.now() / 1000) + 60,
+          instance_id: "native-runtime",
+        }, call.arguments);
+      }
       const result = await connections.request(claims, connectionRequestInputSchema.parse(call.arguments).service);
       if (result.state === "ready" && this.binding.pinnedMcpDigest && this.binding.enqueueWakeup) {
         const current = await resolveNativeRuntimeMcpSnapshot({ db: this.db, agent: { id: this.binding.agentId, companyId: this.binding.companyId }, runId: this.binding.runId });

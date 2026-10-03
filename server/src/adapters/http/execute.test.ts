@@ -25,10 +25,11 @@ describe("http adapter execute", () => {
         rest: {
           connectionsSearch: "https://paperclip.test/runtime-tools/connections/search",
           connectionRequest: "https://paperclip.test/runtime-tools/connections/request",
+          typesafeJudge: "https://paperclip.test/runtime-tools/typesafe/judge",
         },
         bearerToken: "run-token",
         expiresAt: "2026-08-26T15:00:00.000Z",
-        tools: ["connections_search", "connection_request"],
+        tools: ["connections_search", "connection_request", "typesafe_judge"],
       });
       return new Response(null, { status: 204 });
     });
@@ -57,10 +58,11 @@ describe("http adapter execute", () => {
         rest: {
           connectionsSearch: "https://paperclip.test/runtime-tools/connections/search",
           connectionRequest: "https://paperclip.test/runtime-tools/connections/request",
+          typesafeJudge: "https://paperclip.test/runtime-tools/typesafe/judge",
         },
         bearerToken: "run-token",
         expiresAt: "2026-08-26T15:00:00.000Z",
-        tools: ["connections_search", "connection_request"],
+        tools: ["connections_search", "connection_request", "typesafe_judge"],
       },
       onLog: async () => {},
       onDispatch,

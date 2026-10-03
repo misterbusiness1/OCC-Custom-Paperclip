@@ -1,5 +1,5 @@
 import { definePlugin, runWorker, type EnvSecretRefBinding, type PluginEvent } from "@paperclipai/plugin-sdk";
-import { CONTRACT_VERSION, createDecisionClient, suggest, type SuggestionRequest } from "./selector.js";
+import { CONTRACT_VERSION, DEFAULT_MODEL_VERSION, QUESTION_VERSION, createDecisionClient, requestFingerprint, suggest, type SuggestionRequest } from "./selector.js";
 import { classifyIssue, createIssueClassificationClient, ISSUE_CLASSIFICATION_STATE_KEY, isCurrentIssueRevision, issueInputRevision,
   type ClassificationClient, type IssueClassificationRecommendation, type IssueClassificationRevisionState, type WorkType } from "./issue-classifier.js";
 
@@ -47,14 +47,41 @@ export function createSkillSuggestionPlugin(options: SkillSuggestionPluginOption
       ctx.actions.register("skill-suggestion-shadow-v1", async (params, actionContext) => {
         const companyId = actionContext.companyId;
         if (!companyId) throw new Error("company scope is required");
-        const config = await ctx.config.get(companyId);
-        if (config.enabled !== true) return { contractVersion: CONTRACT_VERSION, disabled: true };
+        const initialConfig = await ctx.config.getWithRevision(companyId);
+        const config = initialConfig.value;
+        const input = params as Record<string, unknown>;
+        const mode = input.mode === "active" ? "active" : "shadow";
+        if (config.enabled !== true || (mode === "active" && config.activeEnabled !== true)) return { contractVersion: CONTRACT_VERSION, disabled: true };
         const ref = config.apiKeyRef as EnvSecretRefBinding | undefined;
         if (!ref || ref.type !== "secret_ref") throw new Error("managed TypeSafe secret reference is required");
-        const apiKey = await ctx.secrets.resolve(ref, { companyId, configPath: "apiKeyRef" });
+        const credential = await ctx.secrets.resolveWithMetadata(ref, { companyId, configPath: "apiKeyRef" });
+        const model = typeof config.model === "string" && config.model.trim() ? config.model.trim() : DEFAULT_MODEL_VERSION;
         const timeoutMs = typeof config.timeoutMs === "number" ? Math.min(15_000, Math.max(1_000, config.timeoutMs)) : 5_000;
         const maxRetries = typeof config.maxRetries === "number" ? Math.min(2, Math.max(0, config.maxRetries)) : 1;
-        return suggest(params as unknown as SuggestionRequest, createDecisionClient(apiKey, timeoutMs, maxRetries));
+        const request = typeof input.request === "string" ? input.request : "";
+        const suggestionRequest: SuggestionRequest = {
+          identity: { companyId, bindingId: credential.bindingId, bindingRevision: credential.bindingRevision,
+            secretVersionId: credential.secretVersionId, configRevision: initialConfig.revision,
+            catalogRevision: String(input.catalogRevision ?? ""), requestFingerprint: requestFingerprint(request),
+            questionVersion: QUESTION_VERSION, contractVersion: CONTRACT_VERSION, model },
+          request, skills: Array.isArray(input.skills) ? input.skills as SuggestionRequest["skills"] : [],
+          explicitSkillIds: Array.isArray(input.explicitSkillIds) ? input.explicitSkillIds as string[] : [],
+          mandatorySkillIds: Array.isArray(input.mandatorySkillIds) ? input.mandatorySkillIds as string[] : [],
+          minNeededProbability: typeof config.minNeededProbability === "number" ? config.minNeededProbability : undefined,
+          minAcceptableProbability: typeof config.minAcceptableProbability === "number" ? config.minAcceptableProbability : undefined,
+          minConfidence: typeof config.minConfidence === "number" ? config.minConfidence : undefined,
+          cacheTtlMs: typeof config.cacheTtlMs === "number" ? config.cacheTtlMs : undefined,
+          cacheMaxEntries: typeof config.cacheMaxEntries === "number" ? config.cacheMaxEntries : undefined,
+        };
+        const result = await suggest(suggestionRequest, createDecisionClient(credential.value, model, timeoutMs, maxRetries));
+        const [freshConfig, freshCredential] = await Promise.all([
+          ctx.config.getWithRevision(companyId), ctx.secrets.resolveWithMetadata(ref, { companyId, configPath: "apiKeyRef" }),
+        ]);
+        if (freshConfig.revision !== result.identity.configRevision || freshCredential.bindingId !== result.identity.bindingId ||
+          freshCredential.bindingRevision !== result.identity.bindingRevision || freshCredential.secretVersionId !== result.identity.secretVersionId) {
+          throw Object.assign(new Error("fresh state changed"), { name: "StaleStateError" });
+        }
+        return result;
       });
       ctx.actions.register("skill-load-attribution-v1", async () => ({ accepted: true }));
       ctx.actions.register("issue-classification-attribution-v1", async (params, actionContext) => {

@@ -10,7 +10,7 @@ import {
 } from "./connection-intents.js";
 
 describe("runtime connection MCP contract", () => {
-  it("advertises both canonical tools with the shared descriptions and narrow schemas", () => {
+  it("advertises the canonical runtime tools with narrow schemas", () => {
     expect(
       RUNTIME_CONNECTION_TOOL_DEFINITIONS.map((tool) => tool.name),
     ).toEqual(CONNECTION_RUNTIME_TOOL_NAMES);
@@ -34,6 +34,7 @@ describe("runtime connection MCP contract", () => {
           additionalProperties: false,
         },
       },
+      expect.objectContaining({ name: "typesafe_judge", inputSchema: expect.objectContaining({ required: ["state", "model", "questions"] }) }),
     ]);
   });
 

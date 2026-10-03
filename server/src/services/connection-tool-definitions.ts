@@ -20,5 +20,18 @@ export const RUNTIME_CONNECTION_TOOL_DEFINITIONS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "typesafe_judge",
+    description: "Explicitly evaluate one or more independent bounded Choice, Noul, or Score judgments over shared non-sensitive state. This optional tool returns typed values; it cannot authorize actions or replace the primary reasoning model.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        state: {},
+        model: { type: "string" },
+        questions: { type: "object", minProperties: 1, maxProperties: 32 },
+      },
+      required: ["state", "model", "questions"],
+      additionalProperties: false,
+    },
+  },
 ] as const;
-

@@ -5963,6 +5963,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).toBe(1);
     expect(deferred).toHaveLength(1);
 
+    // Begin the captured drain only when its persisted reorder boundary is
+    // due. This keeps the production window and the coalesced scheduler
+    // assertion intact without spending the downstream waitFor budget on the
+    // intentional ingress delay.
+    const drainAt = durable[0]!.nextAttemptAt!.getTime();
+    const untilDrain = Math.max(0, drainAt - Date.now());
+    if (untilDrain > 0) {
+      await new Promise((resolve) => setTimeout(resolve, untilDrain));
+    }
     deferred.shift()?.();
     await vi.waitFor(async () => {
       const rows = await db
