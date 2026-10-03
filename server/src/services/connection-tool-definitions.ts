@@ -29,7 +29,6 @@ export const RUNTIME_CONNECTION_TOOL_DEFINITIONS = [
         state: {},
         model: { type: "string" },
         questions: { type: "object", minProperties: 1, maxProperties: 32 },
-        catalogRevision: { type: "string" },
       },
       required: ["state", "model", "questions"],
       additionalProperties: false,

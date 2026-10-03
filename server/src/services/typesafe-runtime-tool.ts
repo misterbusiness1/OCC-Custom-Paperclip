@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { agents, type Db } from "@paperclipai/db";
+import { agents, companySkills, type Db } from "@paperclipai/db";
 import { z } from "zod";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { secretService } from "./secrets.js";
@@ -9,67 +9,140 @@ const jsonValue: z.ZodType<unknown> = z.lazy(() => z.union([
   z.string().max(50_000), z.number().finite(), z.boolean(), z.null(),
   z.array(jsonValue).max(250), z.record(z.string().max(128), jsonValue),
 ]));
-const instructions = z.union([z.string().min(1).max(8_000), z.array(jsonValue).max(100), z.record(z.string().max(128), jsonValue)]);
+const structuredValue = z.union([
+  z.string().min(1).max(50_000),
+  z.array(jsonValue).max(250),
+  z.record(z.string().max(128), jsonValue),
+]);
 const questionId = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
-const noul = z.object({ type: z.literal("noul"), instructions, criteria: z.object({ true: jsonValue.optional(), false: jsonValue.optional() }).strict().optional() }).strict();
-const choice = z.object({ type: z.literal("choice"), instructions, criteria: z.record(z.string().min(1).max(128), jsonValue).refine((v) => Object.keys(v).length >= 2 && Object.keys(v).length <= 255) }).strict();
-const score = z.object({ type: z.literal("score"), instructions, criteria: z.array(jsonValue).min(2).max(10) }).strict();
+const noul = z.object({
+  type: z.literal("noul"), instructions: structuredValue,
+  criteria: z.object({ true: structuredValue.optional(), false: structuredValue.optional() }).strict().optional(),
+}).strict();
+const choice = z.object({
+  type: z.literal("choice"), instructions: structuredValue,
+  criteria: z.record(z.string().min(1).max(128), structuredValue.nullable())
+    .refine((value) => Object.keys(value).length >= 2 && Object.keys(value).length <= 255),
+}).strict();
+const score = z.object({
+  type: z.literal("score"), instructions: structuredValue,
+  criteria: z.array(structuredValue).min(2).max(10),
+}).strict();
 export const typeSafeJudgeInputSchema = z.object({
-  state: jsonValue,
+  state: structuredValue,
   model: z.string().min(1).max(80).default("jev-latest"),
-  questions: z.record(questionId, z.discriminatedUnion("type", [choice, noul, score])).refine((v) => Object.keys(v).length >= 1 && Object.keys(v).length <= 32),
-  catalogRevision: z.string().max(128).optional(),
+  questions: z.record(questionId, z.discriminatedUnion("type", [choice, noul, score]))
+    .refine((value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 32),
 }).strict();
 
 type Input = z.infer<typeof typeSafeJudgeInputSchema>;
 type Failure = { ok: false; error: { code: string; retryable: boolean } };
+type Binding = { type?: unknown; secretId?: unknown; version?: unknown };
+type AgentSnapshot = { adapterConfig: Record<string, unknown>; updatedAt: Date } | null;
+type SecretSnapshot = { value: string; secretVersionId: string };
 
+function hash(value: unknown) { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 function probability(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1; }
 function distribution(value: unknown, keys: string[]) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const rows = value as Record<string, unknown>;
-  return Object.keys(rows).length === keys.length && keys.every((key) => probability(rows[key])) && Math.abs(keys.reduce((sum, key) => sum + Number(rows[key]), 0) - 1) <= 0.02;
+  if (Object.keys(rows).length !== keys.length || !keys.every((key) => probability(rows[key]))) return null;
+  if (Math.abs(keys.reduce((sum, key) => sum + Number(rows[key]), 0) - 1) > 0.02) return null;
+  return Object.fromEntries(keys.map((key) => [key, Number(rows[key])]));
 }
+function bindingOf(agent: AgentSnapshot): Binding | null {
+  const binding = (agent?.adapterConfig.env as Record<string, unknown> | undefined)?.TYPESAFE_API_KEY as Binding | undefined;
+  return binding?.type === "secret_ref" && typeof binding.secretId === "string" ? binding : null;
+}
+function configRevision(companyId: string, agentId: string, agent: AgentSnapshot, binding: Binding | null) {
+  return agent && binding ? hash([companyId, agentId, agent.updatedAt.toISOString(), binding.secretId, binding.version ?? "latest"]) : "";
+}
+
 export function validateTypeSafeAnswers(input: Input, payload: unknown) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("invalid_response");
   const body = payload as Record<string, unknown>;
-  const answers = body.answers;
+  const sourceAnswers = body.answers;
   const usage = body.usage as Record<string, unknown> | undefined;
-  if (typeof body.model !== "string" || !answers || typeof answers !== "object" || Array.isArray(answers) || !usage || !Number.isInteger(usage.input_tokens) || !Number.isInteger(usage.output_tokens)) throw new Error("invalid_response");
-  const rows = answers as Record<string, unknown>;
+  if (typeof body.model !== "string" || !sourceAnswers || typeof sourceAnswers !== "object" || Array.isArray(sourceAnswers)
+    || !usage || !Number.isInteger(usage.input_tokens) || !Number.isInteger(usage.output_tokens)
+    || Number(usage.input_tokens) < 0 || Number(usage.output_tokens) < 0) throw new Error("invalid_response");
+  const rows = sourceAnswers as Record<string, unknown>;
   if (Object.keys(rows).length !== Object.keys(input.questions).length) throw new Error("invalid_response");
+  const answers: Record<string, unknown> = {};
   for (const [id, question] of Object.entries(input.questions)) {
     const answer = rows[id] as Record<string, unknown> | undefined;
     if (!answer || answer.type !== question.type) throw new Error("invalid_response");
-    if (question.type === "noul" && !probability(answer.noul)) throw new Error("invalid_response");
-    if (question.type === "choice") {
+    if (question.type === "noul") {
+      if (!probability(answer.noul)) throw new Error("invalid_response");
+      answers[id] = { type: "noul", noul: answer.noul };
+    } else if (question.type === "choice") {
       const keys = Object.keys(question.criteria);
-      if (typeof answer.choice !== "string" || !keys.includes(answer.choice) || !probability(answer.confidence) || !distribution(answer.probabilities, keys)) throw new Error("invalid_response");
-    }
-    if (question.type === "score") {
+      const probabilities = distribution(answer.probabilities, keys);
+      if (typeof answer.choice !== "string" || !keys.includes(answer.choice) || !probability(answer.confidence) || !probabilities) throw new Error("invalid_response");
+      answers[id] = { type: "choice", choice: answer.choice, probabilities, confidence: answer.confidence };
+    } else {
       const keys = question.criteria.map((_, index) => String(index));
-      if (typeof answer.score !== "number" || !Number.isFinite(answer.score) || answer.score < 0 || answer.score > question.criteria.length - 1 || !probability(answer.confidence) || !distribution(answer.probabilities, keys)) throw new Error("invalid_response");
+      const probabilities = distribution(answer.probabilities, keys);
+      const expectedLegend = Object.fromEntries(question.criteria.map((criterion, index) => [String(index), typeof criterion === "string" ? criterion : JSON.stringify(criterion)]));
+      if (typeof answer.score !== "number" || !Number.isFinite(answer.score) || answer.score < 0 || answer.score > question.criteria.length - 1
+        || !probability(answer.confidence) || !probabilities || JSON.stringify(answer.legend) !== JSON.stringify(expectedLegend)) throw new Error("invalid_response");
+      answers[id] = { type: "score", score: answer.score, legend: expectedLegend, probabilities, confidence: answer.confidence };
     }
   }
-  return { model: body.model, answers: rows, usage: { inputTokens: usage.input_tokens as number, outputTokens: usage.output_tokens as number } };
+  return { model: body.model, answers, usage: { inputTokens: Number(usage.input_tokens), outputTokens: Number(usage.output_tokens) } };
 }
 
-export function typeSafeRuntimeToolService(db: Db, deps: { fetch?: typeof fetch; env?: NodeJS.ProcessEnv; now?: () => number; sleep?: (ms: number) => Promise<void> } = {}) {
+export function renderTypeSafeResult(result: { answers: Record<string, unknown> }) {
+  return Object.entries(result.answers).map(([id, raw]) => {
+    const answer = raw as Record<string, unknown>;
+    if (answer.type === "choice") return `${id}: ${String(answer.choice)}`;
+    if (answer.type === "noul") return `${id}: ${Number(answer.noul).toFixed(3)}`;
+    return `${id}: ${Number(answer.score).toFixed(3)}`;
+  }).join("\n");
+}
+
+type Deps = {
+  fetch?: typeof fetch; env?: NodeJS.ProcessEnv; now?: () => number; sleep?: (ms: number) => Promise<void>;
+  loadAgent?: (companyId: string, agentId: string) => Promise<AgentSnapshot>;
+  resolveSecret?: (companyId: string, binding: Binding, claims: RuntimeToolsTokenClaims) => Promise<SecretSnapshot>;
+  loadCatalogRevision?: (companyId: string) => Promise<string>;
+};
+
+export function typeSafeRuntimeToolService(db: Db, deps: Deps = {}) {
   const request = deps.fetch ?? fetch;
   const env = deps.env ?? process.env;
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const loadAgent = deps.loadAgent ?? (async (companyId, agentId) => {
+    const [agent] = await db.select({ adapterConfig: agents.adapterConfig, updatedAt: agents.updatedAt }).from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))).limit(1);
+    return agent ?? null;
+  });
+  const resolveSecret = deps.resolveSecret ?? (async (companyId, binding, claims) => secretService(db).resolveSecretValueWithMetadata(
+    companyId, String(binding.secretId), typeof binding.version === "number" ? binding.version : "latest",
+    { accessContext: { consumerType: "agent", consumerId: claims.sub, actorType: "agent", actorId: claims.sub,
+      heartbeatRunId: claims.run_id, responsibleUserId: claims.responsible_user_id } },
+  ));
+  const loadCatalogRevision = deps.loadCatalogRevision ?? (async (companyId) => {
+    const rows = await db.select({ id: companySkills.id, currentVersionId: companySkills.currentVersionId, updatedAt: companySkills.updatedAt })
+      .from(companySkills).where(eq(companySkills.companyId, companyId)).orderBy(companySkills.id);
+    return hash(rows.map((row) => [row.id, row.currentVersionId, row.updatedAt.toISOString()]));
+  });
+
   return { async judge(claims: RuntimeToolsTokenClaims, raw: unknown): Promise<Failure | Record<string, unknown>> {
     if (!/^(1|true|yes|on)$/i.test(env.PAPERCLIP_TYPESAFE_TOOL_ENABLED ?? "")) return { ok: false, error: { code: "disabled", retryable: false } };
     const input = typeSafeJudgeInputSchema.parse(raw);
-    const [agent] = await db.select({ adapterConfig: agents.adapterConfig, updatedAt: agents.updatedAt }).from(agents).where(and(eq(agents.id, claims.sub), eq(agents.companyId, claims.company_id))).limit(1);
-    const binding = (agent?.adapterConfig?.env as Record<string, unknown> | undefined)?.TYPESAFE_API_KEY as { type?: unknown; secretId?: unknown; version?: unknown } | undefined;
-    if (!agent || binding?.type !== "secret_ref" || typeof binding.secretId !== "string") return { ok: false, error: { code: "credential_denied", retryable: false } };
-    const revision = createHash("sha256").update(JSON.stringify([claims.company_id, claims.sub, agent.updatedAt.toISOString(), binding.secretId, binding.version ?? "latest"])).digest("hex");
-    let apiKey: string;
-    let secretVersionId: string;
+    const agent = await loadAgent(claims.company_id, claims.sub);
+    const binding = bindingOf(agent);
+    if (!agent || !binding) return { ok: false, error: { code: "credential_denied", retryable: false } };
+    const initialConfigRevision = configRevision(claims.company_id, claims.sub, agent, binding);
+    const initialCatalogRevision = await loadCatalogRevision(claims.company_id);
+    let apiKey = "";
+    let initialSecretVersion = "";
     try {
-      ({ value: apiKey, secretVersionId } = await secretService(db).resolveSecretValueWithMetadata(claims.company_id, binding.secretId, typeof binding.version === "number" ? binding.version : "latest", { accessContext: { consumerType: "agent", consumerId: claims.sub, actorType: "agent", actorId: claims.sub, heartbeatRunId: claims.run_id, responsibleUserId: claims.responsible_user_id } }));
+      const secret = await resolveSecret(claims.company_id, binding, claims);
+      apiKey = secret.value;
+      initialSecretVersion = secret.secretVersionId;
     } catch { return { ok: false, error: { code: "credential_denied", retryable: false } }; }
     const started = now();
     const controller = new AbortController();
@@ -77,19 +150,32 @@ export function typeSafeRuntimeToolService(db: Db, deps: { fetch?: typeof fetch;
     try {
       let response: Response | null = null;
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        try { response = await request("https://api.typesafe.ai/v1/systemone", { method: "POST", headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" }, body: JSON.stringify(input), signal: controller.signal }); }
-        catch (error) { if ((error as Error).name === "AbortError") return { ok: false, error: { code: "timeout", retryable: true } }; return { ok: false, error: { code: "service_error", retryable: true } }; }
+        try {
+          response = await request("https://api.typesafe.ai/v1/systemone", { method: "POST", headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" }, body: JSON.stringify({ state: input.state, model: input.model, questions: input.questions }), signal: controller.signal });
+        } catch (error) {
+          return { ok: false, error: { code: (error as Error).name === "AbortError" ? "timeout" : "service_error", retryable: true } };
+        }
         if (![429, 529].includes(response.status) || attempt === 1) break;
         await sleep(100);
       }
       if (!response?.ok) return { ok: false, error: { code: response?.status === 429 ? "rate_limited" : response?.status === 529 ? "overloaded" : response?.status === 401 || response?.status === 403 ? "credential_denied" : "service_error", retryable: Boolean(response && [429, 529].includes(response.status)) } };
       let validated;
-      try { validated = validateTypeSafeAnswers(input, await response.json()); } catch { return { ok: false, error: { code: "invalid_response", retryable: false } }; }
-      const [fresh] = await db.select({ adapterConfig: agents.adapterConfig, updatedAt: agents.updatedAt }).from(agents).where(and(eq(agents.id, claims.sub), eq(agents.companyId, claims.company_id))).limit(1);
-      const freshBinding = (fresh?.adapterConfig?.env as Record<string, unknown> | undefined)?.TYPESAFE_API_KEY as Record<string, unknown> | undefined;
-      const freshRevision = fresh && freshBinding ? createHash("sha256").update(JSON.stringify([claims.company_id, claims.sub, fresh.updatedAt.toISOString(), freshBinding.secretId, freshBinding.version ?? "latest"])).digest("hex") : "";
-      if (freshRevision !== revision) return { ok: false, error: { code: "stale_configuration", retryable: true } };
-      return { ok: true, ...validated, latencyMs: Math.max(0, now() - started), metadata: { companyScoped: true, configRevision: revision, credentialVersion: createHash("sha256").update(secretVersionId).digest("hex"), catalogRevision: input.catalogRevision ?? null, requestFingerprint: createHash("sha256").update(JSON.stringify(input)).digest("hex"), cached: false } };
+      try { validated = validateTypeSafeAnswers(input, await response.json()); }
+      catch { return { ok: false, error: { code: "invalid_response", retryable: false } }; }
+      const freshAgent = await loadAgent(claims.company_id, claims.sub);
+      const freshBinding = bindingOf(freshAgent);
+      let freshSecretVersion = "";
+      try { freshSecretVersion = (await resolveSecret(claims.company_id, freshBinding ?? {}, claims)).secretVersionId; }
+      catch { return { ok: false, error: { code: "stale_configuration", retryable: true } }; }
+      const freshCatalogRevision = await loadCatalogRevision(claims.company_id);
+      if (configRevision(claims.company_id, claims.sub, freshAgent, freshBinding) !== initialConfigRevision
+        || freshSecretVersion !== initialSecretVersion || freshCatalogRevision !== initialCatalogRevision) {
+        return { ok: false, error: { code: "stale_configuration", retryable: true } };
+      }
+      return { ok: true, ...validated, rendered: renderTypeSafeResult(validated), latencyMs: Math.max(0, now() - started), metadata: {
+        companyScoped: true, configRevision: initialConfigRevision, credentialVersion: hash(initialSecretVersion), catalogRevision: initialCatalogRevision,
+        requestFingerprint: hash({ state: input.state, questions: input.questions }), questionSchema: hash(input.questions), model: input.model, cached: false,
+      } };
     } finally { clearTimeout(timeout); apiKey = ""; }
   }};
 }

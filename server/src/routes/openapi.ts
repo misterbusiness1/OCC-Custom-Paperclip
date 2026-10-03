@@ -9939,7 +9939,7 @@ registerCurrentRoute({
   path: "/runtime-tools/typesafe/judge",
   tags: ["connection-intents"],
   summary: "Run an explicit company-scoped typed TypeSafe judgment",
-  body: z.object({ state: z.unknown(), model: z.string(), questions: z.record(z.string(), z.unknown()), catalogRevision: z.string().optional() }).strict(),
+  body: z.object({ state: z.union([z.string(), z.array(z.unknown()), z.record(z.string(), z.unknown())]), model: z.string(), questions: z.record(z.string(), z.unknown()) }).strict(),
 });
 
 registerCurrentRoute({
