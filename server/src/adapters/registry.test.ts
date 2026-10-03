@@ -82,6 +82,16 @@ describe("built-in runtime connection tool delivery", () => {
   it.each([...expectedStrategies])("delivers %s runtime tools through %s", (type, strategy) => {
     expect(requireServerAdapter(type).runtimeToolDelivery).toBe(strategy);
   });
+
+  it.each([
+    ["claude_local", "native_mcp"],
+    ["codex_local", "native_mcp"],
+    ["gemini_local", "environment"],
+    ["kimi_local", "environment"],
+  ] as const)("keeps the %s ACP runtime-tool delivery contract at %s", (type, strategy) => {
+    expect(requireServerAdapter(type).acp).toBeDefined();
+    expect(requireServerAdapter(type).runtimeToolDelivery).toBe(strategy);
+  });
 });
 
 
