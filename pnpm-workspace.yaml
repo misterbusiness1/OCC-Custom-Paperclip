@@ -44,8 +44,8 @@ overrides:
   react-dom: "^19.2.8"
   # Fork production dependency audit pins (#44, OXFA-27638); mirrored from
   # package.json#pnpm.overrides.
-  "brace-expansion@<2": "1.1.20"
-  "brace-expansion@>=2 <3": "2.1.6"
+  "brace-expansion@<2": "1.1.18"
+  "brace-expansion@>=2 <3": "2.1.4"
   fast-uri: "3.1.6"
   js-yaml: "4.3.2"
   "nanoid@<4": "3.3.18"
