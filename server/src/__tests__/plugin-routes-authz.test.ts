@@ -1,4 +1,5 @@
 import express from "express";
+import typeSafeManifest from "../../../packages/plugins/plugin-typesafe-skill-suggestion/src/manifest.js";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -6,6 +7,7 @@ const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
   getByKey: vi.fn(),
   upsertConfig: vi.fn(),
+  getConfig: vi.fn(),
   getCompanySettings: vi.fn(),
   upsertCompanySettings: vi.fn(),
 }));
@@ -318,14 +320,16 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockLifecycle.unload).toHaveBeenCalledWith(pluginId, true);
   }, 20_000);
 
-  it("allows instance admins to save company-scoped secret refs and sync plugin bindings", async () => {
+  it("saves and reads the actual TypeSafe manifest managed binding unchanged", async () => {
     readyPlugin();
+    mockRegistry.getById.mockResolvedValue({ id: pluginId, pluginKey: typeSafeManifest.id, status: "ready", manifestJson: typeSafeManifest });
     const configJson = {
       apiKeyRef: { type: "secret_ref", secretId, version: "latest" },
     };
     mockSecretService.getById.mockResolvedValue({ id: secretId, companyId: companyA, status: "active" });
     mockSecretService.syncSecretRefsForTarget.mockResolvedValue([]);
     mockRegistry.upsertConfig.mockResolvedValue({ id: "config-1", pluginId, companyId: companyA, configJson });
+    mockRegistry.getConfig.mockResolvedValue({ id: "config-1", pluginId, companyId: companyA, configJson });
 
     const { app } = await createApp({
       type: "board",
@@ -340,6 +344,9 @@ describe.sequential("plugin install and upgrade authz", () => {
       .send({ companyId: companyA, configJson });
 
     expect(res.status).toBe(200);
+    const read = await request(app).get(`/api/plugins/${pluginId}/config`).query({ companyId: companyA });
+    expect(read.status).toBe(200);
+    expect(read.body.configJson).toEqual(configJson);
     expect(mockSecretService.getById).toHaveBeenCalledWith(secretId);
     expect(mockSecretService.syncSecretRefsForTarget).toHaveBeenCalledWith(
       companyA,
@@ -355,6 +362,7 @@ describe.sequential("plugin install and upgrade authz", () => {
 
   it("rejects plugin config saves that reference another company's secret before syncing bindings", async () => {
     readyPlugin();
+    mockRegistry.getById.mockResolvedValue({ id: pluginId, pluginKey: typeSafeManifest.id, status: "ready", manifestJson: typeSafeManifest });
     mockSecretService.getById.mockResolvedValue({ id: secretId, companyId: companyB, status: "active" });
     mockSecretService.syncSecretRefsForTarget.mockResolvedValue([]);
 
@@ -380,6 +388,36 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockSecretService.syncSecretRefsForTarget).not.toHaveBeenCalled();
     expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
   }, 20_000);
+
+  it.each([
+    "plaintext-secret", secretId,
+    { type: "secret_ref", secretId: "not-a-uuid" },
+    { type: "secret_ref", secretId, version: -1 },
+    { type: "plain", value: "plaintext-secret" },
+    { type: "secret_ref", secretId, unexpected: true },
+  ])("rejects invalid TypeSafe config before secret lookup: %j", async (apiKeyRef) => {
+    mockRegistry.getById.mockResolvedValue({ id: pluginId, pluginKey: typeSafeManifest.id, status: "ready", manifestJson: typeSafeManifest });
+    const { app } = await createApp(boardActor({ isInstanceAdmin: true }));
+    const res = await request(app).post(`/api/plugins/${pluginId}/config`)
+      .send({ companyId: companyA, configJson: { enabled: true, apiKeyRef } });
+    expect(res.status).toBe(400);
+    expect(mockSecretService.getById).not.toHaveBeenCalled();
+    expect(mockSecretService.syncSecretRefsForTarget).not.toHaveBeenCalled();
+    expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+    expect(JSON.stringify(res.body)).not.toContain("plaintext-secret");
+  });
+
+  it("rejects a deleted secret with the actual TypeSafe manifest before persistence", async () => {
+    mockRegistry.getById.mockResolvedValue({ id: pluginId, pluginKey: typeSafeManifest.id, status: "ready", manifestJson: typeSafeManifest });
+    mockSecretService.getById.mockResolvedValue({ id: secretId, companyId: companyA, status: "deleted" });
+    const { app } = await createApp(boardActor({ isInstanceAdmin: true }));
+    const res = await request(app).post(`/api/plugins/${pluginId}/config`)
+      .send({ companyId: companyA, configJson: { apiKeyRef: { type: "secret_ref", secretId } } });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/deleted secret/i);
+    expect(mockSecretService.syncSecretRefsForTarget).not.toHaveBeenCalled();
+    expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+  });
 
   it("allows instance admins to upgrade plugins", async () => {
     const pluginId = "11111111-1111-4111-8111-111111111111";
