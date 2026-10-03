@@ -8,6 +8,7 @@ import { advisorySkillContext, observeSkillSuggestion } from "../services/skill-
 
 const companyId = "11111111-1111-4111-8111-111111111111";
 const pluginId = "plugin-typesafe-suggestion";
+const secretId = "77777777-7777-4777-8777-777777777777";
 const skills = [{ key: "typesafe-ai", runtimeName: "typesafe-ai", source: "/missing", versionId: "v1", currentVersionId: "v1" }];
 const activeEnv = {
   PAPERCLIP_TYPESAFE_SKILL_SUGGESTION_ACTIVE: "true",
@@ -58,7 +59,7 @@ describe("TypeSafe active advisory rollout contract", () => {
     const { workerManager } = await runtime({
       enabled: true,
       activeEnabled: true,
-      apiKeyRef: { type: "secret_ref", secretId: "typesafe-test" },
+      apiKeyRef: { type: "secret_ref", secretId },
     });
     const observation = await observe(activeEnv, workerManager);
     const rendered = renderPaperclipSkillRelevanceAdvisory(advisorySkillContext(observation));
@@ -66,7 +67,7 @@ describe("TypeSafe active advisory rollout contract", () => {
     expect(rendered).toContain("<skill_id>typesafe-ai</skill_id>");
     expect(rendered).toContain("explicit user-selected and mandatory skill rules take precedence");
     expect(rendered).not.toContain("Use semantic judgment");
-    expect(JSON.stringify(observation)).not.toContain("resolved:typesafe-test");
+    expect(JSON.stringify(observation)).not.toContain(`resolved:${secretId}`);
   });
 
   it.each([
@@ -79,7 +80,7 @@ describe("TypeSafe active advisory rollout contract", () => {
   });
 
   it("keeps shadow-only advisory-free and lets active win when both host flags are enabled", async () => {
-    const { workerManager } = await runtime({ enabled: true, activeEnabled: true, apiKeyRef: { type: "secret_ref", secretId: "typesafe-test" } });
+    const { workerManager } = await runtime({ enabled: true, activeEnabled: true, apiKeyRef: { type: "secret_ref", secretId } });
     const shadow = await observe({ PAPERCLIP_TYPESAFE_SKILL_SUGGESTION_SHADOW: "true", PAPERCLIP_TYPESAFE_SKILL_SUGGESTION_PLUGIN_ID: pluginId }, workerManager);
     expect(shadow.active).toBe(false);
     expect(advisorySkillContext(shadow)).toBeNull();
@@ -92,7 +93,7 @@ describe("TypeSafe active advisory rollout contract", () => {
     ["plugin disabled", { enabled: false, activeEnabled: true }],
     ["active config disabled", { enabled: true, activeEnabled: false }],
   ])("honors %s", async (_label, flags) => {
-    const { workerManager } = await runtime({ ...flags, apiKeyRef: { type: "secret_ref", secretId: "typesafe-test" } });
+    const { workerManager } = await runtime({ ...flags, apiKeyRef: { type: "secret_ref", secretId } });
     expect(await observe(activeEnv, workerManager)).toMatchObject({ status: "disabled", active: true });
   });
 
@@ -104,17 +105,17 @@ describe("TypeSafe active advisory rollout contract", () => {
     })) };
     expect(await observe(activeEnv, wrongCompany as never)).toMatchObject({ status: "failed_open", errorClass: "InvalidResponseError" });
 
-    const state = await runtime({ enabled: true, activeEnabled: true, apiKeyRef: { type: "secret_ref", secretId: "typesafe-test" } });
+    const state = await runtime({ enabled: true, activeEnabled: true, apiKeyRef: { type: "secret_ref", secretId } });
     let reads = 0;
     state.harness.ctx.config.getWithRevision = async () => ({
-      value: { enabled: true, activeEnabled: true, apiKeyRef: { type: "secret_ref", secretId: "typesafe-test" } },
+      value: { enabled: true, activeEnabled: true, apiKeyRef: { type: "secret_ref", secretId } },
       revision: ++reads === 1 ? "config:1" : "config:2",
     });
     expect(await observe(activeEnv, state.workerManager)).toMatchObject({ status: "failed_open", errorClass: "StaleStateError" });
   });
 
   it("preserves mandatory and explicit precedence at the host boundary", async () => {
-    const { workerManager } = await runtime({ enabled: true, activeEnabled: true, apiKeyRef: { type: "secret_ref", secretId: "typesafe-test" } });
+    const { workerManager } = await runtime({ enabled: true, activeEnabled: true, apiKeyRef: { type: "secret_ref", secretId } });
     for (const precedence of [{ explicitSkillIds: ["typesafe-ai"], mandatorySkillIds: [] }, { explicitSkillIds: [], mandatorySkillIds: ["paperclip"] }]) {
       const result = await observeSkillSuggestion({ env: activeEnv, workerManager: workerManager as never, companyId,
         request: "Use semantic judgment", skills, readFreshSkills: async () => skills, ...precedence });
