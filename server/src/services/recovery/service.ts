@@ -574,6 +574,12 @@ const PROVIDER_USAGE_LIMIT_RE = new RegExp([
 // key fix, not a wait), even when the provider text also mentions a limit.
 const PROVIDER_AUTH_FAILURE_RE =
   /(?:\b401\b|unauthori[sz]ed|authentication[\s_-](?:error|failed|required)|invalid[\s_-]+(?:x-)?api[\s_-]?key|incorrect api key|api key (?:is )?(?:invalid|expired|revoked)|invalid (?:access |bearer |auth(?:entication)? )?token|not logged in|please (?:run \/login|log ?in)|login required|requires login|invalid_grant)/i;
+// Kimi's ACP adapter prefixes this specific provider quota response with the
+// misleading generic phrase "Authentication required". Keep this exception
+// fully anchored, including the only observed optional provider CTA, so no
+// other authentication-shaped failure can be normalized as quota.
+const KIMI_ACP_FIVE_HOUR_QUOTA_RE =
+  /^Authentication required:\s*403\s+You(?:'|’)ve reached your 5-hour usage limit\.\s*Your quota will reset when the current 5-hour window ends\.(?:\s+To continue now, purchase extra usage or upgrade your plan:\s*https:\/\/www\.kimi\.com\/membership\/subscription\?tab=quota)?$/i;
 
 export type ProviderQuotaKind = "balance_exhausted" | "usage_limit";
 
@@ -582,6 +588,7 @@ export type ProviderQuotaKind = "balance_exhausted" | "usage_limit";
 export function classifyProviderQuotaErrorMessage(message: string | null | undefined): ProviderQuotaKind | null {
   const text = message?.trim();
   if (!text) return null;
+  if (KIMI_ACP_FIVE_HOUR_QUOTA_RE.test(text)) return "usage_limit";
   if (PROVIDER_AUTH_FAILURE_RE.test(text)) return null;
   if (PROVIDER_BALANCE_EXHAUSTED_RE.test(text)) return "balance_exhausted";
   if (PROVIDER_USAGE_LIMIT_RE.test(text)) return "usage_limit";
