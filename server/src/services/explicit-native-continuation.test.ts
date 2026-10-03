@@ -502,8 +502,8 @@ const support = await getEmbeddedPostgresTestSupport();
       nativeIssueId: null, executionStage: "preparing", controllerBootId,
       runnerProfileJson: { adapterDispatch: { adapterType: "kimi_local" } },
       resultJson: { legacyPrelaunchCancellation: { version: 1, kind: "legacy_prelaunch_cancellation",
-        requestedAt: new Date().toISOString(), beforeAdapterDispatch: true, adapterType: "kimi_local",
-        controllerBootId, settledAt: new Date().toISOString(), settledControllerBootId: controllerBootId } },
+        requestedAt: "2026-09-11T09:59:59.000Z", beforeAdapterDispatch: true, adapterType: "kimi_local",
+        controllerBootId, settledAt: "2026-09-11T10:00:01.000Z", settledControllerBootId: controllerBootId } },
     }).where(eq(heartbeatRuns.id, f.sourceRunId));
     expect(await admit(f, true)).toMatchObject({ previousRunId: f.sourceRunId });
     const results = await Promise.all([admit(f), admit(f)]);
@@ -511,18 +511,27 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.successorRunId))).toHaveLength(1);
   });
 
-  it.each(["unsettled", "controller", "adapter", "provider", "queued"] as const)(
+  it.each(["unsettled", "controller", "adapter", "provider", "queued", "invalid requested",
+    "invalid settled", "reversed", "after finish", "settled before finish"] as const)(
     "keeps ambiguous legacy prelaunch cancellation fail-closed: %s", async kind => {
       const f = await seedCancelledStartup();
       const controllerBootId = randomUUID();
       await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
       await db.update(agents).set({ adapterType: "kimi_local" }).where(eq(agents.id, f.agentId));
       const receipt: Record<string, unknown> = { version: 1, kind: "legacy_prelaunch_cancellation",
-        requestedAt: new Date().toISOString(), beforeAdapterDispatch: true, adapterType: "kimi_local",
-        controllerBootId, settledAt: new Date().toISOString(), settledControllerBootId: controllerBootId };
+        requestedAt: "2026-09-11T09:59:59.000Z", beforeAdapterDispatch: true, adapterType: "kimi_local",
+        controllerBootId, settledAt: "2026-09-11T10:00:01.000Z", settledControllerBootId: controllerBootId };
       if (kind === "unsettled") delete receipt.settledAt;
       if (kind === "controller") receipt.settledControllerBootId = randomUUID();
       if (kind === "adapter") receipt.adapterType = "process";
+      if (kind === "invalid requested") receipt.requestedAt = "not-a-date";
+      if (kind === "invalid settled") receipt.settledAt = "still-not-a-date";
+      if (kind === "reversed") {
+        receipt.requestedAt = "2026-09-11T10:00:02.000Z";
+        receipt.settledAt = "2026-09-11T10:00:01.000Z";
+      }
+      if (kind === "after finish") receipt.requestedAt = "2026-09-11T10:00:01.000Z";
+      if (kind === "settled before finish") receipt.settledAt = "2026-09-11T09:59:59.000Z";
       await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null,
         executionStage: "preparing", controllerBootId,
         runnerProfileJson: { adapterDispatch: { adapterType: "kimi_local" } },

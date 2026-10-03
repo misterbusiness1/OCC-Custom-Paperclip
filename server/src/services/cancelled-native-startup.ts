@@ -55,12 +55,19 @@ export async function isCancelledLegacyPrelaunch(db: Db, run: Run, coordinator: 
     "requestedAt", "settledAt", "settledControllerBootId", "version"].sort().join(",");
   if (!receipt || Object.keys(receipt).sort().join(",") !== expectedKeys) return false;
   const adapterType = claimedAdapterType(run);
+  const requestedAt = typeof receipt.requestedAt === "string"
+    ? Date.parse(receipt.requestedAt) : Number.NaN;
+  const settledAt = typeof receipt.settledAt === "string"
+    ? Date.parse(receipt.settledAt) : Number.NaN;
+  const finishedAt = run.finishedAt.getTime();
   if (receipt.version !== 1 || receipt.kind !== "legacy_prelaunch_cancellation" ||
       receipt.beforeAdapterDispatch !== true || typeof receipt.requestedAt !== "string" ||
       typeof receipt.settledAt !== "string" || !adapterType || !isConversationAdapter(adapterType) ||
       receipt.adapterType !== adapterType || typeof receipt.controllerBootId !== "string" ||
       receipt.controllerBootId !== run.controllerBootId ||
-      receipt.settledControllerBootId !== receipt.controllerBootId) return false;
+      receipt.settledControllerBootId !== receipt.controllerBootId ||
+      !Number.isFinite(requestedAt) || !Number.isFinite(settledAt) ||
+      requestedAt > finishedAt || finishedAt > settledAt) return false;
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
   ));
