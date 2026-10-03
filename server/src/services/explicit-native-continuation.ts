@@ -1,4 +1,4 @@
-import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
+import { isCancelledLegacyPrelaunch, isCancelledNativeStartup } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
@@ -71,6 +71,8 @@ export async function admitExplicitNativeContinuation(input: {
   actorType: string | null | undefined; actorId: string | null | undefined;
   reason: string | null; commentId: string | null; successorRunId: string;
   failedRunId?: string | null;
+  /** Server-generated binding from the interrupting comment wake. */
+  interruptedRunId?: string | null;
   /** Server-recorded board intent to send an existing legacy message queue. */
   queuedCommentInterruptId?: string;
   /** Internal delivery of an unconsumed, user-authored legacy queue entry. */
@@ -188,7 +190,17 @@ export async function admitExplicitNativeContinuation(input: {
     if (!lockedRun || lockedRun.status !== run.status || lockedRun.agentId !== run.agentId ||
         lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return null;
     run = lockedRun;
-    const cancelledStartup = await isCancelledNativeStartup(db, run, coordinator);
+    const cancelledNativeStartup = await isCancelledNativeStartup(db, run, coordinator);
+    const interruption = run.resultJson as Record<string, unknown> | null;
+    const cancelledLegacyPrelaunch = !retry && !queuedInterrupt && !queuedRequest &&
+      input.interruptedRunId === run.id &&
+      interruption?.operatorInterrupted === true &&
+      interruption?.interruptionSource === "issue_comment_interrupt" &&
+      interruption?.interruptedIssueId === issueId &&
+      interruption?.interruptedByActorType === "user" &&
+      interruption?.interruptedByActorId === actorId &&
+      await isCancelledLegacyPrelaunch(db, run, coordinator);
+    const cancelledStartup = cancelledNativeStartup || cancelledLegacyPrelaunch;
     if (cancelledStartup) cancelledStartupIds.add(run.id);
     if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return null;
     if (!cancelledStartup && coordinator && (coordinator.phase !== "terminal_failure" || coordinator.leaseOwner ||

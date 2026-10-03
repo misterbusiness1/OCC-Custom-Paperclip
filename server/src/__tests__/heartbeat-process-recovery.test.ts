@@ -9,6 +9,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import express from "express";
+import request from "supertest";
 import { and, eq, or, inArray, sql } from "drizzle-orm";
 import {
   afterAll,
@@ -38,6 +40,7 @@ import {
   companySecretBindings,
   companySecrets,
   companySkills,
+  companyMemberships,
   companies,
   completionContracts,
   costEvents,
@@ -76,6 +79,8 @@ import {
   workAssessments,
   workspaceOperations,
 } from "@paperclipai/db";
+import { errorHandler } from "../middleware/index.js";
+import { issueRoutes } from "../routes/issues.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -622,6 +627,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(companySkills);
+      await db.delete(companyMemberships);
       await db.delete(workspaceOperations);
       await db.delete(executionWorkspaces);
       await db.delete(projectWorkspaces);
@@ -2595,8 +2601,196 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(mockAdapterExecute).not.toHaveBeenCalled();
       const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(task.executionRunId).toBeNull();
+
     });
   });
+
+  it("fences and settles a legacy conversation cancellation before adapter dispatch", async () => {
+    await withTempPaperclipHome(async () => {
+      const { agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+      await db.update(agents).set({ adapterType: "kimi_local" }).where(eq(agents.id, agentId));
+      let heartbeat!: ReturnType<typeof heartbeatService>;
+      heartbeat = heartbeatService(db, {
+        beforeLegacyAdapterDispatch: async id => {
+          await heartbeat.cancelRun(id, "Interrupted by board comment", {
+            errorCode: "operator_interrupted",
+            resultJson: { operatorInterrupted: true, interruptionSource: "issue_comment_interrupt",
+              interruptedIssueId: issueId },
+          });
+        },
+      });
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", runtimeMode: "legacy",
+        executionStage: "preparing", processPid: null, processGroupId: null, processStartedAt: null,
+        resultJson: { legacyPrelaunchCancellation: { version: 1,
+          kind: "legacy_prelaunch_cancellation", beforeAdapterDispatch: true,
+          adapterType: "kimi_local", controllerBootId: expect.any(String),
+          settledAt: expect.any(String), settledControllerBootId: expect.any(String) } },
+      });
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(task.executionRunId).toBeNull();
+
+      // The versioned legacy-prelaunch receipt authorizes only the comment
+      // bound to this interrupted run. An unrelated saved queue remains
+      // visible until its own interrupt/send admission.
+      const queuedComment = await db.insert(issueComments).values({
+        companyId: task.companyId, issueId, authorType: "user",
+        authorUserId: "responsible-user", body: "Keep this queued until its own admission",
+      }).returning().then(rows => rows[0]!);
+      const queuedWake = await db.insert(agentWakeupRequests).values({
+        companyId: task.companyId, agentId, source: "automation", reason: "issue_commented",
+        status: "deferred_issue_execution", requestedByActorType: "user",
+        requestedByActorId: "responsible-user", payload: {
+          issueId, commentId: queuedComment.id,
+          _paperclipWakeContext: { issueId, wakeReason: "issue_commented",
+            wakeCommentIds: [queuedComment.id], queuedCommentIds: [queuedComment.id] },
+        },
+      }).returning().then(rows => rows[0]!);
+      await heartbeat.resumeRemoteStopComments((await heartbeat.getRun(runId))!);
+      expect(await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, queuedWake.id)).then(rows => rows[0])).toMatchObject({
+          status: "deferred_issue_execution", runId: null,
+        });
+    });
+  });
+
+  it.each(["cancellation fence wins", "dispatch transition wins"] as const)(
+    "serializes an ordinary interrupt when the %s",
+    async (ordering) => {
+      await withTempPaperclipHome(async () => {
+        const { companyId, agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+        await db.update(agents).set({ adapterType: "kimi_local" }).where(eq(agents.id, agentId));
+        await db.insert(companyMemberships).values({ companyId, principalType: "user",
+          principalId: "responsible-user", status: "active", membershipRole: "operator" });
+
+        const testApp = express();
+        testApp.use(express.json());
+        testApp.use((req, _res, next) => {
+          (req as any).actor = { type: "board", source: "session", userId: "responsible-user",
+            companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "operator" }],
+            isInstanceAdmin: false };
+          next();
+        });
+        testApp.use("/api", issueRoutes(db, {} as never));
+        testApp.use(errorHandler);
+
+        let interruptRequest: Promise<unknown> | undefined;
+        const postInterrupt = () => request(testApp).post(`/api/issues/${issueId}/comments`)
+          .send({ body: "Use the saved response", interrupt: true });
+        let sourceDispatches = 0;
+        mockAdapterExecute.mockImplementation(async ({ runId: executingRunId, signal, onDispatch }: any) => {
+          if (executingRunId === runId) {
+            sourceDispatches += 1;
+            await onDispatch?.();
+            interruptRequest = postInterrupt().then(response => {
+              expect(response.status, JSON.stringify(response.body)).toBe(201);
+              return response;
+            });
+            if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+            return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+              summary: "Interrupted source", provider: "test", model: "test-model" };
+          }
+          await db.insert(issueComments).values({ companyId, issueId, authorType: "agent",
+            authorAgentId: agentId, createdByRunId: executingRunId, body: "Saved response" });
+          await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, issueId));
+          return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+            summary: "Saved response", provider: "test", model: "test-model" };
+        });
+
+        let heartbeat!: ReturnType<typeof heartbeatService>;
+        heartbeat = heartbeatService(db, {
+          beforeLegacyAdapterDispatch: async id => {
+            if (id !== runId || ordering !== "cancellation fence wins") return;
+            const response = await postInterrupt();
+            expect(response.status, JSON.stringify(response.body)).toBe(201);
+            const deferred = await waitForValue(async () => db.select().from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            )).then(rows => rows[0] ?? null), 8_000);
+            expect(deferred).toBeTruthy();
+            expect((await heartbeat.getRun(runId))?.resultJson?.legacyPrelaunchCancellation)
+              .not.toMatchObject({ settledAt: expect.any(String) });
+          },
+        });
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+        if (interruptRequest) await interruptRequest;
+        expect(await waitForValue(async () => {
+          const wakes = await db.select().from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.companyId, companyId));
+          return wakes.length >= 2 ? wakes : null;
+        }, 8_000)).not.toBeNull();
+        // Restart after the source executor has durably settled. Reconciliation
+        // must promote the early deferred route wake through ordinary admission.
+        const restarted = heartbeatService(db);
+        const settledSource = await restarted.getRun(runId);
+        expect(settledSource).toBeTruthy();
+        if (ordering === "cancellation fence wins") {
+          let failedSuccessorId: string | null = null;
+          const failingRestart = heartbeatService(db, {
+            beforeExplicitContinuationSuccessorInsert: async successorRunId => {
+              failedSuccessorId = successorRunId;
+              throw new Error("forced successor insert failure");
+            },
+          });
+          await expect(failingRestart.resumeRemoteStopComments(settledSource!))
+            .rejects.toThrow("forced successor insert failure");
+          const [unresolved] = await db.select().from(issueRecoveryActions)
+            .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+          expect(unresolved).toMatchObject({ status: "active" });
+          expect(unresolved.evidence).not.toHaveProperty("explicitUserContinuation");
+          const [deferred] = await db.select().from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          ));
+          expect(deferred).toMatchObject({ runId: null });
+          expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)))
+            .filter(run => run.id !== runId)).toHaveLength(0);
+          expect(failedSuccessorId).toEqual(expect.any(String));
+        }
+        await restarted.resumeRemoteStopComments(settledSource!);
+        await restarted.resumeQueuedRuns();
+        await restarted.drainActiveRunExecutions();
+        await restarted.resumeQueuedRuns();
+        await restarted.drainActiveRunExecutions();
+
+        const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+        const successors = runs.filter(run => run.id !== runId);
+        expect(sourceDispatches).toBe(ordering === "dispatch transition wins" ? 1 : 0);
+        const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+        expect(comments.filter(comment => comment.body === "Use the saved response")).toHaveLength(1);
+        expect(runs.some(run => run.status === "queued" || run.status === "running")).toBe(false);
+        const wakes = await db.select().from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.companyId, companyId));
+        if (ordering === "cancellation fence wins") {
+          expect(successors).toHaveLength(1);
+          expect(successors[0]).toMatchObject({ status: "succeeded" });
+          expect(comments.filter(comment => comment.body === "Saved response")).toHaveLength(1);
+          expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({
+            status: "done", executionRunId: null,
+          });
+          expect(wakes.some(wake => wake.status === "deferred_issue_execution")).toBe(false);
+          const [resolved] = await db.select().from(issueRecoveryActions)
+            .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+          expect(resolved).toMatchObject({
+            status: "resolved",
+            evidence: { explicitUserContinuation: { runId: successors[0]!.id } },
+          });
+          expect(wakes.some(wake => wake.status === "coalesced" && wake.runId === successors[0]!.id)).toBe(true);
+        } else {
+          // Once dispatch wins, the narrow prelaunch receipt is unavailable.
+          // Preserve the generic process-identity fail-closed behavior rather
+          // than manufacturing authority for a successor.
+          expect(successors).toHaveLength(0);
+          expect(comments.filter(comment => comment.body === "Saved response")).toHaveLength(0);
+          expect(wakes.filter(wake => wake.status === "deferred_issue_execution")).toHaveLength(1);
+          expect(await getExecutionBlocker(db, companyId, issueId)).not.toBeNull();
+        }
+      });
+    },
+  );
 
   it("does not dispatch when cancellation wins after native selection", async () => {
     await withTempPaperclipHome(async () => {

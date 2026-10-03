@@ -4983,14 +4983,24 @@ describe("daytona native file-sync hooks", () => {
     const sandbox = createMockSandbox({ id: "sandbox-123" });
     // Hold the inbound upload and the outbound download open at the same time, so
     // the shared lease has two active sync calls when teardown starts.
+    let markUploadArrived!: () => void;
+    const uploadArrived = new Promise<void>((resolve) => {
+      markUploadArrived = resolve;
+    });
     let releaseUpload!: () => void;
     sandbox.fs.uploadFiles.mockImplementation(async () => {
+      markUploadArrived();
       await new Promise<void>((resolve) => {
         releaseUpload = resolve;
       });
     });
+    let markDownloadArrived!: () => void;
+    const downloadArrived = new Promise<void>((resolve) => {
+      markDownloadArrived = resolve;
+    });
     let releaseDownload!: () => void;
     sandbox.fs.downloadFiles.mockImplementation(async (requests: Array<{ source: string; destination: string }>) => {
+      markDownloadArrived();
       await new Promise<void>((resolve) => {
         releaseDownload = resolve;
       });
@@ -5011,7 +5021,7 @@ describe("daytona native file-sync hooks", () => {
     );
     // Let both sync calls register on the activity gate and reach their hung
     // transfer, so teardown sees a refCount of two.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await Promise.all([uploadArrived, downloadArrived]);
 
     const destroyCall = plugin.definition.onEnvironmentDestroyLease?.({
       driverKey: "daytona",

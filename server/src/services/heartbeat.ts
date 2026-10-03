@@ -6,11 +6,12 @@ import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/papercli
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
+import { isCancelledLegacyPrelaunch } from "./cancelled-native-startup.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
-import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
+import { CONVERSATION_ADAPTER_TYPES, CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
 import { findPendingAssigneeWakeInteraction } from "./issue-wake-interactions.js";
 import {
@@ -9209,12 +9210,16 @@ export type HeartbeatEnvironmentRuntime = ReturnType<
 export interface HeartbeatServiceOptions {
   /** Test seam before the atomic native runtime handoff. */
   beforeNativeRuntimeSelection?: (runId: string) => Promise<void>;
+  /** Test seam before the serialized legacy adapter dispatch transition. */
+  beforeLegacyAdapterDispatch?: (runId: string) => Promise<void>;
   /** Test seam immediately before the durable chat-control admission check. */
   beforeChatControlRecoveryCheck?: (input: {
     runId: string;
     issueId: string;
     stage: "claim" | "dispatch";
   }) => Promise<void>;
+  /** Test seam after recovery settlement but before its atomic successor insert. */
+  beforeExplicitContinuationSuccessorInsert?: (runId: string) => Promise<void>;
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
@@ -10234,8 +10239,17 @@ export function heartbeatService(
 
   async function resumeRemoteStopComments(run: typeof heartbeatRuns.$inferSelect, requestId?: string) {
     if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id)) return;
+    const [startupCoordinator] = run.runtimeMode === "legacy"
+      ? await db.select().from(nativeRunFinalizations).where(and(
+          eq(nativeRunFinalizations.companyId, run.companyId),
+          eq(nativeRunFinalizations.runId, run.id),
+        )).limit(1)
+      : [];
+    const settledLegacyPrelaunch = run.runtimeMode === "legacy" &&
+      await isCancelledLegacyPrelaunch(db, run, startupCoordinator);
     if (run.runtimeMode !== "native" &&
         parseObject(run.resultJson?.startupCancellation).beforeNativeSelection !== true &&
+        !settledLegacyPrelaunch &&
         !(await remoteExecutionHasStopped(db, run.companyId, run.id))) return;
     const issueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
     if (!issueId) return;
@@ -10253,7 +10267,7 @@ export function heartbeatService(
       ["terminal_failure", "applied"].includes(coordinator?.phase ?? "") &&
       await acknowledgedNativeStopExecutionHasStopped(db, currentRun) &&
       !(await getExecutionBlocker(db, run.companyId, issueId));
-    const legacyContinuation = run.runtimeMode === "legacy" &&
+    const legacyContinuation = run.runtimeMode === "legacy" && !settledLegacyPrelaunch &&
       hasConversationContinuationPolicy((await getRun(run.id))?.resultJson) &&
       !(await getExecutionBlocker(db, run.companyId, issueId));
     if (run.runtimeMode !== "native" && run.runtimeMode !== "legacy") return;
@@ -10272,6 +10286,13 @@ export function heartbeatService(
         continue;
       }
       let context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+      // A settled prelaunch receipt proves only that the comment which
+      // interrupted this exact run can be admitted. Ordinary queued comments
+      // on the same issue must stay visible until their own queue is adopted;
+      // otherwise a late reconciliation sweep can claim them before the user
+      // asks to stop or send the queue.
+      if (settledLegacyPrelaunch &&
+          readNonEmptyString(context.interruptedRunId) !== run.id) continue;
       let commentId = deriveCommentId(context, payload);
       let requestedByActorId = wake.requestedByActorId;
       const reason = readNonEmptyString(context.wakeReason) ?? wake.reason;
@@ -10302,11 +10323,13 @@ export function heartbeatService(
         if (!comment?.body.trim()) continue;
       } else {
         let wait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
-        const admitted = await admitExplicitNativeContinuation({ db, companyId: run.companyId, issueId,
+        const admitted = await db.transaction(tx => admitExplicitNativeContinuation({
+          db: tx as unknown as Db, companyId: run.companyId, issueId,
           agentId: run.agentId, actorType: wake.requestedByActorType, actorId: requestedByActorId,
           reason, commentId, successorRunId: randomUUID(), dryRun: true,
+          interruptedRunId: readNonEmptyString(context.interruptedRunId),
           onBlocked: (reason, message) => { wait = { reason, message }; },
-        });
+        }));
         if (!admitted) {
           await db.update(agentWakeupRequests).set({
             payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}',
@@ -10323,7 +10346,8 @@ export function heartbeatService(
         reason, payload, contextSnapshot: context,
         requestedByActorType: "user", requestedByActorId,
         ...(stoppedNativeContinuation ? { queuedCommentRequestId: wake.id } : {}),
-        idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` }, wake.id);
+        idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` },
+        wake.id);
       break;
     }
   }
@@ -24569,6 +24593,7 @@ export function heartbeatService(
             if (managedMcpConfig) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
             }
+            await options.beforeLegacyAdapterDispatch?.(run.id);
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {
@@ -26330,6 +26355,19 @@ export function heartbeatService(
             });
           }
         }
+        if (latestRun?.status === "cancelled" && !legacyAdapterEntered && latestRun.runtimeMode === "legacy" &&
+            parseObject(latestRun.resultJson?.legacyPrelaunchCancellation).beforeAdapterDispatch === true &&
+            parseObject(latestRun.resultJson?.legacyPrelaunchCancellation).controllerBootId === legacyControllerBootId) {
+          // Only this exact executor may settle the fence, after preparation and
+          // environment cleanup have unwound without entering adapter.execute.
+          await db.update(heartbeatRuns).set({
+            resultJson: sql`jsonb_set(jsonb_set(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb),
+              '{legacyPrelaunchCancellation,settledAt}', to_jsonb(clock_timestamp()::text), true),
+              '{legacyPrelaunchCancellation,settledControllerBootId}', to_jsonb(${legacyControllerBootId}::text), true)`,
+          }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled"),
+            eq(heartbeatRuns.controllerBootId, legacyControllerBootId), eq(heartbeatRuns.executionStage, "preparing"),
+            sql`${heartbeatRuns.resultJson}->'legacyPrelaunchCancellation'->>'controllerBootId' = ${legacyControllerBootId}`));
+        }
         if (latestRun?.status === "cancelled" && !nativeDispatchStarted && !nativeOwnershipHeld &&
             (latestRun.runtimeMode === "native" ||
               parseObject(latestRun.resultJson?.startupCancellation).beforeNativeSelection === true)) {
@@ -27426,6 +27464,7 @@ export function heartbeatService(
             reason, commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
             queuedCommentInterruptId: opts.queuedCommentInterruptId,
             queuedCommentRequestId: opts.queuedCommentRequestId,
+            interruptedRunId: readNonEmptyString(enrichedContextSnapshot.interruptedRunId),
             dryRun: true,
             onBlocked: (reason, message) => { continuationWait = { reason, message }; },
           }))) return deferBlockedExecution(executionBlocker);
@@ -28238,6 +28277,7 @@ export function heartbeatService(
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
             reason, commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
+            interruptedRunId: readNonEmptyString(enrichedContextSnapshot.interruptedRunId),
             queuedCommentInterruptId: opts.queuedCommentInterruptId,
             queuedCommentRequestId: opts.queuedCommentRequestId,
           });
@@ -28246,6 +28286,7 @@ export function heartbeatService(
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
+            await options.beforeExplicitContinuationSuccessorInsert?.(explicitContinuationRunId);
           }
 
           const wakeupRequest = await tx
@@ -29125,7 +29166,8 @@ export function heartbeatService(
     // Established legacy processes must still be stopped if the database is
     // unavailable. Only native or not-yet-dispatched preparation needs this
     // additional durable fence before its existing cancellation path.
-    if (run.runtimeMode === "native" || (!run.runtimeModeResolvedAt && !running && !control)) {
+    if (run.runtimeMode === "native" || (!run.runtimeModeResolvedAt && !running && !control) ||
+        (run.runtimeMode === "legacy" && run.executionStage === "preparing" && !running && !control)) {
       const [fenced] = await db.update(heartbeatRuns).set({
         resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
           jsonb_build_object('startupCancellation', jsonb_build_object(
@@ -29134,7 +29176,16 @@ export function heartbeatService(
               and ${heartbeatRuns.runtimeModeResolvedAt} is null
               and ${heartbeatRuns.executionStage} = 'preparing'
               and coalesce(${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType' = 'paperclip_runner', false)
-          ))`,
+          )) || case when ${heartbeatRuns.runtimeMode} = 'legacy'
+              and ${heartbeatRuns.executionStage} = 'preparing'
+              and ${heartbeatRuns.controllerBootId} is not null
+              and ${inArray(sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType'`, [...CONVERSATION_ADAPTER_TYPES])}
+            then jsonb_build_object('legacyPrelaunchCancellation', jsonb_build_object(
+              'version', 1, 'kind', 'legacy_prelaunch_cancellation',
+              'requestedAt', clock_timestamp(), 'beforeAdapterDispatch', true,
+              'adapterType', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType',
+              'controllerBootId', ${heartbeatRuns.controllerBootId}
+            )) else '{}'::jsonb end`,
       }).where(and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status,
         pendingNativeRetry ? [...CANCELLABLE_HEARTBEAT_RUN_STATUSES, "failed"] : [...CANCELLABLE_HEARTBEAT_RUN_STATUSES],
       ))).returning();

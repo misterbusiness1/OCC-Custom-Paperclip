@@ -940,6 +940,18 @@ If cleanup or another execution gate is still pending, the message stays in its 
 
 Historical legacy interruption holds for conversational adapters no longer block new messages or Resume. Automatic classification uses the server-owned adapter identity saved atomically at run claim, the saved adapter invocation, or the continuation policy, never the agent’s current adapter settings. Missing historical adapter evidence retains the automatic hold; an explicit user continuation can retire it after proving the predecessor stopped. A terminal row with a live predecessor process, an unreleased environment lease, or failed/pending cleanup still blocks actual admission and Resume; a release timestamp alone does not prove cleanup succeeded. Retry scheduling can happen before cleanup, but grants no execution authority. Recovery folds their obsolete no-replay bookkeeping without changing task ownership, status, or automatically waking old work. The audit trail remains readable. Native integrity and ownership holds, and non-conversational adapter holds, remain enforced.
 
+If an interrupting issue comment cancels a legacy conversational run before
+adapter dispatch, the executor records a versioned server-owned prelaunch
+cancellation receipt only after preparation and cleanup settle. The receipt is
+bound to the exact run, controller, adapter, interrupting comment, and user. It
+is invalid when launch, provider, process, session, or unreleased-lease evidence
+exists. Normal issue-locked admission consumes that receipt and creates the
+successor in one transaction, so the authorization record and successor use the
+same run ID. A failure before insertion leaves the receipt and recovery hold
+unresolved. Comments without the matching interrupt binding remain deferred.
+If adapter dispatch won the race, the ordinary `process_identity_missing`
+fail-closed rule remains in force.
+
 The server projection remains available for diagnostics. Normal working, finishing, and interaction waits add no badges or cards to task lists or feeds. Active transcript headers keep saying Working during automatic retry and execution confirmation; attempts, causes, and recovery decisions belong in the run log. Recovery uses the existing transcript and run log rather than adding a reconciliation form. A cancelled run that never started says “Couldn't start” instead of implying that the agent answered.
 
 ### Codex startup and provider state
