@@ -87,9 +87,13 @@ export function evaluateAudit({ auditReport, whyReport, allowlist, today }) {
     }
 
     const observedPaths = collectDependencyPaths(whyReport, exception.module);
-    const observedPath = observedPaths.find((path) => pathEndsWith(path, exception.dependencyPath));
-    if (!observedPath) {
+    const matchedPaths = observedPaths.filter((path) => pathEndsWith(path, exception.dependencyPath));
+    if (matchedPaths.length === 0) {
       fail(`${ghsa} was not found at the allowlisted dependency path: ${exception.dependencyPath.join(" -> ")}`);
+    }
+    const unmatchedPath = observedPaths.find((path) => !pathEndsWith(path, exception.dependencyPath));
+    if (unmatchedPath) {
+      fail(`${ghsa} was found at a non-allowlisted dependency path: ${unmatchedPath.join(" -> ")}`);
     }
     accepted.push({ ...exception, observedPath: exception.dependencyPath.join(" -> ") });
   }

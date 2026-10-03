@@ -93,3 +93,18 @@ test("fails closed when the observed dependency path drifts", () => {
     today: "2026-10-03",
   }), /was not found at the allowlisted dependency path/);
 });
+
+test("fails closed when an approved path coexists with a non-allowlisted runtime path", () => {
+  const multiPathWhy = structuredClone(whyReport);
+  multiPathWhy[0].dependencies["runtime-client"] = {
+    version: "1.0.0",
+    dependencies: { "http-cache-semantics": { version: "4.2.0" } },
+  };
+
+  assert.throws(() => evaluateAudit({
+    auditReport: advisory(),
+    whyReport: multiPathWhy,
+    allowlist: { schemaVersion: 1, exceptions: [exception] },
+    today: "2026-10-03",
+  }), /was found at a non-allowlisted dependency path: runtime-client@1\.0\.0 -> http-cache-semantics@4\.2\.0/);
+});
