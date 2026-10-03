@@ -403,6 +403,25 @@ describe("ApprovalPayloadRenderer", () => {
     expect(text.indexOf("Original request")).toBeLessThan(text.indexOf("Why"));
     expect(text.indexOf("Why")).toBeLessThan(text.indexOf("Pros"));
     expect(text.indexOf("Pros")).toBeLessThan(text.indexOf("Proposed reply"));
+
+    const proseBodies = Array.from(container.querySelectorAll("pre"));
+    const originalRequest = proseBodies.find((element) => element.textContent === original);
+    expect(originalRequest).toBeDefined();
+    expect(originalRequest?.classList.contains("text-sm")).toBe(true);
+    expect(originalRequest?.classList.contains("whitespace-pre-wrap")).toBe(true);
+    expect(originalRequest?.classList.contains("break-all")).toBe(true);
+    expect(originalRequest?.classList.contains("font-mono")).toBe(false);
+    expect(originalRequest?.classList.contains("text-xs")).toBe(false);
+
+    const proposedReply = proseBodies.find(
+      (element) => element.textContent === "Proposed outgoing reply — not the source",
+    );
+    expect(proposedReply).toBeDefined();
+    expect(proposedReply?.classList.contains("text-sm")).toBe(true);
+    expect(proposedReply?.classList.contains("whitespace-pre-wrap")).toBe(true);
+    expect(proposedReply?.classList.contains("break-all")).toBe(true);
+    expect(proposedReply?.classList.contains("font-mono")).toBe(false);
+    expect(proposedReply?.classList.contains("text-xs")).toBe(false);
     expect(container.querySelector("script")).toBeNull();
     expect(container.querySelector("pre")?.textContent).toBe(original);
     expect(text).toContain("Requester-provided external source snapshot");

@@ -153,7 +153,7 @@ export function OriginalRequestBlock({
         ? "Paperclip source snapshot"
         : null;
   const content = (
-    <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs leading-5 text-foreground">
+    <pre className="mt-2 max-h-96 overflow-y-auto whitespace-pre-wrap break-all rounded-md bg-muted/40 p-3 text-sm leading-6 text-foreground">
       {original.text}
     </pre>
   );
@@ -519,7 +519,7 @@ export function EmailReplyPayload({ payload }: { payload: Record<string, unknown
         <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
           Proposed reply
         </p>
-        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs leading-5 text-foreground">
+        <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap break-all rounded-md bg-muted/40 p-3 text-sm leading-6 text-foreground">
           {body}
         </pre>
       </div>
