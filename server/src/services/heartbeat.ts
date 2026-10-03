@@ -26360,13 +26360,19 @@ export function heartbeatService(
             parseObject(latestRun.resultJson?.legacyPrelaunchCancellation).controllerBootId === legacyControllerBootId) {
           // Only this exact executor may settle the fence, after preparation and
           // environment cleanup have unwound without entering adapter.execute.
-          await db.update(heartbeatRuns).set({
+          const [settledRun] = await db.update(heartbeatRuns).set({
             resultJson: sql`jsonb_set(jsonb_set(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb),
               '{legacyPrelaunchCancellation,settledAt}', to_jsonb(clock_timestamp()::text), true),
               '{legacyPrelaunchCancellation,settledControllerBootId}', to_jsonb(${legacyControllerBootId}::text), true)`,
           }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled"),
             eq(heartbeatRuns.controllerBootId, legacyControllerBootId), eq(heartbeatRuns.executionStage, "preparing"),
-            sql`${heartbeatRuns.resultJson}->'legacyPrelaunchCancellation'->>'controllerBootId' = ${legacyControllerBootId}`));
+            sql`${heartbeatRuns.resultJson}->'legacyPrelaunchCancellation'->>'controllerBootId' = ${legacyControllerBootId}`))
+            .returning();
+          // Admission below must observe the receipt this teardown just
+          // persisted. Keeping the pre-settlement snapshot here re-applies the
+          // generic process-identity fail-closed path and strands the deferred
+          // comment until a later reconciliation pass.
+          if (settledRun) latestRun = settledRun;
         }
         if (latestRun?.status === "cancelled" && !nativeDispatchStarted && !nativeOwnershipHeld &&
             (latestRun.runtimeMode === "native" ||
