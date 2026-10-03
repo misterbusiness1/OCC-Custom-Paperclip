@@ -628,6 +628,7 @@ export {
 export {
   createApprovalInputSchema,
   createApprovalSchema,
+  approvalOriginalRequestSchema,
   decisionReadyApprovalPayloadSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,

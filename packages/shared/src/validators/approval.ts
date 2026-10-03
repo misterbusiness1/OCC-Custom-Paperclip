@@ -4,11 +4,41 @@ import { multilineTextSchema } from "./text.js";
 
 const decisionTextSchema = z.string().trim().min(1);
 
+/**
+ * Immutable source snapshot shown to the board alongside a recommendation.
+ * `text` is verbatim plain text: clients must not summarize or render it as
+ * markup. Paperclip comments are re-snapshotted server-side from `commentId`;
+ * external sources remain explicitly requester-provided quotations.
+ */
+export const approvalOriginalRequestSchema = z.object({
+  text: z.string().min(1),
+  source: z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("paperclip_comment"),
+      commentId: z.string().guid(),
+      issueId: z.string().guid().optional(),
+      sender: z.string().min(1).optional(),
+      sentAt: z.string().datetime().optional(),
+      reference: z.string().min(1).optional(),
+      snapshotOrigin: z.literal("server").optional(),
+    }),
+    z.object({
+      kind: z.literal("external"),
+      channel: z.string().min(1).optional(),
+      sender: z.string().min(1).optional(),
+      sentAt: z.string().datetime().optional(),
+      reference: z.string().min(1).optional(),
+      snapshotOrigin: z.literal("requester").default("requester"),
+    }),
+  ]),
+});
+
 export const decisionReadyApprovalPayloadSchema = z.object({
   recommendedAction: decisionTextSchema,
   reasoning: decisionTextSchema,
   pros: z.array(decisionTextSchema).min(1),
   risks: z.array(decisionTextSchema).min(1),
+  originalRequest: approvalOriginalRequestSchema.optional(),
 }).passthrough();
 
 export const createApprovalInputSchema = z.object({

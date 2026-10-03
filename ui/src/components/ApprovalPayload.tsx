@@ -73,6 +73,114 @@ export function approvalDecisionBrief(payload?: Record<string, unknown> | null) 
   };
 }
 
+export type ApprovalOriginalRequest = {
+  text: string;
+  source: {
+    kind: "paperclip_comment" | "external";
+    sender?: string;
+    sentAt?: string;
+    reference?: string;
+    channel?: string;
+    snapshotOrigin?: "server" | "requester";
+  };
+};
+
+export function approvalOriginalRequest(
+  payload?: Record<string, unknown> | null,
+): ApprovalOriginalRequest | null {
+  const value = payload?.originalRequest;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const source = record.source;
+  if (typeof record.text !== "string" || record.text.length === 0) return null;
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const sourceRecord = source as Record<string, unknown>;
+  if (sourceRecord.kind !== "paperclip_comment" && sourceRecord.kind !== "external") {
+    return null;
+  }
+  const optionalString = (key: string) =>
+    typeof sourceRecord[key] === "string" && sourceRecord[key] ? String(sourceRecord[key]) : undefined;
+  return {
+    text: record.text,
+    source: {
+      kind: sourceRecord.kind,
+      sender: optionalString("sender"),
+      sentAt: optionalString("sentAt"),
+      reference: optionalString("reference"),
+      channel: optionalString("channel"),
+      snapshotOrigin:
+        sourceRecord.snapshotOrigin === "server"
+          ? "server"
+          : sourceRecord.snapshotOrigin === "requester"
+            ? "requester"
+            : undefined,
+    },
+  };
+}
+
+export function OriginalRequestBlock({
+  payload,
+  compact = false,
+}: {
+  payload?: Record<string, unknown> | null;
+  compact?: boolean;
+}) {
+  const original = approvalOriginalRequest(payload);
+  if (!original) {
+    return (
+      <div>
+        <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+          Original request
+        </p>
+        <p className="mt-1 text-sm leading-5 text-muted-foreground">
+          Original source was not retained for this approval.
+        </p>
+      </div>
+    );
+  }
+
+  const provenance = [
+    original.source.sender,
+    original.source.sentAt ? new Date(original.source.sentAt).toLocaleString() : null,
+    original.source.reference,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const sourceNote =
+    original.source.kind === "external" && original.source.snapshotOrigin === "requester"
+      ? "Requester-provided external source snapshot"
+      : original.source.kind === "paperclip_comment" && original.source.snapshotOrigin === "server"
+        ? "Paperclip source snapshot"
+        : null;
+  const content = (
+    <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs leading-5 text-foreground">
+      {original.text}
+    </pre>
+  );
+
+  return (
+    <div>
+      <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+        Original request
+      </p>
+      {(provenance || sourceNote) && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          {provenance || sourceNote}
+          {provenance && sourceNote ? ` · ${sourceNote}` : ""}
+        </p>
+      )}
+      {compact && original.text.length > 480 ? (
+        <details className="mt-2">
+          <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+            Show verbatim request
+          </summary>
+          {content}
+        </details>
+      ) : content}
+    </div>
+  );
+}
+
 export function approvalExcerpt(value: string | null, maxLength = 240): string | null {
   if (!value) return null;
   const plain = value
@@ -282,6 +390,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
           <MarkdownBody className="mt-1 leading-6 text-foreground">{brief.recommendation}</MarkdownBody>
         </div>
       )}
+      <OriginalRequestBlock payload={payload} />
       {reasoning && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Why</p>
@@ -377,9 +486,6 @@ export function EmailReplyPayload({ payload }: { payload: Record<string, unknown
             </div>
           )}
         </div>
-        <div className="max-h-96 overflow-y-auto whitespace-pre-wrap px-4 py-3.5 leading-6 text-foreground">
-          {body}
-        </div>
       </div>
 
       {intent && (
@@ -396,6 +502,7 @@ export function EmailReplyPayload({ payload }: { payload: Record<string, unknown
           <p className="mt-1 leading-6 text-foreground">{brief.recommendation}</p>
         </div>
       )}
+      <OriginalRequestBlock payload={payload} />
       {reasoning && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Why</p>
@@ -408,6 +515,14 @@ export function EmailReplyPayload({ payload }: { payload: Record<string, unknown
           <DecisionList label="Cons & risks" items={brief.cons} />
         </div>
       )}
+      <div className="space-y-1">
+        <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+          Proposed reply
+        </p>
+        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs leading-5 text-foreground">
+          {body}
+        </pre>
+      </div>
     </div>
   );
 }

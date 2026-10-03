@@ -364,4 +364,74 @@ describe("ApprovalPayloadRenderer", () => {
       root.unmount();
     });
   });
+
+  it("renders the verbatim original request as inert multiline text in decision order", () => {
+    const root = createRoot(container);
+    const original = "First line\n<script>alert('no')</script>\n**keep markdown markers**";
+
+    act(() => {
+      root.render(
+        <ThemeProvider>
+          <ApprovalPayloadRenderer
+            type="request_board_approval"
+            payload={{
+              subject: "Synthetic request",
+              recipient: "board@example.test",
+              body: "Proposed outgoing reply — not the source",
+              recommendedAction: "Approve the reply.",
+              reasoning: "The response is bounded.",
+              pros: ["Closes the loop"],
+              risks: ["Could need revision"],
+              originalRequest: {
+                text: original,
+                source: {
+                  kind: "external",
+                  sender: "Synthetic Sender",
+                  sentAt: "2026-10-03T12:00:00.000Z",
+                  reference: "fixture-message-1",
+                  snapshotOrigin: "requester",
+                },
+              },
+            }}
+          />
+        </ThemeProvider>,
+      );
+    });
+
+    const text = container.textContent ?? "";
+    expect(text.indexOf("Recommended action")).toBeLessThan(text.indexOf("Original request"));
+    expect(text.indexOf("Original request")).toBeLessThan(text.indexOf("Why"));
+    expect(text.indexOf("Why")).toBeLessThan(text.indexOf("Pros"));
+    expect(text.indexOf("Pros")).toBeLessThan(text.indexOf("Proposed reply"));
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.querySelector("pre")?.textContent).toBe(original);
+    expect(text).toContain("Requester-provided external source snapshot");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not relabel a draft body as the original request when the source is absent", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <ThemeProvider>
+          <ApprovalPayloadRenderer
+            type="request_board_approval"
+            payload={{
+              subject: "Legacy email approval",
+              recipient: "board@example.test",
+              body: "Draft reply only",
+              recommendedAction: "Approve",
+            }}
+          />
+        </ThemeProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain("Original source was not retained for this approval.");
+    expect(container.textContent).toContain("Proposed replyDraft reply only");
+    act(() => root.unmount());
+  });
 });
