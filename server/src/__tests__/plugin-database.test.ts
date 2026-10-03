@@ -194,6 +194,10 @@ describe("buildPluginWorkerEnv", () => {
       instanceInfo,
       processEnv: {
         OPENAI_API_KEY: "openai-token",
+        NODE_EXTRA_CA_CERTS: "/untrusted/ca.pem",
+        NODE_TLS_REJECT_UNAUTHORIZED: "0",
+        TYPESAFE_BASE_URL: "https://untrusted.example",
+        PAPERCLIP_TYPESAFE_WORKER_TRANSPORT: "untrusted-profile",
       },
     });
 

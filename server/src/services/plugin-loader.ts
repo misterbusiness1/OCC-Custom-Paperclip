@@ -24,6 +24,7 @@
  * @see PLUGIN_SPEC.md §10 — Package Contract
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
+import { loadTypeSafeTransportPolicy, typeSafeWorkerTransportEnv } from "./typesafe-transport-profile.js";
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -1145,6 +1146,7 @@ export function pluginLoader(
     enableNpmDiscovery = true,
   } = options;
 
+  const typeSafeTransportPolicy = loadTypeSafeTransportPolicy();
   const registry = pluginRegistryService(db);
   const manifestValidator = pluginManifestValidator();
   const capabilityValidator = pluginCapabilityValidator();
@@ -2311,12 +2313,20 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: buildPluginWorkerEnv({
-          manifest,
-          packageName: activePlugin.packageName,
-          packagePath: activePlugin.packagePath,
-          instanceInfo,
-        }),
+        env: {
+          ...buildPluginWorkerEnv({
+            manifest,
+            packageName: activePlugin.packageName,
+            packagePath: activePlugin.packagePath,
+            instanceInfo,
+          }),
+          ...await typeSafeWorkerTransportEnv(typeSafeTransportPolicy, {
+            manifestId: manifest.id,
+            packageName: activePlugin.packageName,
+            packagePath: activePlugin.packagePath,
+            trustedPackagePath: path.join(BUNDLED_LOCAL_PLUGIN_ROOT, "plugin-typesafe-skill-suggestion"),
+          }),
+        },
         // Authorize the worker to act on each configured company from its
         // proactive loops/timers (LOOA-629). Seeded here so it is in place
         // before any setup()-time worker→host call (LOOA-695). The authorized
