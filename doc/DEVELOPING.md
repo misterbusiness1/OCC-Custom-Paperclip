@@ -1173,6 +1173,15 @@ schemas. Defaults:
 - retain 30 days
 - backup dir: `~/.paperclip/instances/default/data/backups`
 
+Backup runs enforce owner-only permissions: the configured directory is `0700`
+and SQL, gzip and partial artifacts are `0600`. Existing regular SQL artifacts
+in that directory are normalized without changing their contents. Artifact
+symlinks are skipped, and a symlink used as the backup directory is rejected.
+Keep the backup directory under an operator-controlled parent directory.
+Both backup engines use exclusive private temporary files and validate output
+before the atomic rename publishes the restore point. Group access is removed
+on the next run; restore jobs must run as the backup owner or root.
+
 Automatic backups are disabled for isolated worktree instances created with
 `paperclipai worktree init` or `paperclipai worktree:make`. Existing worktree
 configs are migrated to the disabled setting when their server next starts. The
