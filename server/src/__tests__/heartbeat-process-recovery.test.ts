@@ -2682,6 +2682,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             if (id !== runId || ordering !== "cancellation fence wins") return;
             const response = await postInterrupt();
             expect(response.status, JSON.stringify(response.body)).toBe(201);
+            const deferred = await waitForValue(async () => db.select().from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            )).then(rows => rows[0] ?? null), 8_000);
+            expect(deferred).toBeTruthy();
+            expect((await heartbeat.getRun(runId))?.resultJson?.legacyPrelaunchCancellation)
+              .not.toMatchObject({ settledAt: expect.any(String) });
           },
         });
         await heartbeat.resumeQueuedRuns();
@@ -2692,12 +2699,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             .where(eq(agentWakeupRequests.companyId, companyId));
           return wakes.length >= 2 ? wakes : null;
         }, 8_000)).not.toBeNull();
-        // The route wake can race the source executor's durable settlement. A
-        // normal reconciliation pass must consume that same saved request once.
-        await heartbeat.resumeQueuedRuns();
-        await heartbeat.drainActiveRunExecutions();
-        await heartbeat.resumeQueuedRuns();
-        await heartbeat.drainActiveRunExecutions();
+        // Restart after the source executor has durably settled. Reconciliation
+        // must promote the early deferred route wake through ordinary admission.
+        const restarted = heartbeatService(db);
+        const settledSource = await restarted.getRun(runId);
+        expect(settledSource).toBeTruthy();
+        await restarted.resumeRemoteStopComments(settledSource!);
+        await restarted.resumeQueuedRuns();
+        await restarted.drainActiveRunExecutions();
+        await restarted.resumeQueuedRuns();
+        await restarted.drainActiveRunExecutions();
 
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
         const successors = runs.filter(run => run.id !== runId);

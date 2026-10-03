@@ -71,6 +71,8 @@ export async function admitExplicitNativeContinuation(input: {
   actorType: string | null | undefined; actorId: string | null | undefined;
   reason: string | null; commentId: string | null; successorRunId: string;
   failedRunId?: string | null;
+  /** Server-generated binding from the interrupting comment wake. */
+  interruptedRunId?: string | null;
   /** Server-recorded board intent to send an existing legacy message queue. */
   queuedCommentInterruptId?: string;
   /** Internal delivery of an unconsumed, user-authored legacy queue entry. */
@@ -189,7 +191,14 @@ export async function admitExplicitNativeContinuation(input: {
         lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return null;
     run = lockedRun;
     const cancelledNativeStartup = await isCancelledNativeStartup(db, run, coordinator);
-    const cancelledLegacyPrelaunch = !queuedInterrupt && !queuedRequest &&
+    const interruption = run.resultJson as Record<string, unknown> | null;
+    const cancelledLegacyPrelaunch = !retry && !queuedInterrupt && !queuedRequest &&
+      input.interruptedRunId === run.id &&
+      interruption?.operatorInterrupted === true &&
+      interruption?.interruptionSource === "issue_comment_interrupt" &&
+      interruption?.interruptedIssueId === issueId &&
+      interruption?.interruptedByActorType === "user" &&
+      interruption?.interruptedByActorId === actorId &&
       await isCancelledLegacyPrelaunch(db, run, coordinator);
     const cancelledStartup = cancelledNativeStartup || cancelledLegacyPrelaunch;
     if (cancelledStartup) cancelledStartupIds.add(run.id);

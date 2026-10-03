@@ -6,6 +6,7 @@ import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/papercli
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
+import { isCancelledLegacyPrelaunch } from "./cancelled-native-startup.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
@@ -10234,8 +10235,17 @@ export function heartbeatService(
 
   async function resumeRemoteStopComments(run: typeof heartbeatRuns.$inferSelect, requestId?: string) {
     if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id)) return;
+    const [startupCoordinator] = run.runtimeMode === "legacy"
+      ? await db.select().from(nativeRunFinalizations).where(and(
+          eq(nativeRunFinalizations.companyId, run.companyId),
+          eq(nativeRunFinalizations.runId, run.id),
+        )).limit(1)
+      : [];
+    const settledLegacyPrelaunch = run.runtimeMode === "legacy" &&
+      await isCancelledLegacyPrelaunch(db, run, startupCoordinator);
     if (run.runtimeMode !== "native" &&
         parseObject(run.resultJson?.startupCancellation).beforeNativeSelection !== true &&
+        !settledLegacyPrelaunch &&
         !(await remoteExecutionHasStopped(db, run.companyId, run.id))) return;
     const issueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
     if (!issueId) return;
@@ -10253,7 +10263,7 @@ export function heartbeatService(
       ["terminal_failure", "applied"].includes(coordinator?.phase ?? "") &&
       await acknowledgedNativeStopExecutionHasStopped(db, currentRun) &&
       !(await getExecutionBlocker(db, run.companyId, issueId));
-    const legacyContinuation = run.runtimeMode === "legacy" &&
+    const legacyContinuation = run.runtimeMode === "legacy" && !settledLegacyPrelaunch &&
       hasConversationContinuationPolicy((await getRun(run.id))?.resultJson) &&
       !(await getExecutionBlocker(db, run.companyId, issueId));
     if (run.runtimeMode !== "native" && run.runtimeMode !== "legacy") return;
@@ -10302,11 +10312,13 @@ export function heartbeatService(
         if (!comment?.body.trim()) continue;
       } else {
         let wait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
-        const admitted = await admitExplicitNativeContinuation({ db, companyId: run.companyId, issueId,
+        const admitted = await db.transaction(tx => admitExplicitNativeContinuation({
+          db: tx as unknown as Db, companyId: run.companyId, issueId,
           agentId: run.agentId, actorType: wake.requestedByActorType, actorId: requestedByActorId,
-          reason, commentId, successorRunId: randomUUID(), dryRun: true,
+          reason, commentId, successorRunId: randomUUID(), dryRun: !settledLegacyPrelaunch,
+          interruptedRunId: readNonEmptyString(context.interruptedRunId),
           onBlocked: (reason, message) => { wait = { reason, message }; },
-        });
+        }));
         if (!admitted) {
           await db.update(agentWakeupRequests).set({
             payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}',
@@ -10323,7 +10335,8 @@ export function heartbeatService(
         reason, payload, contextSnapshot: context,
         requestedByActorType: "user", requestedByActorId,
         ...(stoppedNativeContinuation ? { queuedCommentRequestId: wake.id } : {}),
-        idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` }, wake.id);
+        idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` },
+        settledLegacyPrelaunch ? undefined : wake.id);
       break;
     }
   }
@@ -28245,6 +28258,7 @@ export function heartbeatService(
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
             reason, commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
+            interruptedRunId: readNonEmptyString(enrichedContextSnapshot.interruptedRunId),
             queuedCommentInterruptId: opts.queuedCommentInterruptId,
             queuedCommentRequestId: opts.queuedCommentRequestId,
           });
