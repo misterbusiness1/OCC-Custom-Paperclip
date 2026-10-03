@@ -493,6 +493,50 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await admit(f)).toMatchObject({ previousRunId: f.sourceRunId });
   });
 
+  it("admits exactly one genuine comment after a settled legacy prelaunch cancellation", async () => {
+    const f = await seedCancelledStartup();
+    const controllerBootId = randomUUID();
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(agents).set({ adapterType: "kimi_local" }).where(eq(agents.id, f.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", runtimeModeResolvedAt: new Date(),
+      nativeIssueId: null, executionStage: "preparing", controllerBootId,
+      runnerProfileJson: { adapterDispatch: { adapterType: "kimi_local" } },
+      resultJson: { legacyPrelaunchCancellation: { version: 1, kind: "legacy_prelaunch_cancellation",
+        requestedAt: new Date().toISOString(), beforeAdapterDispatch: true, adapterType: "kimi_local",
+        controllerBootId, settledAt: new Date().toISOString(), settledControllerBootId: controllerBootId } },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(await admit(f, true)).toMatchObject({ previousRunId: f.sourceRunId });
+    const results = await Promise.all([admit(f), admit(f)]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.successorRunId))).toHaveLength(1);
+  });
+
+  it.each(["unsettled", "controller", "adapter", "provider", "queued"] as const)(
+    "keeps ambiguous legacy prelaunch cancellation fail-closed: %s", async kind => {
+      const f = await seedCancelledStartup();
+      const controllerBootId = randomUUID();
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+      await db.update(agents).set({ adapterType: "kimi_local" }).where(eq(agents.id, f.agentId));
+      const receipt: Record<string, unknown> = { version: 1, kind: "legacy_prelaunch_cancellation",
+        requestedAt: new Date().toISOString(), beforeAdapterDispatch: true, adapterType: "kimi_local",
+        controllerBootId, settledAt: new Date().toISOString(), settledControllerBootId: controllerBootId };
+      if (kind === "unsettled") delete receipt.settledAt;
+      if (kind === "controller") receipt.settledControllerBootId = randomUUID();
+      if (kind === "adapter") receipt.adapterType = "process";
+      await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null,
+        executionStage: "preparing", controllerBootId,
+        runnerProfileJson: { adapterDispatch: { adapterType: "kimi_local" } },
+        resultJson: { legacyPrelaunchCancellation: receipt },
+      }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (kind === "provider") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId,
+        agentId: f.agentId, runId: f.sourceRunId, seq: 1, eventType: "provider.event",
+        ...{ sourceEventId: "provider-1", sourceInstanceId: "provider", sourceSeq: 1,
+          protocolSchemaVersion: 1, canonicalPayloadHash: "hash" } });
+      expect(await db.transaction(tx => admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db,
+        dryRun: true, ...(kind === "queued" ? { queuedCommentRequestId: randomUUID() } : {}) }))).toBeNull();
+    },
+  );
+
   it.each(["attempt", "generation", "controller", "lease", "process", "launch", "provider", "cleanup", "remote", "preparing", "closed", "reassigned"])(
     "retains cancellation safeguards with %s evidence", async kind => {
       const f = await seedCancelledStartup();

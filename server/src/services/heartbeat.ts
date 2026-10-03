@@ -10,7 +10,7 @@ import { connectionIntentService } from "./connection-intents.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
-import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
+import { CONVERSATION_ADAPTER_TYPES, CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
 import { findPendingAssigneeWakeInteraction } from "./issue-wake-interactions.js";
 import {
@@ -9207,6 +9207,8 @@ export type HeartbeatEnvironmentRuntime = ReturnType<
 export interface HeartbeatServiceOptions {
   /** Test seam before the atomic native runtime handoff. */
   beforeNativeRuntimeSelection?: (runId: string) => Promise<void>;
+  /** Test seam before the serialized legacy adapter dispatch transition. */
+  beforeLegacyAdapterDispatch?: (runId: string) => Promise<void>;
   /** Test seam immediately before the durable chat-control admission check. */
   beforeChatControlRecoveryCheck?: (input: {
     runId: string;
@@ -24560,6 +24562,7 @@ export function heartbeatService(
             if (managedMcpConfig) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
             }
+            await options.beforeLegacyAdapterDispatch?.(run.id);
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {
@@ -26320,6 +26323,19 @@ export function heartbeatService(
               );
             });
           }
+        }
+        if (latestRun?.status === "cancelled" && !legacyAdapterEntered && latestRun.runtimeMode === "legacy" &&
+            parseObject(latestRun.resultJson?.legacyPrelaunchCancellation).beforeAdapterDispatch === true &&
+            parseObject(latestRun.resultJson?.legacyPrelaunchCancellation).controllerBootId === legacyControllerBootId) {
+          // Only this exact executor may settle the fence, after preparation and
+          // environment cleanup have unwound without entering adapter.execute.
+          await db.update(heartbeatRuns).set({
+            resultJson: sql`jsonb_set(jsonb_set(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb),
+              '{legacyPrelaunchCancellation,settledAt}', to_jsonb(clock_timestamp()::text), true),
+              '{legacyPrelaunchCancellation,settledControllerBootId}', to_jsonb(${legacyControllerBootId}::text), true)`,
+          }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled"),
+            eq(heartbeatRuns.controllerBootId, legacyControllerBootId), eq(heartbeatRuns.executionStage, "preparing"),
+            sql`${heartbeatRuns.resultJson}->'legacyPrelaunchCancellation'->>'controllerBootId' = ${legacyControllerBootId}`));
         }
         if (latestRun?.status === "cancelled" && !nativeDispatchStarted && !nativeOwnershipHeld &&
             (latestRun.runtimeMode === "native" ||
@@ -29116,7 +29132,8 @@ export function heartbeatService(
     // Established legacy processes must still be stopped if the database is
     // unavailable. Only native or not-yet-dispatched preparation needs this
     // additional durable fence before its existing cancellation path.
-    if (run.runtimeMode === "native" || (!run.runtimeModeResolvedAt && !running && !control)) {
+    if (run.runtimeMode === "native" || (!run.runtimeModeResolvedAt && !running && !control) ||
+        (run.runtimeMode === "legacy" && run.executionStage === "preparing" && !running && !control)) {
       const [fenced] = await db.update(heartbeatRuns).set({
         resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
           jsonb_build_object('startupCancellation', jsonb_build_object(
@@ -29125,7 +29142,16 @@ export function heartbeatService(
               and ${heartbeatRuns.runtimeModeResolvedAt} is null
               and ${heartbeatRuns.executionStage} = 'preparing'
               and coalesce(${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType' = 'paperclip_runner', false)
-          ))`,
+          )) || case when ${heartbeatRuns.runtimeMode} = 'legacy'
+              and ${heartbeatRuns.executionStage} = 'preparing'
+              and ${heartbeatRuns.controllerBootId} is not null
+              and ${inArray(sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType'`, [...CONVERSATION_ADAPTER_TYPES])}
+            then jsonb_build_object('legacyPrelaunchCancellation', jsonb_build_object(
+              'version', 1, 'kind', 'legacy_prelaunch_cancellation',
+              'requestedAt', clock_timestamp(), 'beforeAdapterDispatch', true,
+              'adapterType', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType',
+              'controllerBootId', ${heartbeatRuns.controllerBootId}
+            )) else '{}'::jsonb end`,
       }).where(and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status,
         pendingNativeRetry ? [...CANCELLABLE_HEARTBEAT_RUN_STATUSES, "failed"] : [...CANCELLABLE_HEARTBEAT_RUN_STATUSES],
       ))).returning();

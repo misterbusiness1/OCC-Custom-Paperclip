@@ -2598,6 +2598,35 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("fences and settles a legacy conversation cancellation before adapter dispatch", async () => {
+    await withTempPaperclipHome(async () => {
+      const { agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+      await db.update(agents).set({ adapterType: "kimi_local" }).where(eq(agents.id, agentId));
+      let heartbeat!: ReturnType<typeof heartbeatService>;
+      heartbeat = heartbeatService(db, {
+        beforeLegacyAdapterDispatch: async id => {
+          await heartbeat.cancelRun(id, "Interrupted by board comment", {
+            errorCode: "operator_interrupted",
+            resultJson: { operatorInterrupted: true, interruptionSource: "issue_comment_interrupt",
+              interruptedIssueId: issueId },
+          });
+        },
+      });
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", runtimeMode: "legacy",
+        executionStage: "preparing", processPid: null, processGroupId: null, processStartedAt: null,
+        resultJson: { legacyPrelaunchCancellation: { version: 1,
+          kind: "legacy_prelaunch_cancellation", beforeAdapterDispatch: true,
+          adapterType: "kimi_local", controllerBootId: expect.any(String),
+          settledAt: expect.any(String), settledControllerBootId: expect.any(String) } },
+      });
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(task.executionRunId).toBeNull();
+    });
+  });
+
   it("does not dispatch when cancellation wins after native selection", async () => {
     await withTempPaperclipHome(async () => {
       const { agentId, issueId, runId } = await seedQueuedIssueRunFixture();

@@ -1,4 +1,4 @@
-import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
+import { isCancelledLegacyPrelaunch, isCancelledNativeStartup } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
@@ -188,7 +188,10 @@ export async function admitExplicitNativeContinuation(input: {
     if (!lockedRun || lockedRun.status !== run.status || lockedRun.agentId !== run.agentId ||
         lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return null;
     run = lockedRun;
-    const cancelledStartup = await isCancelledNativeStartup(db, run, coordinator);
+    const cancelledNativeStartup = await isCancelledNativeStartup(db, run, coordinator);
+    const cancelledLegacyPrelaunch = !queuedInterrupt && !queuedRequest &&
+      await isCancelledLegacyPrelaunch(db, run, coordinator);
+    const cancelledStartup = cancelledNativeStartup || cancelledLegacyPrelaunch;
     if (cancelledStartup) cancelledStartupIds.add(run.id);
     if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return null;
     if (!cancelledStartup && coordinator && (coordinator.phase !== "terminal_failure" || coordinator.leaseOwner ||
