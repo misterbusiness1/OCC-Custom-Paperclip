@@ -58,10 +58,11 @@ describe("runtime connection tool delivery", () => {
         "https://paperclip.test/runtime-tools/connections/search",
       connectionRequest:
         "https://paperclip.test/runtime-tools/connections/request",
+      typesafeJudge: "https://paperclip.test/runtime-tools/typesafe/judge",
     },
     bearerToken: "run-scoped-secret",
     expiresAt: "2026-08-26T15:00:00.000Z",
-    tools: ["connections_search", "connection_request"] as const,
+    tools: ["connections_search", "connection_request", "typesafe_judge"] as const,
   };
 
   it("delivers the complete environment contract and canonical guidance", () => {
@@ -73,8 +74,9 @@ describe("runtime connection tool delivery", () => {
         access.rest.connectionsSearch,
       PAPERCLIP_RUNTIME_TOOLS_CONNECTION_REQUEST_URL:
         access.rest.connectionRequest,
+      PAPERCLIP_RUNTIME_TOOLS_TYPESAFE_JUDGE_URL: access.rest.typesafeJudge,
       PAPERCLIP_RUNTIME_TOOLS_AVAILABLE:
-        "connections_search,connection_request",
+        "connections_search,connection_request,typesafe_judge",
       PAPERCLIP_RUNTIME_TOOLS_GUIDANCE: CONNECTION_INTENT_AGENT_GUIDANCE,
     });
   });

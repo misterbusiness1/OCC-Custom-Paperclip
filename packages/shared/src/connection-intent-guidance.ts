@@ -34,4 +34,5 @@ export const CONNECTION_REQUEST_TOOL_DESCRIPTION = [
 export const CONNECTION_RUNTIME_TOOL_NAMES = [
   "connections_search",
   "connection_request",
+  "typesafe_judge",
 ] as const;

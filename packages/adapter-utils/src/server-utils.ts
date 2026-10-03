@@ -36,6 +36,7 @@ export function buildRuntimeToolsEnv(
       access.rest.connectionsSearch,
     PAPERCLIP_RUNTIME_TOOLS_CONNECTION_REQUEST_URL:
       access.rest.connectionRequest,
+    PAPERCLIP_RUNTIME_TOOLS_TYPESAFE_JUDGE_URL: access.rest.typesafeJudge,
     PAPERCLIP_RUNTIME_TOOLS_AVAILABLE: access.tools.join(","),
     PAPERCLIP_RUNTIME_TOOLS_GUIDANCE: access.guidance,
   };
