@@ -2723,6 +2723,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         const restarted = heartbeatService(db);
         const settledSource = await restarted.getRun(runId);
         expect(settledSource).toBeTruthy();
+        if (ordering === "cancellation fence wins") {
+          let failedSuccessorId: string | null = null;
+          const failingRestart = heartbeatService(db, {
+            beforeExplicitContinuationSuccessorInsert: async successorRunId => {
+              failedSuccessorId = successorRunId;
+              throw new Error("forced successor insert failure");
+            },
+          });
+          await expect(failingRestart.resumeRemoteStopComments(settledSource!))
+            .rejects.toThrow("forced successor insert failure");
+          const [unresolved] = await db.select().from(issueRecoveryActions)
+            .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+          expect(unresolved).toMatchObject({ status: "active" });
+          expect(unresolved.evidence).not.toHaveProperty("explicitUserContinuation");
+          const [deferred] = await db.select().from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          ));
+          expect(deferred).toMatchObject({ runId: null });
+          expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)))
+            .filter(run => run.id !== runId)).toHaveLength(0);
+          expect(failedSuccessorId).toEqual(expect.any(String));
+        }
         await restarted.resumeRemoteStopComments(settledSource!);
         await restarted.resumeQueuedRuns();
         await restarted.drainActiveRunExecutions();
@@ -2745,6 +2768,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             status: "done", executionRunId: null,
           });
           expect(wakes.some(wake => wake.status === "deferred_issue_execution")).toBe(false);
+          const [resolved] = await db.select().from(issueRecoveryActions)
+            .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+          expect(resolved).toMatchObject({
+            status: "resolved",
+            evidence: { explicitUserContinuation: { runId: successors[0]!.id } },
+          });
+          expect(wakes.some(wake => wake.status === "coalesced" && wake.runId === successors[0]!.id)).toBe(true);
         } else {
           // Once dispatch wins, the narrow prelaunch receipt is unavailable.
           // Preserve the generic process-identity fail-closed behavior rather

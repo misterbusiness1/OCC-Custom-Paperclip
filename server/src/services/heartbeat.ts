@@ -9216,6 +9216,8 @@ export interface HeartbeatServiceOptions {
     issueId: string;
     stage: "claim" | "dispatch";
   }) => Promise<void>;
+  /** Test seam after recovery settlement but before its atomic successor insert. */
+  beforeExplicitContinuationSuccessorInsert?: (runId: string) => Promise<void>;
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
@@ -10322,7 +10324,7 @@ export function heartbeatService(
         const admitted = await db.transaction(tx => admitExplicitNativeContinuation({
           db: tx as unknown as Db, companyId: run.companyId, issueId,
           agentId: run.agentId, actorType: wake.requestedByActorType, actorId: requestedByActorId,
-          reason, commentId, successorRunId: randomUUID(), dryRun: !settledLegacyPrelaunch,
+          reason, commentId, successorRunId: randomUUID(), dryRun: true,
           interruptedRunId: readNonEmptyString(context.interruptedRunId),
           onBlocked: (reason, message) => { wait = { reason, message }; },
         }));
@@ -10343,7 +10345,7 @@ export function heartbeatService(
         requestedByActorType: "user", requestedByActorId,
         ...(stoppedNativeContinuation ? { queuedCommentRequestId: wake.id } : {}),
         idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` },
-        settledLegacyPrelaunch ? undefined : wake.id);
+        wake.id);
       break;
     }
   }
@@ -27453,6 +27455,7 @@ export function heartbeatService(
             reason, commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
             queuedCommentInterruptId: opts.queuedCommentInterruptId,
             queuedCommentRequestId: opts.queuedCommentRequestId,
+            interruptedRunId: readNonEmptyString(enrichedContextSnapshot.interruptedRunId),
             dryRun: true,
             onBlocked: (reason, message) => { continuationWait = { reason, message }; },
           }))) return deferBlockedExecution(executionBlocker);
@@ -28274,6 +28277,7 @@ export function heartbeatService(
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
+            await options.beforeExplicitContinuationSuccessorInsert?.(explicitContinuationRunId);
           }
 
           const wakeupRequest = await tx
