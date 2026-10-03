@@ -53,6 +53,7 @@ describe("connection intent agent guidance", () => {
     expect(CONNECTION_RUNTIME_TOOL_NAMES).toEqual([
       "connections_search",
       "connection_request",
+      "typesafe_judge",
     ]);
     expect(CONNECTION_INTENT_AGENT_GUIDANCE).not.toMatch(
       /bearer|credential value|https?:\/\//i,

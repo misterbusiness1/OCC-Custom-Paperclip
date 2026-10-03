@@ -4819,6 +4819,7 @@ function createAdapterRuntimeToolAccess(input: {
     rest: {
       connectionsSearch: `${baseUrl}/runtime-tools/connections/search`,
       connectionRequest: `${baseUrl}/runtime-tools/connections/request`,
+      typesafeJudge: `${baseUrl}/runtime-tools/typesafe/judge`,
     },
     bearerToken: minted.token,
     expiresAt: minted.expiresAt,

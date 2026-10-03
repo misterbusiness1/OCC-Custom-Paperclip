@@ -1258,6 +1258,7 @@ const RUNTIME_TOOLS_OPERATIONS = new Set([
   "POST /mcp/runtime-tools",
   "POST /runtime-tools/connections/search",
   "POST /runtime-tools/connections/request",
+  "POST /runtime-tools/typesafe/judge",
 ]);
 
 const PUBLIC_OPERATIONS = new Set([
@@ -9931,6 +9932,14 @@ registerCurrentRoute({
   tags: ["connection-intents"],
   summary: "Request a connection for the active heartbeat run",
   body: connectionRequestInputSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/runtime-tools/typesafe/judge",
+  tags: ["connection-intents"],
+  summary: "Run an explicit company-scoped typed TypeSafe judgment",
+  body: z.object({ state: z.unknown(), model: z.string(), questions: z.record(z.string(), z.unknown()), catalogRevision: z.string().optional() }).strict(),
 });
 
 registerCurrentRoute({
