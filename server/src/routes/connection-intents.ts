@@ -17,6 +17,7 @@ import { accessService } from "../services/access.js";
 import type { heartbeatService } from "../services/heartbeat.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
+import { typeSafeJudgeInputSchema, typeSafeRuntimeToolService } from "../services/typesafe-runtime-tool.js";
 
 function bearer(req: Request) {
   const value = req.header("authorization") ?? "";
@@ -43,6 +44,7 @@ import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../services/connection-tool
 export function runtimeConnectionIntentRoutes(db: Db) {
   const router = Router();
   const service = connectionIntentService(db);
+  const typeSafe = typeSafeRuntimeToolService(db);
 
   router.post("/runtime-tools/github/credentials", async (req, res) => {
     // This capability is never accepted as board/session authentication.
@@ -113,6 +115,11 @@ export function runtimeConnectionIntentRoutes(db: Db) {
         res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
         return;
       }
+      if (name === "typesafe_judge") {
+        const result = await typeSafe.judge(claims, typeSafeJudgeInputSchema.parse(params.arguments ?? {}));
+        res.json({ jsonrpc: "2.0", id, result: { ...resultContent(result), ...(result.ok === false ? { isError: true } : {}) } });
+        return;
+      }
       res.status(404).json({
         jsonrpc: "2.0",
         id,
@@ -134,6 +141,9 @@ export function runtimeConnectionIntentRoutes(db: Db) {
   router.post("/runtime-tools/connections/request", async (req, res) => {
     const input = connectionRequestInputSchema.parse(req.body ?? {});
     res.json(await service.request(runtimeClaims(req), input.service));
+  });
+  router.post("/runtime-tools/typesafe/judge", async (req, res) => {
+    res.json(await typeSafe.judge(runtimeClaims(req), typeSafeJudgeInputSchema.parse(req.body ?? {})));
   });
   return router;
 }

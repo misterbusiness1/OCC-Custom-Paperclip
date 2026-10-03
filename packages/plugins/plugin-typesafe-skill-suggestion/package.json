@@ -1,9 +1,9 @@
 {
   "name": "@paperclipai/plugin-typesafe-skill-suggestion",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "private": true,
-  "description": "Observation-only TypeSafe/Jev skill suggestions for agent turns.",
+  "description": "Default-disabled TypeSafe/Jev skill advisory with preserved shadow observations.",
   "files": ["dist", "README.md"],
   "scripts": {
     "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",

@@ -179,10 +179,11 @@ export interface AdapterRuntimeToolAccess {
   rest: {
     connectionsSearch: string;
     connectionRequest: string;
+    typesafeJudge: string;
   };
   bearerToken: string;
   expiresAt: string;
-  tools: readonly ["connections_search", "connection_request"];
+  tools: readonly ["connections_search", "connection_request", "typesafe_judge"];
 }
 
 export interface AdapterRuntimeEvent {

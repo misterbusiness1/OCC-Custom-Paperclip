@@ -66,6 +66,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
+  renderPaperclipSkillRelevanceAdvisory,
   renderTemplate,
   resolvePaperclipInstanceRootForAdapter,
   selectPaperclipTaskMarkdown,
@@ -3014,6 +3015,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
     // the wake prompt's description copy out so the prompt carries it once.
     suppressIssueDescription: taskContextNote.length > 0,
   });
+  const skillRelevanceAdvisory = renderPaperclipSkillRelevanceAdvisory(context.paperclipSkillRelevanceAdvisory);
   const shouldUseResumeDeltaPrompt = resumedSession && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   const renderedPrompt =
@@ -3027,6 +3029,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
+    skillRelevanceAdvisory,
     sessionHandoffNote,
     taskContextNote,
     paperclipEnvNote,

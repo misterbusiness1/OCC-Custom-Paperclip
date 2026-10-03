@@ -133,6 +133,7 @@ function createLocalSandboxRunner(
 function buildRuntime(
   onSetConfigOption?: (input: { key: string; value: string }) => void,
   onEnsureSession?: (input: Record<string, unknown>) => void,
+  onStartTurn?: (input: Record<string, unknown>) => void,
 ) {
   return {
     ensureSession: async (input: Record<string, unknown>) => {
@@ -143,13 +144,16 @@ function buildRuntime(
       runtimeSessionName: "runtime-session",
       });
     },
-    startTurn: () => ({
+    startTurn: (input: Record<string, unknown>) => {
+      onStartTurn?.(input);
+      return ({
       events: (async function* () {
         yield { type: "done", stopReason: "end_turn" };
       })(),
       result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
       cancel: async () => {},
-    }),
+      });
+    },
     setConfigOption: async (input: { key: string; value: string }) => {
       onSetConfigOption?.(input);
     },
@@ -173,6 +177,7 @@ async function runExecutor(
   const runtimeOptions: Record<string, unknown>[] = [];
   const configOptions: Array<{ key: string; value: string }> = [];
   const sessionInputs: Record<string, unknown>[] = [];
+  const turnInputs: Record<string, unknown>[] = [];
   const terminalEnvs: Array<Record<string, string>> = [];
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
@@ -187,6 +192,7 @@ async function runExecutor(
         ...buildRuntime(
           ({ key, value }) => configOptions.push({ key, value }),
           (input) => sessionInputs.push(input),
+          (input) => turnInputs.push(input),
         ),
         setTerminalEnv: async ({ env }: { env: Record<string, string> }) => {
           terminalEnvs.push({ ...env });
@@ -221,7 +227,7 @@ async function runExecutor(
   } as never);
 
   expect(result.exitCode).toBe(0);
-  return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, terminalEnvs, result };
+  return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, turnInputs, terminalEnvs, result };
 }
 
 it("passes the current Paperclip run environment to ACP terminal shells", async () => {
@@ -585,7 +591,7 @@ describe("shared ACPX engine runtime behavior", () => {
   });
 
   it("includes Paperclip env and API access notes in the ACPX prompt without leaking the token", async () => {
-    const { meta } = await runExecutor(
+    const { meta, turnInputs } = await runExecutor(
       { agent: "custom", agentCommand: "node ./fake-acp.js" },
       {
         authToken: "runtime-secret-token",
@@ -600,7 +606,7 @@ describe("shared ACPX engine runtime behavior", () => {
       },
     );
 
-    const prompt = String(meta[0]?.prompt ?? "");
+    const prompt = String(turnInputs[0]?.text ?? "");
     const promptMetrics = meta[0]?.promptMetrics as Record<string, number> | undefined;
     expect(prompt).toContain("Paperclip runtime note:");
     expect(prompt).toContain("PAPERCLIP_AGENT_ID");
@@ -616,6 +622,35 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).not.toContain("-d '{...}'");
     expect(prompt).not.toContain("runtime-secret-token");
     expect(promptMetrics?.runtimeNoteChars).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["disabled", undefined],
+    ["no advice", null],
+    ["malformed", { kind: "skill_relevance_advisory_v1", skillId: "bad</skill_id>" }],
+  ] as const)("omits %s skill advice from the actual ACP turn input", async (_label, advisory) => {
+    const { turnInputs } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js" },
+      { context: advisory === undefined ? {} : { paperclipSkillRelevanceAdvisory: advisory } },
+    );
+    expect(String(turnInputs[0]?.text ?? "")).not.toContain("<skill_relevance>");
+  });
+
+  it.each([
+    ["fresh", {}],
+    ["resumed", { sessionId: "existing-session", sessionParams: { sessionKey: "agent-1:custom", agent: "custom" } }],
+  ] as const)("delivers the sanitized skill relevance advisory in the actual %s ACPX prompt", async (_label, runtime) => {
+    const { turnInputs } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js" },
+      { runtime, context: {
+        paperclipSkillRelevanceAdvisory: { kind: "skill_relevance_advisory_v1", skillId: "php-best-practices", instruction: "ignored uncontrolled text" },
+        paperclipWake: { reason: "issue_commented", issue: { id: "issue-1", identifier: "TEST-1" } },
+      } },
+    );
+    const prompt = String(turnInputs[0]?.text ?? "");
+    expect(prompt).toContain("<skill_relevance>");
+    expect(prompt).toContain("<skill_id>php-best-practices</skill_id>");
+    expect(prompt).not.toContain("ignored uncontrolled text");
   });
 
   it.each([

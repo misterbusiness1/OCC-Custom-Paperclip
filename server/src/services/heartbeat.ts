@@ -252,6 +252,7 @@ import {
   PROVIDER_TRACE_MAX_BYTES,
 } from "./provider-trace-store.js";
 import {
+  advisorySkillContext,
   observeSkillSuggestion,
   type SkillSuggestionShadowObservation,
 } from "./skill-suggestion-shadow.js";
@@ -4818,6 +4819,7 @@ function createAdapterRuntimeToolAccess(input: {
     rest: {
       connectionsSearch: `${baseUrl}/runtime-tools/connections/search`,
       connectionRequest: `${baseUrl}/runtime-tools/connections/request`,
+      typesafeJudge: `${baseUrl}/runtime-tools/typesafe/judge`,
     },
     bearerToken: minted.token,
     expiresAt: minted.expiresAt,
@@ -21577,8 +21579,13 @@ export function heartbeatService(
           companyId: agent.companyId,
           request: `${issueRef?.title ?? ""}\n${issueRef?.description ?? ""}`,
           skills: runtimeSkillEntries,
-          explicitSkillNames,
-          mandatorySkillNames,
+          readFreshSkills: () => companySkills.listRuntimeSkillEntries(agent.companyId, {
+            versionSelections: skillVersionSelectionMap(runtimeSkillPreference.desiredSkillEntries, {
+              versionPinsEnabled: resolvedInstanceSettings.experimental.enableBetaSkills === true,
+            }),
+          }),
+          explicitSkillIds: explicitSkillNames,
+          mandatorySkillIds: mandatorySkillNames,
         });
       } catch {
         // Shadow selection is fail-open and can never prevent the current turn.
@@ -24506,6 +24513,8 @@ export function heartbeatService(
                   }
                 : {}),
             };
+            const skillAdvisory = advisorySkillContext(skillSuggestionShadow);
+            if (skillAdvisory) adapterContext.paperclipSkillRelevanceAdvisory = skillAdvisory;
             // Connection intents require a live task-bound run. Unbound
             // diagnostics and timer wakes cannot use this capability.
             const runtimeTools = issueRef

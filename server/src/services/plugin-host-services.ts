@@ -1424,6 +1424,15 @@ export function buildHostServices(
         const configRow = await registry.getConfig(pluginId, companyId);
         return configRow?.configJson ?? {};
       },
+      async getWithRevision(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const configRow = await registry.getConfig(pluginId, companyId);
+        return {
+          value: configRow?.configJson ?? {},
+          revision: configRow ? `${configRow.id}:${configRow.updatedAt.toISOString()}` : "missing",
+        };
+      },
     },
 
     localFolders: {
@@ -1600,6 +1609,11 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         return secretsHandler.resolve({ ...params, companyId });
+      },
+      async resolveWithMetadata(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return secretsHandler.resolveWithMetadata({ ...params, companyId });
       },
     },
 

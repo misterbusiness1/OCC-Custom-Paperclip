@@ -471,6 +471,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async get(companyId?: string) {
           return callHost("config.get", companyId ? { companyId } : {});
         },
+        async getWithRevision(companyId?: string) {
+          return callHost("config.getWithRevision", companyId ? { companyId } : {});
+        },
       },
 
       localFolders: {
@@ -621,6 +624,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       secrets: {
         async resolve(secretRef, options = {}): Promise<string> {
           return callHost("secrets.resolve", {
+            secretRef,
+            companyId: options.companyId,
+            configPath: options.configPath,
+          });
+        },
+        async resolveWithMetadata(secretRef, options = {}) {
+          return callHost("secrets.resolveWithMetadata", {
             secretRef,
             companyId: options.companyId,
             configPath: options.configPath,

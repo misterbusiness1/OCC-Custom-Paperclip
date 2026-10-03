@@ -36,6 +36,7 @@ export function buildRuntimeToolsEnv(
       access.rest.connectionsSearch,
     PAPERCLIP_RUNTIME_TOOLS_CONNECTION_REQUEST_URL:
       access.rest.connectionRequest,
+    PAPERCLIP_RUNTIME_TOOLS_TYPESAFE_JUDGE_URL: access.rest.typesafeJudge,
     PAPERCLIP_RUNTIME_TOOLS_AVAILABLE: access.tools.join(","),
     PAPERCLIP_RUNTIME_TOOLS_GUIDANCE: access.guidance,
   };
@@ -1937,6 +1938,19 @@ export function stringifyPaperclipWakePayload(
     });
   }
   return JSON.stringify(normalized);
+}
+
+export function renderPaperclipSkillRelevanceAdvisory(value: unknown): string {
+  const advisory = parseObject(value);
+  if (advisory.kind !== "skill_relevance_advisory_v1") return "";
+  const skillId = asString(advisory.skillId, "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(skillId)) return "";
+  return [
+    "<skill_relevance>",
+    `  <skill_id>${skillId}</skill_id>`,
+    "  <instruction>This installed skill appears relevant. Treat this as advisory only; explicit user-selected and mandatory skill rules take precedence.</instruction>",
+    "</skill_relevance>",
+  ].join("\n");
 }
 
 export function isPaperclipRecoveryWakePayload(value: unknown): boolean {

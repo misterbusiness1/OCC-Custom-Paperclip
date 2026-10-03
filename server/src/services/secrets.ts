@@ -701,6 +701,7 @@ export type RuntimeSecretManifestEntry = {
   configPath: string;
   envKey: string | null;
   secretId: string;
+  secretVersionId?: string | null;
   bindingId?: string | null;
   secretKey: string;
   version: number;
@@ -1426,6 +1427,7 @@ export function secretService(db: Db | DbTransaction) {
           configPath: configPath ?? "",
           envKey: configPath?.startsWith("env.") ? configPath.slice("env.".length) : null,
           secretId: secret.id,
+          secretVersionId: versionRow.id,
           bindingId: binding?.id ?? null,
           secretKey: secret.key,
           version: resolvedVersion,
@@ -1470,6 +1472,21 @@ export function secretService(db: Db | DbTransaction) {
       ? contextOrOptions
       : { bindingContext: contextOrOptions, accessContext: contextOrOptions };
     return (await resolveSecretValueInternal(companyId, secretId, version, options)).value;
+  }
+
+  async function resolveSecretValueWithMetadata(
+    companyId: string,
+    secretId: string,
+    version: number | "latest",
+    contextOrOptions?: SecretBindingContext | SecretResolutionOptions,
+  ): Promise<{ value: string; secretVersionId: string }> {
+    const options = isSecretResolutionOptions(contextOrOptions)
+      ? contextOrOptions
+      : { bindingContext: contextOrOptions, accessContext: contextOrOptions };
+    const resolved = await resolveSecretValueInternal(companyId, secretId, version, options);
+    const secretVersionId = resolved.manifestEntry.secretVersionId;
+    if (!secretVersionId) throw new Error("Resolved secret version metadata is unavailable");
+    return { value: resolved.value, secretVersionId };
   }
 
   async function resolveSecretValueForEphemeralAccess(
@@ -4528,6 +4545,7 @@ export function secretService(db: Db | DbTransaction) {
     getByName,
     getByKey,
     resolveSecretValue,
+    resolveSecretValueWithMetadata,
     resolveSecretVersion,
     resolveSecretValueForAgentAccess,
     listAgentSecretAccess,

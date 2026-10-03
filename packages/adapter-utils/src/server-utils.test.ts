@@ -23,6 +23,7 @@ import {
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
+  renderPaperclipSkillRelevanceAdvisory,
   resolveLegacyPaperclipDesiredSkillNames,
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
@@ -38,6 +39,15 @@ import {
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
 
+describe("renderPaperclipSkillRelevanceAdvisory", () => {
+  it("renders only a closed sanitized advisory block", () => {
+    expect(renderPaperclipSkillRelevanceAdvisory({ kind: "skill_relevance_advisory_v1", skillId: "php-best-practices" }))
+      .toContain("<skill_relevance>\n  <skill_id>php-best-practices</skill_id>");
+    expect(renderPaperclipSkillRelevanceAdvisory({ kind: "skill_relevance_advisory_v1", skillId: "bad</skill_id><evil>" })).toBe("");
+    expect(renderPaperclipSkillRelevanceAdvisory({ kind: "other", skillId: "php" })).toBe("");
+  });
+});
+
 describe("runtime connection tool delivery", () => {
   const access = {
     version: 1 as const,
@@ -48,10 +58,11 @@ describe("runtime connection tool delivery", () => {
         "https://paperclip.test/runtime-tools/connections/search",
       connectionRequest:
         "https://paperclip.test/runtime-tools/connections/request",
+      typesafeJudge: "https://paperclip.test/runtime-tools/typesafe/judge",
     },
     bearerToken: "run-scoped-secret",
     expiresAt: "2026-08-26T15:00:00.000Z",
-    tools: ["connections_search", "connection_request"] as const,
+    tools: ["connections_search", "connection_request", "typesafe_judge"] as const,
   };
 
   it("delivers the complete environment contract and canonical guidance", () => {
@@ -63,8 +74,9 @@ describe("runtime connection tool delivery", () => {
         access.rest.connectionsSearch,
       PAPERCLIP_RUNTIME_TOOLS_CONNECTION_REQUEST_URL:
         access.rest.connectionRequest,
+      PAPERCLIP_RUNTIME_TOOLS_TYPESAFE_JUDGE_URL: access.rest.typesafeJudge,
       PAPERCLIP_RUNTIME_TOOLS_AVAILABLE:
-        "connections_search,connection_request",
+        "connections_search,connection_request,typesafe_judge",
       PAPERCLIP_RUNTIME_TOOLS_GUIDANCE: CONNECTION_INTENT_AGENT_GUIDANCE,
     });
   });
