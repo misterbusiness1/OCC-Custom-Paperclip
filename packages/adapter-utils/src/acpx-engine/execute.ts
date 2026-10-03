@@ -80,6 +80,53 @@ import {
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
+const ACP_PROVIDER_QUOTA_RE =
+  /(?:you(?:'|’)ve (?:hit|reached) your (?:\d+-hour )?usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|current \d+-hour window ends)/i;
+const ACP_TRANSIENT_RATE_LIMIT_RE = /(?:\b429\b|rate[ -]?limit(?:ed|ing)?|too many requests)/i;
+const ACP_HARD_AUTH_FAILURE_RE =
+  /(?:\b401\b|invalid_grant|login required|not logged in|(?:missing|invalid|expired|revoked)\s+(?:api[ _-]?)?(?:key|token|credential)s?|(?:api[ _-]?)?(?:key|token|credential)s?\s+(?:is\s+)?(?:missing|invalid|expired|revoked))/i;
+const KIMI_WRAPPED_FIVE_HOUR_QUOTA_RE =
+  /^Authentication required:\s*403\s+You(?:'|’)ve reached your 5-hour usage limit\.\s*Your quota will reset when the current 5-hour window ends\.?$/i;
+
+export const ACP_WRAPPED_QUOTA_RETRY_DELAY_MS = 5 * 60 * 60 * 1000;
+
+export function classifyAcpTerminalFailure(
+  message: string,
+  nowMs = Date.now(),
+): Pick<AdapterExecutionResult, "errorCode" | "errorFamily" | "retryNotBefore"> {
+  const normalized = message.trim();
+  // Credential evidence always wins, even when the same failure also mentions
+  // quota. The only exception is Kimi's exact ACP wrapper for its five-hour
+  // usage window, which misleadingly prefixes a quota response with auth text.
+  if (ACP_HARD_AUTH_FAILURE_RE.test(normalized)) {
+    return { errorCode: "acpx_auth_required", errorFamily: null, retryNotBefore: null };
+  }
+  if (KIMI_WRAPPED_FIVE_HOUR_QUOTA_RE.test(normalized)) {
+    return {
+      errorCode: "usage_limit",
+      errorFamily: "provider_quota",
+      retryNotBefore: new Date(nowMs + ACP_WRAPPED_QUOTA_RETRY_DELAY_MS).toISOString(),
+    };
+  }
+  if (/(?:authentication required|auth(?:entication)? failed|credential)/i.test(normalized)) {
+    return { errorCode: "acpx_auth_required", errorFamily: null, retryNotBefore: null };
+  }
+  if (ACP_PROVIDER_QUOTA_RE.test(normalized)) {
+    return {
+      errorCode: "usage_limit",
+      errorFamily: "provider_quota",
+      retryNotBefore: new Date(nowMs + ACP_WRAPPED_QUOTA_RETRY_DELAY_MS).toISOString(),
+    };
+  }
+  if (ACP_TRANSIENT_RATE_LIMIT_RE.test(normalized)) {
+    return {
+      errorCode: "acpx_transient_upstream",
+      errorFamily: "transient_upstream",
+      retryNotBefore: null,
+    };
+  }
+  return { errorCode: "acpx_turn_failed", errorFamily: null, retryNotBefore: null };
+}
 
 interface ChildStderrState {
   logPath: string | null;
@@ -2241,6 +2288,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
         : resultErrorMessage(terminal);
       const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+      const terminalFailure = terminal.status === "failed" && !timedOut
+        ? classifyAcpTerminalFailure(terminal.error.message, now())
+        : null;
       await emitAcpxLog(ctx, {
         type: terminal.status === "completed" ? "acpx.result" : "acpx.error",
         summary: terminal.status,
@@ -2254,7 +2304,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         signal: timedOut ? "SIGTERM" : null,
         timedOut,
         errorMessage,
-        errorCode: terminal.status === "failed" ? "acpx_turn_failed" : timedOut ? "acpx_timeout" : null,
+        errorCode: terminalFailure?.errorCode ?? (timedOut ? "acpx_timeout" : null),
+        errorFamily: terminalFailure?.errorFamily ?? null,
+        retryNotBefore: terminalFailure?.retryNotBefore ?? null,
         sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
         sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
         sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -2270,6 +2322,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           requestedModel: prepared.requestedModel || null,
           requestedThinkingEffort: prepared.requestedThinkingEffort || null,
           fastMode: prepared.fastMode,
+          ...(terminalFailure?.errorFamily ? { errorFamily: terminalFailure.errorFamily } : {}),
+          ...(terminalFailure?.retryNotBefore
+            ? {
+                retryNotBefore: terminalFailure.retryNotBefore,
+                transientRetryNotBefore: terminalFailure.retryNotBefore,
+                ...(terminalFailure.errorFamily === "provider_quota"
+                  ? { providerQuotaRetryNotBefore: terminalFailure.retryNotBefore }
+                  : {}),
+              }
+            : {}),
           ...(turnUsage.usageDetail ? { usage: turnUsage.usageDetail } : {}),
           ...(turnUsage.cumulativeCostUsd != null
             ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }

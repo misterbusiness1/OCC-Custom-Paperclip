@@ -7,6 +7,8 @@ import type { AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
 import { DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC } from "@paperclipai/adapter-utils/execution-target";
 import {
   createAcpxEngineExecutor,
+  ACP_WRAPPED_QUOTA_RETRY_DELAY_MS,
+  classifyAcpTerminalFailure,
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
   parseGeminiVersionParts,
@@ -26,6 +28,65 @@ async function makeTempRoot() {
 
 afterEach(async () => {
   await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+});
+
+describe("ACPX terminal failure classification", () => {
+  const now = Date.parse("2030-04-22T16:00:00.000Z");
+  const wrappedQuota =
+    "Authentication required: 403 You’ve reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends.";
+
+  it("classifies Kimi's exact authentication-wrapped five-hour limit as provider quota", () => {
+    expect(classifyAcpTerminalFailure(wrappedQuota, now)).toEqual({
+      errorCode: "usage_limit",
+      errorFamily: "provider_quota",
+      retryNotBefore: new Date(now + ACP_WRAPPED_QUOTA_RETRY_DELAY_MS).toISOString(),
+    });
+  });
+
+  it.each([
+    "Authentication required: 401 quota exceeded",
+    "Authentication failed: invalid API key; quota status unavailable",
+    "Authentication required: expired token; usage limit unknown",
+    "invalid_grant: quota refresh failed",
+    "Login required before checking quota",
+    "Authentication failed: revoked credential; quota exceeded",
+  ])("preserves hard authentication precedence for %s", (message) => {
+    expect(classifyAcpTerminalFailure(message, now)).toEqual({
+      errorCode: "acpx_auth_required",
+      errorFamily: null,
+      retryNotBefore: null,
+    });
+  });
+
+  it.each([
+    "You've hit your usage limit. Try again later.",
+    "You’ve reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends.",
+    "Provider quota exceeded for this model.",
+  ])("preserves unwrapped provider quota normalization for %s", (message) => {
+    expect(classifyAcpTerminalFailure(message, now)).toMatchObject({
+      errorCode: "usage_limit",
+      errorFamily: "provider_quota",
+    });
+  });
+
+  it.each(["429 Too Many Requests", "Provider rate limit exceeded"])(
+    "keeps transient throttling distinct for %s",
+    (message) => {
+      expect(classifyAcpTerminalFailure(message, now)).toEqual({
+        errorCode: "acpx_transient_upstream",
+        errorFamily: "transient_upstream",
+        retryNotBefore: null,
+      });
+    },
+  );
+
+  it("keeps an ordinary terminal failure unclassified", () => {
+    expect(classifyAcpTerminalFailure("ordinary ACP failure", now)).toEqual({
+      errorCode: "acpx_turn_failed",
+      errorFamily: null,
+      retryNotBefore: null,
+    });
+  });
 });
 
 async function pathExists(candidate: string): Promise<boolean> {
@@ -91,6 +152,7 @@ function createLocalSandboxRunner(
 function buildRuntime(
   onSetConfigOption?: (input: { key: string; value: string }) => void,
   onEnsureSession?: (input: Record<string, unknown>) => void,
+  terminalResult: Record<string, unknown> = { status: "completed", stopReason: "end_turn" },
 ) {
   return {
     ensureSession: async (input: Record<string, unknown>) => {
@@ -105,7 +167,7 @@ function buildRuntime(
       events: (async function* () {
         yield { type: "done", stopReason: "end_turn" };
       })(),
-      result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+      result: Promise.resolve(terminalResult),
       cancel: async () => {},
     }),
     setConfigOption: async (input: { key: string; value: string }) => {
@@ -123,6 +185,7 @@ async function runExecutor(
     authToken?: string;
     executionTarget?: Record<string, unknown>;
     runtimeMcp?: AdapterRuntimeMcpAccess;
+    terminalResult?: Record<string, unknown>;
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
@@ -131,11 +194,12 @@ async function runExecutor(
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
   const execute = createAcpxEngineExecutor({
-    createRuntime: (options) => {
-      runtimeOptions.push(options as unknown as Record<string, unknown>);
+    createRuntime: (runtimeOption) => {
+      runtimeOptions.push(runtimeOption as unknown as Record<string, unknown>);
       return buildRuntime(
         ({ key, value }) => configOptions.push({ key, value }),
         (input) => sessionInputs.push(input),
+        options.terminalResult,
       ) as never;
     },
   });
@@ -161,11 +225,33 @@ async function runExecutor(
     },
   } as never);
 
-  expect(result.exitCode).toBe(0);
+  expect(result.exitCode).toBe(options.terminalResult?.status === "failed" ? 1 : 0);
   return { logs, meta, runtimeOptions, configOptions, sessionInputs, result };
 }
 
 describe("shared ACPX engine runtime behavior", () => {
+  it("persists wrapped Kimi quota metadata from a synthetic failed terminal turn", async () => {
+    const message =
+      "Authentication required: 403 You’ve reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends.";
+    const { result, logs } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js" },
+      { terminalResult: { status: "failed", error: { message, code: "ACP_TURN_FAILED" } } },
+    );
+
+    expect(result).toMatchObject({
+      errorCode: "usage_limit",
+      errorFamily: "provider_quota",
+      errorMessage: message,
+      resultJson: {
+        status: "failed",
+        errorFamily: "provider_quota",
+      },
+    });
+    expect(result.retryNotBefore).toEqual(expect.any(String));
+    expect(result.resultJson?.providerQuotaRetryNotBefore).toBe(result.retryNotBefore);
+    expect(logs.some(({ text }) => text.includes('"type":"acpx.error"'))).toBe(true);
+  });
+
   it("sets Codex model, effort, and fast mode through CODEX_CONFIG without session config calls", async () => {
     const { configOptions, meta } = await runExecutor({
       agent: "codex",
