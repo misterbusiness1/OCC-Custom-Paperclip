@@ -17,6 +17,7 @@ vi.mock("../sentry.js", async () => {
 });
 
 import { reconcileAbandonedExecutionControl } from "./execution-control-reconciliation.js";
+import { waitForPendingRunFailureReports } from "./run-failure-report.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -96,7 +97,14 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
 
   it("reports zero events for a repeated sweep over the same already-failed run", async () => {
     const { runId } = await seedAbandonedRunFixture();
+    const captureCallsBeforeFirstSweep = mockCaptureRunFailure.mock.calls.length;
     await reconcileAbandonedExecutionControl(db);
+    await waitForPendingRunFailureReports();
+    const firstSweepCaptures = mockCaptureRunFailure.mock.calls.slice(
+      captureCallsBeforeFirstSweep,
+    );
+    expect(firstSweepCaptures).toHaveLength(1);
+    expect(firstSweepCaptures[0]?.[0]).toMatchObject({ runId });
     // The first sweep already cleared executionControlDeadlineAt and moved the
     // run to "failed". Restore the deadline to simulate a second sweep still
     // observing the same run as a candidate.

@@ -242,10 +242,7 @@ export async function reconcileAbandonedExecutionControl(
           return true;
         });
         if (repaired) surfaced += 1;
-        // Await the report so a completed sweep owns its terminal side effect.
-        // A following sweep can then observe the terminal guard without racing
-        // the first sweep's deferred failure event.
-        if (terminalRunToReport) await reportRunFailure(db, terminalRunToReport);
+        if (terminalRunToReport) void reportRunFailure(db, terminalRunToReport);
       } catch {
         logger.warn(
           { runId: candidate.runId },

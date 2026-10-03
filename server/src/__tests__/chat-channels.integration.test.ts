@@ -5963,24 +5963,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).toBe(1);
     expect(deferred).toHaveLength(1);
 
-    // The reorder window is an ingress batching boundary, not the behavior
-    // under test. Make both admitted callbacks due together so this test
-    // deterministically proves provider comment-ID ordering before task start.
-    await db
-      .update(chatDeliveries)
-      .set({ nextAttemptAt: new Date(0) })
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    // Begin the captured drain only when its persisted reorder boundary is
+    // due. This keeps the production window and the coalesced scheduler
+    // assertion intact without spending the downstream waitFor budget on the
+    // intentional ingress delay.
+    const drainAt = durable[0]!.nextAttemptAt!.getTime();
+    const untilDrain = Math.max(0, drainAt - Date.now());
+    if (untilDrain > 0) {
+      await new Promise((resolve) => setTimeout(resolve, untilDrain));
+    }
     deferred.shift()?.();
-    await vi.waitFor(
-      async () => {
-        const rows = await db
-          .select()
-          .from(chatConversations)
-          .where(eq(chatConversations.endpointId, endpoint.id));
-        expect(rows).toHaveLength(1);
-      },
-      { timeout: 15_000 },
-    );
+    await vi.waitFor(async () => {
+      const rows = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id));
+      expect(rows).toHaveLength(1);
+    });
     const [conversation] = await db
       .select()
       .from(chatConversations)
