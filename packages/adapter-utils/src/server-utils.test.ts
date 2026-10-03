@@ -23,6 +23,7 @@ import {
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
+  renderPaperclipSkillRelevanceAdvisory,
   resolveLegacyPaperclipDesiredSkillNames,
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
@@ -37,6 +38,15 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+describe("renderPaperclipSkillRelevanceAdvisory", () => {
+  it("renders only a closed sanitized advisory block", () => {
+    expect(renderPaperclipSkillRelevanceAdvisory({ kind: "skill_relevance_advisory_v1", skillId: "php-best-practices" }))
+      .toContain("<skill_relevance>\n  <skill_id>php-best-practices</skill_id>");
+    expect(renderPaperclipSkillRelevanceAdvisory({ kind: "skill_relevance_advisory_v1", skillId: "bad</skill_id><evil>" })).toBe("");
+    expect(renderPaperclipSkillRelevanceAdvisory({ kind: "other", skillId: "php" })).toBe("");
+  });
+});
 
 describe("runtime connection tool delivery", () => {
   const access = {

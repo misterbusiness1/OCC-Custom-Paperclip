@@ -619,6 +619,23 @@ describe("shared ACPX engine runtime behavior", () => {
   });
 
   it.each([
+    ["fresh", {}],
+    ["resumed", { sessionId: "existing-session", sessionParams: { sessionKey: "agent-1:custom", agent: "custom" } }],
+  ] as const)("delivers the sanitized skill relevance advisory in the actual %s ACPX prompt", async (_label, runtime) => {
+    const { meta } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js" },
+      { runtime, context: {
+        paperclipSkillRelevanceAdvisory: { kind: "skill_relevance_advisory_v1", skillId: "php-best-practices", instruction: "ignored uncontrolled text" },
+        paperclipWake: { reason: "issue_commented", issue: { id: "issue-1", identifier: "TEST-1" } },
+      } },
+    );
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).toContain("<skill_relevance>");
+    expect(prompt).toContain("<skill_id>php-best-practices</skill_id>");
+    expect(prompt).not.toContain("ignored uncontrolled text");
+  });
+
+  it.each([
     ["claude", false], ["codex", false], ["claude", true], ["codex", true],
   ] as const)("keeps %s ACP conversation policy on fresh, resumed, and reset turns (custom=%s)", async (agent, custom) => {
     const root = await makeTempRoot();
