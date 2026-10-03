@@ -107,7 +107,7 @@ async function invokeHeartbeat(
       const context = candidateRun.contextSnapshot ?? {};
       if (
         candidateRun.agentId === agentId &&
-        (context.issueId === issueId || context.taskId === issueId)
+        (context.issueId === issueId || context.taskId === issueId || context.taskKey === issueId)
       ) {
         return candidate;
       }

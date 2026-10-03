@@ -151,4 +151,34 @@ describeEmbedded("generic adapter provider quota failures", () => {
     // Never before the provider reset (the retry is max(transient tier, reset)).
     expect(retry.scheduledRetryAt!.getTime()).toBeGreaterThanOrEqual(retryNotBefore.getTime());
   }, 30_000);
+
+  it("persists and schedules the full Kimi ACP wrapped quota terminal failure without another provider turn", async () => {
+    nextFailure = {
+      errorCode: "acpx_turn_failed",
+      errorMessage:
+        "Authentication required: 403 You’ve reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/membership/subscription?tab=quota",
+    };
+    const turnsBefore = providerTurns;
+    const { agentId, issueId } = await seedAssignedIssue();
+    const started = Date.now();
+    const runId = await runUntilFailed(agentId, issueId);
+
+    const failed = await heartbeat.getRun(runId);
+    expect(failed).toMatchObject({ errorCode: "provider_quota" });
+    expect(failed?.resultJson).toMatchObject({
+      errorFamily: "provider_quota",
+      providerQuotaKind: "usage_limit",
+      providerQuotaResetSource: "default",
+      originalErrorCode: "acpx_turn_failed",
+    });
+
+    const readRetries = () => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
+    await expect.poll(async () => (await readRetries()).length, { timeout: 10_000 }).toBe(1);
+    const [retry] = await readRetries();
+    expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
+    expect(retry.contextSnapshot).toMatchObject({ issueId, errorFamily: "provider_quota" });
+    expect(retry.scheduledRetryAt!.getTime() - started).toBeGreaterThanOrEqual(PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS);
+    expect(await heartbeat.promoteDueScheduledRetries(new Date(started + 5 * 60 * 1000))).toEqual({ promoted: 0, runIds: [] });
+    expect(providerTurns - turnsBefore).toBe(1);
+  }, 30_000);
 });

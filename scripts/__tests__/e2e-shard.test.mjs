@@ -208,6 +208,21 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
   }
 });
 
+test("the trusted PR workflow audits the exact downstream production lockfile", () => {
+  const workflow = readTrustedPrWorkflow();
+  const jobs = readWorkflowJobs(workflow);
+  const audit = jobs.get("dependency_audit");
+  const aggregate = jobs.get("verify");
+
+  assert.ok(audit, "pr-trusted.yml must define a dependency_audit job");
+  assert.match(audit, /^ {4}name: Dependency Audit$/m);
+  assert.match(audit, /^ {4}needs: \[gate, policy\]$/m);
+  assert.match(audit, /Restore regenerated PR lockfile \(if policy uploaded one\)/);
+  assert.match(audit, /run: pnpm audit:production/);
+  assert.match(aggregate, /needs: \[gate, policy, dependency_audit,/);
+  assert.match(aggregate, /test "\$DEPENDENCY_AUDIT_RESULT" = "success"/);
+});
+
 test("the trusted PR workflow limits full CI to merge-relevant stack layers", () => {
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   const jobs = readWorkflowJobs(workflow);
@@ -220,6 +235,7 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
 
   for (const jobId of [
     "typecheck_release_registry",
+    "dependency_audit",
     "general_tests",
     "verify_paperclip_runner",
     "build",
@@ -243,7 +259,7 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   const verify = jobs.get("verify");
   assert.match(
     verify,
-    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity\]$/m,
+    /^ {4}needs: \[gate, policy, dependency_audit, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity\]$/m,
   );
   assert.match(verify, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
   assert.match(verify, /test "\$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"/);
@@ -331,7 +347,7 @@ test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
   const restoreSteps = workflow.match(
     /- name: Restore regenerated PR lockfile \(if policy uploaded one\)\n        if: needs\.policy\.outputs\.lockfile_regenerated == '1'/g,
   ) ?? [];
-  assert.equal(restoreSteps.length, 7, "every downstream install job must restore a required regenerated artifact");
+  assert.equal(restoreSteps.length, 8, "every downstream lock consumer must restore a required regenerated artifact");
   assert.doesNotMatch(
     workflow,
     /- name: Restore regenerated PR lockfile \(if policy uploaded one\)[\s\S]{0,220}continue-on-error:/,

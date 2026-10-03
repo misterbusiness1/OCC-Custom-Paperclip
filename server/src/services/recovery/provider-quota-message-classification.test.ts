@@ -18,6 +18,10 @@ const CLAUDE_ACP_SESSION_LIMIT_5AM = "Internal error: You've hit your session li
 const CLAUDE_ACP_RATE_LIMIT =
   "Internal error: API Error: This request would exceed your account's rate limit. Please try again later.";
 const KIMI_FIVE_HOUR_LIMIT = "403 You've reached your 5-hour usage limit";
+const KIMI_ACP_WRAPPED_FIVE_HOUR_LIMIT =
+  "Authentication required: 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends.";
+const KIMI_ACP_WRAPPED_FIVE_HOUR_LIMIT_FULL =
+  "Authentication required: 403 You’ve reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/membership/subscription?tab=quota";
 
 // opencode_local stdout shape for the DeepSeek 402 (trimmed).
 const OPENCODE_402_STDOUT = JSON.stringify({
@@ -72,6 +76,10 @@ describe("classifyProviderQuotaErrorMessage", () => {
     [CLAUDE_ACP_SESSION_LIMIT_10PM, "usage_limit"],
     [CLAUDE_ACP_SESSION_LIMIT_3_10AM, "usage_limit"],
     [KIMI_FIVE_HOUR_LIMIT, "usage_limit"],
+    [KIMI_ACP_WRAPPED_FIVE_HOUR_LIMIT, "usage_limit"],
+    [KIMI_ACP_WRAPPED_FIVE_HOUR_LIMIT.replace("You've", "You’ve"), "usage_limit"],
+    [KIMI_ACP_WRAPPED_FIVE_HOUR_LIMIT_FULL, "usage_limit"],
+    [KIMI_ACP_WRAPPED_FIVE_HOUR_LIMIT_FULL.replace("You’ve", "You've"), "usage_limit"],
     [CLAUDE_ACP_RATE_LIMIT, "usage_limit"],
     ["You've hit your weekly limit · resets Oct 2, 5pm (UTC)", "usage_limit"],
     ["Claude AI usage limit reached|1790370000", "usage_limit"],
@@ -88,6 +96,8 @@ describe("classifyProviderQuotaErrorMessage", () => {
     "Not logged in · Please run /login",
     "authentication_error: invalid bearer token (rate limit headers omitted)",
     "Error: 401 {\"error\":{\"message\":\"Incorrect API key provided\",\"code\":\"insufficient_quota\"}}",
+    "Authentication required: 403 quota exceeded; purchase extra usage or upgrade your plan",
+    "Authentication required: 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. Contact support.",
     // A transient 429 throttle stays on the transient retry path.
     "Upstream provider responded 429: you have been rate limited, please retry later.",
     // Unrelated failures.

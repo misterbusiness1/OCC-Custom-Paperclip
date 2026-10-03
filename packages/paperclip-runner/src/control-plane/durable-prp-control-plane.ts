@@ -2078,7 +2078,16 @@ export class DurablePrpControlPlane {
     if (kind === "event") {
       if (this.#store.state.warmTransition?.phase === "awaiting_result")
         connection.replayOnly = true;
-      if (connection.replayOnly) {
+      // A completed run.attach result can reach durable storage before the
+      // event it emitted does. If that event's external commit loses its ACK,
+      // the old authority reconnects after the transition is already prepared.
+      // Keep that authority replay-only for commands, but let its authenticated
+      // event outbox drain through #event: identity and cumulative sourceSeq
+      // validation there admit only the exact old-authority continuation.
+      if (
+        connection.replayOnly &&
+        this.#store.state.warmTransition?.phase !== "prepared"
+      ) {
         connection.close();
         return;
       }
