@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import {
+  ACP_WRAPPED_QUOTA_RETRY_DELAY_MS,
+  createAcpxEngineExecutor,
+} from "../../../packages/adapter-utils/src/acpx-engine/index.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS } from "../services/recovery/service.ts";
@@ -24,15 +31,51 @@ describeEmbedded("generic adapter provider quota failures", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
   let heartbeat: ReturnType<typeof heartbeatService>;
+  let acpxStateRoot: string;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-generic-quota-retry-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
+    acpxStateRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-quota-server-test-"));
+    const executeAcpTerminal = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "quota-backend-session",
+          agentSessionId: "quota-agent-session",
+          runtimeSessionName: "quota-runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "done", stopReason: "failed" };
+          })(),
+          result: Promise.resolve({ status: "failed", error: new Error(nextFailure.errorMessage) }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
     registerServerAdapter({
       type: adapterType,
-      execute: async () => {
+      execute: async (context) => {
         providerTurns += 1;
+        if (nextFailure.errorCode === "acpx_turn_failed") {
+          const result = await executeAcpTerminal({
+            ...context,
+            config: {
+              agent: "custom",
+              agentCommand: "node ./synthetic-acp.js",
+              stateDir: acpxStateRoot,
+            },
+          } as never);
+          return {
+            ...result,
+            resultJson: {
+              ...(result.resultJson ?? {}),
+              conversationContinuation: "continue_conversation_v1",
+            },
+          };
+        }
         return {
           exitCode: 1,
           signal: null,
@@ -54,6 +97,7 @@ describeEmbedded("generic adapter provider quota failures", () => {
   afterAll(async () => {
     if (db && heartbeat) await drainHeartbeatRunsToQuiescence(db, heartbeat);
     unregisterServerAdapter(adapterType);
+    await fs.rm(acpxStateRoot, { recursive: true, force: true });
     await tempDb?.cleanup();
   });
 
@@ -115,7 +159,6 @@ describeEmbedded("generic adapter provider quota failures", () => {
     expect(retry.contextSnapshot).toMatchObject({ issueId, errorFamily: "provider_quota" });
     // Deferred by the provider_quota default, not the 2-minute transient tier.
     expect(retry.scheduledRetryAt!.getTime() - started).toBeGreaterThanOrEqual(PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS);
-    expect(await heartbeat.promoteDueScheduledRetries(new Date(started + 5 * 60 * 1000))).toEqual({ promoted: 0, runIds: [] });
     expect(providerTurns - turnsBefore).toBe(1);
 
     const [retained] = await db.select().from(issues).where(eq(issues.id, issueId));
@@ -167,9 +210,7 @@ describeEmbedded("generic adapter provider quota failures", () => {
     expect(failed).toMatchObject({ errorCode: "provider_quota" });
     expect(failed?.resultJson).toMatchObject({
       errorFamily: "provider_quota",
-      providerQuotaKind: "usage_limit",
-      providerQuotaResetSource: "default",
-      originalErrorCode: "acpx_turn_failed",
+      providerQuotaRetryNotBefore: expect.any(String),
     });
 
     const readRetries = () => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
@@ -177,8 +218,33 @@ describeEmbedded("generic adapter provider quota failures", () => {
     const [retry] = await readRetries();
     expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
     expect(retry.contextSnapshot).toMatchObject({ issueId, errorFamily: "provider_quota" });
-    expect(retry.scheduledRetryAt!.getTime() - started).toBeGreaterThanOrEqual(PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS);
-    expect(await heartbeat.promoteDueScheduledRetries(new Date(started + 5 * 60 * 1000))).toEqual({ promoted: 0, runIds: [] });
+    expect(retry.scheduledRetryAt!.getTime() - started).toBeGreaterThanOrEqual(ACP_WRAPPED_QUOTA_RETRY_DELAY_MS);
     expect(providerTurns - turnsBefore).toBe(1);
+  }, 30_000);
+
+  it("keeps a generic quota terminal on the ordinary quota backoff instead of the Kimi five-hour cooldown", async () => {
+    nextFailure = {
+      errorCode: "acpx_turn_failed",
+      errorMessage: "Provider quota exceeded for this model.",
+    };
+    const { agentId, issueId } = await seedAssignedIssue();
+    const started = Date.now();
+    const runId = await runUntilFailed(agentId, issueId);
+    const failed = await heartbeat.getRun(runId);
+    expect(failed).toMatchObject({ errorCode: "provider_quota" });
+    expect(failed?.resultJson).toMatchObject({
+      errorFamily: "provider_quota",
+      providerQuotaResetSource: "default",
+      originalErrorCode: "acpx_turn_failed",
+    });
+
+    const readRetries = () => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
+    await expect.poll(async () => (await readRetries()).length, { timeout: 10_000 }).toBe(1);
+    const [retry] = await readRetries();
+    expect(retry.contextSnapshot).toMatchObject({ issueId, errorFamily: "provider_quota" });
+    expect(retry.scheduledRetryAt!.getTime() - started).toBeGreaterThanOrEqual(
+      PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS,
+    );
+    expect(retry.scheduledRetryAt!.getTime() - started).toBeLessThan(ACP_WRAPPED_QUOTA_RETRY_DELAY_MS);
   }, 30_000);
 });
