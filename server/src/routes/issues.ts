@@ -17252,10 +17252,26 @@ export function issueRoutes(
         })
       )
         return;
+      const actor = getActorInfo(req);
+      if (actor.actorType === "user" && req.body.clientRequestId) {
+        const replayedComment = await svc.getCommentByClientRequestId(
+          issue.id,
+          actor.actorId,
+          req.body.clientRequestId,
+        );
+        if (replayedComment) {
+          if (replayedComment.body !== req.body.body) {
+            throw conflict(
+              "Message request ID was already used for different content",
+            );
+          }
+          res.status(201).json(replayedComment);
+          return;
+        }
+      }
       const closedExecutionWorkspace =
         await getClosedIssueExecutionWorkspace(issue);
 
-      const actor = getActorInfo(req);
       const commentPresentation =
         req.body.presentation ??
         (await deriveRecoveryCommentPresentation(

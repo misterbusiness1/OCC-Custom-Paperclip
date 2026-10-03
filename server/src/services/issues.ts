@@ -12042,6 +12042,29 @@ export function issueService(db: Db) {
       });
     },
 
+    getCommentByClientRequestId: async (
+      issueId: string,
+      userId: string,
+      clientRequestId: string,
+    ): Promise<IssueComment | null> => {
+      const [comment] = await db
+        .select()
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.issueId, issueId),
+            eq(issueComments.authorUserId, userId),
+            eq(issueComments.clientRequestId, clientRequestId),
+          ),
+        )
+        .limit(1);
+      if (!comment) return null;
+      const currentUserRedactionOptions = {
+        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+      };
+      return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+    },
+
     addComment: async function addComment(
       issueId: string,
       body: string,

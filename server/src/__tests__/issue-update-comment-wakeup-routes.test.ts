@@ -13,6 +13,7 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdForUpdate: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  getCommentByClientRequestId: vi.fn(),
   findMentionedAgents: vi.fn(),
   getRelationSummaries: vi.fn(),
   getDependencyReadiness: vi.fn(),
@@ -185,6 +186,7 @@ describe("issue update comment wakeups", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIssueService.getCommentByClientRequestId.mockResolvedValue(null);
     mockAccessDecide.mockImplementation(async (input) => ({ allowed: true, action: input.action, reason: "allow_explicit_grant", explanation: "Allowed by test grant." }));
     mockPauseGate.mockResolvedValue(null);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
