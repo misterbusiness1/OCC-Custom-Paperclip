@@ -128,6 +128,7 @@ import {
   type SettlementReason,
   type SettlementDispositionReport,
 } from "./run-coordinator.js";
+import { classifyAcpTerminalFailure } from "./terminal-failure-classification.js";
 import {
   runTurn as runTurnSequence,
   type StartedTurn,
@@ -5010,6 +5011,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? channelLostMessage
             : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+        const terminalFailure = terminal.status === "failed" && !timedOut && !channelLost
+          ? classifyAcpTerminalFailure(terminal.error.message, now())
+          : null;
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
           summary: channelLost ? "duplex_channel_lost" : terminal.status,
@@ -5030,8 +5034,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             : channelLost
               ? DUPLEX_CHANNEL_LOST_ERROR_CODE
               : terminal.status === "failed"
-                ? "acpx_turn_failed"
+                ? terminalFailure?.errorCode ?? "acpx_turn_failed"
                 : null,
+          errorFamily: terminalFailure?.errorFamily ?? null,
+          retryNotBefore: terminalFailure?.retryNotBefore ?? null,
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -5048,6 +5054,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             requestedModel: prepared.requestedModel || null,
             requestedThinkingEffort: prepared.requestedThinkingEffort || null,
             fastMode: prepared.fastMode,
+            ...(terminalFailure?.errorFamily ? { errorFamily: terminalFailure.errorFamily } : {}),
+            ...(terminalFailure?.retryNotBefore
+              ? {
+                  retryNotBefore: terminalFailure.retryNotBefore,
+                  transientRetryNotBefore: terminalFailure.retryNotBefore,
+                  ...(terminalFailure.errorFamily === "provider_quota"
+                    ? { providerQuotaRetryNotBefore: terminalFailure.retryNotBefore }
+                    : {}),
+                }
+              : {}),
             ...(turnUsage.usageDetail ? { usage: turnUsage.usageDetail } : {}),
             ...(turnUsage.cumulativeCostUsd != null
               ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
