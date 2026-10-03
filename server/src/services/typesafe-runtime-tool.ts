@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { agents, companySkills, type Db } from "@paperclipai/db";
 import { z } from "zod";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
+import { connectionIntentService } from "./connection-intents.js";
 import { secretService } from "./secrets.js";
 
 const jsonValue: z.ZodType<unknown> = z.lazy(() => z.union([
@@ -103,6 +104,7 @@ export function renderTypeSafeResult(result: { answers: Record<string, unknown> 
 
 type Deps = {
   fetch?: typeof fetch; env?: NodeJS.ProcessEnv; now?: () => number; sleep?: (ms: number) => Promise<void>;
+  validateCapability?: (claims: RuntimeToolsTokenClaims) => Promise<unknown>;
   loadAgent?: (companyId: string, agentId: string) => Promise<AgentSnapshot>;
   resolveSecret?: (companyId: string, binding: Binding, claims: RuntimeToolsTokenClaims) => Promise<SecretSnapshot>;
   loadCatalogRevision?: (companyId: string) => Promise<string>;
@@ -113,6 +115,7 @@ export function typeSafeRuntimeToolService(db: Db, deps: Deps = {}) {
   const env = deps.env ?? process.env;
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const validateCapability = deps.validateCapability ?? ((claims: RuntimeToolsTokenClaims) => connectionIntentService(db).validate(claims));
   const loadAgent = deps.loadAgent ?? (async (companyId, agentId) => {
     const [agent] = await db.select({ adapterConfig: agents.adapterConfig, updatedAt: agents.updatedAt }).from(agents)
       .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))).limit(1);
@@ -130,6 +133,10 @@ export function typeSafeRuntimeToolService(db: Db, deps: Deps = {}) {
   });
 
   return { async judge(claims: RuntimeToolsTokenClaims, raw: unknown): Promise<Failure | Record<string, unknown>> {
+    // Keep REST, MCP, and native calls behind the same live-run authority. This
+    // must precede agent/config/secret reads so a stale capability has no access
+    // to company-scoped credential state.
+    await validateCapability(claims);
     if (!/^(1|true|yes|on)$/i.test(env.PAPERCLIP_TYPESAFE_TOOL_ENABLED ?? "")) return { ok: false, error: { code: "disabled", retryable: false } };
     const input = typeSafeJudgeInputSchema.parse(raw);
     const agent = await loadAgent(claims.company_id, claims.sub);
@@ -159,6 +166,9 @@ export function typeSafeRuntimeToolService(db: Db, deps: Deps = {}) {
         await sleep(100);
       }
       if (!response?.ok) return { ok: false, error: { code: response?.status === 429 ? "rate_limited" : response?.status === 529 ? "overloaded" : response?.status === 401 || response?.status === 403 ? "credential_denied" : "service_error", retryable: Boolean(response && [429, 529].includes(response.status)) } };
+      // The provider may have completed after the heartbeat ended or its bound
+      // identity changed. Discard its body before parsing or recording usage.
+      await validateCapability(claims);
       let validated;
       try { validated = validateTypeSafeAnswers(input, await response.json()); }
       catch { return { ok: false, error: { code: "invalid_response", retryable: false } }; }
@@ -172,6 +182,7 @@ export function typeSafeRuntimeToolService(db: Db, deps: Deps = {}) {
         || freshSecretVersion !== initialSecretVersion || freshCatalogRevision !== initialCatalogRevision) {
         return { ok: false, error: { code: "stale_configuration", retryable: true } };
       }
+      await validateCapability(claims);
       return { ok: true, ...validated, rendered: renderTypeSafeResult(validated), latencyMs: Math.max(0, now() - started), metadata: {
         companyScoped: true, configRevision: initialConfigRevision, credentialVersion: hash(initialSecretVersion), catalogRevision: initialCatalogRevision,
         requestFingerprint: hash({ state: input.state, questions: input.questions }), questionSchema: hash(input.questions), model: input.model, cached: false,

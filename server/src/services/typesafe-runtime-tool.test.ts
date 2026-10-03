@@ -24,6 +24,7 @@ const agent = { adapterConfig: { env: { TYPESAFE_API_KEY: { type: "secret_ref", 
 function service(overrides: Record<string, unknown> = {}) {
   return typeSafeRuntimeToolService(null as never, {
     env: { PAPERCLIP_TYPESAFE_TOOL_ENABLED: "true" }, now: () => 100,
+    validateCapability: vi.fn(async () => undefined),
     loadAgent: vi.fn(async () => agent), loadCatalogRevision: vi.fn(async () => "catalog-a"),
     resolveSecret: vi.fn(async () => ({ value: "test-key", secretVersionId: "version-a" })),
     fetch: vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 })),
@@ -62,6 +63,37 @@ describe("TypeSafe runtime tool contract", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     const requestInit = (fetch.mock.calls as unknown as Array<[string, RequestInit]>)[0]![1];
     expect(JSON.parse(String(requestInit.body))).toEqual({ state: input.state, model: input.model, questions: input.questions });
+  });
+
+  it("rejects invalid live-run authority before credential or provider access", async () => {
+    const denied = Object.assign(new Error("Runtime tool token is no longer active"), { status: 403 });
+    const validateCapability = vi.fn(async () => { throw denied; });
+    const loadAgent = vi.fn(async () => agent);
+    const resolveSecret = vi.fn(async () => ({ value: "test-key", secretVersionId: "version-a" }));
+    const fetch = vi.fn();
+    const runtime = service({ validateCapability, loadAgent, resolveSecret, fetch });
+
+    await expect(runtime.judge(claims(), input)).rejects.toBe(denied);
+    expect(validateCapability).toHaveBeenCalledOnce();
+    expect(loadAgent).not.toHaveBeenCalled();
+    expect(resolveSecret).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("discards a provider result when live-run authority is lost while pending", async () => {
+    const denied = Object.assign(new Error("Runtime tool token is no longer active"), { status: 403 });
+    const validateCapability = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(denied);
+    const response = new Response(JSON.stringify(payload), { status: 200 });
+    const json = vi.spyOn(response, "json");
+    const resolveSecret = vi.fn(async () => ({ value: "test-key", secretVersionId: "version-a" }));
+    const runtime = service({ validateCapability, resolveSecret, fetch: vi.fn(async () => response) });
+
+    await expect(runtime.judge(claims(), input)).rejects.toBe(denied);
+    expect(validateCapability).toHaveBeenCalledTimes(2);
+    expect(json).not.toHaveBeenCalled();
+    expect(resolveSecret).toHaveBeenCalledOnce();
   });
 
   it("supports fresh and resumed run claims without allowing identity selection", async () => {
