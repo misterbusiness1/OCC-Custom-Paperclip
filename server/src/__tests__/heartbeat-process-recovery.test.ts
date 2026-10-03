@@ -2601,6 +2601,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(mockAdapterExecute).not.toHaveBeenCalled();
       const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(task.executionRunId).toBeNull();
+
+      const queuedComment = await db.insert(issueComments).values({
+        companyId: task.companyId, issueId, authorType: "user",
+        authorUserId: "responsible-user", body: "Keep this queued until its own admission",
+      }).returning().then(rows => rows[0]!);
+      const queuedWake = await db.insert(agentWakeupRequests).values({
+        companyId: task.companyId, agentId, source: "automation", reason: "issue_commented",
+        status: "deferred_issue_execution", requestedByActorType: "user",
+        requestedByActorId: "responsible-user", payload: {
+          issueId, commentId: queuedComment.id,
+          _paperclipWakeContext: { issueId, wakeReason: "issue_commented",
+            wakeCommentIds: [queuedComment.id], queuedCommentIds: [queuedComment.id] },
+        },
+      }).returning().then(rows => rows[0]!);
+      await heartbeat.resumeRemoteStopComments((await heartbeat.getRun(runId))!);
+      expect(await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, queuedWake.id)).then(rows => rows[0])).toMatchObject({
+          status: "deferred_issue_execution", runId: null,
+        });
     });
   });
 

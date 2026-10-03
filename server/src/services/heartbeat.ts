@@ -10282,6 +10282,13 @@ export function heartbeatService(
         continue;
       }
       let context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+      // A settled prelaunch receipt proves only that the comment which
+      // interrupted this exact run can be admitted. Ordinary queued comments
+      // on the same issue must stay visible until their own queue is adopted;
+      // otherwise a late reconciliation sweep can claim them before the user
+      // asks to stop or send the queue.
+      if (settledLegacyPrelaunch &&
+          readNonEmptyString(context.interruptedRunId) !== run.id) continue;
       let commentId = deriveCommentId(context, payload);
       let requestedByActorId = wake.requestedByActorId;
       const reason = readNonEmptyString(context.wakeReason) ?? wake.reason;
