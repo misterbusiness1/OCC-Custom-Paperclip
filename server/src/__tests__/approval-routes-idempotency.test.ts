@@ -482,6 +482,61 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
   });
 
+  it("preserves a retained original request when its source is unavailable during resubmission", async () => {
+    const originalRequest = {
+      text: "Exact retained first line\nExact retained second line <script>text only</script>",
+      source: {
+        kind: "paperclip_comment",
+        commentId: "00000000-0000-0000-0000-000000000404",
+        issueId: "00000000-0000-0000-0000-000000000001",
+        sender: "board-user",
+        sentAt: "2026-10-03T12:00:00.000Z",
+        reference: "paperclip-comment:00000000-0000-0000-0000-000000000404",
+        snapshotOrigin: "server",
+      },
+    };
+    const existing = {
+      id: "approval-7",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: {
+        title: "Approve synthetic action",
+        recommendedAction: "Use the old recommendation.",
+        reasoning: "The retained source supports it.",
+        pros: ["Completes the fixture."],
+        risks: ["May need rollback."],
+        originalRequest,
+      },
+      requestedByAgentId: "agent-1",
+    };
+    mockApprovalService.getById.mockResolvedValue(existing);
+    mockApprovalService.resubmit.mockImplementation(async (_id, payload) => ({
+      ...existing,
+      payload,
+      status: "pending",
+    }));
+
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-7/resubmit")
+      .send({
+        payload: {
+          title: "Approve synthetic action",
+          recommendedAction: "Use the revised recommendation.",
+          reasoning: "The retained source still supports it.",
+          pros: ["Completes the fixture."],
+          risks: ["May need rollback."],
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockApprovalService.resubmit).toHaveBeenCalledWith(
+      "approval-7",
+      expect.objectContaining({ originalRequest }),
+    );
+    expect(res.body.payload.originalRequest).toEqual(originalRequest);
+  });
+
   it("blocks status-only recovery runs from creating approvals", async () => {
     const res = await request(await createAgentApp({
       contextSnapshot: {

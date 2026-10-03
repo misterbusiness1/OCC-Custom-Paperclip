@@ -701,16 +701,20 @@ export function approvalRoutes(
       }
     }
 
+    const replacesOriginalRequest = Boolean(
+      req.body.payload &&
+      Object.prototype.hasOwnProperty.call(req.body.payload, "originalRequest"),
+    );
     const requestedPayload = req.body.payload
       ? {
           ...req.body.payload,
-          ...(!Object.prototype.hasOwnProperty.call(req.body.payload, "originalRequest") && existing.payload.originalRequest
+          ...(!replacesOriginalRequest && existing.payload.originalRequest
             ? { originalRequest: existing.payload.originalRequest }
             : {}),
         }
       : undefined;
     const sourceSnapshottedPayload =
-      requestedPayload && existing.type === "request_board_approval"
+      requestedPayload && existing.type === "request_board_approval" && replacesOriginalRequest
         ? await snapshotOriginalRequest(existing.companyId, requestedPayload)
         : requestedPayload;
     const normalizedPayload = sourceSnapshottedPayload
@@ -736,7 +740,7 @@ export function approvalRoutes(
         type: approval.type,
         originalRequestChanged: Boolean(
           requestedPayload &&
-          Object.prototype.hasOwnProperty.call(req.body.payload, "originalRequest") &&
+          replacesOriginalRequest &&
           JSON.stringify(existing.payload.originalRequest) !==
             JSON.stringify(approval.payload.originalRequest)
         ),
