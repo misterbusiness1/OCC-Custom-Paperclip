@@ -117,7 +117,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     );
   }
 
-  async function runTeardown(input: { sandboxAuth: string; hostAuth: string }) {
+  async function runTeardown(input: { sandboxAuth: string; hostAuth: string; resumed?: boolean }) {
     const rootDir = await mkdtemp(
       path.join(os.tmpdir(), "paperclip-codex-copyback-e2e-"),
     );
@@ -136,6 +136,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     process.env.CODEX_HOME = sharedHostHome;
     sandboxAuthFixture.bytes = Buffer.from(input.sandboxAuth, "utf8");
 
+    const meta: Record<string, unknown>[] = [];
     const executionResult = await execute({
       runId: "run-copyback-e2e",
       agent: {
@@ -145,7 +146,9 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
         adapterType: "codex_local",
         adapterConfig: {},
       },
-      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      runtime: input.resumed
+        ? { sessionId: "existing-codex-session", sessionParams: { sessionId: "existing-codex-session" }, sessionDisplayId: "existing-codex-session", taskKey: null }
+        : { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
       config: {
         command: "codex",
         engine: "cli",
@@ -154,6 +157,12 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
         env: { CODEX_HOME: sharedHostHome },
       },
       context: {
+        paperclipSkillRelevanceAdvisory: {
+          kind: "skill_relevance_advisory_v1",
+          skillId: "php-best-practices",
+          instruction: "ignored uncontrolled text",
+        },
+        paperclipWake: { reason: "issue_commented", issue: { id: "issue-1", identifier: "TEST-1" } },
         paperclipWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
@@ -172,14 +181,30 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
         },
       },
       onLog: async () => {},
+      onMeta: async (payload: unknown) => { meta.push(payload as Record<string, unknown>); },
     });
 
     return {
       finalHostAuth: await readFile(hostAuthPath, "utf8"),
       finalHostMode: (await lstat(hostAuthPath)).mode & 0o777,
       executionResult,
+      prompt: String(meta[0]?.prompt ?? ""),
     };
   }
+
+  it.each([["fresh", false], ["resumed", true]] as const)(
+    "delivers a sanitized skill relevance advisory in the actual %s Codex stdin prompt",
+    async (_label, resumed) => {
+      const result = await runTeardown({
+        sandboxAuth: subscriptionAuth({ accountId: "acct", marker: "sandbox" }),
+        hostAuth: subscriptionAuth({ accountId: "acct", marker: "host" }),
+        resumed,
+      });
+      expect(result.prompt).toContain("<skill_relevance>");
+      expect(result.prompt).toContain("<skill_id>php-best-practices</skill_id>");
+      expect(result.prompt).not.toContain("ignored uncontrolled text");
+    },
+  );
 
   it("declares a Codex `home` asset carrying both inbound provision and outbound restore contributions", async () => {
     await runTeardown({

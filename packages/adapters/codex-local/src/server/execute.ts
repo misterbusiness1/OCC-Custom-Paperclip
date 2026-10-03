@@ -45,6 +45,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   renderTemplate,
   renderPaperclipWakePrompt,
+  renderPaperclipSkillRelevanceAdvisory,
   selectPaperclipTaskMarkdown,
   isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
@@ -1129,6 +1130,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       conversationMode: context.conversationMode === true,
       suppressIssueDescription: taskContextNote.length > 0,
     });
+    const skillRelevanceAdvisory = renderPaperclipSkillRelevanceAdvisory(context.paperclipSkillRelevanceAdvisory);
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
     instructionsChars = promptInstructionsPrefix.length;
@@ -1209,6 +1211,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       promptInstructionsPrefix,
       renderedBootstrapPrompt,
       wakePrompt,
+      skillRelevanceAdvisory,
       codexFallbackHandoffNote,
       sessionHandoffNote,
       taskContextNote,
