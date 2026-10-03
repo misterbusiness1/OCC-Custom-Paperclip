@@ -117,7 +117,12 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     );
   }
 
-  async function runTeardown(input: { sandboxAuth: string; hostAuth: string; resumed?: boolean }) {
+  async function runTeardown(input: {
+    sandboxAuth: string;
+    hostAuth: string;
+    resumed?: boolean;
+    advisory?: unknown;
+  }) {
     const rootDir = await mkdtemp(
       path.join(os.tmpdir(), "paperclip-codex-copyback-e2e-"),
     );
@@ -157,11 +162,9 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
         env: { CODEX_HOME: sharedHostHome },
       },
       context: {
-        paperclipSkillRelevanceAdvisory: {
-          kind: "skill_relevance_advisory_v1",
-          skillId: "php-best-practices",
-          instruction: "ignored uncontrolled text",
-        },
+        ...(input.advisory === undefined
+          ? {}
+          : { paperclipSkillRelevanceAdvisory: input.advisory }),
         paperclipWake: { reason: "issue_commented", issue: { id: "issue-1", identifier: "TEST-1" } },
         paperclipWorkspace: {
           cwd: workspaceDir,
@@ -188,7 +191,11 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
       finalHostAuth: await readFile(hostAuthPath, "utf8"),
       finalHostMode: (await lstat(hostAuthPath)).mode & 0o777,
       executionResult,
-      prompt: String(meta[0]?.prompt ?? ""),
+      prompt: String(
+        ((runChildProcess.mock.calls as unknown[][]).at(-1)?.[3] as
+          | { stdin?: unknown }
+          | undefined)?.stdin ?? "",
+      ),
     };
   }
 
@@ -199,12 +206,30 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
         sandboxAuth: subscriptionAuth({ accountId: "acct", marker: "sandbox" }),
         hostAuth: subscriptionAuth({ accountId: "acct", marker: "host" }),
         resumed,
+        advisory: {
+          kind: "skill_relevance_advisory_v1",
+          skillId: "php-best-practices",
+          instruction: "ignored uncontrolled text",
+        },
       });
       expect(result.prompt).toContain("<skill_relevance>");
       expect(result.prompt).toContain("<skill_id>php-best-practices</skill_id>");
       expect(result.prompt).not.toContain("ignored uncontrolled text");
     },
   );
+
+  it.each([
+    ["disabled", undefined],
+    ["no advice", null],
+    ["malformed", { kind: "skill_relevance_advisory_v1", skillId: "bad</skill_id>" }],
+  ] as const)("omits %s skill advice from the actual Codex stdin", async (_label, advisory) => {
+    const result = await runTeardown({
+      sandboxAuth: subscriptionAuth({ accountId: "acct", marker: "sandbox" }),
+      hostAuth: subscriptionAuth({ accountId: "acct", marker: "host" }),
+      advisory,
+    });
+    expect(result.prompt).not.toContain("<skill_relevance>");
+  });
 
   it("declares a Codex `home` asset carrying both inbound provision and outbound restore contributions", async () => {
     await runTeardown({
