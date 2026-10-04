@@ -159,6 +159,22 @@ Provider identity diagnostics remain in the local run log. They record the notif
 
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
+When an ordinary queued run has a cancelled, failed, or skipped wake, recovery
+may cancel it only after verifying that it never started and has no retained
+execution ownership. The cancellation transaction also persists one `lifecycle`
+event on the `system` stream at `warn` level. Its payload contains
+`code: "queued_run_terminal_wake_without_execution"`, `wakeupRequestId`,
+`wakeStatus`, and `providerDispatched: false`. The message describes the ended
+wake. The record remains in the instance database; these payload fields are
+not sent to first-party Telemetry.
+
+After commit, the live `heartbeat.run.event` notification uses that persisted
+record's sequence, payload, and timestamp. Repeated recovery does not insert
+another lifecycle event. Status delivery has its own durable delivery ID, so a
+failed status notification can be retried without replaying provider work.
+The separate existing `agent.task_run` telemetry call uses its normal closed
+dimensions and runs on a best-effort basis after commit.
+
 Bounded retry exhaustion writes one lifecycle receipt per run, retry reason,
 scheduled attempt, and retry limit. Repeated or concurrent recovery checks reuse
 that receipt, including receipts from earlier builds, without advancing the event
