@@ -71,6 +71,83 @@ describe("createBufferedTextFileWriter", () => {
     await writer.close();
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
+    expect(fs.statSync(outputPath).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe("private backup artifacts", () => {
+  it("keeps a live temporary writer private under a permissive umask and removes it on abort", async () => {
+    const root = createTempDir("paperclip-backup-umask-");
+    const destination = path.join(root, "output.sql.partial");
+    const previous = process.umask(0);
+    const writer = createBufferedTextFileWriter(destination);
+    try {
+      writer.emit("sensitive backup data");
+      await writer.drain();
+      expect(fs.statSync(destination).mode & 0o777).toBe(0o600);
+      await writer.abort();
+      expect(fs.existsSync(destination)).toBe(false);
+    } finally {
+      process.umask(previous);
+      await writer.abort();
+    }
+  });
+
+  it("normalizes existing regular SQL files without following artifact symlinks", async () => {
+    const root = createTempDir("paperclip-backup-modes-");
+    const backupDir = path.join(root, "backups");
+    fs.mkdirSync(backupDir, { mode: 0o755 });
+    fs.chmodSync(backupDir, 0o755);
+    for (const name of ["old.sql", "old.sql.gz", "old.sql.gz.partial"]) {
+      fs.writeFileSync(path.join(backupDir, name), "preserved");
+      fs.chmodSync(path.join(backupDir, name), 0o644);
+    }
+    const outside = path.join(root, "outside.sql");
+    fs.writeFileSync(outside, "untouched");
+    fs.chmodSync(outside, 0o644);
+    fs.symlinkSync(outside, path.join(backupDir, "linked.sql"));
+    fs.writeFileSync(path.join(backupDir, "notes.txt"), "notes");
+    fs.chmodSync(path.join(backupDir, "notes.txt"), 0o644);
+    const fail = () => runDatabaseBackup({
+      connectionString: "postgres://invalid:invalid@127.0.0.1:1/invalid",
+      backupDir, connectTimeoutSeconds: 1,
+      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      backupEngine: "javascript",
+    });
+    await expect(fail()).rejects.toThrow();
+    await expect(fail()).rejects.toThrow();
+    expect(fs.statSync(backupDir).mode & 0o777).toBe(0o700);
+    for (const name of ["old.sql", "old.sql.gz", "old.sql.gz.partial"]) {
+      expect(fs.statSync(path.join(backupDir, name)).mode & 0o777).toBe(0o600);
+      expect(fs.readFileSync(path.join(backupDir, name), "utf8")).toBe("preserved");
+    }
+    expect(fs.statSync(outside).mode & 0o777).toBe(0o644);
+    expect(fs.statSync(path.join(backupDir, "notes.txt")).mode & 0o777).toBe(0o644);
+    expect(fs.readdirSync(backupDir)).toHaveLength(5);
+  });
+
+  it("rejects a symlink backup directory without changing its target", async () => {
+    const root = createTempDir("paperclip-backup-link-");
+    const target = path.join(root, "target");
+    fs.mkdirSync(target); fs.chmodSync(target, 0o755);
+    const backupDir = path.join(root, "link"); fs.symlinkSync(target, backupDir);
+    await expect(runDatabaseBackup({
+      connectionString: "postgres://invalid:invalid@127.0.0.1:1/invalid", backupDir,
+      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+    })).rejects.toThrow();
+    expect(fs.statSync(target).mode & 0o777).toBe(0o755);
+    expect(fs.readdirSync(target)).toEqual([]);
+  });
+
+  it("does not truncate or remove an existing writer destination on abort", async () => {
+    const root = createTempDir("paperclip-backup-exclusive-");
+    const destination = path.join(root, "existing.sql");
+    fs.writeFileSync(destination, "keep");
+    const writer = createBufferedTextFileWriter(destination);
+    writer.emit("replace");
+    await expect(writer.drain()).rejects.toThrow();
+    await writer.abort();
+    expect(fs.readFileSync(destination, "utf8")).toBe("keep");
   });
 });
 
@@ -105,6 +182,10 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         }
 
         expect(partialBackupVisible).toBe(true);
+        expect(fs.statSync(backupDir).mode & 0o777).toBe(0o700);
+        for (const name of fs.readdirSync(backupDir).filter((name) => name.endsWith(".partial"))) {
+          expect(fs.statSync(path.join(backupDir, name)).mode & 0o777).toBe(0o600);
+        }
         expect(fs.readdirSync(backupDir).some((name) => name.endsWith(".sql.gz"))).toBe(false);
         await expect(backup).rejects.toThrow("failed with exit code 1");
         expect(
@@ -231,6 +312,8 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(result.backupFile).toMatch(/paperclip-test-.*\.sql\.gz$/);
         expect(result.sizeBytes).toBeGreaterThan(0);
         expect(fs.existsSync(result.backupFile)).toBe(true);
+        expect(fs.statSync(result.backupFile).mode & 0o777).toBe(0o600);
+        expect(fs.statSync(backupDir).mode & 0o777).toBe(0o700);
 
         await runDatabaseRestore({
           connectionString: restoreConnectionString,

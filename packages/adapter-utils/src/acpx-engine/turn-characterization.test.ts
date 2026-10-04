@@ -608,6 +608,68 @@ describe("ACPX engine turn characterization", () => {
     expect(result.costUsd).toBeCloseTo(0.31);
   });
 
+  it("classifies only the server-owned failed terminal message, not agent output", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const terminalMessage =
+      "Authentication required: 403 You’ve reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends.";
+    const execute = createAcpxEngineExecutor({
+      now: () => Date.parse("2030-04-22T16:00:00.000Z"),
+      createRuntime: () => turnRuntime({
+        events: async function* () {
+          yield { type: "text_delta", text: "Provider quota exceeded", stream: "output", tag: "agent_message_chunk" };
+          yield { type: "done", stopReason: "failed" };
+        },
+        result: Promise.resolve({ status: "failed", error: new Error(terminalMessage) }),
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-wrapped-quota",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "provider_quota",
+      errorFamily: "provider_quota",
+      errorMessage: terminalMessage,
+      retryNotBefore: "2030-04-22T21:00:00.000Z",
+      resultJson: {
+        status: "failed",
+        errorFamily: "provider_quota",
+        providerQuotaRetryNotBefore: "2030-04-22T21:00:00.000Z",
+      },
+    });
+
+    const generic = createAcpxEngineExecutor({
+      createRuntime: () => turnRuntime({
+        events: async function* () {
+          yield { type: "text_delta", text: terminalMessage, stream: "output", tag: "agent_message_chunk" };
+          yield { type: "done", stopReason: "failed" };
+        },
+        result: Promise.resolve({ status: "failed", error: new Error("ordinary ACP failure") }),
+      }) as never,
+    });
+    const genericResult = await generic({
+      runId: "run-agent-output-negative",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+    expect(genericResult.errorCode).toBe("acpx_turn_failed");
+    expect(genericResult.errorFamily).toBeNull();
+    expect(genericResult.retryNotBefore).toBeNull();
+  });
+
   it("computes usage the same way summarizeAcpxTurnUsage does for the event fallback", () => {
     // Pin the exported helper the turn path calls: with no getStatus snapshots the
     // event breakdown and cost drive the per-run usage.

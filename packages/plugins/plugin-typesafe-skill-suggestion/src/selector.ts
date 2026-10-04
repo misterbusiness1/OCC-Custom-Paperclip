@@ -1,3 +1,4 @@
+import { operatorTransportOptions } from "./operator-transport.js";
 import { createHash } from "node:crypto";
 import { choice, noul, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { JsonValue } from "@typesafe-ai/sdk";
@@ -58,7 +59,7 @@ export type DecisionClient = {
 };
 
 export function createDecisionClient(apiKey: string, model: string, timeoutMs: number, maxRetries: number): DecisionClient {
-  const client = new TypeSafeClient({ apiKey, defaultModel: model, timeout: timeoutMs,
+  const client = new TypeSafeClient({ ...operatorTransportOptions(), apiKey, defaultModel: model, timeout: timeoutMs,
     retry: { maxRetries }, logLevel: "warn" });
   return {
     async rank(state, ids) {

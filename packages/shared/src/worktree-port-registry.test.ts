@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   withWorktreePortRegistryLock,
@@ -34,24 +35,51 @@ describe("worktree port registry lock", () => {
   it("does not reclaim a stale lock while its fallback ownership probe responds", async () => {
     const homeDir = makeTemporaryRoot();
     const lockPath = path.join(homeDir, ".worktree-port-reservations.lock");
-    const firstEntered = deferred();
-    const releaseFirst = deferred();
-    let secondEntered = false;
-
-    const first = withWorktreePortRegistryLock(homeDir, async () => {
-      fs.renameSync(path.join(lockPath, "owner.json"), path.join(lockPath, "owner.unavailable.json"));
-      const backupOwnerPath = path.join(lockPath, "owner.backup.json");
-      const owner = JSON.parse(fs.readFileSync(backupOwnerPath, "utf8"));
-      fs.writeFileSync(backupOwnerPath, `${JSON.stringify({
-        ...owner,
-        processIdentity: "unavailable-process-identity",
-      })}\n`);
-      const oldTimestamp = new Date(Date.now() - 10_000);
-      fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
-      firstEntered.resolve();
-      await releaseFirst.promise;
+    const token = "responsive-stale-owner";
+    const probeControl = new Int32Array(new SharedArrayBuffer(8));
+    const probe = new Worker(`
+      const net = require("node:net");
+      const { parentPort, workerData } = require("node:worker_threads");
+      const control = new Int32Array(workerData.control);
+      const server = net.createServer((socket) => {
+        socket.setEncoding("utf8");
+        socket.once("data", (candidate) => {
+          socket.end(candidate === workerData.token ? "owned" : "denied");
+        });
+      });
+      parentPort.once("message", () => server.close(() => process.exit(0)));
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        Atomics.store(control, 1, address.port);
+        Atomics.store(control, 0, 1);
+        Atomics.notify(control, 0);
+      });
+    `, {
+      eval: true,
+      execArgv: [],
+      workerData: { control: probeControl.buffer, token },
     });
-    await firstEntered.promise;
+    Atomics.wait(probeControl, 0, 0, 2_000);
+    const probePort = Atomics.load(probeControl, 1);
+    if (Atomics.load(probeControl, 0) !== 1 || probePort <= 0) {
+      void probe.terminate();
+      throw new Error("Failed to start fallback ownership probe fixture");
+    }
+
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(
+      path.join(lockPath, "owner.backup.json"),
+      `${JSON.stringify({
+        version: 1,
+        pid: process.pid,
+        processIdentity: "unavailable-process-identity",
+        probePort,
+        token,
+      })}\n`,
+    );
+    const oldTimestamp = new Date(Date.now() - 10_000);
+    fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
+    let secondEntered = false;
 
     expect(Date.now() - fs.statSync(lockPath).mtimeMs).toBeGreaterThan(5_000);
 
@@ -61,8 +89,9 @@ describe("worktree port registry lock", () => {
     await delay(100);
 
     expect(secondEntered).toBe(false);
-    releaseFirst.resolve();
-    await Promise.all([first, second]);
+    probe.postMessage("close");
+    await probe.terminate();
+    await second;
     expect(secondEntered).toBe(true);
   }, 10_000);
 

@@ -1,4 +1,10 @@
 import {
+  constants,
+  closeSync,
+  fchmodSync,
+  fstatSync,
+  openSync,
+  lstatSync,
   createReadStream,
   createWriteStream,
   existsSync,
@@ -8,6 +14,7 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
@@ -83,6 +90,44 @@ const EMPTY_GZIP_BYTES = 20;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
+// Operate on descriptors so an artifact symlink cannot change another file's mode.
+function prepareBackupDirectory(backupDir: string): void {
+  mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+  const directory = openSync(backupDir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    fchmodSync(directory, 0o700);
+    for (const entry of readdirSync(backupDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !/\.sql(?:\.gz)?(?:\.partial)?$/.test(entry.name)) continue;
+      let file: number;
+      try {
+        file = openSync(resolve(backupDir, entry.name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ELOOP") continue;
+        throw error;
+      }
+      try {
+        if (fstatSync(file).isFile()) fchmodSync(file, 0o600);
+      } finally {
+        closeSync(file);
+      }
+    }
+  } finally {
+    closeSync(directory);
+  }
+}
+
+function createPrivateBackupStream(filePath: string) {
+  const fd = openSync(filePath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    fchmodSync(fd, 0o600);
+    return createWriteStream(filePath, { fd, autoClose: true });
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
 function sanitizeRestoreErrorMessage(error: unknown): string {
   if (error && typeof error === "object") {
     const record = error as Record<string, unknown>;
@@ -145,7 +190,8 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
     if (!name.startsWith(`${filenamePrefix}-`)) continue;
     if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
     const fullPath = resolve(backupDir, name);
-    const stat = statSync(fullPath);
+    const stat = lstatSync(fullPath);
+    if (!stat.isFile()) continue;
     entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
   }
 
@@ -333,31 +379,40 @@ async function runPgDumpBackup(opts: {
   connectTimeout: number;
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
-  const child = spawn(
-    pgDumpBin,
-    [
-      `--dbname=${opts.connectionString}`,
-      "--format=plain",
-      "--clean",
-      "--if-exists",
-      "--no-owner",
-      "--no-privileges",
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        PGCONNECT_TIMEOUT: String(opts.connectTimeout),
+  const output = createPrivateBackupStream(opts.backupFile);
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(
+      pgDumpBin,
+      [
+        `--dbname=${opts.connectionString}`,
+        "--format=plain",
+        "--clean",
+        "--if-exists",
+        "--no-owner",
+        "--no-privileges",
+      ],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          PGCONNECT_TIMEOUT: String(opts.connectTimeout),
+        },
       },
-    },
-  );
+    );
+
+  } catch (error) {
+    output.destroy();
+    throw error;
+  }
 
   if (!child.stdout) {
+    output.destroy();
     throw new Error("pg_dump did not expose stdout");
   }
 
   const [outputResult, exitResult] = await Promise.allSettled([
-    pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
+    pipeline(child.stdout, createGzip(), output),
     waitForChildExit(child, pgDumpBin),
   ]);
   if (exitResult.status === "rejected") throw exitResult.reason;
@@ -463,7 +518,19 @@ async function* readRestoreStatements(backupFile: string): AsyncGenerator<string
 }
 
 export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
-  const filePromise = openFile(filePath, "w");
+  let ownsFile = false;
+  const filePromise = openFile(filePath, "wx", 0o600).then(async (file) => {
+    ownsFile = true;
+    try {
+      await file.chmod(0o600);
+      return file;
+    } catch (error) {
+      await file.close();
+      throw error;
+    }
+  });
+  // Opening starts before database work. Keep early failures handled until drain/close.
+  void filePromise.catch(() => {});
   const flushThreshold = Math.max(1, Math.trunc(maxBufferedBytes));
   let bufferedLines: string[] = [];
   let bufferedBytes = 0;
@@ -522,9 +589,12 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
       if (closed) return;
       closed = true;
       flushBufferedLines();
-      await pendingWrite;
-      const file = await filePromise;
-      await file.close();
+      try {
+        await pendingWrite;
+      } finally {
+        const file = await filePromise;
+        await file.close();
+      }
     },
     async abort() {
       if (closed) return;
@@ -533,7 +603,7 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
       bufferedBytes = 0;
       await pendingWrite.catch(() => {});
       await filePromise.then((file) => file.close()).catch(() => {});
-      if (existsSync(filePath)) {
+      if (ownsFile && existsSync(filePath)) {
         try {
           unlinkSync(filePath);
         } catch {
@@ -560,11 +630,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     sqlClosed = true;
     await sql.end();
   };
-  mkdirSync(opts.backupDir, { recursive: true });
+  prepareBackupDirectory(opts.backupDir);
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
   const backupFile = `${sqlFile}.gz`;
-  const partialSqlFile = `${sqlFile}.partial`;
-  const partialBackupFile = `${backupFile}.partial`;
+  const attemptId = randomUUID();
+  const partialSqlFile = `${sqlFile.slice(0, -4)}-${attemptId}.sql.partial`;
+  const partialBackupFile = `${sqlFile.slice(0, -4)}-${attemptId}.sql.gz.partial`;
   const writer = createBufferedTextFileWriter(partialSqlFile);
 
   try {
@@ -1064,7 +1135,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     // Compress the SQL file with gzip
     const sqlReadStream = createReadStream(partialSqlFile);
-    const gzWriteStream = createWriteStream(partialBackupFile);
+    const gzWriteStream = createPrivateBackupStream(partialBackupFile);
     await pipeline(sqlReadStream, createGzip(), gzWriteStream);
     unlinkSync(partialSqlFile);
 

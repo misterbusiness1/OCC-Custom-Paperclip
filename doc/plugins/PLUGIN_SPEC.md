@@ -1235,6 +1235,9 @@ The auto-generated form supports:
 - nested objects rendered as fieldsets
 - arrays rendered as repeatable field groups with add/remove controls
 - secret ref fields: any schema property annotated with `"format": "secret-ref"` renders as a secret picker that stores the shared `{ type: "secret_ref", secretId, version? }` object shape and resolves through the Paperclip secret provider system rather than a plain text input
+  - The API validates these fields as managed binding objects even when a manifest uses the legacy `type: "string"` annotation. It adapts schema nodes before validation; it never converts or resolves submitted config values. The shared binding validator checks the UUID, version selector and projection fields and rejects unknown binding keys, plaintext and bare UUID strings.
+  - Schema adaptation visits schema properties, arrays, definitions/references and combinators, not literal values in defaults or enums. Surrounding `required`, `additionalProperties`, enum/const and scalar constraints remain in force. String-only constraints apply only to strings under JSON Schema and do not constrain the managed object; use binding fields for identity and version validation.
+  - After schema validation, the normal config route verifies secret ownership and deletion status, records the plugin binding, and saves the unchanged object. Worker config delivery preserves that object and its version. Runtime secret resolution still enforces live access and version policy. No database migration is required for existing object-shaped bindings.
 - validation messages derived from schema constraints (`required`, `minLength`, `pattern`, `minimum`, etc.)
 - a "Test Connection" action if the plugin declares a `validateConfig` RPC method — the host calls it and displays the result inline
 
