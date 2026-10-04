@@ -24,6 +24,7 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runningProcesses } from "../adapters/index.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -496,6 +497,93 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       .where(eq(issues.id, plainIssueId));
   });
 
+  it.each(["heartbeat.run.status", "activity.logged"] as const)(
+    "commits Board cancellation records and continues queued work when a %s listener throws",
+    async failureEvent => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    const issueId = randomUUID(), independentIssueId = randomUUID();
+    const commentId = randomUUID(), receiptId = randomUUID();
+    const terminalRunId = randomUUID(), terminalWakeId = randomUUID();
+    const independentRunId = randomUUID(), independentWakeId = randomUUID();
+    await db.insert(issues).values([
+      { id: issueId, companyId, title: "Saved Board request", status: "in_progress",
+        assigneeAgentId: agentId, responsibleUserId: ownerUserId },
+      { id: independentIssueId, companyId, title: "Later queued work", status: "todo",
+        assigneeAgentId: agentId, responsibleUserId: ownerUserId },
+    ]);
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId,
+      authorType: "user", authorUserId: ownerUserId, body: "Synthetic saved request" });
+    await db.insert(agentWakeupRequests).values([
+      { id: receiptId, companyId, agentId, source: "automation", reason: "issue_commented",
+        status: "deferred_issue_execution", payload: { issueId, commentId,
+          _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [commentId] } } },
+      { id: terminalWakeId, companyId, agentId, source: "on_demand", reason: "issue_commented",
+        status: "cancelled", idempotencyKey: `queued-comment-interrupt:${receiptId}`,
+        runId: terminalRunId, payload: { issueId, commentId } },
+      { id: independentWakeId, companyId, agentId, source: "assignment", reason: "issue_assigned",
+        status: "queued", runId: independentRunId, payload: { issueId: independentIssueId } },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      { id: terminalRunId, companyId, agentId, status: "queued", runtimeMode: "legacy",
+        invocationSource: "on_demand", wakeupRequestId: terminalWakeId,
+        responsibleUserId: ownerUserId, createdAt: new Date(Date.now() - 1_000),
+        contextSnapshot: { issueId, wakeReason: "issue_commented", wakeCommentIds: [commentId] } },
+      { id: independentRunId, companyId, agentId, status: "queued", runtimeMode: "legacy",
+        invocationSource: "assignment", wakeupRequestId: independentWakeId,
+        responsibleUserId: ownerUserId,
+        contextSnapshot: { issueId: independentIssueId, wakeReason: "issue_assigned" } },
+    ]);
+    await db.update(issues).set({ executionRunId: terminalRunId }).where(eq(issues.id, issueId));
+
+    const seen: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, event => {
+      seen.push({ type: event.type, payload: event.payload });
+      if (event.type === failureEvent && event.payload.runId === terminalRunId) {
+        throw new Error("synthetic Board listener failure");
+      }
+    });
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    } finally {
+      unsubscribe();
+    }
+
+    const terminalRun = await heartbeat.getRun(terminalRunId);
+    expect(terminalRun).toMatchObject({ status: "cancelled", errorCode: "queued_wakeup_terminal",
+      executionStatusDeliveryId: expect.any(String), nextEventSeq: 2 });
+    expect(await heartbeat.getRun(independentRunId)).toMatchObject({ status: "succeeded" });
+    const lifecycle = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, terminalRunId));
+    expect(lifecycle).toMatchObject([{ seq: 1, eventType: "lifecycle", stream: "system",
+      level: "warn", payload: { code: "queued_wakeup_terminal" } }]);
+    expect(seen).toEqual(expect.arrayContaining([expect.objectContaining({
+      type: "heartbeat.run.event", payload: expect.objectContaining({
+        runId: terminalRunId, seq: lifecycle[0].seq, eventType: "lifecycle",
+        payload: lifecycle[0].payload, lastEventAt: lifecycle[0].createdAt.toISOString(),
+      }),
+    })]));
+    expect(seen).toEqual(expect.arrayContaining([expect.objectContaining({
+      type: "activity.logged", payload: expect.objectContaining({
+        runId: terminalRunId, action: "heartbeat.queued_run_terminal_wake_reconciled",
+      }),
+    })]));
+    for (const action of ["heartbeat.queued_comment_interrupt_held_for_review",
+      "heartbeat.queued_run_terminal_wake_reconciled"]) {
+      expect(await db.select().from(activityLog).where(and(
+        eq(activityLog.runId, terminalRunId), eq(activityLog.action, action),
+      ))).toHaveLength(1);
+    }
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receiptId)))[0])
+      .toMatchObject({ status: "held_for_board_review" });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].executionRunId).toBeNull();
+    expect(mockAdapterExecute.mock.calls.some(call => call[0].runId === independentRunId)).toBe(true);
+    expect(mockAdapterExecute.mock.calls.some(call => call[0].runId === terminalRunId)).toBe(false);
+    await heartbeat.resumeQueuedRuns();
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, terminalRunId)))
+      .toHaveLength(1);
+    },
+  );
+
   it("serializes a held receipt transition with fresh same-issue Board admission", async () => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const issueId = randomUUID(), heldCommentId = randomUUID(), freshCommentId = randomUUID();
@@ -647,6 +735,9 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       await heartbeat.resumeQueuedRuns();
       expect(await heartbeat.getRun(runId)).toMatchObject({
         status: "queued", errorCode: "queued_wakeup_issue_identity_unverified" });
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.runId, runId),
+        eq(activityLog.action, "heartbeat.queued_board_interrupt_issue_identity_unverified"))))
+        .toHaveLength(1);
       expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].executionRunId)
         .toBe(mode === "conflicting_checkout" ? null : runId);
       if (mode === "conflicting_checkout") {
@@ -704,6 +795,14 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       });
       await heartbeat.resumeQueuedRuns();
       expect(await heartbeat.getRun(runId)).toMatchObject({ status: "queued" });
+      if (!retainedExecution && mode !== "controller_owned") {
+        await heartbeat.resumeQueuedRuns();
+        expect(await heartbeat.getRun(runId)).toMatchObject({ status: "queued",
+          errorCode: "queued_wakeup_receipt_unverified" });
+        expect(await db.select().from(activityLog).where(and(eq(activityLog.runId, runId),
+          eq(activityLog.action, "heartbeat.queued_board_interrupt_receipt_unverified"))))
+          .toHaveLength(1);
+      }
       if (retainedExecution) {
         if (mode === "lease_removed_after_hold") {
           expect(await heartbeat.getRun(runId)).toMatchObject({

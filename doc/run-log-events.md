@@ -175,6 +175,13 @@ failed status notification can be retried without replaying provider work.
 The separate existing `agent.task_run` telemetry call uses its normal closed
 dimensions and runs on a best-effort basis after commit.
 
+Board interrupt settlement writes a `lifecycle` event with payload
+`{ "code": "queued_wakeup_terminal" }`, on the `system` stream at `warn`
+level. The event and reconciliation activity are persisted in the same
+transaction as the cancellation and saved-request hold. Activity and run
+notifications publish after commit. A failed notification cannot remove the
+durable records or prevent subsequent authorized queued work from being claimed.
+
 Bounded retry exhaustion writes one lifecycle receipt per run, retry reason,
 scheduled attempt, and retry limit. Repeated or concurrent recovery checks reuse
 that receipt, including receipts from earlier builds, without advancing the event

@@ -366,7 +366,9 @@ import {
 } from "./issue-rewake-throttle.js";
 import {
   logActivity,
+  publishActivity,
   publishPluginDomainEvent,
+  type ActivityPublication,
   type LogActivityInput,
 } from "./activity-log.js";
 import {
@@ -19673,6 +19675,7 @@ export function heartbeatService(
     if (!candidate.wakeupRequestId) return false;
     const issueId = readNonEmptyString(parseObject(candidate.contextSnapshot).issueId);
     const now = new Date();
+    const postCommitActivityPublications: ActivityPublication[] = [];
     const settled = await db.transaction(async (tx) => {
       // Queue edits lock issue -> wake -> run. A cancelled wake must never be
       // revived by a run claim, including after a restart or a partial write.
@@ -19715,7 +19718,7 @@ export function heartbeatService(
           readNonEmptyString(wake.payload?.issueId) !== issueId) {
         // Neither cancellation nor generic release is safe: release can find a
         // different issue through executionRunId and promote an unheld receipt.
-        await tx.update(heartbeatRuns).set({
+        const [identityHeldRun] = await tx.update(heartbeatRuns).set({
           error: "Queued Board interrupt has unverified issue identity; operator reconciliation required",
           errorCode: "queued_wakeup_issue_identity_unverified",
           updatedAt: now,
@@ -19724,7 +19727,19 @@ export function heartbeatService(
           eq(heartbeatRuns.agentId, candidate.agentId),
           eq(heartbeatRuns.status, "queued"),
           eq(heartbeatRuns.wakeupRequestId, wake.id),
-          isNull(heartbeatRuns.errorCode)));
+          isNull(heartbeatRuns.errorCode))).returning({ id: heartbeatRuns.id });
+        if (identityHeldRun) await logActivity(tx as unknown as Db, {
+          companyId: run.companyId,
+          actorType: "system",
+          actorId: "heartbeat-recovery",
+          agentId: run.agentId,
+          runId: run.id,
+          action: "heartbeat.queued_board_interrupt_issue_identity_unverified",
+          entityType: "heartbeat_run",
+          entityId: run.id,
+          details: { issueId: issueId && isUuidLike(issueId) ? issueId : null,
+            wakeupRequestId: wake.id, reason: "issue_identity_unverified" },
+        }, postCommitActivityPublications);
         return { held: true as const, reason: "issue_identity_unverified", run: null };
       }
       // Queued is not proof of never-started execution. Preserve any retained
@@ -19786,7 +19801,7 @@ export function heartbeatService(
           entityId: run.id,
           details: { issueId, wakeupRequestId: wake.id,
             code: "queued_wakeup_execution_ownership_unverified", providerDispatched: false },
-        });
+        }, postCommitActivityPublications);
         return { held: true as const, reason: "execution_ownership_unverified", run: null };
       }
       const receiptId = wake.idempotencyKey!.slice("queued-comment-interrupt:".length);
@@ -19800,12 +19815,25 @@ export function heartbeatService(
           primaryReceipt.agentId !== run.agentId ||
           readNonEmptyString(primaryReceipt.payload?.issueId) !== issueId ||
           primaryReceipt.status !== "deferred_issue_execution") {
-        await tx.update(heartbeatRuns).set({
+        const [receiptHeldRun] = await tx.update(heartbeatRuns).set({
           error: "Queued Board interrupt has an unverified saved receipt; operator reconciliation required",
           errorCode: "queued_wakeup_receipt_unverified",
           updatedAt: now,
         }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
-          eq(heartbeatRuns.wakeupRequestId, wake.id), isNull(heartbeatRuns.errorCode)));
+          eq(heartbeatRuns.wakeupRequestId, wake.id), isNull(heartbeatRuns.errorCode)))
+          .returning({ id: heartbeatRuns.id });
+        if (receiptHeldRun) await logActivity(tx as unknown as Db, {
+          companyId: run.companyId,
+          actorType: "system",
+          actorId: "heartbeat-recovery",
+          agentId: run.agentId,
+          runId: run.id,
+          action: "heartbeat.queued_board_interrupt_receipt_unverified",
+          entityType: "heartbeat_run",
+          entityId: run.id,
+          details: { issueId, wakeupRequestId: wake.id,
+            receiptId: isUuidLike(receiptId) ? receiptId : null, reason: "receipt_unverified" },
+        }, postCommitActivityPublications);
         return { held: true as const, reason: "receipt_unverified", run: null };
       }
       // Include partial historical rows with runId set, and mismatched
@@ -19845,7 +19873,7 @@ export function heartbeatService(
         entityId: primaryReceipt.id,
         details: { issueId, cancelledWakeId: wake.id, heldReceiptIds: heldIds,
           nextAction: "fresh_board_submit" },
-      });
+      }, postCommitActivityPublications);
       const reason = `Queued run cancelled because its bound wake request is ${wake.status}`;
       const [cancelled] = await tx.update(heartbeatRuns).set({
         status: "cancelled",
@@ -19878,38 +19906,86 @@ export function heartbeatService(
           eq(issues.executionRunId, run.id),
         ));
       }
-      return { held: false as const, run: cancelled };
+      const lifecycleEvent = await appendHeartbeatRunEvent(tx as unknown as Db, {
+        companyId: cancelled.companyId,
+        runId: cancelled.id,
+        agentId: cancelled.agentId,
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: reason,
+        payload: { code: "queued_wakeup_terminal" },
+      });
+      await logActivity(tx as unknown as Db, {
+        companyId: cancelled.companyId,
+        actorType: "system",
+        actorId: "heartbeat-recovery",
+        agentId: cancelled.agentId,
+        runId: cancelled.id,
+        action: "heartbeat.queued_run_terminal_wake_reconciled",
+        entityType: "heartbeat_run",
+        entityId: cancelled.id,
+        details: { wakeupRequestId: cancelled.wakeupRequestId, issueId },
+      }, postCommitActivityPublications);
+      return { held: false as const, run: cancelled, event: lifecycleEvent.row };
     });
     if (!settled) return false;
+    for (const publication of postCommitActivityPublications) {
+      try {
+        publishActivity(publication);
+      } catch (error) {
+        logger.error({ error, runId: candidate.id }, "queued Board activity notification failed");
+      }
+    }
     if (settled.held) {
       logger.warn({ runId: candidate.id, reason: settled.reason },
         "queued Board interrupt run held for operator reconciliation");
       return true;
     }
     const cancelled = settled.run!;
-    publishLiveEvent({
-      companyId: cancelled.companyId,
-      type: "heartbeat.run.status",
-      payload: buildHeartbeatRunStatusLiveEventPayload(cancelled),
-    });
-    publishRunLifecyclePluginEvent(cancelled);
-    emitTerminalAgentTaskRun(cancelled, "queued");
-    await appendRunEvent(cancelled, {
-      eventType: "lifecycle", stream: "system", level: "warn",
-      message: cancelled.error ?? "Queued run cancelled because its wake is terminal",
-      payload: { code: "queued_wakeup_terminal" },
-    });
-    await logActivity(db, {
-      companyId: cancelled.companyId,
-      actorType: "system",
-      actorId: "heartbeat-recovery",
-      agentId: cancelled.agentId,
-      runId: cancelled.id,
-      action: "heartbeat.queued_run_terminal_wake_reconciled",
-      entityType: "heartbeat_run",
-      entityId: cancelled.id,
-      details: { wakeupRequestId: cancelled.wakeupRequestId, issueId },
-    });
+    try {
+      publishLiveEvent({
+        companyId: cancelled.companyId,
+        type: "heartbeat.run.status",
+        payload: buildHeartbeatRunStatusLiveEventPayload(cancelled),
+      });
+    } catch (error) {
+      logger.error({ error, runId: cancelled.id }, "queued Board status notification failed");
+    }
+    try {
+      publishRunLifecyclePluginEvent(cancelled);
+    } catch (error) {
+      logger.error({ error, runId: cancelled.id }, "queued Board plugin notification failed");
+    }
+    try {
+      emitTerminalAgentTaskRun(cancelled, "queued");
+    } catch (error) {
+      logger.error({ error, runId: cancelled.id }, "queued Board telemetry notification failed");
+    }
+    try {
+      const event = settled.event;
+      publishLiveEvent({
+        companyId: cancelled.companyId,
+        type: "heartbeat.run.event",
+        payload: {
+          runId: cancelled.id,
+          agentId: cancelled.agentId,
+          issueId: readRuntimeStatusIssueIdCandidate(cancelled) ?? null,
+          seq: event.seq,
+          eventType: event.eventType,
+          stream: event.stream ?? null,
+          level: event.level ?? null,
+          color: event.color ?? null,
+          message: event.message ?? null,
+          currentToolName: null,
+          lastAssistantSnippet: null,
+          lastEventAt: event.createdAt.toISOString(),
+          payload: event.payload ?? null,
+        },
+      });
+    } catch (error) {
+      logger.error({ error, runId: cancelled.id }, "queued Board run event notification failed");
+    }
     await releaseIssueExecutionAndPromote(cancelled, {
       suppressImmediateRecovery: true,
       deferredPostCommitEffects,

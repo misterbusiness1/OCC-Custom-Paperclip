@@ -28,6 +28,12 @@ If recovery observes execution evidence on a queued run, it records
 `queued_wakeup_execution_ownership_unverified` and one audit entry. Later scans
 keep that run queued for operator reconciliation even if a transient lease or
 other evidence record has since disappeared.
+For a Board queued-comment interrupt, eligible cancellation uses
+`queued_wakeup_terminal`. The same transaction holds its saved receipts,
+records the terminal run status and retryable status notification, stores a
+`lifecycle` run-log event, and writes the reconciliation audit. Live status,
+activity, plugin, and run-log notifications publish after commit. A failed live
+listener does not erase the stored records or stop recovery of later queued work.
 If startup suppression returns a claimed run to the queue, it returns the
 bound wake only when that wake is still claimed by the same run. A cancelled
 wake stays cancelled.
