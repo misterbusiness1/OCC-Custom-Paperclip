@@ -1,6 +1,6 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 const manifest: PaperclipPluginManifestV1 = {
-  id: "oxford.typesafe-skill-suggestion", apiVersion: 1, version: "0.1.0",
+  id: "oxford.typesafe-skill-suggestion", apiVersion: 1, version: "0.2.0",
   displayName: "TypeSafe Skill Suggestion", author: "Oxford Cigar Company", categories: ["automation"],
   description: "Default-disabled advisory skill suggestion with preserved shadow telemetry.",
   capabilities: ["secrets.read-ref", "events.subscribe", "issues.read", "plugin.state.read", "plugin.state.write"], entrypoints: { worker: "./dist/worker.js" },

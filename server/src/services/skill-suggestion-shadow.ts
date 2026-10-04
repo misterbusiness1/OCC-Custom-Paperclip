@@ -70,6 +70,15 @@ export async function observeSkillSuggestion(input: {
   const active = flag(input.env, "PAPERCLIP_TYPESAFE_SKILL_SUGGESTION_ACTIVE");
   const shadow = flag(input.env, "PAPERCLIP_TYPESAFE_SKILL_SUGGESTION_SHADOW");
   if (!active && !shadow) return { ...failOpen(revision, started, new Error("disabled")), status: "disabled", outcome: "disabled", errorClass: null };
+  if (active && (input.mandatorySkillIds.length > 0 || input.explicitSkillIds.length > 0)) {
+    return {
+      ...failOpen(revision, started, new Error("deterministic precedence")),
+      status: "observed",
+      outcome: "deterministic_precedence",
+      errorClass: null,
+      active: false,
+    };
+  }
   const pluginId = input.env.PAPERCLIP_TYPESAFE_SKILL_SUGGESTION_PLUGIN_ID?.trim();
   if (!pluginId || !input.workerManager?.isRunning(pluginId)) return failOpen(revision, started, new Error("WorkerUnavailable"), active);
   try {
