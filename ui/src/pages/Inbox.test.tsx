@@ -24,6 +24,8 @@ const externalObjectMocks = vi.hoisted(() => ({
 
 const apiMocks = vi.hoisted(() => ({
   approvalsList: vi.fn(),
+  approve: vi.fn(),
+  reject: vi.fn(),
   joinRequestsList: vi.fn(),
   userDirectoryList: vi.fn(),
   authSession: vi.fn(),
@@ -42,7 +44,11 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../api/approvals", () => ({
-  approvalsApi: { list: apiMocks.approvalsList },
+  approvalsApi: {
+    list: apiMocks.approvalsList,
+    approve: apiMocks.approve,
+    reject: apiMocks.reject,
+  },
 }));
 
 vi.mock("../api/access", async () => {
@@ -346,6 +352,8 @@ function resetInboxApiMocks() {
   routerMock.location.hash = "";
   routerMock.navigate.mockReset();
   apiMocks.approvalsList.mockResolvedValue([]);
+  apiMocks.approve.mockResolvedValue(createApproval({ status: "approved" }));
+  apiMocks.reject.mockResolvedValue(createApproval({ status: "rejected" }));
   apiMocks.joinRequestsList.mockResolvedValue([]);
   apiMocks.userDirectoryList.mockResolvedValue({ users: [] });
   apiMocks.authSession.mockResolvedValue({
@@ -518,6 +526,92 @@ describe("Inbox toolbar", () => {
     });
 
     act(() => root.unmount());
+  });
+
+  it.each([true, false])("shows verbatim Board source before inbox decisions with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    const original = "\nPlease review this email.\n\n<script>alert('source')</script>\n**Keep this wording**\n"
+      + "The original message continues without shortening.\n".repeat(12);
+    apiMocks.approvalsList.mockResolvedValue([createApproval({
+      type: "request_board_approval",
+      payload: {
+        title: "Customer request",
+        recommendedAction: "Approve the bounded reply",
+        reasoning: "The request fits the agreed scope",
+        pros: ["Answers the customer's question"],
+        risks: ["Requires a final review"],
+        originalRequest: {
+          text: original,
+          source: { kind: "external", sender: "Customer", snapshotOrigin: "requester" },
+        },
+      },
+    })]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Customer request"));
+      const row = [...container.querySelectorAll("[data-inbox-item]")]
+        .find((item) => item.textContent?.includes("Customer request"))!;
+      expect(row.querySelector("pre")?.textContent).toBe(original);
+      expect(row.querySelector("details summary")?.textContent).toBe("Show verbatim request");
+      expect(row.querySelector("script")).toBeNull();
+      expect(row.textContent).toContain("Requester-provided external source snapshot");
+      const text = row.textContent!;
+      expect(text.indexOf("Recommendation")).toBeLessThan(text.indexOf("Original request"));
+      expect(text.indexOf("Original request")).toBeLessThan(text.indexOf("Why"));
+      expect(text.indexOf("Why")).toBeLessThan(text.indexOf("Benefit"));
+      expect(text.indexOf("Tradeoff")).toBeLessThan(text.indexOf("ApproveReject"));
+      const buttons = [...row.querySelectorAll("button")];
+      const approve = buttons.find((button) => button.textContent === "Approve")!;
+      const reject = buttons.find((button) => button.textContent === "Reject")!;
+      await act(async () => approve.click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-1"));
+      await vi.waitFor(() => expect(routerMock.navigate).toHaveBeenCalledWith("/approvals/approval-1?resolved=approved"));
+      await vi.waitFor(() => expect(reject.disabled).toBe(false));
+      await act(async () => reject.click());
+      await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("approval-1"));
+      expect(row.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
+      expect(row.querySelector('button[aria-label="Archive"]')).not.toBeNull();
+      expect(row.querySelector('a[to="/approvals/approval-1"]')).not.toBeNull();
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("shows an honest missing-source state in the inbox with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    apiMocks.approvalsList.mockResolvedValue([createApproval({
+      type: "request_board_approval",
+      payload: {
+        title: "Historical email approval",
+        recommendedAction: "Review the proposed reply",
+        reasoning: "Consider the documented risk",
+        subject: "Re: historical request",
+        body: "A generated outbound draft is not the original email",
+      },
+    })]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Historical email approval"));
+      const row = [...container.querySelectorAll("[data-inbox-item]")]
+        .find((item) => item.textContent?.includes("Historical email approval"))!;
+      const text = row.textContent!;
+      expect(text).toContain("Original source was not retained for this approval.");
+      expect(row.querySelector("pre")).toBeNull();
+      expect(text).not.toContain("A generated outbound draft is not the original email");
+      expect(text.indexOf("Recommendation")).toBeLessThan(text.indexOf("Original request"));
+      expect(text.indexOf("Original request")).toBeLessThan(text.indexOf("Why"));
+      expect(text.indexOf("Tradeoff")).toBeLessThan(text.indexOf("ApproveReject"));
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
   });
 
   it("restores folded and unfolded sub-tasks across remounts", async () => {
