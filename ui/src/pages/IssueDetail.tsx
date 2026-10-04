@@ -2299,7 +2299,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       {classicTaskInterfaceEnabled ? loadOlderButton : null}
       {classicTaskInterfaceEnabled && authoritativeQueuedCommentQueue?.heldForBoardReview?.length ? (
         <p role="status" data-testid="classic-held-board-request-notice"
-          className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">
+          className="rounded-md border border-border bg-muted/50 px-3 py-2 text-sm text-foreground">
           {authoritativeQueuedCommentQueue.heldForBoardReview.length} saved Board request{authoritativeQueuedCommentQueue.heldForBoardReview.length === 1 ? "" : "s"} require review. Submit a fresh message to authorize delivery.
         </p>
       ) : null}

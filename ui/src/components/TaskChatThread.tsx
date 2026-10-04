@@ -2955,7 +2955,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   data-testid="task-chat-composer-stack"
                 >
                   {queuedCommentQueue?.heldForBoardReview?.length ? (
-                    <p className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-foreground"
+                    <p role="status" className="mb-2 rounded-md border border-border bg-muted/50 px-3 py-2 text-xs text-foreground"
                       data-testid="held-board-request-notice">
                       {queuedCommentQueue.heldForBoardReview.length} saved Board request{queuedCommentQueue.heldForBoardReview.length === 1 ? "" : "s"} require review. Submit a fresh message to authorize delivery.
                     </p>
