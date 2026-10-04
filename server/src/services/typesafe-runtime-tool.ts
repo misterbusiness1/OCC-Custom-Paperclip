@@ -51,6 +51,21 @@ function distribution(value: unknown, keys: string[]) {
   if (Math.abs(keys.reduce((sum, key) => sum + Number(rows[key]), 0) - 1) > 0.02) return null;
   return Object.fromEntries(keys.map((key) => [key, Number(rows[key])]));
 }
+function retryDelayMs(response: Response, now: number, attempt: number) {
+  const milliseconds = response.headers.get("retry-after-ms");
+  if (milliseconds !== null && milliseconds.trim() && Number.isFinite(Number(milliseconds)) && Number(milliseconds) >= 0) return Number(milliseconds);
+  const value = response.headers.get("retry-after")?.trim();
+  if (value) {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds)) {
+      if (seconds >= 0) return seconds * 1_000;
+    } else {
+      const date = Date.parse(value);
+      if (Number.isFinite(date)) return Math.max(0, date - now);
+    }
+  }
+  return Math.min(500 * 2 ** attempt, 5_000);
+}
 function bindingOf(agent: AgentSnapshot): Binding | null {
   const binding = (agent?.adapterConfig.env as Record<string, unknown> | undefined)?.TYPESAFE_API_KEY as Binding | undefined;
   return binding?.type === "secret_ref" && typeof binding.secretId === "string" ? binding : null;
@@ -68,6 +83,8 @@ export function validateTypeSafeAnswers(input: Input, payload: unknown) {
     || !usage || !Number.isInteger(usage.input_tokens) || !Number.isInteger(usage.output_tokens)
     || Number(usage.input_tokens) < 0 || Number(usage.output_tokens) < 0) throw new Error("invalid_response");
   const rows = sourceAnswers as Record<string, unknown>;
+  // Aliases resolve to versioned IDs; an explicitly requested model must match.
+  if (!body.model || (!["jev-latest", "jev-preview"].includes(input.model) && body.model !== input.model)) throw new Error("invalid_response");
   if (Object.keys(rows).length !== Object.keys(input.questions).length) throw new Error("invalid_response");
   const answers: Record<string, unknown> = {};
   for (const [id, question] of Object.entries(input.questions)) {
@@ -153,17 +170,37 @@ export function typeSafeRuntimeToolService(db: Db, deps: Deps = {}) {
     } catch { return { ok: false, error: { code: "credential_denied", retryable: false } }; }
     const started = now();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Math.min(15_000, Math.max(1_000, Number(env.PAPERCLIP_TYPESAFE_TIMEOUT_MS) || 8_000)));
+    const timeoutMs = Math.min(15_000, Math.max(1_000, Number(env.PAPERCLIP_TYPESAFE_TIMEOUT_MS) || 8_000));
+    const deadline = started + timeoutMs;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const configurationIsCurrent = async () => {
+      const freshAgent = await loadAgent(claims.company_id, claims.sub);
+      const freshBinding = bindingOf(freshAgent);
+      let freshSecretVersion = "";
+      try { freshSecretVersion = (await resolveSecret(claims.company_id, freshBinding ?? {}, claims)).secretVersionId; }
+      catch { return false; }
+      const freshCatalogRevision = await loadCatalogRevision(claims.company_id);
+      return configRevision(claims.company_id, claims.sub, freshAgent, freshBinding) === initialConfigRevision
+        && freshSecretVersion === initialSecretVersion && freshCatalogRevision === initialCatalogRevision;
+    };
     try {
       let response: Response | null = null;
       for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (attempt > 0) {
+          await validateCapability(claims);
+          if (!await configurationIsCurrent()) return { ok: false, error: { code: "stale_configuration", retryable: true } };
+          await validateCapability(claims);
+        }
+        if (controller.signal.aborted || now() >= deadline) return { ok: false, error: { code: "timeout", retryable: true } };
         try {
           response = await request("https://api.typesafe.ai/v1/systemone", { method: "POST", headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" }, body: JSON.stringify({ state: input.state, model: input.model, questions: input.questions }), signal: controller.signal });
         } catch (error) {
           return { ok: false, error: { code: (error as Error).name === "AbortError" ? "timeout" : "service_error", retryable: true } };
         }
         if (![429, 529].includes(response.status) || attempt === 1) break;
-        await sleep(100);
+        const delay = retryDelayMs(response, now(), attempt);
+        if (delay >= deadline - now()) break;
+        await sleep(delay);
       }
       if (!response?.ok) return { ok: false, error: { code: response?.status === 429 ? "rate_limited" : response?.status === 529 ? "overloaded" : response?.status === 401 || response?.status === 403 ? "credential_denied" : "service_error", retryable: Boolean(response && [429, 529].includes(response.status)) } };
       // The provider may have completed after the heartbeat ended or its bound
@@ -172,14 +209,7 @@ export function typeSafeRuntimeToolService(db: Db, deps: Deps = {}) {
       let validated;
       try { validated = validateTypeSafeAnswers(input, await response.json()); }
       catch { return { ok: false, error: { code: "invalid_response", retryable: false } }; }
-      const freshAgent = await loadAgent(claims.company_id, claims.sub);
-      const freshBinding = bindingOf(freshAgent);
-      let freshSecretVersion = "";
-      try { freshSecretVersion = (await resolveSecret(claims.company_id, freshBinding ?? {}, claims)).secretVersionId; }
-      catch { return { ok: false, error: { code: "stale_configuration", retryable: true } }; }
-      const freshCatalogRevision = await loadCatalogRevision(claims.company_id);
-      if (configRevision(claims.company_id, claims.sub, freshAgent, freshBinding) !== initialConfigRevision
-        || freshSecretVersion !== initialSecretVersion || freshCatalogRevision !== initialCatalogRevision) {
+      if (!await configurationIsCurrent()) {
         return { ok: false, error: { code: "stale_configuration", retryable: true } };
       }
       await validateCapability(claims);

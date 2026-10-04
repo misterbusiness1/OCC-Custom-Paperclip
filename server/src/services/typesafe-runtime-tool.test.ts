@@ -65,6 +65,16 @@ describe("TypeSafe runtime tool contract", () => {
     expect(JSON.parse(String(requestInit.body))).toEqual({ state: input.state, model: input.model, questions: input.questions });
   });
 
+  it("rejects a different returned model for an explicitly pinned request", async () => {
+    const pinnedInput = { ...input, model: "jev-1.13.0" };
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ...payload, model: "jev-1.12.0" }), { status: 200 }));
+    expect(await service({ fetch }).judge(claims(), pinnedInput)).toEqual({ ok: false, error: { code: "invalid_response", retryable: false } });
+  });
+
+  it.each(["jev-1.13.0", "jev-latest", "jev-preview"])("accepts the versioned response for a matching pin or alias %s", async (model) => {
+    expect(await service().judge(claims(), { ...input, model })).toMatchObject({ ok: true, model: "jev-1.13.0" });
+  });
+
   it("rejects invalid live-run authority before credential or provider access", async () => {
     const denied = Object.assign(new Error("Runtime tool token is no longer active"), { status: 403 });
     const validateCapability = vi.fn(async () => { throw denied; });
@@ -118,6 +128,102 @@ describe("TypeSafe runtime tool contract", () => {
     const actual = await service({ fetch }).judge(claims(), input);
     expect(actual).toMatchObject({ ok: false, error: { code } });
     expect(fetch).toHaveBeenCalledTimes(status === 429 || status === 529 ? 2 : 1);
+  });
+
+  it.each([429, 529])("honors Retry-After before retrying HTTP %s", async (status) => {
+    let elapsed = 0;
+    const sleep = vi.fn(async (ms: number) => { elapsed += ms; });
+    const requestTimes: number[] = [];
+    const fetch = vi.fn()
+      .mockImplementationOnce(async () => {
+        requestTimes.push(elapsed);
+        return new Response("{}", { status, headers: { "retry-after": "5" } });
+      })
+      .mockImplementationOnce(async () => {
+        requestTimes.push(elapsed);
+        return new Response(JSON.stringify(payload), { status: 200 });
+      });
+    expect(await service({ fetch, sleep, now: () => elapsed }).judge(claims(), input)).toMatchObject({ ok: true });
+    expect(requestTimes).toEqual([0, 5_000]);
+    expect(sleep).toHaveBeenCalledWith(5_000);
+  });
+
+  it.each([
+    ["HTTP date", { "retry-after": "Sun, 04 Oct 2026 00:00:05 GMT" }, 5_000],
+    ["millisecond header", { "retry-after-ms": "1250", "retry-after": "5" }, 1_250],
+    ["absent header", {}, 500],
+    ["malformed header", { "retry-after": "invalid" }, 500],
+    ["negative header", { "retry-after": "-1" }, 500],
+    ["empty header", { "retry-after": "" }, 500],
+    ["explicit zero", { "retry-after": "0" }, 0],
+  ] as const)("uses the documented delay or first exponential backoff for %s", async (_label, headers, expectedDelay) => {
+    let clock = Date.parse("2026-10-04T00:00:00Z");
+    const sleep = vi.fn(async (ms: number) => { clock += ms; });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 429, headers }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload), { status: 200 }));
+    expect(await service({ fetch, sleep, now: () => clock }).judge(claims(), input)).toMatchObject({ ok: true, latencyMs: expectedDelay });
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(expectedDelay);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([429, 529])("does not retry HTTP %s when Retry-After exhausts the total deadline", async (status) => {
+    let elapsed = 0;
+    const sleep = vi.fn(async (ms: number) => { elapsed += ms; });
+    const fetch = vi.fn(async () => {
+      elapsed = 2_000;
+      return new Response("{}", { status, headers: { "retry-after": "6" } });
+    });
+    expect(await service({ fetch, sleep, now: () => elapsed }).judge(claims(), input)).toEqual({
+      ok: false, error: { code: status === 429 ? "rate_limited" : "overloaded", retryable: true },
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch a retry when its wait outlives the deadline", async () => {
+    let elapsed = 0;
+    const sleep = vi.fn(async () => { elapsed = 8_000; });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 429, headers: { "retry-after": "5" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload), { status: 200 }));
+    expect(await service({ fetch, sleep, now: () => elapsed }).judge(claims(), input)).toEqual({
+      ok: false, error: { code: "timeout", retryable: true },
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each(["agent_configuration", "secret_version", "revoked_binding", "skill_catalog"])("does not retry after %s changes during the wait", async (change) => {
+    let waited = false;
+    const sleep = vi.fn(async () => { waited = true; });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 429, headers: { "retry-after": "1" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload), { status: 200 }));
+    const loadAgent = vi.fn(async () => waited && change === "agent_configuration"
+      ? { ...agent, updatedAt: new Date("2026-10-04T00:00:00Z") } : agent);
+    const resolveSecret = vi.fn(async () => {
+      if (waited && change === "revoked_binding") throw new Error("revoked");
+      return { value: "test-key", secretVersionId: waited && change === "secret_version" ? "version-b" : "version-a" };
+    });
+    const loadCatalogRevision = vi.fn(async () => waited && change === "skill_catalog" ? "catalog-b" : "catalog-a");
+    expect(await service({ fetch, sleep, loadAgent, resolveSecret, loadCatalogRevision }).judge(claims(), input)).toEqual({
+      ok: false, error: { code: "stale_configuration", retryable: true },
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an ended run before retry credential reads or provider dispatch", async () => {
+    let waited = false;
+    const denied = Object.assign(new Error("run ended"), { status: 403 });
+    const sleep = vi.fn(async () => { waited = true; });
+    const validateCapability = vi.fn(async () => { if (waited) throw denied; });
+    const resolveSecret = vi.fn(async () => ({ value: "test-key", secretVersionId: "version-a" }));
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 429, headers: { "retry-after": "1" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload), { status: 200 }));
+    await expect(service({ fetch, sleep, validateCapability, resolveSecret }).judge(claims(), input)).rejects.toBe(denied);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(resolveSecret).toHaveBeenCalledOnce();
   });
 
   it("fails closed for timeout, transport error, malformed output, and stale revisions", async () => {
