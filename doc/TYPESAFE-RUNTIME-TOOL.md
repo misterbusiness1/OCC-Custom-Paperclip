@@ -31,6 +31,6 @@ The invoking agent must have a current company-scoped `TYPESAFE_API_KEY` `secret
 
 Rate-limit (`429`) and overload (`529`) responses receive at most one retry. The retry honors `retry-after-ms` or `Retry-After` (seconds or an HTTP date). If neither header supplies a valid delay, the first backoff is 500 milliseconds. A delay that reaches the remaining request deadline prevents the retry. Paperclip rechecks live-run authority, the agent configuration, the credential version, and the skill catalog before sending a retry; stale authority or bindings prevent another provider call.
 
-An explicitly requested model ID must match the response model. The documented aliases `jev-latest` and `jev-preview` may resolve to a versioned ID. See the [TypeSafe model reference](https://docs.typesafe.ai/models) and [API reference](https://docs.typesafe.ai/api).
+An explicitly requested model ID must match the response model. The documented aliases `jev-latest` and `jev-preview` must return a resolved `jev-MAJOR.MINOR.PATCH` ID, such as `jev-1.13.0`; echoed aliases, unrelated model names, and malformed versions are rejected. Aliases can advance to newer versions without a client release. See the [TypeSafe model reference](https://docs.typesafe.ai/models) and [API reference](https://docs.typesafe.ai/api).
 
 No database migration is required. Roll back by disabling the kill switch; code rollback removes the tool definition and endpoint.

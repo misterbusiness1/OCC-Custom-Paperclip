@@ -75,6 +75,18 @@ describe("TypeSafe runtime tool contract", () => {
     expect(await service().judge(claims(), { ...input, model })).toMatchObject({ ok: true, model: "jev-1.13.0" });
   });
 
+  describe.each(["jev-latest", "jev-preview"])("resolved model for %s", (model) => {
+    it.each(["unrelated-provider-model", "jev-latest", "jev-preview", "jev-1.13", "jev-1.13.0\n"])("rejects invalid provenance %j", async (returnedModel) => {
+      const fetch = vi.fn(async () => new Response(JSON.stringify({ ...payload, model: returnedModel }), { status: 200 }));
+      expect(await service({ fetch }).judge(claims(), { ...input, model })).toEqual({ ok: false, error: { code: "invalid_response", retryable: false } });
+    });
+
+    it("accepts a newly resolved version without pinning the alias to today's release", async () => {
+      const fetch = vi.fn(async () => new Response(JSON.stringify({ ...payload, model: "jev-1.14.0" }), { status: 200 }));
+      expect(await service({ fetch }).judge(claims(), { ...input, model })).toMatchObject({ ok: true, model: "jev-1.14.0" });
+    });
+  });
+
   it("rejects invalid live-run authority before credential or provider access", async () => {
     const denied = Object.assign(new Error("Runtime tool token is no longer active"), { status: 403 });
     const validateCapability = vi.fn(async () => { throw denied; });
