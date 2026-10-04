@@ -88,6 +88,7 @@ import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
 import { approvalLabel, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
+import { ApprovalDecisionSummary } from "../components/ApprovalDecisionSummary";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import {
@@ -460,6 +461,7 @@ function ApprovalInboxRow({
 }) {
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
+  const showBoardDecisionSummary = approval.type === "request_board_approval";
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
     ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
@@ -518,12 +520,12 @@ function ApprovalInboxRow({
             </span>
           </span>
         </Link>
-        {(onArchive || showResolutionButtons) ? (
+        {(onArchive || (showResolutionButtons && !showBoardDecisionSummary)) ? (
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
             {onArchive ? (
               <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} />
             ) : null}
-            {showResolutionButtons ? (
+            {showResolutionButtons && !showBoardDecisionSummary ? (
               <>
                 <Button
                   size="sm"
@@ -547,8 +549,11 @@ function ApprovalInboxRow({
           </div>
         ) : null}
       </div>
+      {showBoardDecisionSummary && (
+        <ApprovalDecisionSummary type={approval.type} payload={approval.payload} className="mt-3" />
+      )}
       {showResolutionButtons ? (
-        <div className="mt-3 flex gap-2 sm:hidden">
+        <div className={cn("mt-3 flex gap-2", !showBoardDecisionSummary && "sm:hidden")}>
           <Button
             size="sm"
             className="h-8 bg-(--status-task-icon-done) px-3 text-white hover:bg-(--status-task-done)"

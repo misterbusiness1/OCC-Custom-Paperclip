@@ -3,12 +3,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Identity } from "./Identity";
 import {
-  approvalDecisionBrief,
   approvalExcerpt,
   approvalSubject,
-  OriginalRequestBlock,
   typeLabel,
 } from "./ApprovalPayload";
+import { ApprovalDecisionSummary } from "./ApprovalDecisionSummary";
 import { timeAgo } from "../lib/timeAgo";
 import type { Approval, Agent } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
@@ -37,13 +36,6 @@ export function ApprovalCard({
   const payload = approval.payload as Record<string, unknown> | null;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
   const subject = approvalExcerpt(approvalSubject(payload), 120);
-  const brief = approvalDecisionBrief(payload);
-  const recommendation = approvalExcerpt(brief.recommendation, 180);
-  const reasoning = approvalExcerpt(brief.reasoning, 220);
-  const benefit = approvalExcerpt(brief.pros[0] ?? null, 160);
-  const tradeoff = approvalExcerpt(brief.cons[0] ?? null, 160);
-  const showMissingDecisionFields = approval.type === "request_board_approval";
-  const hasBrief = showMissingDecisionFields || Boolean(recommendation || reasoning || benefit || tradeoff);
   const showResolutionButtons =
     Boolean(onApprove && onReject) &&
     approval.type !== "budget_override_required" &&
@@ -75,49 +67,11 @@ export function ApprovalCard({
         </div>
       </div>
 
-      {hasBrief && (
-        <div className="mt-4 space-y-3 border-t border-border/60 pt-4">
-          {recommendation && (
-            <div>
-              <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                Recommendation
-              </p>
-              <p className="mt-1 text-sm leading-5 text-foreground">{recommendation}</p>
-            </div>
-          )}
-          {showMissingDecisionFields && <OriginalRequestBlock payload={payload} compact />}
-          {reasoning && (
-            <div>
-              <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                Why
-              </p>
-              <p className="mt-1 text-sm leading-5 text-foreground">{reasoning}</p>
-            </div>
-          )}
-          <div className="grid gap-3 sm:grid-cols-2">
-            {(benefit || showMissingDecisionFields) && (
-              <div>
-                <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                  Benefit
-                </p>
-                <p className={cn("mt-1 text-sm leading-5", benefit ? "text-foreground" : "text-muted-foreground")}>
-                  {benefit ?? "Not supplied."}
-                </p>
-              </div>
-            )}
-            {(tradeoff || showMissingDecisionFields) && (
-              <div>
-                <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                  Tradeoff
-                </p>
-                <p className={cn("mt-1 text-sm leading-5", tradeoff ? "text-foreground" : "text-muted-foreground")}>
-                  {tradeoff ?? "Not supplied."}
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      <ApprovalDecisionSummary
+        type={approval.type}
+        payload={payload}
+        className="mt-4 border-t border-border/60 pt-4"
+      />
 
       {approval.decisionNote && (
         <div className="mt-4 rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground">
