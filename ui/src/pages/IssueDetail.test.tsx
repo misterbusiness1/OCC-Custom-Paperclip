@@ -5200,6 +5200,31 @@ describe("IssueDetail", () => {
     ).toBeNull();
   });
 
+  it("shows held Board history in Classic Task Interface when no agent is assigned", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableExternalObjects: false,
+      enableStreamlinedUi: false,
+      enableClassicTaskInterface: true,
+    });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ assigneeAgentId: null }));
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      queueId: null, state: null, targetRunId: null, entries: [],
+      heldForBoardReview: [{ queueId: "old-receipt", agentId: "former-agent",
+        heldAt: "2026-10-04T13:00:00.000Z", reason: "Review before resubmitting" }],
+    }));
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>);
+    });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.getQueuedComments).toHaveBeenCalledWith("issue-1");
+      expect(container.querySelector('[data-testid="classic-held-board-request-notice"]')?.textContent)
+        .toContain("Submit a fresh message");
+    });
+    expect(container.querySelector('[data-testid="issue-chat-thread"]')).not.toBeNull();
+  });
+
   it("passes @task mention options to the thread by default", async () => {
     const mentionPoolIssue = {
       ...createIssue(),

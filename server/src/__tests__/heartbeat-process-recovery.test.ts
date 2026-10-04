@@ -723,9 +723,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       triggerDetail: "system",
       reason: "issue_assigned",
       payload: input?.includeIssue === false ? {} : { issueId },
-      status: "claimed",
+      status: input?.runStatus === "queued" ? "queued" : "claimed",
       runId,
-      claimedAt: now,
+      ...(input?.runStatus === "queued" ? {} : { claimedAt: now }),
     });
 
     await db.insert(heartbeatRuns).values({
@@ -746,13 +746,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ...(input?.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
-      nextEventSeq: 2,
-      startedAt: now,
+      nextEventSeq: input?.runStatus === "queued" ? 1 : 2,
+      startedAt: input?.runStatus === "queued" ? null : now,
       updatedAt: new Date("2026-03-19T00:00:00.000Z"),
     });
 
-    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId,
-      seq: 1, eventType: "adapter.invoke", payload: { adapterType: input?.adapterType ?? "codex_local" } });
+    if (input?.runStatus !== "queued") {
+      await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId,
+        seq: 1, eventType: "adapter.invoke", payload: { adapterType: input?.adapterType ?? "codex_local" } });
+    }
 
     if (input?.includeIssue !== false) {
       await db.insert(issues).values({

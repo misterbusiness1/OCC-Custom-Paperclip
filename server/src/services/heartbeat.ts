@@ -1,5 +1,6 @@
 import { beginHeartbeatShutdown, beginHeartbeatClaim, isHeartbeatShuttingDown, waitForHeartbeatClaimsToSettle } from "./heartbeat-shutdown-admission.js";
 import { releaseRunClaimedJustBeforeSuppression } from "./heartbeat-queued-claim-release.js";
+import { reconcileTerminalWakeQueuedRun } from "./terminal-wake-queued-run.js";
 import { isStartupWorkHeld } from "./startup-work-barrier.js";
 import { assertBoardCommentWorkspaceMaterializationAllowed } from "./board-comment-workspace-reservation.js";
 import { boardCommentRequestDelivery } from "./board-comment-request-delivery.js";
@@ -135,6 +136,7 @@ import {
   documentAnnotationThreads,
   documentRevisions,
   environmentLeases,
+  executionWorkspaceRuntimeLeases,
   issueDocuments,
   executionWorkspaces,
   heartbeatRunEvents,
@@ -364,7 +366,9 @@ import {
 } from "./issue-rewake-throttle.js";
 import {
   logActivity,
+  publishActivity,
   publishPluginDomainEvent,
+  type ActivityPublication,
   type LogActivityInput,
 } from "./activity-log.js";
 import {
@@ -9221,6 +9225,8 @@ export interface HeartbeatServiceOptions {
   beforeNativeRuntimeSelection?: (runId: string) => Promise<void>;
   /** Test seam before the serialized legacy adapter dispatch transition. */
   beforeLegacyAdapterDispatch?: (runId: string) => Promise<void>;
+  /** Test seam immediately before the locked queued-wake claim. */
+  beforeQueuedWakeClaim?: (runId: string) => Promise<void>;
   /** Test seam immediately before the durable chat-control admission check. */
   beforeChatControlRecoveryCheck?: (input: {
     runId: string;
@@ -17747,14 +17753,27 @@ export function heartbeatService(
       void emitAgentTaskRun(db, queuedCommentClaim.run);
       return null;
     }
+    await options.beforeQueuedWakeClaim?.(run.id);
     const claimed = queuedCommentClaim
       ? queuedCommentClaim.run
       : await withChatControlRecoveryGate(run, "claim", async (tx) => {
           // Same issue -> wake -> run order as queued-comment editing.
           if (issueId) await tx.select({ id: issues.id }).from(issues)
             .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).for("update");
-          if (run.wakeupRequestId) await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
-            .where(and(eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId))).for("update");
+          if (run.wakeupRequestId) {
+            const [wake] = await tx.select({
+              id: agentWakeupRequests.id,
+              status: agentWakeupRequests.status,
+              runId: agentWakeupRequests.runId,
+            }).from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.id, run.wakeupRequestId),
+              eq(agentWakeupRequests.companyId, run.companyId),
+              eq(agentWakeupRequests.agentId, run.agentId),
+            )).for("update").limit(1);
+            // The wake is the dispatch authority. A cancelled/failed/skipped
+            // wake must not become a provider turn between scan and claim.
+            if (!wake || wake.status !== "queued" || wake.runId !== run.id) return null;
+          }
           if (isHeartbeatShuttingDown()) throw claimDeferred;
           const claimed = await tx
             .update(heartbeatRuns)
@@ -19649,6 +19668,331 @@ export function heartbeatService(
     }
   }
 
+  async function settleQueuedRunWithTerminalWake(
+    candidate: typeof heartbeatRuns.$inferSelect,
+    deferredPostCommitEffects: WakeQueuePostCommitEffect[],
+  ) {
+    if (!candidate.wakeupRequestId) return false;
+    const issueId = readNonEmptyString(parseObject(candidate.contextSnapshot).issueId);
+    const now = new Date();
+    const postCommitActivityPublications: ActivityPublication[] = [];
+    const settled = await db.transaction(async (tx) => {
+      // Queue edits lock issue -> wake -> run. A cancelled wake must never be
+      // revived by a run claim, including after a restart or a partial write.
+      const [lockedIssue] = issueId && isUuidLike(issueId)
+        ? await tx.select({ id: issues.id, executionRunId: issues.executionRunId,
+          checkoutRunId: issues.checkoutRunId }).from(issues).where(and(
+          eq(issues.id, issueId), eq(issues.companyId, candidate.companyId),
+        )).for("update") : [];
+      const [wake] = await tx.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.id, candidate.wakeupRequestId!),
+        eq(agentWakeupRequests.companyId, candidate.companyId),
+        eq(agentWakeupRequests.agentId, candidate.agentId),
+        eq(agentWakeupRequests.runId, candidate.id),
+      )).for("update");
+      if (!wake || !["cancelled", "failed", "skipped"].includes(wake.status)) return null;
+      // Only Board interrupt successors have a separate saved receipt whose
+      // authority can be held. Other wake sources need their own recovery path.
+      if (!wake.idempotencyKey?.startsWith("queued-comment-interrupt:")) return null;
+      const [run] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, candidate.id),
+        eq(heartbeatRuns.companyId, candidate.companyId),
+        eq(heartbeatRuns.agentId, candidate.agentId),
+      )).for("update");
+      if (!run || run.status !== "queued" || run.wakeupRequestId !== wake.id) return null;
+      // Recorded execution ownership survives removal of transient evidence.
+      if (run.errorCode === "queued_wakeup_execution_ownership_unverified") {
+        return { held: true as const, reason: "prior_reconciliation_required", run: null };
+      }
+      const [conflictingIssue] = issueId && isUuidLike(issueId)
+        ? await tx.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.companyId, run.companyId),
+          or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
+          ne(issues.id, issueId),
+        )).limit(1) : [];
+      if (!issueId || !isUuidLike(issueId) || !lockedIssue ||
+          (lockedIssue.executionRunId !== null && lockedIssue.executionRunId !== run.id) ||
+          (lockedIssue.checkoutRunId !== null && lockedIssue.checkoutRunId !== run.id) ||
+          conflictingIssue ||
+          readNonEmptyString(run.contextSnapshot?.issueId) !== issueId ||
+          readNonEmptyString(wake.payload?.issueId) !== issueId) {
+        // Neither cancellation nor generic release is safe: release can find a
+        // different issue through executionRunId and promote an unheld receipt.
+        const [identityHeldRun] = await tx.update(heartbeatRuns).set({
+          error: "Queued Board interrupt has unverified issue identity; operator reconciliation required",
+          errorCode: "queued_wakeup_issue_identity_unverified",
+          updatedAt: now,
+        }).where(and(eq(heartbeatRuns.id, candidate.id),
+          eq(heartbeatRuns.companyId, candidate.companyId),
+          eq(heartbeatRuns.agentId, candidate.agentId),
+          eq(heartbeatRuns.status, "queued"),
+          eq(heartbeatRuns.wakeupRequestId, wake.id),
+          isNull(heartbeatRuns.errorCode))).returning({ id: heartbeatRuns.id });
+        if (identityHeldRun) await logActivity(tx as unknown as Db, {
+          companyId: run.companyId,
+          actorType: "system",
+          actorId: "heartbeat-recovery",
+          agentId: run.agentId,
+          runId: run.id,
+          action: "heartbeat.queued_board_interrupt_issue_identity_unverified",
+          entityType: "heartbeat_run",
+          entityId: run.id,
+          details: { issueId: issueId && isUuidLike(issueId) ? issueId : null,
+            wakeupRequestId: wake.id, reason: "issue_identity_unverified" },
+        }, postCommitActivityPublications);
+        return { held: true as const, reason: "issue_identity_unverified", run: null };
+      }
+      // Queued is not proof of never-started execution. Preserve any retained
+      // controller, provider, output, lease or finalization evidence before
+      // changing the saved Board receipt or releasing the issue owner.
+      const hasRecordedExecution = Boolean(
+        run.startedAt || run.finishedAt || run.controllerBootId ||
+        run.controllerLeaseExpiresAt || run.processPid || run.processGroupId ||
+        run.processStartedAt || run.runnerInstanceId || run.nativeSessionId ||
+        run.sessionIdAfter || run.externalRunId || run.executionStage ||
+        run.nativePhase || run.nativePhaseUpdatedAt || run.activeIdentityContextId ||
+        run.executionControlDeadlineAt || run.executionStatusDeliveryId ||
+        run.lastOutputAt || run.lastOutputSeq > 0 || run.lastOutputStream || run.lastOutputBytes !== null ||
+        run.exitCode !== null || run.signal !== null ||
+        (run.usageJson && Object.keys(run.usageJson).length > 0) ||
+        (run.resultJson && Object.keys(run.resultJson).length > 0) ||
+        run.logStore || run.logRef || run.logCompressed || run.logBytes !== null || run.logSha256 ||
+        run.stdoutExcerpt || run.stderrExcerpt || run.driverKind || run.driverVersion ||
+        run.completionContractId || run.completionContractSha256 || run.nativeIssueId ||
+        run.issueCommentStatus !== "not_applicable" || run.issueCommentSatisfiedByCommentId ||
+        run.issueCommentRetryQueuedAt || run.lastUsefulActionAt || run.livenessState ||
+        run.livenessReason || run.nextAction || run.runnerProfileJson?.adapterDispatch
+      );
+      const hasRows = async <T extends { id: unknown }>(query: PromiseLike<T[]>) =>
+        (await query).length > 0;
+      if (hasRecordedExecution ||
+          await hasRows(tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents)
+            .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id))).limit(1)) ||
+          await hasRows(tx.select({ id: agentTaskSessions.id }).from(agentTaskSessions)
+            .where(and(eq(agentTaskSessions.companyId, run.companyId), eq(agentTaskSessions.lastRunId, run.id))).limit(1)) ||
+          await hasRows(tx.select({ id: environmentLeases.id }).from(environmentLeases)
+            .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id))).limit(1)) ||
+          await hasRows(tx.select({ id: executionWorkspaceRuntimeLeases.id }).from(executionWorkspaceRuntimeLeases)
+            .where(and(eq(executionWorkspaceRuntimeLeases.companyId, run.companyId), or(
+              eq(executionWorkspaceRuntimeLeases.ownerRunId, run.id),
+              eq(executionWorkspaceRuntimeLeases.ownerKey, `run:${run.id}`),
+              eq(executionWorkspaceRuntimeLeases.ownerIssueId, issueId),
+            ))).limit(1)) ||
+          await hasRows(tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+            .where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id))).limit(1)) ||
+          await hasRows(tx.select({ id: workspaceOperations.id }).from(workspaceOperations)
+            .where(and(eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.heartbeatRunId, run.id))).limit(1))) {
+        const [heldRun] = await tx.update(heartbeatRuns).set({
+          error: "Queued Board interrupt retains execution evidence; operator reconciliation required",
+          errorCode: "queued_wakeup_execution_ownership_unverified",
+          updatedAt: now,
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, "queued"),
+          eq(heartbeatRuns.wakeupRequestId, wake.id), isNull(heartbeatRuns.errorCode)))
+          .returning({ id: heartbeatRuns.id });
+        if (heldRun) await logActivity(tx as unknown as Db, {
+          companyId: run.companyId,
+          actorType: "system",
+          actorId: "heartbeat-recovery",
+          agentId: run.agentId,
+          runId: run.id,
+          action: "heartbeat.queued_board_interrupt_execution_ownership_unverified",
+          entityType: "heartbeat_run",
+          entityId: run.id,
+          details: { issueId, wakeupRequestId: wake.id,
+            code: "queued_wakeup_execution_ownership_unverified", providerDispatched: false },
+        }, postCommitActivityPublications);
+        return { held: true as const, reason: "execution_ownership_unverified", run: null };
+      }
+      const receiptId = wake.idempotencyKey!.slice("queued-comment-interrupt:".length);
+      // Issue admission and release take this same issue lock first. A new
+      // same-issue receipt cannot slip between this selection and the hold.
+      // The key names the original receipt; its own idempotency key may differ.
+      const [primaryReceipt] = isUuidLike(receiptId)
+        ? await tx.select().from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, receiptId)).for("update") : [];
+      if (!primaryReceipt || primaryReceipt.companyId !== run.companyId ||
+          primaryReceipt.agentId !== run.agentId ||
+          readNonEmptyString(primaryReceipt.payload?.issueId) !== issueId ||
+          primaryReceipt.status !== "deferred_issue_execution") {
+        const [receiptHeldRun] = await tx.update(heartbeatRuns).set({
+          error: "Queued Board interrupt has an unverified saved receipt; operator reconciliation required",
+          errorCode: "queued_wakeup_receipt_unverified",
+          updatedAt: now,
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
+          eq(heartbeatRuns.wakeupRequestId, wake.id), isNull(heartbeatRuns.errorCode)))
+          .returning({ id: heartbeatRuns.id });
+        if (receiptHeldRun) await logActivity(tx as unknown as Db, {
+          companyId: run.companyId,
+          actorType: "system",
+          actorId: "heartbeat-recovery",
+          agentId: run.agentId,
+          runId: run.id,
+          action: "heartbeat.queued_board_interrupt_receipt_unverified",
+          entityType: "heartbeat_run",
+          entityId: run.id,
+          details: { issueId, wakeupRequestId: wake.id,
+            receiptId: isUuidLike(receiptId) ? receiptId : null, reason: "receipt_unverified" },
+        }, postCommitActivityPublications);
+        return { held: true as const, reason: "receipt_unverified", run: null };
+      }
+      // Include partial historical rows with runId set, and mismatched
+      // actor/comment metadata. Their shared key may otherwise deliver saved
+      // Board input after the cancelled successor releases its issue lock.
+      const siblings = await tx.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.agentId, run.agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        eq(agentWakeupRequests.idempotencyKey, wake.idempotencyKey!),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+      )).orderBy(asc(agentWakeupRequests.id)).for("update");
+      const heldIds = [...new Set([primaryReceipt.id, ...siblings.map((receipt) => receipt.id)])];
+      const heldRows = await tx.update(agentWakeupRequests).set({
+        status: "held_for_board_review",
+        error: "Saved Board request requires a fresh Board submit after its successor wake ended",
+        updatedAt: now,
+      }).where(and(
+        inArray(agentWakeupRequests.id, heldIds),
+        eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.agentId, run.agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+      )).returning({ id: agentWakeupRequests.id });
+      if (heldRows.length !== heldIds.length) {
+        // Roll back the entire settlement if the compare-and-set lost a row.
+        throw new Error("queued Board receipt hold lost deferred compare-and-set");
+      }
+      await logActivity(tx as unknown as Db, {
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "heartbeat-recovery",
+        agentId: run.agentId,
+        runId: run.id,
+        action: "heartbeat.queued_comment_interrupt_held_for_review",
+        entityType: "agent_wakeup_request",
+        entityId: primaryReceipt.id,
+        details: { issueId, cancelledWakeId: wake.id, heldReceiptIds: heldIds,
+          nextAction: "fresh_board_submit" },
+      }, postCommitActivityPublications);
+      const reason = `Queued run cancelled because its bound wake request is ${wake.status}`;
+      const [cancelled] = await tx.update(heartbeatRuns).set({
+        status: "cancelled",
+        finishedAt: now,
+        error: reason,
+        errorCode: "queued_wakeup_terminal",
+        resultJson: {
+          ...parseObject(run.resultJson),
+          ...(run.runtimeMode !== "native"
+            ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
+            : {}),
+        },
+        executionStatusDeliveryId: randomUUID(),
+        updatedAt: now,
+      }).where(and(
+        eq(heartbeatRuns.id, run.id),
+        eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.status, "queued"),
+      )).returning();
+      if (!cancelled) return null;
+      if (issueId && isUuidLike(issueId)) {
+        await tx.update(issues).set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        }).where(and(
+          eq(issues.id, issueId),
+          eq(issues.companyId, run.companyId),
+          eq(issues.executionRunId, run.id),
+        ));
+      }
+      const lifecycleEvent = await appendHeartbeatRunEvent(tx as unknown as Db, {
+        companyId: cancelled.companyId,
+        runId: cancelled.id,
+        agentId: cancelled.agentId,
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: reason,
+        payload: { code: "queued_wakeup_terminal" },
+      });
+      await logActivity(tx as unknown as Db, {
+        companyId: cancelled.companyId,
+        actorType: "system",
+        actorId: "heartbeat-recovery",
+        agentId: cancelled.agentId,
+        runId: cancelled.id,
+        action: "heartbeat.queued_run_terminal_wake_reconciled",
+        entityType: "heartbeat_run",
+        entityId: cancelled.id,
+        details: { wakeupRequestId: cancelled.wakeupRequestId, issueId },
+      }, postCommitActivityPublications);
+      return { held: false as const, run: cancelled, event: lifecycleEvent.row };
+    });
+    if (!settled) return false;
+    for (const publication of postCommitActivityPublications) {
+      try {
+        publishActivity(publication);
+      } catch (error) {
+        logger.error({ error, runId: candidate.id }, "queued Board activity notification failed");
+      }
+    }
+    if (settled.held) {
+      logger.warn({ runId: candidate.id, reason: settled.reason },
+        "queued Board interrupt run held for operator reconciliation");
+      return true;
+    }
+    const cancelled = settled.run!;
+    try {
+      publishLiveEvent({
+        companyId: cancelled.companyId,
+        type: "heartbeat.run.status",
+        payload: buildHeartbeatRunStatusLiveEventPayload(cancelled),
+      });
+    } catch (error) {
+      logger.error({ error, runId: cancelled.id }, "queued Board status notification failed");
+    }
+    try {
+      publishRunLifecyclePluginEvent(cancelled);
+    } catch (error) {
+      logger.error({ error, runId: cancelled.id }, "queued Board plugin notification failed");
+    }
+    try {
+      emitTerminalAgentTaskRun(cancelled, "queued");
+    } catch (error) {
+      logger.error({ error, runId: cancelled.id }, "queued Board telemetry notification failed");
+    }
+    try {
+      const event = settled.event;
+      publishLiveEvent({
+        companyId: cancelled.companyId,
+        type: "heartbeat.run.event",
+        payload: {
+          runId: cancelled.id,
+          agentId: cancelled.agentId,
+          issueId: readRuntimeStatusIssueIdCandidate(cancelled) ?? null,
+          seq: event.seq,
+          eventType: event.eventType,
+          stream: event.stream ?? null,
+          level: event.level ?? null,
+          color: event.color ?? null,
+          message: event.message ?? null,
+          currentToolName: null,
+          lastAssistantSnippet: null,
+          lastEventAt: event.createdAt.toISOString(),
+          payload: event.payload ?? null,
+        },
+      });
+    } catch (error) {
+      logger.error({ error, runId: cancelled.id }, "queued Board run event notification failed");
+    }
+    await releaseIssueExecutionAndPromote(cancelled, {
+      suppressImmediateRecovery: true,
+      deferredPostCommitEffects,
+    });
+    return true;
+  }
+
   async function startNextQueuedRunForAgent(agentId: string) {
     if ((await getSchedulingSuppression()).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
@@ -19690,6 +20034,23 @@ export function heartbeatService(
           )
           .orderBy(asc(heartbeatRuns.createdAt));
         if (queuedRuns.length === 0) return [];
+
+        // Ordinary queued wakes do not need a lock-heavy reconciliation scan.
+        // A wake can turn terminal after this read; claim checks the locked
+        // wake again, and the next recovery sweep then closes an eligible run.
+        const linkedWakeIds = [...new Set(queuedRuns
+          .map(run => run.wakeupRequestId)
+          .filter((id): id is string => Boolean(id)))];
+        const linkedWakes = linkedWakeIds.length > 0
+          ? await db.select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status })
+              .from(agentWakeupRequests)
+              .where(and(
+                eq(agentWakeupRequests.companyId, agent.companyId),
+                eq(agentWakeupRequests.agentId, agent.id),
+                inArray(agentWakeupRequests.id, linkedWakeIds),
+              ))
+          : [];
+        const linkedWakeStatus = new Map(linkedWakes.map(wake => [wake.id, wake.status]));
 
         const dependencyReadiness = await listQueuedRunDependencyReadiness(
           agent.companyId,
@@ -19769,6 +20130,57 @@ export function heartbeatService(
           for (const queuedRun of prioritizedRuns) {
             if (isHeartbeatShuttingDown()) break;
             if (claimedRuns.length >= availableSlots) break;
+            if (await settleQueuedRunWithTerminalWake(queuedRun, deferredPostCommitEffects)) continue;
+            const wakeStatus = queuedRun.wakeupRequestId
+              ? linkedWakeStatus.get(queuedRun.wakeupRequestId)
+              : null;
+            const terminalWake = queuedRun.wakeupRequestId &&
+              (!wakeStatus || ["cancelled", "failed", "skipped"].includes(wakeStatus))
+              ? await reconcileTerminalWakeQueuedRun(db, queuedRun)
+              : { kind: "not_terminal_wake" as const };
+            if (terminalWake.kind !== "not_terminal_wake") {
+              if (terminalWake.kind === "terminalized") {
+                try {
+                  publishLiveEvent({
+                    companyId: terminalWake.run.companyId,
+                    type: "heartbeat.run.status",
+                    payload: buildHeartbeatRunStatusLiveEventPayload(terminalWake.run),
+                  });
+                } catch (error) {
+                  logger.error({ error, runId: terminalWake.run.id }, "terminal-wake status notification failed");
+                }
+                try {
+                  publishRunLifecyclePluginEvent(terminalWake.run);
+                } catch (error) {
+                  logger.error({ error, runId: terminalWake.run.id }, "terminal-wake plugin notification failed");
+                }
+                try {
+                  const event = terminalWake.event;
+                  publishLiveEvent({
+                    companyId: terminalWake.run.companyId,
+                    type: "heartbeat.run.event",
+                    payload: {
+                      runId: terminalWake.run.id,
+                      agentId: terminalWake.run.agentId,
+                      issueId: readRuntimeStatusIssueIdCandidate(terminalWake.run) ?? null,
+                      seq: event.seq,
+                      eventType: event.eventType,
+                      stream: event.stream ?? null,
+                      level: event.level ?? null,
+                      color: event.color ?? null,
+                      message: event.message ?? null,
+                      currentToolName: null,
+                      lastAssistantSnippet: null,
+                      lastEventAt: event.createdAt.toISOString(),
+                      payload: event.payload ?? null,
+                    },
+                  });
+                } catch (error) {
+                  logger.error({ error, runId: terminalWake.run.id }, "terminal-wake run event notification failed");
+                }
+              }
+              continue;
+            }
             await recoverPersistedQueuedCommentInterruptReceipt(queuedRun);
             let claimed: typeof heartbeatRuns.$inferSelect | null;
             try {
@@ -27094,6 +27506,47 @@ export function heartbeatService(
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
+
+          // A new idempotency key is not fresh Board authority for an old
+          // comment. Only a new submitted comment may supersede a held one.
+          const incomingCommentIds = [...new Set([
+            ...queuedCommentIdsFromRunContext(enrichedContextSnapshot),
+            ...queuedCommentIdsFromWakePayload(payload),
+            ...(wakeCommentId ? [wakeCommentId] : []),
+          ])];
+          if (incomingCommentIds.length > 0) {
+            const heldComments = await tx.select({ payload: agentWakeupRequests.payload })
+              .from(agentWakeupRequests).where(and(
+                eq(agentWakeupRequests.companyId, agent.companyId),
+                eq(agentWakeupRequests.agentId, agentId),
+                eq(agentWakeupRequests.status, "held_for_board_review"),
+                sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+              ));
+            const heldCommentIds = new Set(heldComments.flatMap((receipt) =>
+              queuedCommentIdsFromWakePayload(receipt.payload)));
+            if (incomingCommentIds.some((commentId) => heldCommentIds.has(commentId))) {
+              return { kind: "deferred" as const };
+            }
+          }
+
+          // The cancelled successor and this admission serialize on the issue.
+          // A retry cannot insert another same-key sibling after the old Board
+          // lineage has been held, even in the gap before release promotion.
+          if (opts.idempotencyKey?.startsWith("queued-comment-interrupt:")) {
+            const receiptId = opts.idempotencyKey.slice("queued-comment-interrupt:".length);
+            const [original] = isUuidLike(receiptId)
+              ? await tx.select({ companyId: agentWakeupRequests.companyId,
+                  agentId: agentWakeupRequests.agentId, status: agentWakeupRequests.status,
+                  payload: agentWakeupRequests.payload })
+                .from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receiptId))
+                .for("update") : [];
+            if (!original || original.companyId !== agent.companyId ||
+                original.agentId !== agentId ||
+                readNonEmptyString(original.payload?.issueId) !== issueId ||
+                original.status === "held_for_board_review") {
+              return { kind: "deferred" as const };
+            }
+          }
 
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(

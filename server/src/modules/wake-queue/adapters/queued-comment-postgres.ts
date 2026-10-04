@@ -222,7 +222,6 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
             and(
               eq(agentWakeupRequests.id, input.queueId),
               eq(agentWakeupRequests.companyId, companyId),
-              input.issue.assigneeAgentId ? eq(agentWakeupRequests.agentId, input.issue.assigneeAgentId) : undefined,
             ),
           )
           .for("update")
@@ -230,8 +229,13 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
           .then((rows) => rows[0] ?? null);
 
         const wakePayload = parseObject(wakeRow?.payload);
+        if (wakeRow?.status === "held_for_board_review" &&
+            readNonEmptyString(wakePayload.issueId) === input.issue.id) {
+          throw new QueuedCommentMutationError("queued_comment_interrupt_held",
+            "This saved request was held after its wake ended. Submit a fresh Board message to authorize delivery.");
+        }
         const lookup = decideQueuedCommentWakeLookup({
-          wakePresent: wakeRow !== null,
+          wakePresent: wakeRow !== null && wakeRow.agentId === input.issue.assigneeAgentId,
           wakeIssueIdMatches: readNonEmptyString(wakePayload.issueId) === input.issue.id,
           hasQueuedCommentIds: queuedCommentIdsFromWakePayload(wakeRow?.payload ?? null).length > 0,
           wakeStatus: wakeRow?.status ?? null,

@@ -1429,6 +1429,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_STATUSES = new Set([
   "failed",
   "cancelled",
   "deferred_issue_execution",
+  "held_for_board_review",
 ]);
 
 function dateToIso(value: Date | string | null | undefined) {
@@ -1592,6 +1593,9 @@ function buildIssueWakeDiagnosis(input: {
     )} was deferred by an active issue-tree hold.`;
   }
   if (latest?.kind === "wake_request") {
+    if (latest.status === "held_for_board_review") {
+      return `The most recent saved Board request for ${blockerDiagnosticLabel(input.issue)} requires review. Submit a fresh Board message to authorize delivery.`;
+    }
     if (latest.status === "deferred_issue_execution") {
       return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} is deferred${wakeDiagnosticReasonPhrase(
         latest.reason,
@@ -7175,7 +7179,15 @@ export function issueRoutes(
             .then((state) => state.disposition)
             .catch(() => "temporarily_unavailable" as const));
     const wait = queueState?.state === "deferred" ? readObject(readObject(wake?.payload).executionWait) : {};
-    return buildQueuedCommentQueueSnapshot({
+    const heldRows = await input.executor.select({ id: agentWakeupRequests.id,
+          agentId: agentWakeupRequests.agentId, updatedAt: agentWakeupRequests.updatedAt,
+          error: agentWakeupRequests.error })
+        .from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, input.issue.companyId),
+          eq(agentWakeupRequests.status, "held_for_board_review"),
+          sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issue.id}`,
+        )).orderBy(asc(agentWakeupRequests.updatedAt));
+    return { ...buildQueuedCommentQueueSnapshot({
       issueId: input.issue.id,
       executionWait: typeof wait.reason === "string" && typeof wait.message === "string"
         ? { reason: wait.reason, message: wait.message } : null,
@@ -7187,7 +7199,12 @@ export function issueRoutes(
       comments,
       actorType: input.actor.actorType,
       actorId: input.actor.actorId,
-    });
+    }), heldForBoardReview: heldRows.map((row) => ({
+      queueId: row.id,
+      agentId: row.agentId,
+      heldAt: row.updatedAt.toISOString(),
+      reason: row.error ?? "Submit a fresh Board message to authorize delivery",
+    })) };
   }
 
   function assertQueueMutationTarget(input: {
@@ -7239,16 +7256,19 @@ export function issueRoutes(
         and(
           eq(agentWakeupRequests.id, input.queueId),
           eq(agentWakeupRequests.companyId, input.issue.companyId),
-          input.issue.assigneeAgentId
-            ? eq(agentWakeupRequests.agentId, input.issue.assigneeAgentId)
-            : undefined,
         ),
       )
       .for("update")
       .limit(1)
       .then((rows) => rows[0] ?? null);
+    if (wake?.status === "held_for_board_review" &&
+        readObject(wake.payload).issueId === input.issue.id) {
+      throw conflict("This saved request was held after its wake ended. Submit a fresh Board message to authorize delivery.",
+        { code: "queued_comment_interrupt_held" });
+    }
     if (
       !wake ||
+      wake.agentId !== input.issue.assigneeAgentId ||
       readObject(wake.payload).issueId !== input.issue.id ||
       queuedCommentIdsFromWakePayload(wake.payload).length === 0
     ) {
