@@ -20,3 +20,6 @@ terminal wake ID and status and that no provider work was dispatched. The wake,
 issue, and comments are not changed. A new Board request or authorized wake is
 required to restart work. Ordinary claim admission checks the locked wake
 again so a wake cancelled after the recovery scan cannot launch a provider.
+If startup suppression returns a claimed run to the queue, it returns the
+bound wake only when that wake is still claimed by the same run. A cancelled
+wake stays cancelled.

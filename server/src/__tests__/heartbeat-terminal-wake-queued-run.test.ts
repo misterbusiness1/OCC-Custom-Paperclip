@@ -9,6 +9,7 @@ import {
   companies,
   createDb,
   environmentLeases,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issues,
@@ -22,6 +23,7 @@ vi.mock("../adapters/index.ts", async () => ({
   getServerAdapter: vi.fn(() => ({ supportsLocalAgentJwt: false, execute })),
 }));
 import { heartbeatService } from "../services/heartbeat.ts";
+import { releaseRunClaimedJustBeforeSuppression } from "../services/heartbeat-queued-claim-release.ts";
 import {
   reconcileTerminalWakeQueuedRun,
   TERMINAL_WAKE_QUEUED_RUN_CODE,
@@ -66,7 +68,7 @@ describe("terminal-wake queued-run reconciliation", () => {
 
   async function seedPair(input: {
     source?: "assignment" | "automation";
-    wakeStatus?: "cancelled" | "failed" | "skipped" | "queued";
+    wakeStatus?: "cancelled" | "failed" | "skipped" | "queued" | "claimed";
     issueId?: string | null;
     reason?: string;
     idempotencyKey?: string;
@@ -81,7 +83,9 @@ describe("terminal-wake queued-run reconciliation", () => {
       payload: issueId ? { issueId } : {},
       idempotencyKey: input.idempotencyKey ?? null,
       requestedByActorType: "system", requestedByActorId: "test",
-      ...((input.wakeStatus ?? "cancelled") === "queued" ? {} : { finishedAt: new Date() }),
+      ...((input.wakeStatus ?? "cancelled") === "queued" ? {}
+        : input.wakeStatus === "claimed" ? { claimedAt: new Date() }
+        : { finishedAt: new Date() }),
     });
     await db.insert(heartbeatRuns).values({
       id: runId, companyId, agentId, invocationSource: source,
@@ -156,6 +160,45 @@ describe("terminal-wake queued-run reconciliation", () => {
       .toMatchObject({ deletedAt: null, body: "Existing mention remains in history." });
     expect(execute).not.toHaveBeenCalled();
   });
+
+  it("does not redispatch a queued run whose bound wake is already claimed", async () => {
+    await seedCompany();
+    const { runId, wakeId } = await seedPair({
+      issueId: null, wakeStatus: "claimed", reason: "manual",
+    });
+    await db.update(heartbeatRuns).set({
+      startedAt: new Date(), nextEventSeq: 2,
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRunEvents).values({
+      companyId, agentId, runId, seq: 1, eventType: "adapter.invoke",
+      payload: { adapterType: "codex_local" },
+    });
+    await heartbeat.resumeQueuedRuns();
+    const { run, wake } = await state(runId, wakeId);
+    expect(run.status).toBe("queued");
+    expect(wake.status).toBe("claimed");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each(["claimed", "cancelled"] as const)(
+    "suppression release preserves %s wake authority",
+    async wakeStatus => {
+      await seedCompany();
+      const { runId, wakeId } = await seedPair({
+        issueId: null, wakeStatus, reason: "manual",
+      });
+      const controllerBootId = randomUUID();
+      await db.update(heartbeatRuns).set({
+        status: "running", runtimeMode: "legacy", controllerBootId,
+        executionStage: "preparing", startedAt: new Date(),
+      }).where(eq(heartbeatRuns.id, runId));
+      await releaseRunClaimedJustBeforeSuppression(db, runId, controllerBootId);
+      const { run, wake } = await state(runId, wakeId);
+      expect(run.status).toBe(wakeStatus === "claimed" ? "queued" : "running");
+      expect(wake.status).toBe(wakeStatus === "claimed" ? "queued" : "cancelled");
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["execution pointer", "checkout pointer", "deferred receipt", "controller", "event", "session", "lease", "result"] as const)(
     "fails closed when ownership is ambiguous: %s",
