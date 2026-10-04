@@ -44617,11 +44617,75 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       };
     }
 
-    it.each(["working", "final", "unknown_final", "card"] as const)(
+    it.each([
+      "working",
+      "final",
+      "unknown_final",
+      "card",
+      "working_with_unrelated_lease",
+    ] as const)(
       "qualifies pinned Discord close-owned progress retirement (%s)",
-      async (mode) => {
+      async (scenario) => {
+        const mode =
+          scenario === "working_with_unrelated_lease" ? "working" : scenario;
         const f = await commandFixture();
+        let unrelated: {
+          endpointId: string;
+          actionId: string;
+          leaseToken: string;
+        } | null = null;
         try {
+          if (scenario === "working_with_unrelated_lease") {
+            const previous = await seedCompany();
+            const context = createService(
+              new FakeChatSdkRuntime(),
+              fakeSlackFetch() as typeof globalThis.fetch,
+              { scheduleDeferredWork: () => undefined },
+            );
+            const endpoint = await context.service.create(
+              previous.companyId,
+              { provider: "slack", assignedAgentId: previous.assignedAgentId },
+              "owner-user",
+            );
+            await context.service.shutdown();
+            await db
+              .update(chatEndpoints)
+              .set({ status: "paused" })
+              .where(eq(chatEndpoints.id, endpoint.id));
+            const [receipt] = await db
+              .insert(chatActions)
+              .values({
+                companyId: previous.companyId,
+                endpointId: endpoint.id,
+                kind: "receipt_reaction",
+                providerActionId: `unrelated-paused-receipt:${randomUUID()}`,
+                payload: {
+                  version: 1,
+                  operation: "remove",
+                  threadId: "slack:prior-fixture:1",
+                  messageId: "1",
+                  reaction: "eyes",
+                  runtimeGeneration: 0,
+                  credentialFingerprint: "fixture",
+                },
+                status: "received",
+                createdAt: new Date(Date.now() - 60_000),
+              })
+              .returning();
+            const leaseToken = randomUUID();
+            unrelated = {
+              endpointId: endpoint.id,
+              actionId: receipt!.id,
+              leaseToken,
+            };
+            await db.insert(chatEndpointLeases).values({
+              companyId: previous.companyId,
+              endpointId: endpoint.id,
+              leaseKey: "credentials",
+              token: leaseToken,
+              expiresAt: new Date(Date.now() + 60_000),
+            });
+          }
           // The setup root can still have a retryable wake after a concurrent
           // fixture drain. Start this run from a fresh, actually accepted
           // request and prove its receipt exists before testing its removal.
@@ -44759,7 +44823,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           const editCount = runtime.edits.length,
             postCount = runtime.posts.length;
           await f.service.processPendingPublications();
-          await f.service.processPendingReceiptReactions();
+          // This case qualifies its own progress/receipt retirement. A global
+          // sweep can wait on a credential lease retained by another fixture.
+          const receipts = await db
+            .select({ id: chatActions.id })
+            .from(chatActions)
+            .where(
+              and(
+                eq(chatActions.endpointId, f.endpoint.id),
+                eq(chatActions.kind, "receipt_reaction"),
+              ),
+            );
+          for (const receipt of receipts) {
+            await f.service.processPendingReceiptReactions(1, receipt.id);
+          }
           expect(runtime.edits).toHaveLength(
             editCount + (mode === "working" ? 1 : 0),
           );
@@ -44793,7 +44870,44 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           expect(runtime.edits).toHaveLength(
             editCount + (mode === "working" ? 1 : 0),
           );
+          if (unrelated) {
+            await expect(
+              db
+                .select({ status: chatActions.status })
+                .from(chatActions)
+                .where(eq(chatActions.id, unrelated.actionId)),
+            ).resolves.toEqual([{ status: "received" }]);
+            await expect(
+              db
+                .select({ token: chatEndpointLeases.token })
+                .from(chatEndpointLeases)
+                .where(
+                  and(
+                    eq(chatEndpointLeases.endpointId, unrelated.endpointId),
+                    eq(chatEndpointLeases.leaseKey, "credentials"),
+                  ),
+                ),
+            ).resolves.toEqual([{ token: unrelated.leaseToken }]);
+          }
         } finally {
+          if (unrelated) {
+            await db
+              .delete(chatEndpointLeases)
+              .where(
+                and(
+                  eq(chatEndpointLeases.endpointId, unrelated.endpointId),
+                  eq(chatEndpointLeases.leaseKey, "credentials"),
+                  eq(chatEndpointLeases.token, unrelated.leaseToken),
+                ),
+              );
+            await db
+              .update(chatActions)
+              .set({
+                status: "cancelled",
+                result: { code: "test_fixture_complete" },
+              })
+              .where(eq(chatActions.id, unrelated.actionId));
+          }
           await f.close();
         }
       },
