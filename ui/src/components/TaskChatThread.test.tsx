@@ -15,6 +15,7 @@ import type {
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
+import { mergePendingIssueQueuedComments, normalizeIssueQueuedCommentQueue } from "@/lib/issue-queued-comment-queue";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 
 const transcriptState = vi.hoisted(() => ({
@@ -142,6 +143,20 @@ function render(ui: ReactElement) {
     ),
   );
 }
+
+it("shows held Board history even when no actionable queue remains", () => {
+  const authoritativeQueue = normalizeIssueQueuedCommentQueue({
+    issueId: "issue-1", queueId: null, state: null, entries: [],
+    heldForBoardReview: [{ queueId: "held-1", agentId: "former-agent", heldAt: "2026-10-04T13:00:00.000Z",
+      reason: "Submit a fresh Board message" }],
+  }, "issue-1");
+  const queue = mergePendingIssueQueuedComments({ issueId: "issue-1",
+    authoritativeQueue, pendingComments: [], fallbackProtocol: "legacy" });
+  render(<TaskChatThread comments={[]} onAdd={async () => {}} queuedCommentQueue={queue} />);
+  expect(container.querySelector('[data-testid="held-board-request-notice"]')?.textContent)
+    .toContain("Submit a fresh message");
+  expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+});
 
 it("coordinates first reveal while keeping the composer and visible history mounted through refresh", async () => {
   const props = {

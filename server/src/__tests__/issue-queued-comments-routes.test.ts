@@ -196,6 +196,91 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     },
   );
 
+  it("rejects a held interrupt receipt with a fresh Board request instruction", async () => {
+    const seeded = await seedQueue();
+    await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "succeeded",
+      finishedAt: new Date() }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, seeded.issueId));
+    await db.update(agentWakeupRequests).set({ status: "held_for_board_review" })
+      .where(eq(agentWakeupRequests.id, seeded.wakeId));
+    const client = app(seeded.companyId);
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body.queueId).toBeNull();
+    expect(queue.body.heldForBoardReview).toEqual([expect.objectContaining({ queueId: seeded.wakeId })]);
+    const response = await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`)
+      .send({ queueId: seeded.wakeId, revision: queue.body.revision, targetRunId: null }).expect(409);
+    expect(response.body.error).toContain("fresh Board message");
+    const edited = await request(client)
+      .patch(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[1]}`)
+      .send({ queueId: seeded.wakeId, revision: queue.body.revision, body: "Stale edit" })
+      .expect(409);
+    expect(edited.body.error).toContain("fresh Board message");
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(receipt.status).toBe("held_for_board_review");
+    expect(receipt.payload?.queuedCommentInterrupt).toBeUndefined();
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({ id: replacementAgentId, companyId: seeded.companyId,
+      name: "Replacement", role: "engineer", status: "idle", adapterType: "claude_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.update(issues).set({ assigneeAgentId: replacementAgentId })
+      .where(eq(issues.id, seeded.issueId));
+    const reassignedQueue = await request(client)
+      .get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(reassignedQueue.body.heldForBoardReview)
+      .toEqual([expect.objectContaining({ queueId: seeded.wakeId, agentId: seeded.agentId })]);
+    const reassignedInterrupt = await request(client)
+      .post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`)
+      .send({ queueId: seeded.wakeId, revision: reassignedQueue.body.revision,
+        targetRunId: null }).expect(409);
+    expect(reassignedInterrupt.body.error).toContain("fresh Board message");
+    const reassignedEdit = await request(client)
+      .patch(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[1]}`)
+      .send({ queueId: seeded.wakeId, revision: reassignedQueue.body.revision,
+        body: "Stale edit after reassignment" }).expect(409);
+    expect(reassignedEdit.body.error).toContain("fresh Board message");
+    const actions = await db.select().from(activityLog).where(eq(activityLog.action, "issue.queued_comments_interrupted"));
+    expect(actions).toHaveLength(0);
+  });
+
+  it("shows a newer authorized queue instead of an older held receipt and permits interruption", async () => {
+    const seeded = await seedQueue();
+    await db.update(agents).set({ adapterType: "claude_local",
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "succeeded",
+      finishedAt: new Date() }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, seeded.issueId));
+    await db.update(agentWakeupRequests).set({ status: "held_for_board_review" })
+      .where(eq(agentWakeupRequests.id, seeded.wakeId));
+    const freshCommentId = randomUUID(), freshWakeId = randomUUID();
+    await db.insert(issueComments).values({ id: freshCommentId, companyId: seeded.companyId,
+      issueId: seeded.issueId, authorType: "user", authorUserId: "other-operator",
+      body: "New authorized Board request" });
+    await db.insert(agentWakeupRequests).values({ id: freshWakeId, companyId: seeded.companyId,
+      agentId: seeded.agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "other-operator",
+      payload: { issueId: seeded.issueId, commentId: freshCommentId,
+        _paperclipWakeContext: { issueId: seeded.issueId, wakeReason: "issue_commented",
+          wakeCommentIds: [freshCommentId] } } });
+    // Keep the agent occupied on another issue so the accepted successor
+    // remains queued; this test must not start a provider.
+    await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      status: "running", contextSnapshot: { issueId: randomUUID() } });
+    const client = app(seeded.companyId, "other-operator");
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body.queueId).toBe(freshWakeId);
+    expect(queue.body.heldForBoardReview).toEqual([expect.objectContaining({ queueId: seeded.wakeId })]);
+    const response = await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`)
+      .send({ queueId: freshWakeId, revision: queue.body.revision, targetRunId: null }).expect(200);
+    expect(response.body.queueId).not.toBe(seeded.wakeId);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0])
+      .toMatchObject({ status: "held_for_board_review", runId: null });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, freshWakeId)))[0])
+      .toMatchObject({ status: "coalesced" });
+  });
+
   it("does not accept interruption authority from an agent wake payload", async () => {
     const seeded = await seedQueue();
     await db.update(agents).set({ adapterType: "claude_local",

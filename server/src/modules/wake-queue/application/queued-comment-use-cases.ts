@@ -15,6 +15,7 @@ import type {
 
 export type QueuedCommentMutationErrorCode =
   | "queued_comment_not_pending"
+  | "queued_comment_interrupt_held"
   | "queued_comment_already_dispatching"
   | "queued_comment_stale_queue"
   | "queued_comment_revision_conflict"

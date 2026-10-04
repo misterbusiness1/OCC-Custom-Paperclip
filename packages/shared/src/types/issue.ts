@@ -996,6 +996,8 @@ export interface IssueQueuedCommentQueue {
   protocol: IssueQueuedCommentProtocol;
   steeringDisposition: IssueQueuedCommentSteeringDisposition;
   entries: IssueQueuedCommentEntry[];
+  /** Prior saved requests that require a new Board submit before delivery. */
+  heldForBoardReview?: Array<{ queueId: string; agentId: string; heldAt: string; reason: string }>;
   /** Current admission condition for a saved user continuation. */
   executionWait?: { reason: string; message: string } | null;
 }

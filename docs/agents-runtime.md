@@ -106,6 +106,10 @@ For each heartbeat run you get:
 
 In local/dev setups, full logs are stored on disk under the configured run-log path.
 
+### Saved Board request held after a cancelled wake
+
+If a Board interrupt wake ends while its run is still queued, recovery settles that run so it cannot block other work. Paperclip moves the original saved request and same-lineage deferred receipts to `held_for_board_review` and records the exact successor wake, issue, and held receipt IDs in `heartbeat.queued_comment_interrupt_held_for_review` activity. The status prevents recovery and ordinary wake merging from sending that message. The issue queue response lists held requests separately from the actionable queue; editing or interrupting one returns a conflict with a fresh-request instruction. Review the original request and submit a new Board message if the agent should act on it; the new message carries its own authorization. This uses the existing text status column and activity log, so no database migration or payload backfill is needed.
+
 ## 6. Live updates in the UI
 
 Paperclip pushes runtime/activity updates to the browser in real time.

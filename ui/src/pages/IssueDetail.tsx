@@ -1498,9 +1498,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const runtimeSelectionKnown =
     liveRunsFetched && (!activeRunQueryEnabled || activeRunFetched);
   const queuedCommentQueueEnabled =
-    !classicTaskInterfaceEnabled &&
     runtimeSelectionKnown &&
-    Boolean(liveRuntimeRun || issueAssigneeAgentId);
+    Boolean(issueId);
   const { data: authoritativeQueuedCommentQueue } = useQuery({
     queryKey: queryKeys.issues.queuedComments(issueId),
     queryFn: async () =>
@@ -2298,6 +2297,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       {/* Chat-style: the button rides inside the thread's scroll viewport with
           the header so nothing sits above the thread in the page flow. */}
       {classicTaskInterfaceEnabled ? loadOlderButton : null}
+      {classicTaskInterfaceEnabled && authoritativeQueuedCommentQueue?.heldForBoardReview?.length ? (
+        <p role="status" data-testid="classic-held-board-request-notice"
+          className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">
+          {authoritativeQueuedCommentQueue.heldForBoardReview.length} saved Board request{authoritativeQueuedCommentQueue.heldForBoardReview.length === 1 ? "" : "s"} require review. Submit a fresh message to authorize delivery.
+        </p>
+      ) : null}
       {classicTaskInterfaceEnabled &&
       commentsInitialLoading &&
       commentsWithRunMeta.length === 0 &&

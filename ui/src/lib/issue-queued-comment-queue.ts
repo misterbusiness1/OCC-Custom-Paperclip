@@ -55,6 +55,19 @@ export function normalizeIssueQueuedCommentQueue(
   const disposition = source?.steeringDisposition;
   const state = source?.state;
   const wait = record(source?.executionWait);
+  const heldSeen = new Set<string>();
+  const heldForBoardReview = (Array.isArray(source?.heldForBoardReview)
+    ? source.heldForBoardReview : []).flatMap((candidate) => {
+    const held = record(candidate);
+    const queueId = typeof held?.queueId === "string" ? held.queueId : "";
+    const agentId = typeof held?.agentId === "string" ? held.agentId : "";
+    const heldAt = typeof held?.heldAt === "string" ? held.heldAt : "";
+    if (!queueId || !agentId || !heldAt || Number.isNaN(Date.parse(heldAt)) || heldSeen.has(queueId)) return [];
+    heldSeen.add(queueId);
+    return [{ queueId, agentId, heldAt,
+      reason: typeof held?.reason === "string" && held.reason.trim()
+        ? held.reason : "Submit a fresh Board message to authorize delivery" }];
+  });
 
   return {
     issueId:
@@ -81,6 +94,7 @@ export function normalizeIssueQueuedCommentQueue(
         ? (disposition as IssueQueuedCommentSteeringDisposition)
         : "unsupported",
     entries,
+    heldForBoardReview,
     executionWait: typeof wait?.reason === "string" && typeof wait?.message === "string"
       ? { reason: wait.reason, message: wait.message }
       : null,
@@ -120,7 +134,8 @@ export function mergePendingIssueQueuedComments(params: {
   const entries = [...authoritativeEntries, ...pendingEntries].map(
     (entry, position) => ({ ...entry, position }),
   );
-  if (entries.length === 0) return null;
+  const heldForBoardReview = params.authoritativeQueue?.heldForBoardReview ?? [];
+  if (entries.length === 0 && heldForBoardReview.length === 0) return null;
 
   const queueAcknowledged = pendingEntries.length === 0;
   const authoritativeOwnsQueue = Boolean(params.authoritativeQueue?.queueId);
@@ -149,6 +164,7 @@ export function mergePendingIssueQueuedComments(params: {
         ? "temporarily_unavailable"
         : "unsupported"),
     entries,
+    heldForBoardReview,
     executionWait: params.authoritativeQueue?.executionWait ?? null,
   };
 }

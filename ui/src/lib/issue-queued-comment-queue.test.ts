@@ -22,6 +22,36 @@ function comment(id: string, body: string) {
 }
 
 describe("normalizeIssueQueuedCommentQueue", () => {
+  it("keeps a held-only Board request visible through normalization and merge", () => {
+    const authoritativeQueue = normalizeIssueQueuedCommentQueue({
+      issueId: "issue-1", queueId: null, state: null, entries: [],
+      heldForBoardReview: [
+        { queueId: "held-1", agentId: "former-agent", heldAt: "2026-10-04T13:00:00.000Z", reason: "Review before resubmitting" },
+        { queueId: "held-1", agentId: "former-agent", heldAt: "2026-10-04T13:00:00.000Z", reason: "Duplicate" },
+        { queueId: "bad-time", agentId: "former-agent", heldAt: "not-a-date", reason: "Malformed" },
+      ],
+    }, "issue-1");
+    const queue = mergePendingIssueQueuedComments({ issueId: "issue-1",
+      authoritativeQueue, pendingComments: [], fallbackProtocol: "legacy" });
+    expect(queue).toMatchObject({ queueId: null, entries: [],
+      heldForBoardReview: [{ queueId: "held-1", reason: "Review before resubmitting" }] });
+    expect(queue?.heldForBoardReview).toHaveLength(1);
+  });
+
+  it("keeps held history while a newer Board request is actionable", () => {
+    const authoritativeQueue = normalizeIssueQueuedCommentQueue({
+      issueId: "issue-1", queueId: "fresh-2", state: "deferred",
+      revision: "rev-2", entries: [{ comment: comment("new-comment", "New request"), position: 0 }],
+      heldForBoardReview: [{ queueId: "held-1", agentId: "former-agent", heldAt: "2026-10-04T13:00:00.000Z",
+        reason: "Submit a fresh Board message" }],
+    }, "issue-1");
+    const queue = mergePendingIssueQueuedComments({ issueId: "issue-1",
+      authoritativeQueue, pendingComments: [], fallbackProtocol: "legacy" });
+    expect(queue?.queueId).toBe("fresh-2");
+    expect(queue?.entries.map((entry) => entry.comment.id)).toEqual(["new-comment"]);
+    expect(queue?.heldForBoardReview?.map((held) => held.queueId)).toEqual(["held-1"]);
+  });
+
   it("sorts, deduplicates, and drops malformed queue entries", () => {
     const queue = normalizeIssueQueuedCommentQueue(
       {
