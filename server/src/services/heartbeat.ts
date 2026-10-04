@@ -1,3 +1,4 @@
+import { beginHeartbeatShutdown, beginHeartbeatClaim, isHeartbeatShuttingDown, waitForHeartbeatClaimsToSettle } from "./heartbeat-shutdown-admission.js";
 import { releaseRunClaimedJustBeforeSuppression } from "./heartbeat-queued-claim-release.js";
 import { isStartupWorkHeld } from "./startup-work-barrier.js";
 import { assertBoardCommentWorkspaceMaterializationAllowed } from "./board-comment-workspace-reservation.js";
@@ -9349,8 +9350,9 @@ export function resolveHeartbeatSchedulingSuppression(
 ): {
   suppressed: boolean;
   reason:
-    "worktree_instance" | "database_restore_in_progress" | "task_drain" | "startup_work_held" | null;
+    "worktree_instance" | "database_restore_in_progress" | "task_drain" | "startup_work_held" | "server_shutdown" | null;
 } {
+  if (isHeartbeatShuttingDown()) return { suppressed: true, reason: "server_shutdown" };
   if (isStartupWorkHeld()) return { suppressed: true, reason: "startup_work_held" };
   if (
     isTruthyRuntimeEnvValue(env.PAPERCLIP_IN_WORKTREE) &&
@@ -9374,7 +9376,6 @@ export function heartbeatService(
   db: Db,
   options: HeartbeatServiceOptions = {},
 ) {
-  let shutdownInProgress = false;
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -9428,11 +9429,11 @@ export function heartbeatService(
     return cachedWorktreeRunExecutionOverride;
   };
   const getSchedulingSuppression = async () => {
-    if (shutdownInProgress) return { suppressed: true, reason: "server_shutdown" as const };
+    if (isHeartbeatShuttingDown()) return { suppressed: true, reason: "server_shutdown" as const };
     const override = await resolveWorktreeRunExecutionOverride();
     // Shutdown can begin while the settings lookup is in flight. Completion
     // callbacks still use this service after the periodic scheduler stops.
-    if (shutdownInProgress) return { suppressed: true, reason: "server_shutdown" as const };
+    if (isHeartbeatShuttingDown()) return { suppressed: true, reason: "server_shutdown" as const };
     return resolveHeartbeatSchedulingSuppression(runtimeEnv, {
       allowWorktreeRunExecution: override.allowed,
     });
@@ -14419,7 +14420,8 @@ export function heartbeatService(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
   ) {
-    shutdownInProgress = true;
+    beginHeartbeatShutdown();
+    await waitForHeartbeatClaimsToSettle();
     const idleSessions = await closeIdleWarmNativeSessionsForRestart();
     if (idleSessions.failed > 0) {
       logger.warn({ idleSessions }, "idle native sessions could not checkpoint before controller shutdown");
@@ -17178,6 +17180,20 @@ export function heartbeatService(
     companyAgents?: AgentOrgRow[],
     deferredPostCommitEffects?: WakeQueuePostCommitEffect[],
   ) {
+    const finish = beginHeartbeatClaim();
+    if (!finish) return null;
+    try {
+      return await claimQueuedRunInternal(run, companyAgents, deferredPostCommitEffects);
+    } finally {
+      finish();
+    }
+  }
+
+  async function claimQueuedRunInternal(
+    run: typeof heartbeatRuns.$inferSelect,
+    companyAgents?: AgentOrgRow[],
+    deferredPostCommitEffects?: WakeQueuePostCommitEffect[],
+  ) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
     if (!agent) {
@@ -17401,7 +17417,7 @@ export function heartbeatService(
           eq(agentWakeupRequests.companyId, claimed.companyId), eq(agentWakeupRequests.runId, claimed.id)));
       // Shutdown may begin during an awaited database write. Roll the entire
       // admission back rather than leave a new owner for the next process.
-      if (shutdownInProgress) throw claimDeferred;
+      if (isHeartbeatShuttingDown()) throw claimDeferred;
     }
     function isRoutineClaimContention(error: unknown): boolean {
       if (error === claimDeferred) return true;
@@ -17564,7 +17580,7 @@ export function heartbeatService(
                 // envelope. Preserve their established claim path; only an
                 // explicitly bound queued-message envelope is subject to the
                 // live-comment discard gate below.
-                if (shutdownInProgress) throw claimDeferred;
+                if (isHeartbeatShuttingDown()) throw claimDeferred;
                 const [claimedRun] = await tx
                   .update(heartbeatRuns)
                   .set({
@@ -17664,7 +17680,7 @@ export function heartbeatService(
                   updatedAt: claimedAt,
                 })
                 .where(eq(agentWakeupRequests.id, wake.id));
-              if (shutdownInProgress) throw claimDeferred;
+              if (isHeartbeatShuttingDown()) throw claimDeferred;
               const [claimedRun] = await tx
                 .update(heartbeatRuns)
                 .set({
@@ -17739,7 +17755,7 @@ export function heartbeatService(
             .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).for("update");
           if (run.wakeupRequestId) await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
             .where(and(eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId))).for("update");
-          if (shutdownInProgress) throw claimDeferred;
+          if (isHeartbeatShuttingDown()) throw claimDeferred;
           const claimed = await tx
             .update(heartbeatRuns)
             .set({
@@ -19641,7 +19657,7 @@ export function heartbeatService(
     let scanFailed = false;
     try {
       return await withAgentStartLock(agentId, async () => {
-        if (shutdownInProgress) return [];
+        if (isHeartbeatShuttingDown()) return [];
         const agent = await getAgent(agentId);
         if (!agent) return [];
         const invokability = await getAgentInvokability(agent);
@@ -19751,7 +19767,7 @@ export function heartbeatService(
         const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
         try {
           for (const queuedRun of prioritizedRuns) {
-            if (shutdownInProgress) break;
+            if (isHeartbeatShuttingDown()) break;
             if (claimedRuns.length >= availableSlots) break;
             await recoverPersistedQueuedCommentInterruptReceipt(queuedRun);
             let claimed: typeof heartbeatRuns.$inferSelect | null;
@@ -26458,7 +26474,7 @@ export function heartbeatService(
       if (
         !nativeSessionResumeScheduled &&
         !nativeWorkspaceFinalizeScheduled &&
-        !shutdownInProgress
+        !isHeartbeatShuttingDown()
       ) {
         if (latestRun) await resumeRemoteStopComments(latestRun).catch(err => {
           logger.warn({ err, runId: run.id }, "failed to resume user messages after remote Stop");

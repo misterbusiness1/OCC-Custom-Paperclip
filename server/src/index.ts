@@ -1,4 +1,5 @@
 /// <reference path="./types/express.d.ts" />
+import { beginHeartbeatShutdown } from "./services/heartbeat-shutdown-admission.js";
 import { isStartupWorkHeld, waitForStartupWorkRelease } from "./services/startup-work-barrier.js";
 // Kicks off the OTel bootstrap as early as possible (no-op unless
 // OTEL_EXPORTER_OTLP_ENDPOINT is set). startServer() awaits
@@ -1966,6 +1967,7 @@ async function startServerWithDatabaseTeardown(
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
   ) => {
+    beginHeartbeatShutdown();
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
     if (executionControlInterval) clearInterval(executionControlInterval);

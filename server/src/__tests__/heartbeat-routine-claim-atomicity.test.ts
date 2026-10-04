@@ -1,9 +1,10 @@
+import { coordinateHeartbeatSchedulerShutdown } from "../shutdown.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { releaseRunClaimedJustBeforeSuppression } from "../services/heartbeat-queued-claim-release.js";
-import { heartbeatService } from "../services/heartbeat.js";
+import { heartbeatService, stopTaskDrain } from "../services/heartbeat.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { withQueuedCommentIdsInWakePayload } from "../services/issue-queued-comment-queue.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -112,13 +113,68 @@ suite("atomic routine execution claim", () => {
     }});
     const pending=heartbeat.resumeQueuedRuns();
     await atGate;
-    await heartbeat.prepareHotRestartShutdown("SIGTERM");
+    const shutdown = heartbeatService(db).prepareHotRestartShutdown("SIGTERM");
     proceed();
-    await pending;
+    await Promise.all([pending, shutdown]);
     expect(await row(f.contenderRun)).toMatchObject({status:"queued",startedAt:null});
     expect(await row(f.ownerRun)).toMatchObject({status:"queued",startedAt:null});
     expect(execute).not.toHaveBeenCalled();
     expect(vi.mocked(publishLiveEvent).mock.calls.some(([event])=>event.type==="heartbeat.run.status" && event.payload.status==="running")).toBe(false);
+  });
+
+  it("keeps shutdown closed across existing and new services after operator drain release", async () => {
+    const f = await fixture("ordinary");
+    await heartbeatService(db).prepareHotRestartShutdown("SIGTERM");
+    stopTaskDrain();
+    await heartbeat.resumeQueuedRuns();
+    await heartbeatService(db).resumeQueuedRuns();
+    expect(await row(f.ownerRun)).toMatchObject({ status: "queued", startedAt: null });
+    expect(await row(f.contenderRun)).toMatchObject({ status: "queued", startedAt: null });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("waits for another service's admitted transaction before the shutdown snapshot", async () => {
+    const f = await fixture("ordinary");
+    let entered!: () => void, proceed!: () => void;
+    const beforeCommit = new Promise<void>(resolve => { entered = resolve; });
+    const commitAllowed = new Promise<void>(resolve => { proceed = resolve; });
+    const pausedDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop !== "transaction") return Reflect.get(target, prop, receiver);
+        return (fn: (tx: unknown) => Promise<unknown>) => target.transaction(async tx => {
+          const result = await fn(tx);
+          const claimed = result as { id?: string; status?: string } | null;
+          if (claimed?.id === f.ownerRun && claimed.status === "running") {
+            // All callback checks have passed, but PostgreSQL has not committed.
+            entered();
+            await commitAllowed;
+          }
+          return result;
+        });
+      },
+    }) as typeof db;
+    const otherService = heartbeatService(pausedDb);
+    const admission = otherService.resumeQueuedRuns();
+    await beforeCommit;
+    let snapshotEntered = false;
+    const shutdown = coordinateHeartbeatSchedulerShutdown({
+      signal: "SIGTERM",
+      waitForHeartbeatSchedulerIdle: async () => {},
+      prepareHotRestartShutdown: async signal => {
+        snapshotEntered = true;
+        return heartbeat.prepareHotRestartShutdown(signal);
+      },
+    });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(snapshotEntered).toBe(false);
+    expect(await row(f.ownerRun)).toMatchObject({ status: "queued", startedAt: null });
+    proceed();
+    await Promise.all([admission, shutdown]);
+    await otherService.drainActiveRunExecutions();
+    expect(snapshotEntered).toBe(true);
+    expect(await row(f.ownerRun)).toMatchObject({ status: "queued", startedAt: null, controllerBootId: null });
+    expect(await row(f.contenderRun)).toMatchObject({ status: "queued", startedAt: null });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("dispatches an earlier committed claim when a later claim fails", async () => {
