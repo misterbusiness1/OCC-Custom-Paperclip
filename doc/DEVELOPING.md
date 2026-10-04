@@ -265,6 +265,11 @@ look like a zero-loss restart.
 
 A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
 
+Shutdown preparation suppresses new heartbeat claims in the retiring controller,
+including queue resumption requested by run-completion callbacks. Pending work
+stays queued for the next controller; this applies to ordinary shutdown as well
+as an explicitly requested hot restart.
+
 ### Recovering a deploy blocked by missing process metadata
 
 If the currently installed version already has a running local-agent heartbeat

@@ -1,3 +1,4 @@
+import { releaseRunClaimedJustBeforeSuppression } from "./heartbeat-queued-claim-release.js";
 import { isStartupWorkHeld } from "./startup-work-barrier.js";
 import { assertBoardCommentWorkspaceMaterializationAllowed } from "./board-comment-workspace-reservation.js";
 import { boardCommentRequestDelivery } from "./board-comment-request-delivery.js";
@@ -9427,7 +9428,11 @@ export function heartbeatService(
     return cachedWorktreeRunExecutionOverride;
   };
   const getSchedulingSuppression = async () => {
+    if (shutdownInProgress) return { suppressed: true, reason: "server_shutdown" as const };
     const override = await resolveWorktreeRunExecutionOverride();
+    // Shutdown can begin while the settings lookup is in flight. Completion
+    // callbacks still use this service after the periodic scheduler stops.
+    if (shutdownInProgress) return { suppressed: true, reason: "server_shutdown" as const };
     return resolveHeartbeatSchedulingSuppression(runtimeEnv, {
       allowWorktreeRunExecution: override.allowed,
     });
@@ -16923,7 +16928,13 @@ export function heartbeatService(
     const issueId = readNonEmptyString(
       parseObject(run.contextSnapshot).issueId,
     );
-    if (!issueId || run.invocationSource !== "automation") return onClear(db);
+    if (!issueId || run.invocationSource !== "automation") {
+      // Claim callbacks also bind issue ownership and the wake receipt. They
+      // must commit together even without an automatic-chat admission gate.
+      return stage === "claim"
+        ? db.transaction(tx => onClear(tx as unknown as Db))
+        : onClear(db);
+    }
     await options.beforeChatControlRecoveryCheck?.({
       runId: run.id,
       issueId,
@@ -17357,6 +17368,51 @@ export function heartbeatService(
         issueId,
         stage: "claim",
       });
+    // A routine fingerprint can already belong to another open execution.
+    // Claiming the run first and binding the issue later stranded a running
+    // controller when that unique constraint rejected the issue update.
+    // Keep every ownership write in the claim transaction; publish only after
+    // its successful commit. Mention/context runs intentionally do not take
+    // the current assignee's issue ownership.
+    const claimDeferred = new Error("Queued run ownership is not currently available");
+    async function bindClaimOwnership(tx: Db, claimed: typeof heartbeatRuns.$inferSelect) {
+      const claimedContext = parseObject(claimed.contextSnapshot);
+      const claimedIssueId = readNonEmptyString(claimedContext.issueId);
+      if (claimedIssueId && claimedContext.wakeReason !== "source_scoped_recovery_action") {
+        const [currentIssue] = await tx.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues)
+          .where(and(eq(issues.id, claimedIssueId), eq(issues.companyId, claimed.companyId)));
+        const bound = await tx.update(issues).set({
+          executionRunId: claimed.id,
+          executionAgentNameKey: normalizeAgentNameKey(agent.name),
+          executionLockedAt: claimedAt,
+          updatedAt: claimedAt,
+        }).where(and(
+          eq(issues.id, claimedIssueId), eq(issues.companyId, claimed.companyId),
+          eq(issues.assigneeAgentId, claimed.agentId),
+          claimed.scheduledRetryReason === "native_safe_replacement"
+            ? or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, claimed.id)) : undefined,
+          or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+        )).returning({ id: issues.id });
+        if (currentIssue?.assigneeAgentId === claimed.agentId && bound.length === 0) throw claimDeferred;
+      }
+      if (claimed.wakeupRequestId) await tx.update(agentWakeupRequests)
+        .set({ status: "claimed", claimedAt, updatedAt: claimedAt })
+        .where(and(eq(agentWakeupRequests.id, claimed.wakeupRequestId),
+          eq(agentWakeupRequests.companyId, claimed.companyId), eq(agentWakeupRequests.runId, claimed.id)));
+      // Shutdown may begin during an awaited database write. Roll the entire
+      // admission back rather than leave a new owner for the next process.
+      if (shutdownInProgress) throw claimDeferred;
+    }
+    function isRoutineClaimContention(error: unknown): boolean {
+      if (error === claimDeferred) return true;
+      let current: unknown = error;
+      for (let depth = 0; depth < 5 && current && typeof current === "object"; depth++) {
+        const value = current as { code?: unknown; constraint_name?: unknown; cause?: unknown };
+        if (value.code === "23505" && value.constraint_name === "issues_open_routine_execution_uq") return true;
+        current = value.cause;
+      }
+      return false;
+    }
     const queuedCommentClaim =
       issueId && run.wakeupRequestId && queuedCommentIds.length > 0
         ? await db
@@ -17508,6 +17564,7 @@ export function heartbeatService(
                 // envelope. Preserve their established claim path; only an
                 // explicitly bound queued-message envelope is subject to the
                 // live-comment discard gate below.
+                if (shutdownInProgress) throw claimDeferred;
                 const [claimedRun] = await tx
                   .update(heartbeatRuns)
                   .set({
@@ -17525,6 +17582,7 @@ export function heartbeatService(
                     ),
                   )
                   .returning();
+                if (claimedRun) await bindClaimOwnership(tx as unknown as Db, claimedRun);
                 return claimedRun
                   ? { kind: "claimed" as const, run: claimedRun }
                   : { kind: "stale" as const, run: null };
@@ -17606,6 +17664,7 @@ export function heartbeatService(
                   updatedAt: claimedAt,
                 })
                 .where(eq(agentWakeupRequests.id, wake.id));
+              if (shutdownInProgress) throw claimDeferred;
               const [claimedRun] = await tx
                 .update(heartbeatRuns)
                 .set({
@@ -17627,12 +17686,13 @@ export function heartbeatService(
                   ),
                 )
                 .returning();
+              if (claimedRun) await bindClaimOwnership(tx as unknown as Db, claimedRun);
               return claimedRun
                 ? { kind: "claimed" as const, run: claimedRun }
                 : { kind: "stale" as const, run: null };
             })
             .catch((error) => {
-              if (isExternalChatWaitAuthorizationContention(error))
+              if (isExternalChatWaitAuthorizationContention(error) || isRoutineClaimContention(error))
                 return { kind: "stale" as const, run: null };
               throw error;
             })
@@ -17673,8 +17733,14 @@ export function heartbeatService(
     }
     const claimed = queuedCommentClaim
       ? queuedCommentClaim.run
-      : await withChatControlRecoveryGate(run, "claim", async (tx) =>
-          tx
+      : await withChatControlRecoveryGate(run, "claim", async (tx) => {
+          // Same issue -> wake -> run order as queued-comment editing.
+          if (issueId) await tx.select({ id: issues.id }).from(issues)
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).for("update");
+          if (run.wakeupRequestId) await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+            .where(and(eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId))).for("update");
+          if (shutdownInProgress) throw claimDeferred;
+          const claimed = await tx
             .update(heartbeatRuns)
             .set({
               status: "running",
@@ -17691,11 +17757,19 @@ export function heartbeatService(
               ),
             )
             .returning()
-            .then((rows) => rows[0] ?? null),
-        );
+            .then((rows) => rows[0] ?? null);
+          if (claimed) await bindClaimOwnership(tx, claimed);
+          return claimed;
+        }).catch(error => {
+          // The transaction has rolled back. Keep this contender queued and
+          // allow the queue scan to dispatch the fingerprint's current owner.
+          if (isRoutineClaimContention(error)) return null;
+          throw error;
+        });
     if (!claimed) return null;
 
-    publishLiveEvent({
+    try {
+      publishLiveEvent({
       companyId: claimed.companyId,
       type: "heartbeat.run.status",
       payload: {
@@ -17714,47 +17788,13 @@ export function heartbeatService(
           : null,
       },
     });
-    publishRunLifecyclePluginEvent(claimed);
-
-    await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
-
-    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
-    // not at queue time. Guard is idempotent — safe if called more than once.
-    const claimedContext = parseObject(claimed.contextSnapshot);
-    const claimedIssueId = readNonEmptyString(claimedContext.issueId);
-    const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
-    if (
-      claimedIssueId &&
-      claimedWakeReason !== "source_scoped_recovery_action"
-    ) {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            claimed.scheduledRetryReason === "native_safe_replacement"
-              ? or(
-                  isNull(issues.checkoutRunId),
-                  eq(issues.checkoutRunId, claimed.id),
-                )
-              : undefined,
-            or(
-              isNull(issues.executionRunId),
-              eq(issues.executionRunId, claimed.id),
-            ),
-          ),
-        );
+    } catch (error) {
+      logger.error({ error, runId: claimed.id }, "committed queued claim live notification failed");
+    }
+    try {
+      publishRunLifecyclePluginEvent(claimed);
+    } catch (error) {
+      logger.error({ error, runId: claimed.id }, "committed queued claim plugin notification failed");
     }
 
     return claimed;
@@ -17778,52 +17818,6 @@ export function heartbeatService(
   // activeRunExecutionPromises while the wakeup stayed "claimed" or the
   // issue stayed locked to a queued run — task-drain status would then read
   // quiescent while the database still held part of the old claim.
-  async function releaseRunClaimedJustBeforeSuppression(runId: string) {
-    const now = new Date();
-    await db.transaction(async (tx) => {
-      const released = await tx
-        .update(heartbeatRuns)
-        .set({
-          status: "queued",
-          startedAt: null,
-          responsibleUserId: null,
-          updatedAt: now,
-        })
-        .where(
-          and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (!released) return;
-
-      if (released.wakeupRequestId) {
-        await tx
-          .update(agentWakeupRequests)
-          .set({ status: "queued", claimedAt: null, updatedAt: now })
-          .where(eq(agentWakeupRequests.id, released.wakeupRequestId));
-      }
-
-      const context = parseObject(released.contextSnapshot);
-      const issueId = readNonEmptyString(context.issueId);
-      if (issueId) {
-        await tx
-          .update(issues)
-          .set({
-            executionRunId: null,
-            executionAgentNameKey: null,
-            executionLockedAt: null,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(issues.id, issueId),
-              eq(issues.companyId, released.companyId),
-              eq(issues.executionRunId, released.id),
-            ),
-          );
-      }
-    });
-  }
 
   async function cancelQueuedRunForBlockedDependencies(
     run: typeof heartbeatRuns.$inferSelect,
@@ -19644,191 +19638,208 @@ export function heartbeatService(
     const cutoff = await getWorktreeExecutionCutoff();
 
     const deferredPostCommitEffects: WakeQueuePostCommitEffect[] = [];
-    const startedRuns = await withAgentStartLock(agentId, async () => {
-      const agent = await getAgent(agentId);
-      if (!agent) return [];
-      const invokability = await getAgentInvokability(agent);
-      if (!invokability.invokable) {
-        if (shouldCancelRunsForNonInvokableAgent(invokability)) {
-          await cancelActiveForAgentInternal(
-            agentId,
-            `Cancelled because the agent is not invokable: ${invokability.reason}`,
-          );
+    let scanFailed = false;
+    try {
+      return await withAgentStartLock(agentId, async () => {
+        if (shutdownInProgress) return [];
+        const agent = await getAgent(agentId);
+        if (!agent) return [];
+        const invokability = await getAgentInvokability(agent);
+        if (!invokability.invokable) {
+          if (shouldCancelRunsForNonInvokableAgent(invokability)) {
+            await cancelActiveForAgentInternal(
+              agentId,
+              `Cancelled because the agent is not invokable: ${invokability.reason}`,
+            );
+          }
+          return [];
         }
-        return [];
-      }
-      const policy = parseHeartbeatPolicy(agent);
-      const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(
-        0,
-        policy.maxConcurrentRuns - runningCount,
-      );
-      if (availableSlots <= 0) return [];
+        const policy = parseHeartbeatPolicy(agent);
+        const runningCount = await countRunningRunsForAgent(agentId);
+        const availableSlots = Math.max(
+          0,
+          policy.maxConcurrentRuns - runningCount,
+        );
+        if (availableSlots <= 0) return [];
 
-      const queuedRuns = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.agentId, agentId),
-            eq(heartbeatRuns.status, "queued"),
-            cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
-          ),
-        )
-        .orderBy(asc(heartbeatRuns.createdAt));
-      if (queuedRuns.length === 0) return [];
+        const queuedRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.agentId, agentId),
+              eq(heartbeatRuns.status, "queued"),
+              cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+            ),
+          )
+          .orderBy(asc(heartbeatRuns.createdAt));
+        if (queuedRuns.length === 0) return [];
 
-      const dependencyReadiness = await listQueuedRunDependencyReadiness(
-        agent.companyId,
-        queuedRuns,
-      );
-      const queuedIssueIds = [
-        ...new Set(
-          queuedRuns
-            .map((run) =>
-              readNonEmptyString(parseObject(run.contextSnapshot).issueId),
-            )
-            .filter((issueId): issueId is string => Boolean(issueId)),
-        ),
-      ];
-      const issueRows = await db
-        .select({
-          id: issues.id,
-          status: issues.status,
-          priority: issues.priority,
-        })
-        .from(issues)
-        .where(
-          queuedIssueIds.length > 0
-            ? and(
-                eq(issues.companyId, agent.companyId),
-                inArray(issues.id, queuedIssueIds),
+        const dependencyReadiness = await listQueuedRunDependencyReadiness(
+          agent.companyId,
+          queuedRuns,
+        );
+        const queuedIssueIds = [
+          ...new Set(
+            queuedRuns
+              .map((run) =>
+                readNonEmptyString(parseObject(run.contextSnapshot).issueId),
               )
-            : sql`false`,
-        );
-      const issueById = new Map(issueRows.map((row) => [row.id, row]));
-      const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
-        const leftIssueId = readNonEmptyString(
-          parseObject(left.contextSnapshot).issueId,
-        );
-        const rightIssueId = readNonEmptyString(
-          parseObject(right.contextSnapshot).issueId,
-        );
-        const leftReadiness = leftIssueId
-          ? dependencyReadiness.get(leftIssueId)
-          : null;
-        const rightReadiness = rightIssueId
-          ? dependencyReadiness.get(rightIssueId)
-          : null;
-        const leftReady = leftIssueId
-          ? (leftReadiness?.isDependencyReady ?? true)
-          : true;
-        const rightReady = rightIssueId
-          ? (rightReadiness?.isDependencyReady ?? true)
-          : true;
-        const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
-        const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId
-          ? leftReady
-            ? leftIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        const rightRank = rightIssueId
-          ? rightReady
-            ? rightIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank)
-          return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
-      });
-
-      const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of prioritizedRuns) {
-        if (claimedRuns.length >= availableSlots) break;
-        await recoverPersistedQueuedCommentInterruptReceipt(queuedRun);
-        let claimed: typeof heartbeatRuns.$inferSelect | null;
-        try {
-          claimed = await claimQueuedRun(
-            queuedRun,
-            companyAgents,
-            deferredPostCommitEffects,
+              .filter((issueId): issueId is string => Boolean(issueId)),
+          ),
+        ];
+        const issueRows = await db
+          .select({
+            id: issues.id,
+            status: issues.status,
+            priority: issues.priority,
+          })
+          .from(issues)
+          .where(
+            queuedIssueIds.length > 0
+              ? and(
+                  eq(issues.companyId, agent.companyId),
+                  inArray(issues.id, queuedIssueIds),
+                )
+              : sql`false`,
           );
-        } catch (error) {
-          if (
-            !(error instanceof HttpError) ||
-            error.status !== 403 ||
-            error.message !== "Queued-message interrupt authority is unavailable"
-          ) throw error;
-          const failed = await db
-            .update(heartbeatRuns)
-            .set({
-              status: "failed",
-              error: error.message,
-              errorCode: "queued_comment_interrupt_authority_unavailable",
-              finishedAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(heartbeatRuns.id, queuedRun.id),
-                eq(heartbeatRuns.companyId, queuedRun.companyId),
-                eq(heartbeatRuns.status, "queued"),
-              ),
-            )
-            .returning()
-            .then((rows) => rows[0] ?? null);
-          if (failed) {
-            await setWakeupStatus(failed.wakeupRequestId, "failed", {
-              error: error.message,
-              finishedAt: new Date(),
+        const issueById = new Map(issueRows.map((row) => [row.id, row]));
+        const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
+        const prioritizedRuns = [...queuedRuns].sort((left, right) => {
+          const leftIssueId = readNonEmptyString(
+            parseObject(left.contextSnapshot).issueId,
+          );
+          const rightIssueId = readNonEmptyString(
+            parseObject(right.contextSnapshot).issueId,
+          );
+          const leftReadiness = leftIssueId
+            ? dependencyReadiness.get(leftIssueId)
+            : null;
+          const rightReadiness = rightIssueId
+            ? dependencyReadiness.get(rightIssueId)
+            : null;
+          const leftReady = leftIssueId
+            ? (leftReadiness?.isDependencyReady ?? true)
+            : true;
+          const rightReady = rightIssueId
+            ? (rightReadiness?.isDependencyReady ?? true)
+            : true;
+          const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
+          const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
+          const leftRank = leftIssueId
+            ? leftReady
+              ? leftIssue?.status === "in_progress"
+                ? 0
+                : 1
+              : 3
+            : 2;
+          const rightRank = rightIssueId
+            ? rightReady
+              ? rightIssue?.status === "in_progress"
+                ? 0
+                : 1
+              : 3
+            : 2;
+          if (leftRank !== rightRank) return leftRank - rightRank;
+          const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
+          const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
+          if (leftPriorityRank !== rightPriorityRank)
+            return leftPriorityRank - rightPriorityRank;
+          return left.createdAt.getTime() - right.createdAt.getTime();
+        });
+
+        const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+        try {
+          for (const queuedRun of prioritizedRuns) {
+            if (shutdownInProgress) break;
+            if (claimedRuns.length >= availableSlots) break;
+            await recoverPersistedQueuedCommentInterruptReceipt(queuedRun);
+            let claimed: typeof heartbeatRuns.$inferSelect | null;
+            try {
+              claimed = await claimQueuedRun(
+                queuedRun,
+                companyAgents,
+                deferredPostCommitEffects,
+              );
+            } catch (error) {
+              if (
+                !(error instanceof HttpError) ||
+                error.status !== 403 ||
+                error.message !== "Queued-message interrupt authority is unavailable"
+              ) throw error;
+              const failed = await db
+                .update(heartbeatRuns)
+                .set({
+                  status: "failed",
+                  error: error.message,
+                  errorCode: "queued_comment_interrupt_authority_unavailable",
+                  finishedAt: new Date(),
+                  updatedAt: new Date(),
+                })
+                .where(
+                  and(
+                    eq(heartbeatRuns.id, queuedRun.id),
+                    eq(heartbeatRuns.companyId, queuedRun.companyId),
+                    eq(heartbeatRuns.status, "queued"),
+                  ),
+                )
+                .returning()
+                .then((rows) => rows[0] ?? null);
+              if (failed) {
+                await setWakeupStatus(failed.wakeupRequestId, "failed", {
+                  error: error.message,
+                  finishedAt: new Date(),
+                });
+                await appendRunEvent(failed, {
+                  eventType: "error",
+                  stream: "system",
+                  level: "error",
+                  message: error.message,
+                  payload: { code: "queued_comment_interrupt_authority_unavailable" },
+                });
+              }
+              continue;
+            }
+            if (claimed) claimedRuns.push(claimed);
+          }
+        } finally {
+          // A later claim can fail after earlier claims committed. Those runs
+          // already own capacity and must still execute; propagate the original
+          // failure after registering their execution promises for shutdown.
+          for (const claimedRun of claimedRuns) {
+            const execution = executeRun(claimedRun.id).catch((err) => {
+              logger.error(
+                { err, runId: claimedRun.id },
+                "queued heartbeat execution failed",
+              );
             });
-            await appendRunEvent(failed, {
-              eventType: "error",
-              stream: "system",
-              level: "error",
-              message: error.message,
-              payload: { code: "queued_comment_interrupt_authority_unavailable" },
+            // Register the in-flight execution so drainActiveRunExecutions() can await
+            // it. executeRun resolves only after its finally block finishes flushing
+            // run rows/events, so awaiting this promise guarantees the run's writes
+            // have landed before a caller (e.g. a test's afterEach) mutates the DB.
+            activeRunExecutionPromises.add(execution);
+            void execution.finally(() => {
+              // drainActiveRunExecutions loops on activeRunExecutionPromises.size,
+              // so an entry that never clears here would hang it forever.
+              activeRunExecutionPromises.delete(execution);
             });
           }
-          continue;
         }
-        if (claimed) claimedRuns.push(claimed);
+        return claimedRuns;
+      });
+    } catch (error) {
+      scanFailed = true;
+      throw error;
+    } finally {
+      // Committed cancellation/promotion effects survive a later scan failure.
+      // Apply them only after releasing the agent lock to avoid reentrant locks.
+      try {
+        await applyWakeQueuePostCommitEffects(deferredPostCommitEffects);
+      } catch (error) {
+        if (!scanFailed) throw error;
+        logger.error({ err: error, agentId }, "post-commit wake effects failed after queue scan failure");
       }
-      if (claimedRuns.length === 0) return [];
-
-      for (const claimedRun of claimedRuns) {
-        const execution = executeRun(claimedRun.id).catch((err) => {
-          logger.error(
-            { err, runId: claimedRun.id },
-            "queued heartbeat execution failed",
-          );
-        });
-        // Register the in-flight execution so drainActiveRunExecutions() can await
-        // it. executeRun resolves only after its finally block finishes flushing
-        // run rows/events, so awaiting this promise guarantees the run's writes
-        // have landed before a caller (e.g. a test's afterEach) mutates the DB.
-        activeRunExecutionPromises.add(execution);
-        void execution.finally(() => {
-          // drainActiveRunExecutions loops on activeRunExecutionPromises.size,
-          // so an entry that never clears here would hang it forever.
-          activeRunExecutionPromises.delete(execution);
-        });
-      }
-      return claimedRuns;
-    });
-    // A cancelled readiness run can release a saved comment behind it.
-    // Start the promoted run after releasing this agent's start lock.
-    await applyWakeQueuePostCommitEffects(deferredPostCommitEffects);
-    return startedRuns;
+    }
   }
 
   async function recoverPersistedQueuedCommentInterruptReceipt(
@@ -20288,7 +20299,10 @@ export function heartbeatService(
     let attestedQuestionResponseAtMs: number | null = null;
     if ((await getSchedulingSuppression()).suppressed) {
       try {
-        await releaseRunClaimedJustBeforeSuppression(runId);
+        // A recovered native owner may already have provider work. Suppression
+        // pauses recovery; only a newly queued claim may be returned to queue.
+        if (!runOptions.nativeRestartRecovery && !runOptions.nativeLeaseOwner)
+          await releaseRunClaimedJustBeforeSuppression(db, runId, legacyControllerBootId);
       } catch (err) {
         logger.error(
           { err, runId },
