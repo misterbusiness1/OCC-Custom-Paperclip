@@ -87,6 +87,15 @@ describe("TypeSafe runtime tool contract", () => {
     });
   });
 
+  it.each([
+    ["an unrelated model", "other-1.13.0"],
+    ["the latest alias echoed by the provider", "jev-latest"],
+    ["the preview alias echoed by the provider", "jev-preview"],
+  ])("rejects %s for an alias request", async (_label, model) => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ...payload, model }), { status: 200 }));
+    expect(await service({ fetch }).judge(claims(), input)).toEqual({ ok: false, error: { code: "invalid_response", retryable: false } });
+  });
+
   it("rejects invalid live-run authority before credential or provider access", async () => {
     const denied = Object.assign(new Error("Runtime tool token is no longer active"), { status: 403 });
     const validateCapability = vi.fn(async () => { throw denied; });
