@@ -18,17 +18,23 @@ suite("actual HTTP durable Board comment admission", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   let app: express.Express;
+  let restartedApp: express.Express;
+  const makeApp = (connection: ReturnType<typeof createDb>) => {
+    const server = express(); server.use(express.json());
+    server.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "local-board", source: "local_implicit", isInstanceAdmin: false }; next();
+    });
+    server.use("/api", issueRoutes(connection, {} as StorageService));
+    server.use("/api", boardCommentRequestProtocolRoutes(connection)); server.use(errorHandler);
+    return server;
+  };
   const oldAdmission = process.env.PAPERCLIP_BOARD_COMMENT_REQUEST_ADMISSION_ENABLED;
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-comment-http-");
     db = createDb(database.connectionString, { maxConnections: 8 });
     process.env.PAPERCLIP_BOARD_COMMENT_REQUEST_ADMISSION_ENABLED = "true";
-    app = express(); app.use(express.json());
-    app.use((req, _res, next) => {
-      req.actor = { type: "board", userId: "local-board", source: "local_implicit", isInstanceAdmin: false };
-      next();
-    });
-    app.use("/api", issueRoutes(db, {} as StorageService)); app.use("/api", boardCommentRequestProtocolRoutes(db)); app.use(errorHandler);
+    app = makeApp(db);
+    restartedApp = makeApp(createDb(database.connectionString, { maxConnections: 1 }));
   }, 30_000);
   afterAll(async () => {
     if (oldAdmission === undefined) delete process.env.PAPERCLIP_BOARD_COMMENT_REQUEST_ADMISSION_ENABLED;
@@ -52,7 +58,7 @@ suite("actual HTTP durable Board comment admission", () => {
     });
     await lockReady;
     const first = request(app).post(`/api/issues/${input.issueId}/comments`).send(body).then(response => response);
-    const second = request(app).post(`/api/issues/${input.issueId}/comments`).send(body).then(response => response);
+    const second = request(restartedApp).post(`/api/issues/${input.issueId}/comments`).send(body).then(response => response);
     await new Promise(resolve => setTimeout(resolve, 100)); unlock(); await holder;
     const responses = await Promise.all([first, second]);
     for (const response of responses) expect(response.status, JSON.stringify(response.body)).toBe(201);
