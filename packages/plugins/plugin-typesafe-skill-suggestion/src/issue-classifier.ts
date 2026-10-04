@@ -1,3 +1,4 @@
+import { operatorTransportOptions } from "./operator-transport.js";
 import { createHash } from "node:crypto";
 import { choice, noul, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { JsonValue } from "@typesafe-ai/sdk";
@@ -81,7 +82,7 @@ export function isCurrentIssueRevision(inputRevision: string, title: string, sum
 }
 
 export function createIssueClassificationClient(apiKey: string, timeoutMs: number, maxRetries: number): ClassificationClient {
-  const client = new TypeSafeClient({ apiKey, defaultModel: ISSUE_CLASSIFICATION_MODEL, timeout: timeoutMs,
+  const client = new TypeSafeClient({ ...operatorTransportOptions(), apiKey, defaultModel: ISSUE_CLASSIFICATION_MODEL, timeout: timeoutMs,
     retry: { maxRetries }, logLevel: "warn" });
   return {
     async classify(state) {
