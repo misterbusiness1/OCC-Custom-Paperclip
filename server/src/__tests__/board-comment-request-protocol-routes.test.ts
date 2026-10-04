@@ -28,7 +28,8 @@ describe("Board comment protocol operational evidence", () => {
     expect(response.status).toBe(200);
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.body).toEqual({ protocolVersion: 1, processBootId: expect.any(String),
-      controls: { admission: true, dispatch: false }, inFlight: { admission: 0, dispatch: 0 } });
+      controls: { admission: true, dispatch: false }, configuredControls: { admission: true, dispatch: false },
+      startupWork: { bootId: expect.any(String), generation: 0, held: false, configuredHold: false, qualificationSha256: null }, inFlight: { admission: 0, dispatch: 0 } });
   });
   it("counts an outstanding operation and releases its count when it throws", async () => {
     let release!: () => void;

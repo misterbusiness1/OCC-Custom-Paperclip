@@ -1,3 +1,4 @@
+import { isStartupWorkHeld } from "../services/startup-work-barrier.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
@@ -54,7 +55,7 @@ function liveAuthorityKey(input: {
 
 function rejectUpgrade(
   socket: Duplex,
-  status: "400 Bad Request" | "404 Not Found",
+  status: "400 Bad Request" | "404 Not Found" | "503 Service Unavailable",
 ): void {
   if (socket.destroyed) return;
   try {
@@ -100,6 +101,11 @@ export function setupRunnerPrpWebSocketServer(
           "runner PRP websocket upgrade socket failed",
         );
       });
+
+      if (isStartupWorkHeld()) {
+        rejectUpgrade(socket, "503 Service Unavailable");
+        return;
+      }
 
       const runId = url.pathname.slice(CONNECT_PATH_PREFIX.length);
       if (!UUID_PATTERN.test(runId)) {

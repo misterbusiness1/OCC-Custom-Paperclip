@@ -1,3 +1,4 @@
+import { assertStartupWorkAllowed, isStartupWorkHeld } from "./startup-work-barrier.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -980,6 +981,7 @@ export function externalObjectService(
     objectId: string,
     input: RefreshObjectInput,
   ) {
+    assertStartupWorkAllowed();
     const now = input.now ?? new Date();
     const object = await db
       .select()
@@ -1023,6 +1025,7 @@ export function externalObjectService(
     objectIds?: string[];
     actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId" | "runId">;
   }) {
+    assertStartupWorkAllowed();
     if (!(await isEnabled())) return [];
     const groups = await listForIssue(issueId);
     const objectIds = groups
@@ -1064,11 +1067,13 @@ export function externalObjectService(
   }
 
   async function refreshDueObjects(companyId: string, limit = 50, now = new Date()) {
+    if (isStartupWorkHeld()) return [];
     if (!(await isEnabled())) return [];
     return refreshDueObjectsUnchecked(companyId, limit, now);
   }
 
   async function refreshDueObjectsForActiveCompanies(limitPerCompany = 50, now = new Date()) {
+    if (isStartupWorkHeld()) return { companies: 0, checked: 0, refreshed: 0 };
     if (!(await isEnabled())) return { companies: 0, checked: 0, refreshed: 0 };
     const activeCompanies = await db
       .select({ id: companies.id })

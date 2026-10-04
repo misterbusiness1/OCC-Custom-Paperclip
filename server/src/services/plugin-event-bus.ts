@@ -1,3 +1,4 @@
+import { assertStartupWorkAllowed } from "./startup-work-barrier.js";
 /**
  * PluginEventBus — typed in-process event bus for the Paperclip plugin system.
  *
@@ -170,6 +171,7 @@ export function createPluginEventBus(): PluginEventBus {
    * single misbehaving plugin cannot interrupt delivery to other plugins.
    */
   async function emit(event: PluginEvent): Promise<PluginEventBusEmitResult> {
+    assertStartupWorkAllowed();
     const errors: Array<{ pluginId: string; error: unknown }> = [];
     const promises: Promise<void>[] = [];
 

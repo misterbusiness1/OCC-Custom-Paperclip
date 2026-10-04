@@ -1,3 +1,4 @@
+import { assertStartupWorkAllowed, isStartupWorkHeld } from "./startup-work-barrier.js";
 /**
  * PluginJobScheduler — tick-based scheduler for plugin scheduled jobs.
  *
@@ -244,6 +245,7 @@ export function createPluginJobScheduler(
    * A single scheduler tick. Queries for due jobs and dispatches them.
    */
   async function tick(): Promise<void> {
+    if (isStartupWorkHeld()) return;
     // Prevent overlapping ticks (in case a tick takes longer than the interval)
     if (tickInProgress) {
       log.debug("skipping tick — previous tick still in progress");
@@ -343,6 +345,7 @@ export function createPluginJobScheduler(
   async function dispatchJob(
     job: typeof pluginJobs.$inferSelect,
   ): Promise<void> {
+    assertStartupWorkAllowed();
     const { id: jobId, pluginId, jobKey, schedule } = job;
     const jobLog = log.child({ jobId, pluginId, jobKey });
 
@@ -440,6 +443,7 @@ export function createPluginJobScheduler(
     jobId: string,
     trigger: "manual" | "retry" = "manual",
   ): Promise<TriggerJobResult> {
+    assertStartupWorkAllowed();
     const job = await jobStore.getJobById(jobId);
     if (!job) {
       throw new Error(`Job not found: ${jobId}`);
@@ -503,6 +507,7 @@ export function createPluginJobScheduler(
     runId: string,
     trigger: "manual" | "retry",
   ): Promise<void> {
+    assertStartupWorkAllowed();
     const { id: jobId, pluginId, jobKey } = job;
     const jobLog = log.child({ jobId, pluginId, jobKey, runId, trigger });
 

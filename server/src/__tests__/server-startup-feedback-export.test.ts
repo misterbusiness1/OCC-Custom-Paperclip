@@ -409,6 +409,17 @@ vi.mock("../auth/better-auth.js", () => ({
   resolveBetterAuthSessionFromHeaders: vi.fn(async () => null),
 }));
 
+const heldStartupControl = vi.hoisted(() => ({ barrier: null as null | {
+  isHeld(): boolean; waitUntilReleased(): Promise<void>;
+} }));
+vi.mock("../services/startup-work-barrier.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/startup-work-barrier.js")>();
+  return { ...actual,
+    isStartupWorkHeld: () => heldStartupControl.barrier?.isHeld() ?? false,
+    waitForStartupWorkRelease: () => heldStartupControl.barrier?.waitUntilReleased() ?? Promise.resolve(),
+  };
+});
+import { createStartupWorkBarrier } from "../services/startup-work-barrier.js";
 import { startServer } from "../index.ts";
 import { reconcileSafeNativeReplacements } from "../services/native-runtime/native-safe-replacement.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "../services/execution-control-deadline.js";
@@ -528,6 +539,32 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+
+  it("finishes held bootstrap without business recovery, then starts the same boot once after release", async () => {
+    const barrier = createStartupWorkBarrier({ PAPERCLIP_STARTUP_WORK_HELD: "true" });
+    heldStartupControl.barrier = barrier;
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    const intervals = vi.spyOn(globalThis, "setInterval").mockImplementation((() =>
+      1 as unknown as ReturnType<typeof setInterval>) as typeof setInterval);
+    try {
+      await startServer();
+      expect(createAppMock).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.resumeQueuedRuns).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.recoverNativeRunsAfterRestart).not.toHaveBeenCalled();
+      expect(reconcileSafeNativeReplacements).not.toHaveBeenCalled();
+      expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).not.toHaveBeenCalled();
+      expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
+      const app = createAppMock.mock.results[0]?.value;
+      expect((await app).locals.toolActionDeliveries.sweepPending).not.toHaveBeenCalled();
+      const boot = barrier.snapshot();
+      barrier.release({ expectedBootId: boot.bootId, expectedGeneration: boot.generation,
+        qualificationSha256: "a".repeat(64) });
+      await vi.waitFor(() => expect(heartbeatServiceMock.resumeQueuedRuns).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(1));
+      expect((await app).locals.toolActionDeliveries.sweepPending).toHaveBeenCalledTimes(1);
+      expect(createAppMock).toHaveBeenCalledTimes(1);
+    } finally { heldStartupControl.barrier = null; intervals.mockRestore(); }
   });
 
   it("never invokes the retired review detector at startup or on periodic recovery", async () => {

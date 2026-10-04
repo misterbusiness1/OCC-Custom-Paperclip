@@ -562,7 +562,7 @@ describe("issue update comment wakeups", () => {
     expect(issueCommentedWakeCalls).toEqual([]);
   });
 
-  it("wakes the assignee on top-level board issue comments", async () => {
+  it("wakes the assignee on unkeyed top-level board issue comments", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,
       assigneeUserId: null,
@@ -580,12 +580,11 @@ describe("issue update comment wakeups", () => {
       .post(`/api/issues/${existing.id}/comments`)
       .send({
         body: "please handle this top-level thread comment",
-        clientRequestId: "66666666-6666-4666-8666-666666666666",
       });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.addComment).toHaveBeenCalledWith(existing.id, "please handle this top-level thread comment", expect.anything(),
-      expect.objectContaining({ clientRequestId: "66666666-6666-4666-8666-666666666666" }), expect.anything());
+      expect.objectContaining({ clientRequestId: undefined }), expect.anything());
     await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,

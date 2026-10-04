@@ -1,3 +1,4 @@
+import { assertStartupWorkAllowed, isStartupWorkHeld, StartupWorkBarrierError } from "./startup-work-barrier.js";
 /**
  * PluginWorkerManager — spawns and manages out-of-process plugin worker child
  * processes, routes JSON-RPC 2.0 calls over stdio, and handles lifecycle
@@ -3096,6 +3097,7 @@ export function createPluginWorkerHandle(
   // -----------------------------------------------------------------------
 
   async function startInternal(): Promise<void> {
+    assertStartupWorkAllowed();
     if (status === "running" || status === "starting") {
       throw new Error(`Worker for plugin "${pluginId}" is already ${status}`);
     }
@@ -3293,6 +3295,10 @@ export function createPluginWorkerHandle(
     executeLogSink?: ExecuteLogSink,
   ): Promise<HostToWorkerMethods[M][1]> {
     const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
+      if (isStartupWorkHeld() && method !== "shutdown" && method !== "health") {
+        try { assertStartupWorkAllowed(); } catch (error) { reject(error); }
+        return;
+      }
       if (!childProcess?.stdin?.writable) {
         reject(
           new Error(
@@ -3425,6 +3431,7 @@ export function createPluginWorkerHandle(
       timeoutMs?: number,
       executeLogSink?: ExecuteLogSink,
     ): Promise<HostToWorkerMethods[M][1]> {
+      if (isStartupWorkHeld() && method !== "shutdown" && method !== "health") return Promise.reject(new StartupWorkBarrierError("startup_work_held"));
       if (status !== "running" && status !== "starting") {
         return Promise.reject(
           new Error(
@@ -3436,6 +3443,7 @@ export function createPluginWorkerHandle(
     },
 
     openLoginPtySession(input: LoginPtyOpenInput) {
+      if (isStartupWorkHeld()) return Promise.reject(new StartupWorkBarrierError("startup_work_held"));
       if (status !== "running" && status !== "starting") {
         return Promise.reject(
           new Error(
@@ -3447,6 +3455,7 @@ export function createPluginWorkerHandle(
     },
 
     openDuplexChannel(input: DuplexChannelOpenInput) {
+      if (isStartupWorkHeld()) return Promise.reject(new StartupWorkBarrierError("startup_work_held"));
       if (status !== "running" && status !== "starting") {
         return Promise.reject(
           new Error(
@@ -3458,6 +3467,7 @@ export function createPluginWorkerHandle(
     },
 
     notify(method: string, params: unknown) {
+      assertStartupWorkAllowed();
       if (status !== "running") return;
       const invocationScope = deriveInvocationScope(method, params);
       // Notifications have no response to settle on, so the invocation scope

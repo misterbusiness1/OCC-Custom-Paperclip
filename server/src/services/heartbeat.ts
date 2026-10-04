@@ -1,3 +1,4 @@
+import { isStartupWorkHeld } from "./startup-work-barrier.js";
 import { assertBoardCommentWorkspaceMaterializationAllowed } from "./board-comment-workspace-reservation.js";
 import { boardCommentRequestDelivery } from "./board-comment-request-delivery.js";
 import { assertBoardCommentWakeClaim, type BoardCommentWakeClaim } from "./board-comment-wake-claim.js";
@@ -9347,8 +9348,9 @@ export function resolveHeartbeatSchedulingSuppression(
 ): {
   suppressed: boolean;
   reason:
-    "worktree_instance" | "database_restore_in_progress" | "task_drain" | null;
+    "worktree_instance" | "database_restore_in_progress" | "task_drain" | "startup_work_held" | null;
 } {
+  if (isStartupWorkHeld()) return { suppressed: true, reason: "startup_work_held" };
   if (
     isTruthyRuntimeEnvValue(env.PAPERCLIP_IN_WORKTREE) &&
     !overrides.allowWorktreeRunExecution

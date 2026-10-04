@@ -1,3 +1,4 @@
+import { assertStartupWorkAllowed, isStartupWorkHeld } from "./startup-work-barrier.js";
 import { reserveBoardCommentWorkspaceReopen } from "./board-comment-request-workspace-reopen.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -87,6 +88,7 @@ export function issueCommentRequestService(db: Db, options: {
       normalization: { body: string; censorUsername: boolean },
     ) => Promise<{ commentId: string; effects: CommentEffectPlan[]; sourceTrust?: Record<string, unknown> | null }>) {
       return trackBoardCommentRequestOperation("admission", async () => {
+      assertStartupWorkAllowed();
       if (!input.authorUserId || !input.clientRequestId) throw forbidden("Authenticated request identity required");
       if (input.authorType != null && input.authorType !== "user") throw unprocessable("Comment authorType must match authenticated actor");
       const result = await db.transaction(async (tx) => {
@@ -192,7 +194,7 @@ export function issueCommentRequestService(db: Db, options: {
     /** One bounded effect per invocation; repeated recovery passes drain the ordered outbox. */
     async dispatchOne(companyId: string, requestId: string) {
       return trackBoardCommentRequestOperation("dispatch", async () => {
-      if (!controls().dispatch) return;
+      if (isStartupWorkHeld() || !controls().dispatch) return;
       const claimed = await db.transaction(async (tx) => {
         const [identity] = await tx.select({ issueId: issueCommentRequests.issueId }).from(issueCommentRequests)
           .where(and(eq(issueCommentRequests.id, requestId), eq(issueCommentRequests.companyId, companyId)));

@@ -60,6 +60,12 @@ Observation schema:
   "writerInventoryComplete": true,
   "releaseLockHeld": true,
   "databaseIdentityVerified": true,
+  "databaseIdentity": {
+    "database": "paperclip",
+    "systemIdentifier": "<PostgreSQL system identifier>",
+    "migrationLedgerSha256": "<exact current ledger SHA256>"
+  },
+  "bootstrapReadinessVerified": true,
   "admissionsInFlight": 0,
   "dispatchesInFlight": 0,
   "migrationAttestationVerified": true,
@@ -95,20 +101,40 @@ to an older script or automatically selects an unqualified image.
 2. Apply only the separately qualified additive migration and app replacement.
    Preserve all request/effect records. Start only the qualified compatible
    image, with admission off. Do not serve an old writer beside it.
-3. **dispatcher-ready (mandatory before enabling admission):** attest the actual migration and all serving writer
-   images/sources. Dispatch is on and admission remains off. Prove readiness
-   using actual isolated protocol checks and current health; do not infer it
-   from a desired flag or merely from a running container.
-4. **activation (post-change verification, not permission to enable):** only after
-   the dispatcher-ready pre-enable gate passes for this exact image, enable
-   admission. Inspect actual flags again; both must be on and every serving
-   writer must match the qualified image/source. Keep the external admission
-   gate closed until this check succeeds, then release it and test real tasks.
-5. **rollback:** disable both switches, settle/stop writers, and call the guard
+3. **dispatcher-ready (mandatory before configuring admission):** attest the actual
+   migration and all serving writer images/sources. The startup barrier remains
+   held: configured dispatch is on, configured admission off, and both effective
+   controls are off. Prove bootstrap readiness and the qualified source contract;
+   this phase does not claim business dispatch has started.
+4. **held-release (mandatory before releasing work):** start the exact qualified
+   image with both controls configured on and startup work held. Collect its actual
+   boot ID and generation. Require generation zero, configured hold and held both
+   true, null prior qualification, effective controls both false, bootstrap ready,
+   zero in-flight operations, exact database/ledger identity and compatible floor.
+   Use the resulting bound evidence to call authenticated release on this same boot;
+   do not restart between this check and that explicit work-release commit.
+5. **activation (post-release verification):** observe the same released boot with
+   effective controls both on, matching configured flags, and actual dispatcher
+   readiness after deferred startup recovery. Activation does not authorize an
+   earlier release and cannot substitute for held-release. Keep external ingress
+   held until it succeeds; internal work may already be executing after release.
+6. **rollback:** disable both switches, settle/stop writers, and call the guard
    against the independently qualified rollback target before any image swap.
    Any ledger row with a higher protocol version rejects that target, including
    delivered/cancelled rows. Clearing a queue or waiting does not permit an
    unaware rollback. Use a qualified compatible image or forward repair.
+
+### Held runtime observation
+
+Each live writer must also include `processBootId`, `startupWork` (the full
+`bootId`, `generation`, `configuredHold`, `held`, `qualificationSha256` snapshot),
+`runtimeControlsSource: "authenticated_startup_work_endpoint"`,
+`configuredControls` and `effectiveControls` from the authenticated startup
+barrier endpoint. Configured values must match container inspection; effective
+values must match the current held/released state. The guard returns qualified
+boot IDs/generations and database identity for the operator's final receipt.
+The CLI independently reads the connected PostgreSQL identity and ledger, then
+checks the retained floor. A matching operator boolean alone is insufficient.
 
 ### Startup-only switch constraint
 

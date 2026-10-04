@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const IMAGE = /^sha256:[a-f0-9]{64}$/;
+const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const COMMIT = /^[a-f0-9]{40}$/;
-const PHASES = new Set(["pre-swap", "dispatcher-ready", "activation", "rollback"]);
+const PHASES = new Set(["pre-swap", "dispatcher-ready", "held-release", "activation", "rollback"]);
 
 function requireCondition(condition, code) {
   if (!condition) throw new Error(code);
@@ -31,6 +32,17 @@ export function observedSwitch(value) {
   throw new Error("invalid_observed_switch");
 }
 
+/** Check the database actually connected by the CLI, not just an operator boolean. */
+export function validateConnectedDatabase(expected, actual) {
+  requireCondition(expected && /^[0-9]+$/.test(expected.systemIdentifier ?? "")
+    && typeof expected.database === "string" && expected.database.length > 0
+    && (expected.migrationLedgerSha256 === null || SHA256.test(expected.migrationLedgerSha256 ?? "")),
+  "database_identity_pin_required");
+  requireCondition(expected.systemIdentifier === actual?.systemIdentifier
+    && expected.database === actual?.database && expected.migrationLedgerSha256 === actual?.migrationLedgerSha256,
+  "connected_database_identity_or_ledger_changed");
+}
+
 export function validateReleaseEvidence({ phase, qualification, observation, expectedImage, expectedSource, now = Date.now() }) {
   requireCondition(PHASES.has(phase), "invalid_release_phase");
   requireCondition(IMAGE.test(expectedImage ?? "") && COMMIT.test(expectedSource ?? ""), "immutable_target_required");
@@ -45,6 +57,7 @@ export function validateReleaseEvidence({ phase, qualification, observation, exp
   requireCondition(observation.writerInventoryComplete === true && Array.isArray(observation.writers), "writer_inventory_required");
   requireCondition(observation.releaseLockHeld === true, "release_lock_required");
   requireCondition(observation.databaseIdentityVerified === true, "database_identity_required");
+  validateConnectedDatabase(observation.databaseIdentity, observation.databaseIdentity);
   requireCondition(observation.admissionsInFlight === 0 && observation.dispatchesInFlight === 0, "requests_not_quiescent");
   const identities = new Set();
   for (const writer of observation.writers) {
@@ -62,16 +75,36 @@ export function validateReleaseEvidence({ phase, qualification, observation, exp
   } else {
     requireCondition(qualification.protocolVersion > 0, "activation_requires_protocol_support");
     requireCondition(observation.migrationAttestationVerified === true, "migration_attestation_required");
+    requireCondition(SHA256.test(observation.databaseIdentity.migrationLedgerSha256 ?? ""), "migration_ledger_pin_required");
     requireCondition(live.length > 0, "serving_writer_required");
     for (const writer of live) {
       requireCondition(writer.running && writer.serving && writer.imageDigest === expectedImage && writer.sourceCommit === expectedSource, "mixed_or_unknown_writers");
       requireCondition(observedSwitch(writer.dispatchEnabled), "dispatcher_disabled");
-      requireCondition(observedSwitch(writer.admissionEnabled) === (phase === "activation"), "admission_switch_wrong_phase");
+      requireCondition(observedSwitch(writer.admissionEnabled) === (phase !== "dispatcher-ready"), "admission_switch_wrong_phase");
+      const boot = writer.startupWork;
+      requireCondition(boot && UUID.test(boot.bootId ?? "") && writer.processBootId === boot.bootId
+        && Number.isSafeInteger(boot.generation) && boot.generation >= 0, "runtime_boot_identity_required");
+      requireCondition(writer.runtimeControlsSource === "authenticated_startup_work_endpoint", "runtime_control_observation_required");
+      requireCondition(writer.configuredControls?.admission === observedSwitch(writer.admissionEnabled)
+        && writer.configuredControls?.dispatch === observedSwitch(writer.dispatchEnabled), "configured_control_inspect_mismatch");
+      if (phase === "dispatcher-ready" || phase === "held-release") {
+        requireCondition(boot.configuredHold === true && boot.held === true && boot.generation === 0
+          && boot.qualificationSha256 === null, "fresh_held_boot_required");
+        requireCondition(writer.effectiveControls?.admission === false && writer.effectiveControls?.dispatch === false,
+          "held_effective_controls_must_be_off");
+        requireCondition(observation.bootstrapReadinessVerified === true, "held_bootstrap_readiness_required");
+      } else {
+        requireCondition(boot.held === false && writer.effectiveControls?.admission === true
+          && writer.effectiveControls?.dispatch === true, "activation_work_not_released");
+      }
     }
     if (phase === "activation") {
       requireCondition(observation.dispatcherReadinessVerified === true, "dispatcher_readiness_required");
       requireCondition(observation.dispatcherReadinessImageDigest === expectedImage, "dispatcher_readiness_wrong_image");
     }
   }
-  return { phase, imageDigest: expectedImage, sourceCommit: expectedSource, targetProtocolVersion: qualification.protocolVersion };
+  return { phase, imageDigest: expectedImage, sourceCommit: expectedSource, targetProtocolVersion: qualification.protocolVersion,
+    databaseIdentity: observation.databaseIdentity,
+    qualifiedBoots: live.map(writer => ({ writerId: writer.id, bootId: writer.startupWork.bootId,
+      generation: writer.startupWork.generation })) };
 }

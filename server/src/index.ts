@@ -1,4 +1,5 @@
 /// <reference path="./types/express.d.ts" />
+import { isStartupWorkHeld, waitForStartupWorkRelease } from "./services/startup-work-barrier.js";
 // Kicks off the OTel bootstrap as early as possible (no-op unless
 // OTEL_EXPORTER_OTLP_ENDPOINT is set). startServer() awaits
 // instrumentationReady before opening DB connections or constructing the
@@ -1033,7 +1034,7 @@ async function startServerWithDatabaseTeardown(
     logger.error({ err }, "startup reconciliation of managed runtime control operations failed");
   }
 
-  void reconcilePersistedRuntimeServicesOnStartup(db as any)
+  void waitForStartupWorkRelease().then(() => reconcilePersistedRuntimeServicesOnStartup(db as any))
     .then((result) => {
       if (
         result.reconciled > 0
@@ -1063,7 +1064,7 @@ async function startServerWithDatabaseTeardown(
   // Backfill auth.json into any already-isolated codex_local managed home that
   // was created by the #8272 isolation guard before the Phase 1 seeding fix.
   // Idempotent; the Phase 1 execute-time seeding covers new strandings.
-  void reconcileCodexLocalManagedHomesOnStartup(db)
+  void waitForStartupWorkRelease().then(() => reconcileCodexLocalManagedHomesOnStartup(db))
     .then((result) => {
       if (result.seeded > 0 || result.failed > 0) {
         logger.warn(
@@ -1082,7 +1083,7 @@ async function startServerWithDatabaseTeardown(
       logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
     });
 
-  void reconcileBuiltInAgentsOnStartup(db as any)
+  void waitForStartupWorkRelease().then(() => reconcileBuiltInAgentsOnStartup(db as any))
     .then((result) => {
       if (
         result.reconciled > 0
@@ -1132,6 +1133,7 @@ async function startServerWithDatabaseTeardown(
   // activates before its provider driver is registered; the worker manager
   // additionally gates each entry on a live plugin worker (and archives the
   // row of a provider that did not come up).
+  const initializeManagedEnvironments = async () => {
   try {
     const bundledPluginsStartup = (app as { locals?: { bundledPluginsStartup?: Promise<unknown> } })
       .locals?.bundledPluginsStartup;
@@ -1146,6 +1148,13 @@ async function startServerWithDatabaseTeardown(
     logger.error({ err }, "failed to apply managed environments from managed config");
     throw err;
   }
+  };
+  const managedEnvironmentsReady = isStartupWorkHeld()
+    ? waitForStartupWorkRelease().then(initializeManagedEnvironments)
+    : initializeManagedEnvironments();
+  // Deferred provisioning is observed by business startup after explicit release.
+  if (!isStartupWorkHeld()) await managedEnvironmentsReady;
+
 
   let drainHeartbeatRunsForShutdown: ((
     signal: "SIGINT" | "SIGTERM",
@@ -1173,6 +1182,13 @@ async function startServerWithDatabaseTeardown(
       await Promise.allSettled([...heartbeatSchedulerInFlight]);
     }
   };
+  // Held boot completes database/auth/bootstrap readiness, not plugin execution. Business recovery,
+  // dispatchers and their timers are installed once the same boot is released.
+  let executionControlInterval: ReturnType<typeof setInterval> | null = null;
+  const startBusinessRuntime = async () => {
+    if (heartbeatSchedulerStopped) return;
+    await managedEnvironmentsReady;
+    if (heartbeatSchedulerStopped) return;
   const executionControlSweepsInFlight = new Set<string>();
   const executionControlSweeps = [
     ["finalization", () => reconcileAbandonedExecutionControl(db)],
@@ -1194,7 +1210,7 @@ async function startServerWithDatabaseTeardown(
         .finally(() => { executionControlSweepsInFlight.delete(queue); }));
     }
   };
-  const executionControlInterval = setInterval(sweepExecutionControl, EXECUTION_RECONCILIATION_INTERVAL_MS);
+  executionControlInterval = setInterval(sweepExecutionControl, EXECUTION_RECONCILIATION_INTERVAL_MS);
   executionControlInterval.unref?.();
   sweepExecutionControl();
   const startHeartbeatSchedulerInterval = (callback: () => void) => {
@@ -1864,6 +1880,19 @@ async function startServerWithDatabaseTeardown(
     }).start();
   }
   
+  };
+  if (isStartupWorkHeld()) {
+    void waitForStartupWorkRelease().then(async () => {
+      setStartupRecoveryPhase("recovering");
+      await startBusinessRuntime();
+      setStartupRecoveryPhase("ready");
+    }).catch((err) => {
+      logger.error({ err }, "released startup business recovery failed");
+    });
+  } else {
+    await startBusinessRuntime();
+  }
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.
@@ -1939,7 +1968,7 @@ async function startServerWithDatabaseTeardown(
   ) => {
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
-    clearInterval(executionControlInterval);
+    if (executionControlInterval) clearInterval(executionControlInterval);
     if (heartbeatSchedulerInterval) {
       clearInterval(heartbeatSchedulerInterval);
       heartbeatSchedulerInterval = null;

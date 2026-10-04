@@ -1483,11 +1483,16 @@ fn rejected_expected_steering_target(
     turn_id: Option<&str>,
 ) -> Option<&'static str> {
     if payload.get("expectedProviderTurnId").is_none()
-        && payload.get("expectedProviderSessionId").is_none() {
+        && payload.get("expectedProviderSessionId").is_none()
+    {
         return None; // Legacy steering retains its established behavior.
     }
-    let expected_session = payload.get("expectedProviderSessionId").and_then(Value::as_str);
-    let expected_turn = payload.get("expectedProviderTurnId").and_then(Value::as_str);
+    let expected_session = payload
+        .get("expectedProviderSessionId")
+        .and_then(Value::as_str);
+    let expected_turn = payload
+        .get("expectedProviderTurnId")
+        .and_then(Value::as_str);
     if expected_session.is_none_or(str::is_empty) || expected_session != session_id {
         return Some("stale_provider_session");
     }
@@ -3169,14 +3174,22 @@ impl CodexCommandExecutor {
         if let Some(code) = rejected_expected_steering_target(
             payload,
             self.provider.as_ref().map(|provider| provider.thread_id()),
-            self.provider.as_ref().and_then(|provider| provider.active_provider_turn_id()),
+            self.provider
+                .as_ref()
+                .and_then(|provider| provider.active_provider_turn_id()),
         ) {
-            return Ok(CommandExecution::result(json!({"status": "rejected", "code": code})));
+            return Ok(CommandExecution::result(
+                json!({"status": "rejected", "code": code}),
+            ));
         }
-        let expected_turn = payload.get("expectedProviderTurnId").and_then(Value::as_str);
-        self.ensure_provider()?.steer_turn_for_expected(text, expected_turn).map_err(|error| {
-            DurableRunnerError::invalid(format!("Codex turn steer failed: {error}"))
-        })?;
+        let expected_turn = payload
+            .get("expectedProviderTurnId")
+            .and_then(Value::as_str);
+        self.ensure_provider()?
+            .steer_turn_for_expected(text, expected_turn)
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!("Codex turn steer failed: {error}"))
+            })?;
         Ok(CommandExecution::result(json!({"status": "steered"})))
     }
 
@@ -4560,23 +4573,46 @@ mod tests {
     #[test]
     fn durable_board_steering_rejects_changed_or_absent_provider_targets() {
         let payload = serde_json::json!({"expectedProviderSessionId": "session-1", "expectedProviderTurnId": "turn-1"});
-        assert_eq!(super::rejected_expected_steering_target(&payload, Some("session-1"), Some("turn-1")), None);
-        assert_eq!(super::rejected_expected_steering_target(&payload, Some("session-2"), Some("turn-1")), Some("stale_provider_session"));
-        assert_eq!(super::rejected_expected_steering_target(&payload, Some("session-1"), Some("turn-2")), Some("stale_provider_turn"));
-        assert_eq!(super::rejected_expected_steering_target(&payload, None, None), Some("stale_provider_session"));
-        assert_eq!(super::rejected_expected_steering_target(&serde_json::json!({}), None, None), None);
-        assert_eq!(super::rejected_expected_steering_target(&serde_json::json!({"expectedProviderTurnId": "turn-1"}), Some("session-1"), Some("turn-1")), Some("stale_provider_session"));
+        assert_eq!(
+            super::rejected_expected_steering_target(&payload, Some("session-1"), Some("turn-1")),
+            None
+        );
+        assert_eq!(
+            super::rejected_expected_steering_target(&payload, Some("session-2"), Some("turn-1")),
+            Some("stale_provider_session")
+        );
+        assert_eq!(
+            super::rejected_expected_steering_target(&payload, Some("session-1"), Some("turn-2")),
+            Some("stale_provider_turn")
+        );
+        assert_eq!(
+            super::rejected_expected_steering_target(&payload, None, None),
+            Some("stale_provider_session")
+        );
+        assert_eq!(
+            super::rejected_expected_steering_target(&serde_json::json!({}), None, None),
+            None
+        );
+        assert_eq!(
+            super::rejected_expected_steering_target(
+                &serde_json::json!({"expectedProviderTurnId": "turn-1"}),
+                Some("session-1"),
+                Some("turn-1")
+            ),
+            Some("stale_provider_session")
+        );
     }
 
     #[test]
     fn durable_board_steering_does_not_restore_an_absent_provider() {
-        let mut executor = super::CodexCommandExecutor::new(std::path::PathBuf::from("unused-board-steer-fixture"));
+        let mut executor = super::CodexCommandExecutor::new(std::path::PathBuf::from(
+            "unused-board-steer-fixture",
+        ));
         let outcome = executor.steer_turn(&serde_json::json!({"text": "accepted board comment", "expectedProviderSessionId": "session-1", "expectedProviderTurnId": "turn-1"})).unwrap();
         assert_eq!(outcome.result["status"], "rejected");
         assert_eq!(outcome.result["code"], "stale_provider_session");
         assert!(executor.provider.is_none());
     }
-
 
     #[test]
     fn startup_evidence_save_failure_cannot_become_an_empty_drain_or_admission() {

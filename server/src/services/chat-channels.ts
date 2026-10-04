@@ -1,3 +1,4 @@
+import { assertStartupWorkAllowed } from "./startup-work-barrier.js";
 import { takePhotonCompanion } from "./photon/attachments.js";
 import { canonicalUuidTextReference } from "./canonical-uuid-text-reference.js";
 import { writePhotonCheckpoint } from "./photon/receiver.js";
@@ -3514,6 +3515,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function processReceiptReaction(actionId: string): Promise<void> {
+    assertStartupWorkAllowed();
     const initialAction = await db
       .select({ endpointId: chatActions.endpointId })
       .from(chatActions)
@@ -3540,6 +3542,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     actionId: string,
     credentialLease: CredentialMutationLeaseGuard,
   ): Promise<void> {
+    assertStartupWorkAllowed();
     let action = await db
       .select()
       .from(chatActions)
@@ -3945,6 +3948,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     limit = 25,
     onlyActionId?: string,
   ) {
+    assertStartupWorkAllowed();
     const now = new Date();
     const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
     const actions = await db
@@ -4075,6 +4079,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     force = false,
     credentialLease?: CredentialMutationLeaseGuard,
   ): Promise<"processed" | "pending" | "failed"> {
+    assertStartupWorkAllowed();
     if (!credentialLease) {
       const initialAction = await db
         .select({ endpointId: chatActions.endpointId })
@@ -4425,6 +4430,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function processPendingTelegramMaintenance(limit = 25) {
+    assertStartupWorkAllowed();
     // Keyset scanning bounds each sweep without starving endpoints behind a
     // page whose subscriptions were already confirmed. No provider I/O here.
     const candidates = await db
@@ -5075,6 +5081,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     actionId: string,
     liveTarget?: ProviderEffectTarget,
   ): Promise<"processed" | "pending" | "failed" | "delivery_unknown"> {
+    assertStartupWorkAllowed();
     const initial = await db
       .select()
       .from(chatActions)
@@ -5412,6 +5419,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function processPendingProviderEffects(limit = 25) {
+    assertStartupWorkAllowed();
     const now = new Date();
     const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
     const actions = await db
@@ -5606,6 +5614,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     callback: DiscordGatewayCallbackEvent,
     context: RuntimeContext,
   ): Promise<void> {
+    assertStartupWorkAllowed();
     if (
       !(await ensureDiscordGatewayRuntimeIsCurrent(
         callback.endpointId,
@@ -5874,6 +5883,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     input: CreateChatEndpointInput,
     actorUserId?: string | null,
   ) {
+    assertStartupWorkAllowed();
     if ((input.provider as string) === "agentmail") throw badRequest("Use the email inbox setup API for AgentMail");
     const agent = await db
       .select({ id: agents.id, name: agents.name, status: agents.status })
@@ -6010,6 +6020,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     input: UpdateChatEndpointInput,
     actorUserId?: string | null,
   ) {
+    assertStartupWorkAllowed();
     const initial = await endpointRecord(endpointId);
     if (!initial) throw notFound("Chat endpoint not found");
     if (initial.endpoint.provider === "agentmail") throw badRequest("Use the email inbox API for AgentMail");
@@ -7988,6 +7999,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function reconcileProviderRuntimes() {
+    assertStartupWorkAllowed();
     if (shuttingDown) {
       return { eligible: 0, local: 0, ownedElsewhere: 0, failed: 0 };
     }
@@ -8245,6 +8257,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     adapter: PhotonChatAdapter,
     context: RuntimeContext,
   ): Promise<boolean> {
+    assertStartupWorkAllowed();
     const command =
       event.type === "message.received"
         ? photonResponseCommand(event.message.content.text ?? "")
@@ -9015,6 +9028,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     input: ConfigureChatEndpointInput,
     actorUserId?: string | null,
   ) {
+    assertStartupWorkAllowed();
     const record = await endpointRecord(endpointId);
     if (!record) throw notFound("Chat endpoint not found");
     if (record.endpoint.provider === "agentmail") throw badRequest("Use the email inbox API for AgentMail");
@@ -9881,6 +9895,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function test(endpointId: string) {
+    assertStartupWorkAllowed();
     const initial = await endpointRecord(endpointId);
     if (!initial) throw notFound("Chat endpoint not found");
     return withCredentialMutationLease(
@@ -13293,6 +13308,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     ReturnType<typeof claimFailedChatRunRetry>
   >();
   function processFailedChatRunRetry(actionId: string) {
+    assertStartupWorkAllowed();
     const existing = failedRetryTasks.get(actionId);
     if (existing) return existing;
     const task = claimFailedChatRunRetry(actionId);
@@ -13305,6 +13321,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function processFailedChatRunRetries(limit = 20) {
+    assertStartupWorkAllowed();
     if (shuttingDown) return 0;
     const now = new Date();
     const candidates = await db
@@ -13708,6 +13725,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function enqueueInboundWakeupPublications(limit = 50): Promise<number> {
+    assertStartupWorkAllowed();
     if (shuttingDown) return 0;
     const retryInserted = await enqueueFailedChatRetryPublications(limit);
     const owner = alias(agentWakeupRequests, "chat_notice_owner");
@@ -14066,6 +14084,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function processInboundWakeup(deliveryId: string): Promise<boolean> {
+    assertStartupWorkAllowed();
     const now = new Date();
     const candidate = await db
       .select()
@@ -14294,6 +14313,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     suppressSetupDestinationActivation = false,
     slackSlashControl = false,
   ) {
+    assertStartupWorkAllowed();
     if (
       endpoint.provider === "telegram" &&
       (telegramZeroMessageId(message.id) ||
@@ -17602,6 +17622,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     endpoint: EndpointRow,
     candidate: DeliveryRow,
   ): Promise<void> {
+    assertStartupWorkAllowed();
     const lifecycle = lifecycleMessageFromDelivery(candidate);
     if (!lifecycle) {
       await db
@@ -19558,6 +19579,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   async function processPendingInteractionWakeups(
     limit = 100,
   ): Promise<number> {
+    assertStartupWorkAllowed();
     const staleBefore = new Date(Date.now() - 30_000);
     const retryBefore = new Date(
       Date.now() - CONFIRMATION_WAKEUP_RETRY_BACKOFF_MS,
@@ -22084,6 +22106,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     actionId: string,
     ingressOnly = true,
   ): Promise<boolean> {
+    assertStartupWorkAllowed();
     let action = await db
       .select()
       .from(chatActions)
@@ -22584,6 +22607,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function processPendingSlackTaskStarts(limit: number) {
+    assertStartupWorkAllowed();
     const now = new Date();
     const staleAdmission = new Date(
       now.getTime() - SLACK_COMMAND_ADMISSION_STALE_MS,
@@ -24897,6 +24921,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     actionId: string,
     propagateProcessingFailure = false,
   ): Promise<Response | null> {
+    assertStartupWorkAllowed();
     let action = await db
       .select()
       .from(chatActions)
@@ -25280,6 +25305,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     limit = 5,
     onlyEndpointId?: string,
   ) {
+    assertStartupWorkAllowed();
     if (shuttingDown || !webhookPublicBaseUrl?.startsWith("https://")) return 0;
     const now = new Date();
     const rows = await db
@@ -25744,6 +25770,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     limit = 25,
     onlyActionId?: string,
   ) {
+    assertStartupWorkAllowed();
     const now = new Date();
     const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
     const actions = await db
@@ -25951,6 +25978,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function processSlackSessionStop(actionId: string): Promise<void> {
+    assertStartupWorkAllowed();
     const now = new Date();
     const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
     const action = await db
@@ -26472,6 +26500,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     limit = 25,
     onlyActionId?: string,
   ) {
+    assertStartupWorkAllowed();
     const now = new Date();
     const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
     const actions = await db
@@ -26511,6 +26540,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       superseded?: boolean;
     },
   ) {
+    assertStartupWorkAllowed();
     const serviceReceivedAtMs = Date.now();
     const replayingDurableGitHubIngress =
       provider === "github" && Boolean(internalContext?.githubIngressActionId);
@@ -27127,6 +27157,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   async function processPendingReactionDelivery(
     candidate: DeliveryRow,
   ): Promise<void> {
+    assertStartupWorkAllowed();
     const reaction = normalizedPendingReaction(candidate);
     if (!reaction || !candidate.principalId) {
       const now = new Date();
@@ -27337,6 +27368,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     limit: number,
     onlyDeliveryId?: string,
   ): Promise<number> {
+    assertStartupWorkAllowed();
     const now = new Date();
     const candidates = await db
       .select()
@@ -27393,6 +27425,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
    * or no-longer-available files are omitted without losing the text turn.
    */
   async function processPendingDeliveries(limit = 25, onlyDeliveryId?: string) {
+    assertStartupWorkAllowed();
     await settleRejectedInboundWakeups(onlyDeliveryId);
     // Provider-visible effects that are not backed by a task publication use
     // chat_actions as their outbox. Reconcile them before inbound deliveries
@@ -28515,6 +28548,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function replayDelivery(endpointId: string, deliveryId: string) {
+    assertStartupWorkAllowed();
     const delivery = await db
       .select()
       .from(chatDeliveries)
@@ -28609,6 +28643,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function replayPublication(endpointId: string, publicationId: string) {
+    assertStartupWorkAllowed();
     const publication = await db
       .select()
       .from(chatPublications)
@@ -28731,6 +28766,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       version: number;
     },
   ) {
+    assertStartupWorkAllowed();
     const initialRecord = await endpointRecord(endpointId);
     if (!initialRecord) throw notFound("Chat endpoint not found");
     await withCredentialMutationLease(
@@ -29070,6 +29106,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     resolution: "mark_delivered" | "retry_anyway" | "cancel",
     userId: string,
   ) {
+    assertStartupWorkAllowed();
     const initialRecord = await endpointRecord(endpointId);
     if (!initialRecord) throw notFound("Chat endpoint not found");
 
@@ -29368,6 +29405,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     resolution: "mark_delivered" | "retry_anyway" | "cancel",
     userId: string,
   ) {
+    assertStartupWorkAllowed();
     const initialRecord = await endpointRecord(endpointId);
     if (!initialRecord) throw notFound("Chat endpoint not found");
     const initialAction = await db
@@ -29921,6 +29959,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     conversationId: string,
     commentId: string,
   ) {
+    assertStartupWorkAllowed();
     const emailBoundary = await endpointRecord(endpointId);
     if (emailBoundary?.endpoint.publicationMode === "explicit")
       throw badRequest("Use an explicit email send action");
@@ -29996,6 +30035,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     userId: string,
     attachmentIds: string[] = [],
   ) {
+    assertStartupWorkAllowed();
     const emailBoundary = await endpointRecord(endpointId);
     if (emailBoundary?.endpoint.publicationMode === "explicit")
       throw badRequest("Use an explicit email send action");
@@ -35637,6 +35677,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function processPendingSlackFileUploadReceipts(limit = 25) {
+    assertStartupWorkAllowed();
     const selectedAt = new Date();
     const actions = await db
       .select()
@@ -36124,6 +36165,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     limit = 25,
     onlyActionId?: string,
   ) {
+    assertStartupWorkAllowed();
     const now = new Date();
     const actions = await db
       .select()
@@ -36607,6 +36649,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   async function processSelectedPublication(
     selectedPublication: typeof chatPublications.$inferSelect,
   ): Promise<void> {
+    assertStartupWorkAllowed();
     let publication: typeof chatPublications.$inferSelect;
     try {
       publication =
@@ -37301,6 +37344,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     limit = 25,
     { waitForCompletion = true }: { waitForCompletion?: boolean } = {},
   ) {
+    assertStartupWorkAllowed();
     if (shuttingDown) return 0;
     await enqueueInboundWakeupPublications();
     await reconcileTerminalConfirmationActions(limit);
@@ -37620,6 +37664,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   // Cron refills free endpoint slots from the durable outbox each second.
   // Work remains tracked by this service and is joined before runtime shutdown.
   async function schedulePendingPublications(limit = 25) {
+    assertStartupWorkAllowed();
     scheduleTeamsFileMaintenance();
     return processPendingPublications(limit, { waitForCompletion: false });
   }
