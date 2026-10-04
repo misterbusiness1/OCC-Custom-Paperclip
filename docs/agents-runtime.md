@@ -110,6 +110,8 @@ In local/dev setups, full logs are stored on disk under the configured run-log p
 
 If a Board interrupt wake ends while its run is still queued, recovery settles that run so it cannot block other work. Paperclip moves the original saved request and same-lineage deferred receipts to `held_for_board_review` and records the exact successor wake, issue, and held receipt IDs in `heartbeat.queued_comment_interrupt_held_for_review` activity. The status prevents recovery and ordinary wake merging from sending that message. The issue queue response lists held requests separately from the actionable queue; editing or interrupting one returns a conflict with a fresh-request instruction. Review the original request and submit a new Board message if the agent should act on it; the new message carries its own authorization. This uses the existing text status column and activity log, so no database migration or payload backfill is needed.
 
+Automatic settlement requires a never-started run with no retained execution evidence. A queued row that still has provider/session/output evidence, a task session, a lease, a native finalization, a workspace operation or run events stays queued for operator reconciliation with `queued_wakeup_execution_ownership_unverified`. Recovery preserves its issue owner, saved Board receipts and original terminal wake, and dispatches no provider work. The execution ownership marker continues to hold the run even if transient evidence later disappears; its creation records one activity entry, and repeated recovery scans do not duplicate it. A null `startedAt` alone does not prove execution never started.
+
 ## 6. Live updates in the UI
 
 Paperclip pushes runtime/activity updates to the browser in real time.

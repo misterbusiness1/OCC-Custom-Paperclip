@@ -87,6 +87,11 @@ for their exact dimensions and optionality.
 `agent.task_run` records one terminal state for one agent run: `succeeded`,
 `interrupted`, `failed`, `cancelled`, or `timed_out`. Emit it once per run, at
 the run's terminal transition. Do not emit it for a run that is still active.
+The terminal-wake queued-run reconciler emits the existing `cancelled` event
+after its database transaction commits, even when no provider work started.
+This call uses the same dimensions as other terminal runs; wake IDs, error text,
+and run-log payloads are not sent. Emission is best-effort, while status
+delivery and the local run log have separate durable records.
 
 The event's `task_id` dimension is optional and privacy-protected. Never emit
 the raw task id. Pass the raw id to `trackAgentTaskRun()` in `events.ts`. The
