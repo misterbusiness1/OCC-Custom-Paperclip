@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests } from "@paperclipai/db";
@@ -216,14 +216,15 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
     .select({
       id: agentWakeupRequests.id,
       status: agentWakeupRequests.status,
-      idempotencyKey: agentWakeupRequests.idempotencyKey,
+      idempotencyKey: sql<string | null>`case when ${agentWakeupRequests.idempotencyKey} like 'issue-comment-request:%' then coalesce(${agentWakeupRequests.payload}->>'dependencyReadyStateKey', ${agentWakeupRequests.idempotencyKey}) else ${agentWakeupRequests.idempotencyKey} end`,
       requestedAt: agentWakeupRequests.requestedAt,
     })
     .from(agentWakeupRequests)
     .where(
       and(
         eq(agentWakeupRequests.companyId, input.companyId),
-        inArray(agentWakeupRequests.idempotencyKey, lookupKeys),
+        or(inArray(agentWakeupRequests.idempotencyKey, lookupKeys),
+          and(sql`${agentWakeupRequests.idempotencyKey} like 'issue-comment-request:%'`, inArray(sql<string>`${agentWakeupRequests.payload}->>'dependencyReadyStateKey'`, lookupKeys)))!,
       ),
     );
 

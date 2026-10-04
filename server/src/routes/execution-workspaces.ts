@@ -529,6 +529,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       run: async (reportProgress) => {
         const ensureWorkspaceAvailable = async () =>
           await ensurePersistedExecutionWorkspaceAvailable({
+            db,
             base: {
               baseCwd: projectWorkspace?.cwd ?? workspaceCwd,
               source: existing.mode === "shared_workspace" ? "project_primary" : "task_session",
@@ -538,6 +539,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               repoRef: existing.baseRef,
             },
             workspace: {
+              id: existing.id,
               mode: existing.mode,
               strategyType: existing.strategyType,
               cwd: existing.cwd,

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import os from "node:os";
 
 export const CURRENT_USER_REDACTION_TOKEN = "*";
@@ -102,6 +103,15 @@ function resolveCurrentUserCandidates(opts?: CurrentUserRedactionOptions) {
   const homeDirs = uniqueNonEmpty(opts?.homeDirs ?? defaults.homeDirs);
   const replacement = opts?.replacement?.trim() || defaults.replacement;
   return { userNames, homeDirs, replacement };
+}
+
+/** Identifies the exact normalization profile without retaining names/home paths in request ledgers. */
+export function currentUserRedactionProfileSha256(enabled: boolean) {
+  if (!enabled) return "disabled";
+  const profile = resolveCurrentUserCandidates();
+  return createHash("sha256").update(JSON.stringify({ version: 1,
+    userNames: [...profile.userNames].sort(), homeDirs: [...profile.homeDirs].sort(), replacement: profile.replacement,
+  })).digest("hex");
 }
 
 export function redactCurrentUserText(input: string, opts?: CurrentUserRedactionOptions) {

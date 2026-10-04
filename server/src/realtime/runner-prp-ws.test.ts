@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -8,6 +9,8 @@ import { DurablePrpControlPlane } from "@paperclipai/paperclip-runner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  captureLiveRunnerPrpSteerTarget,
+  readCapturedRunnerPrpSteerOutcome,
   queueLiveRunnerPrpCommand,
   queueRunnerPrpRuntimeRequestResolution,
   registerRunnerPrpAuthority,
@@ -378,4 +381,50 @@ describe("runner PRP websocket route", () => {
       }
     },
   );
+});
+
+describe("accepted Board steering target fencing", () => {
+  it("pins registration, PRP identity and provider turn; reattachment permits only receipt inspection", async () => {
+    const server = createServer();
+    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3214" });
+    const binding = { companyId: "company-steer", issueId: "issue-steer", agentId: "agent-steer" };
+    const runId = "00000000-0000-4000-8000-000000000881";
+    const state = { identity: { runId, runnerInstanceId: "runner-1", environmentLeaseId: "lease-1",
+      normalizedSessionId: "session-prp-1", turnId: "turn-prp-1", itemId: "item-1" },
+      committedEvents: [{ eventType: "turn.accepted", envelope: { payload: { providerTurnId: "provider-turn-1", providerSessionId: "provider-session-1" } } }],
+      commands: [] as Array<{ commandId: string; type: string; payload: Record<string, unknown> }> };
+    const queueCommand = vi.fn((type: string, payload: Record<string, unknown>, commandId: string) => {
+      state.commands.push({ commandId, type, payload }); return { commandId, controllerSeq: 1 };
+    });
+    state.committedEvents = state.committedEvents.map(event => ({ ...event,
+      envelope: { ...state.identity, payload: { payload: event.envelope.payload } } })) as unknown as typeof state.committedEvents;
+    const authority = { store: { state }, queueCommand,
+      commandOutcome: () => ({ status: "completed", result: { result: { status: "steered" } } }) } as unknown as DurablePrpControlPlane;
+    let registration = await registerRunnerPrpAuthority({ ...binding, runId, authority });
+    const target = captureLiveRunnerPrpSteerTarget(binding)!;
+    expect(target).toMatchObject({ runId, providerTurnId: "provider-turn-1", providerSessionId: "provider-session-1" });
+    const input = { ...binding, type: "turn.steer", commandId: "board-command-1", expectedSteerTarget: target,
+      payload: { text: "accepted comment", expectedProviderTurnId: target.providerTurnId, expectedProviderSessionId: target.providerSessionId } };
+    const queued = queueLiveRunnerPrpCommand(input)!;
+    expect(await queued.completion).toEqual({ result: { status: "steered" } });
+    expect(queueCommand).toHaveBeenCalledOnce();
+    state.committedEvents.push({ eventType: "turn.accepted", envelope: { ...state.identity,
+      payload: { payload: { providerTurnId: "provider-turn-2", providerSessionId: "provider-session-1" } } } } as unknown as typeof state.committedEvents[number]);
+    expect(queueLiveRunnerPrpCommand(input)).toBeNull();
+    expect(queueCommand).toHaveBeenCalledOnce();
+    state.committedEvents.pop();
+    const expectedTextSha256 = createHash("sha256").update("accepted comment").digest("hex");
+    await registration.release();
+    registration = await registerRunnerPrpAuthority({ ...binding, runId, authority });
+    expect(queueLiveRunnerPrpCommand(input)).toBeNull();
+    expect(queueCommand).toHaveBeenCalledOnce();
+    expect(readCapturedRunnerPrpSteerOutcome({ ...binding, target, commandId: "board-command-1", expectedTextSha256 }))
+      .toMatchObject({ status: "completed" });
+    expect(readCapturedRunnerPrpSteerOutcome({ ...binding, target, commandId: "board-command-1", expectedTextSha256: "a".repeat(64) })).toBeNull();
+    state.committedEvents.push({ eventType: "turn.completed", envelope: { ...state.identity,
+      payload: { payload: { providerTurnId: "provider-turn-1", providerSessionId: "provider-session-1" } } } } as unknown as typeof state.committedEvents[number]);
+    expect(captureLiveRunnerPrpSteerTarget(binding)).toBeNull();
+    await registration.release();
+    server.close();
+  });
 });

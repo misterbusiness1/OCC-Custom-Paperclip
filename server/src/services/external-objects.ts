@@ -165,7 +165,7 @@ function genericUrlDetector(): ExternalObjectDetector {
   };
 }
 
-export function createExternalObjectDetectorRegistry(detectors: ExternalObjectDetector[] = []) {
+export function createExternalObjectDetectorRegistry(detectors: ExternalObjectDetector[] = [], failOnError = false) {
   const entries = [...detectors, genericUrlDetector()];
 
   async function detect(input: {
@@ -186,6 +186,7 @@ export function createExternalObjectDetectorRegistry(detectors: ExternalObjectDe
           detections.push({ ...detection, detectorKey: detection.detectorKey || detector.key });
         }
       } catch (err) {
+        if (failOnError) throw err;
         logger.warn({ err, detectorKey: detector.key }, "external object detector failed");
       }
     }
@@ -260,6 +261,7 @@ async function readyObjectReferencePlugins(db: Db) {
 function createPluginProviderDetector(
   db: Db,
   pluginWorkerManager: PluginWorkerManager,
+  failOnError = false,
 ): ExternalObjectDetector {
   return {
     key: "plugin-object-reference-providers",
@@ -305,6 +307,7 @@ function createPluginProviderDetector(
             });
           }
         } catch (err) {
+          if (failOnError) throw err;
           logger.warn(
             { err, pluginId: provider.id, pluginKey: provider.pluginKey },
             "plugin external object detector failed",
@@ -355,6 +358,7 @@ async function resolveViaPluginProvider(
 export function externalObjectService(
   db: Db,
   opts: {
+    failOnDetectorError?: boolean;
     detectors?: ExternalObjectDetector[];
     resolvers?: ExternalObjectResolver[];
     pluginWorkerManager?: PluginWorkerManager;
@@ -364,13 +368,13 @@ export function externalObjectService(
 ) {
   const githubProvider = opts.github === false ? null : createGitHubExternalObjectProvider(db, opts.github);
   const pluginProviderDetector = opts.pluginWorkerManager
-    ? createPluginProviderDetector(db, opts.pluginWorkerManager)
+    ? createPluginProviderDetector(db, opts.pluginWorkerManager, opts.failOnDetectorError)
     : null;
   const detectorRegistry = createExternalObjectDetectorRegistry([
     ...(pluginProviderDetector ? [pluginProviderDetector] : []),
     ...(opts.detectors ?? []),
     ...(githubProvider ? [githubProvider.detector] : []),
-  ]);
+  ], opts.failOnDetectorError);
   const resolverRegistry = createExternalObjectResolverRegistry([
     ...(opts.resolvers ?? []),
     ...(githubProvider?.resolvers ?? []),
@@ -447,17 +451,26 @@ export function externalObjectService(
     input: ExternalObjectSourceContext & { text: string | null | undefined },
     dbOrTx: any = db,
   ) {
+    const detections = await detectSourceMentions(input);
+    await applySourceMentions(input, detections, dbOrTx);
+  }
+
+  async function detectSourceMentions(input: ExternalObjectSourceContext & { text: string | null | undefined }) {
     const urls = extractExternalObjectCanonicalUrls(input.text ?? "");
+    if (urls.length === 0) return [];
+    return detectorRegistry.detect({ companyId: input.companyId, urls, sourceContext: input });
+  }
+
+  /** Detection may call plugins; callers must run this outside their claim transaction. */
+  async function prepareAcceptedCommentProjection(comment: { id: string; companyId: string; issueId: string; body: string }) {
+    const input: ExternalObjectSourceContext = { companyId: comment.companyId, sourceIssueId: comment.issueId,
+      sourceKind: "comment", sourceRecordId: comment.id, documentKey: null, propertyKey: null };
+    if (!(await isEnabled())) return { input, enabled: false, detections: [] as ExternalObjectDetection[] };
+    return { input, enabled: true, detections: await detectSourceMentions({ ...input, text: comment.body }) };
+  }
+
+  async function applySourceMentions(input: ExternalObjectSourceContext, detections: ExternalObjectDetection[], dbOrTx: any) {
     await dbOrTx.delete(externalObjectMentions).where(sourceWhere(input));
-    if (urls.length === 0) return;
-
-    const detections = await detectorRegistry.detect({
-      companyId: input.companyId,
-      urls,
-      sourceContext: input,
-    });
-    if (detections.length === 0) return;
-
     const seen = new Set<string>();
     const values: Array<typeof externalObjectMentions.$inferInsert> = [];
     for (const detection of detections) {
@@ -1072,6 +1085,10 @@ export function externalObjectService(
   }
 
   return {
+    prepareAcceptedCommentProjection,
+    applyAcceptedCommentProjection: async (projection: Awaited<ReturnType<typeof prepareAcceptedCommentProjection>>, tx: Db) => {
+      if (projection.enabled) await applySourceMentions(projection.input, projection.detections, tx);
+    },
     syncIssue,
     syncComment,
     syncDocument,

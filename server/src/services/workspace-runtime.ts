@@ -1,3 +1,4 @@
+import { assertBoardCommentWorkspaceMaterializationAllowed, type BoardCommentWorkspaceCapability } from "./board-comment-workspace-reservation.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -3632,6 +3633,7 @@ export async function realizeExecutionWorkspace(input: {
 }
 
 export async function ensurePersistedExecutionWorkspaceAvailable(input: {
+  boardCommentCapability?: BoardCommentWorkspaceCapability;
   db?: Db | null;
   base: ExecutionWorkspaceInput;
   workspace: {
@@ -3659,6 +3661,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   recorder?: WorkspaceOperationRecorder | null;
   resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<RealizedExecutionWorkspace | null> {
+  await assertBoardCommentWorkspaceMaterializationAllowed(input.db, input.workspace.id, input.workspace.metadata, input.boardCommentCapability);
   const cwd = asString(input.workspace.cwd ?? input.workspace.providerRef, "").trim();
   if (!cwd) return null;
 

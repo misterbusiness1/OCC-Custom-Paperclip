@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agentApiKeys, companies, heartbeatRuns, issues } from "@paperclipai/db";
@@ -157,6 +156,36 @@ export function publishActivity(publication: ActivityPublication) {
   if (publication.pluginEvent) publishPluginDomainEvent(publication.pluginEvent);
 }
 
+/** Observes local dispatch completion only; external consumers have no durable delivery receipt. */
+export async function publishActivityObserved(publication: ActivityPublication) {
+  publishLiveEvent({ companyId: publication.companyId, type: "activity.logged", payload: publication.payload });
+  if (publication.pluginEvent && _pluginEventBus) {
+    const result = await _pluginEventBus.emit(publication.pluginEvent);
+    if (result.errors.length > 0) throw new Error("Activity plugin publication outcome requires reconciliation");
+  }
+}
+
+/** Reconstruct a publication from its existing audit record, never create another audit row. */
+export async function loadActivityPublication(db: Db, companyId: string, activityId: string): Promise<ActivityPublication | null> {
+  const [row] = await db.select().from(activityLog).where(and(
+    eq(activityLog.companyId, companyId), eq(activityLog.id, activityId),
+  ));
+  if (!row) return null;
+  const eventType = eventTypeForActivityAction(row.action);
+  if (!["agent", "user", "system", "plugin"].includes(row.actorType)) throw new Error("Invalid activity actor type");
+  const details = await redactActivityDetails(db, row.details ?? null);
+  return { companyId, payload: {
+    activityId: row.id, actorType: row.actorType, actorId: row.actorId, action: row.action,
+    entityType: row.entityType, entityId: row.entityId, agentId: row.agentId, runId: row.runId,
+    responsibleUserId: row.responsibleUserId, details,
+  }, pluginEvent: eventType ? {
+    eventId: row.id, eventType, occurredAt: row.createdAt.toISOString(),
+    actorId: row.actorId, actorType: row.actorType as LogActivityInput["actorType"],
+    entityId: row.entityId, entityType: row.entityType, companyId,
+    payload: { ...details, agentId: row.agentId, runId: row.runId, responsibleUserId: row.responsibleUserId },
+  } : null };
+}
+
 export async function persistActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = await redactActivityDetails(db, input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
@@ -171,9 +200,10 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     runId: input.runId ?? null,
     responsibleUserId,
     details: redactedDetails,
-  }).returning({ id: activityLog.id });
+  }).returning({ id: activityLog.id, createdAt: activityLog.createdAt });
 
   const payload = {
+    activityId: activity!.id,
     actorType: input.actorType,
     actorId: input.actorId,
     action: input.action,
@@ -187,9 +217,9 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
   const pluginEventType = eventTypeForActivityAction(input.action);
   const pluginEvent: PluginEvent | null = pluginEventType
     ? {
-        eventId: randomUUID(),
+        eventId: activity!.id,
         eventType: pluginEventType,
-        occurredAt: new Date().toISOString(),
+        occurredAt: activity!.createdAt.toISOString(),
         actorId: input.actorId,
         actorType: input.actorType,
         entityId: input.entityId,

@@ -171,6 +171,11 @@ export type IssueThreadInteractionServiceOptions = {
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+/** Caller must persist these IDs in the same transaction and deliver telemetry after commit. */
+export interface DeferredInteractionResolutionTelemetry {
+  interactionIds: string[];
+}
+
 type InteractionResolutionMutationOptions = {
   beforeResolveInTransaction?: (tx: DbTransaction) => Promise<void>;
   afterResolveInTransaction?: (
@@ -1401,6 +1406,22 @@ function emitInteractionCreatedTelemetry(args: {
       error,
     );
   }
+}
+
+/** Post-commit publication only; this does not claim a durable analytics receipt. */
+export async function publishDeferredInteractionResolutionTelemetry(
+  db: Db, companyId: string, issueId: string, interactionIds: readonly string[],
+) {
+  if (interactionIds.length === 0) return;
+  const ids = [...new Set(interactionIds)];
+  const rows = await db.select().from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
+    inArray(issueThreadInteractions.id, ids),
+  ));
+  if (rows.length !== ids.length || rows.some((row) => row.status !== "expired")) {
+    throw new Error("Deferred interaction telemetry identity no longer matches");
+  }
+  await emitResolvedInteractionsTelemetry(db, rows.map(hydrateInteraction));
 }
 
 async function emitResolvedInteractionsTelemetry(
@@ -4130,6 +4151,7 @@ export function issueThreadInteractionService(
         createdByRunId?: string | null;
       },
       actor: InteractionActor,
+      deferredTelemetry?: DeferredInteractionResolutionTelemetry,
     ) => {
       if (!comment.authorUserId) return [];
       // Local-CLI adapters post under user auth, so authorUserId can't tell a human from a
@@ -4205,7 +4227,8 @@ export function issueThreadInteractionService(
 
       if (expired.length > 0) {
         await touchIssue(db, issue.id);
-        await emitResolvedInteractionsTelemetry(db, expired);
+        if (deferredTelemetry) deferredTelemetry.interactionIds.push(...expired.map((interaction) => interaction.id));
+        else await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
     },
@@ -4535,8 +4558,10 @@ export function issueThreadInteractionService(
     expirePendingInteractionsForTerminalIssue: async (
       issue: { id: string; companyId: string; status: string },
       actor: InteractionActor = {},
+      deferredTelemetry?: DeferredInteractionResolutionTelemetry,
+      acceptedInteractionIds?: readonly string[],
     ) => {
-      if (!isTerminalIssueStatus(issue.status)) return [];
+      if (!isTerminalIssueStatus(issue.status) || acceptedInteractionIds?.length === 0) return [];
       const rows = await db
         .select()
         .from(issueThreadInteractions)
@@ -4545,6 +4570,7 @@ export function issueThreadInteractionService(
             eq(issueThreadInteractions.companyId, issue.companyId),
             eq(issueThreadInteractions.issueId, issue.id),
             eq(issueThreadInteractions.status, "pending"),
+            ...(acceptedInteractionIds ? [inArray(issueThreadInteractions.id, [...acceptedInteractionIds])] : []),
           ),
         );
       if (rows.length === 0) return [];
@@ -4612,7 +4638,8 @@ export function issueThreadInteractionService(
       }
       if (expired.length > 0) {
         await touchIssue(db, issue.id);
-        await emitResolvedInteractionsTelemetry(db, expired);
+        if (deferredTelemetry) deferredTelemetry.interactionIds.push(...expired.map((interaction) => interaction.id));
+        else await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
     },

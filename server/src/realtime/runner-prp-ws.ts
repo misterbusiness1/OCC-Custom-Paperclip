@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 
@@ -23,6 +24,7 @@ interface RegisteredAuthority {
   readonly agentId: string | null;
   readonly authority: DurablePrpControlPlane;
   readonly generation: symbol;
+  readonly controllerInstanceId: string;
   readonly runtimeRequestResolutions: Map<
     string,
     { readonly fingerprint: string; readonly commandId: string }
@@ -137,6 +139,7 @@ export async function registerRunnerPrpAuthority(input: {
     agentId: input.agentId ?? null,
     authority: input.authority,
     generation,
+    controllerInstanceId: randomUUID(),
     runtimeRequestResolutions: new Map(),
   };
   registrations.set(input.runId, registeredAuthority);
@@ -172,6 +175,65 @@ export async function registerRunnerPrpAuthority(input: {
   };
 }
 
+export interface CapturedRunnerPrpSteerTarget {
+  runId: string;
+  controllerInstanceId: string;
+  runnerInstanceId: string;
+  environmentLeaseId: string;
+  normalizedSessionId: string;
+  turnId: string;
+  itemId: string;
+  providerTurnId: string;
+  providerSessionId: string;
+}
+
+function capturedIdentityMatches(binding: RegisteredAuthority, target: CapturedRunnerPrpSteerTarget) {
+  const identity = binding.authority.store.state.identity;
+  return ["runId", "runnerInstanceId", "environmentLeaseId", "normalizedSessionId", "turnId", "itemId"].every(
+    key => identity[key as keyof typeof identity] === target[key as keyof CapturedRunnerPrpSteerTarget]);
+}
+
+/** Read-only admission snapshot. A later generation/turn must never receive this request. */
+export function captureLiveRunnerPrpSteerTarget(input: { companyId: string; issueId: string; agentId: string }): CapturedRunnerPrpSteerTarget | null {
+  const current = currentLiveAuthorities.get(liveAuthorityKey(input));
+  const binding = current ? registrations.get(current.runId) : null;
+  if (!current || !binding || binding.generation !== current.generation || binding.companyId !== input.companyId
+    || binding.issueId !== input.issueId || binding.agentId !== input.agentId) return null;
+  const state = binding.authority.store?.state;
+  if (!state || state.identity.runId !== current.runId) return null;
+  const identity = state.identity;
+  if (Object.values(identity).some(value => typeof value !== "string" || !value)) return null;
+  const events = state.committedEvents;
+  let accepted: { providerTurnId: string; providerSessionId: string } | null = null;
+  for (const event of events) {
+    if (["runId", "runnerInstanceId", "environmentLeaseId", "normalizedSessionId", "turnId", "itemId"].some(
+      key => event.envelope[key] !== identity[key as keyof typeof identity])) continue;
+    if (["turn.completed", "turn.failed", "turn.cancelled", "run.terminal"].includes(event.eventType)) accepted = null;
+    if (event.eventType !== "turn.accepted") continue;
+    const prpEvent = event.envelope.payload as Record<string, unknown> | undefined;
+    const payload = prpEvent?.payload as Record<string, unknown> | undefined;
+    accepted = payload && typeof payload.providerTurnId === "string" && payload.providerTurnId.length > 0
+      && typeof payload.providerSessionId === "string" && payload.providerSessionId.length > 0
+      ? { providerTurnId: payload.providerTurnId, providerSessionId: payload.providerSessionId } : null;
+  }
+  return accepted ? { ...identity, controllerInstanceId: binding.controllerInstanceId, ...accepted } : null;
+}
+
+/** Receipt-only lookup may inspect a reattached controller, but may not queue into it. */
+export function readCapturedRunnerPrpSteerOutcome(input: {
+  companyId: string; issueId: string; agentId: string; target: CapturedRunnerPrpSteerTarget; commandId: string; expectedTextSha256: string;
+}) {
+  const binding = registrations.get(input.target.runId);
+  if (!binding || binding.companyId !== input.companyId || binding.issueId !== input.issueId || binding.agentId !== input.agentId
+    || !capturedIdentityMatches(binding, input.target)) return null;
+  const command = binding.authority.store.state.commands.find(command => command.commandId === input.commandId);
+  if (!command || command.type !== "turn.steer" || command.payload.expectedProviderTurnId !== input.target.providerTurnId
+    || command.payload.expectedProviderSessionId !== input.target.providerSessionId
+    || typeof command.payload.text !== "string"
+    || createHash("sha256").update(command.payload.text).digest("hex") !== input.expectedTextSha256) return null;
+  return binding.authority.commandOutcome(input.commandId);
+}
+
 export function queueLiveRunnerPrpCommand(input: {
   companyId: string;
   issueId: string;
@@ -179,6 +241,7 @@ export function queueLiveRunnerPrpCommand(input: {
   type: string;
   payload?: Record<string, unknown>;
   commandId?: string;
+  expectedSteerTarget?: CapturedRunnerPrpSteerTarget;
 }): {
   runId: string;
   commandId: string;
@@ -189,6 +252,15 @@ export function queueLiveRunnerPrpCommand(input: {
   if (!current) return null;
   const binding = registrations.get(current.runId);
   if (!binding || binding.generation !== current.generation) return null;
+  if (input.expectedSteerTarget) {
+    const captured = captureLiveRunnerPrpSteerTarget(input);
+    const expected = input.expectedSteerTarget;
+    if (input.type !== "turn.steer" || !captured || Object.keys(expected).length !== Object.keys(captured).length
+      || Object.keys(captured).some(key =>
+      captured[key as keyof CapturedRunnerPrpSteerTarget] !== expected[key as keyof CapturedRunnerPrpSteerTarget])) return null;
+    if (input.payload?.expectedProviderTurnId !== expected.providerTurnId
+      || input.payload?.expectedProviderSessionId !== expected.providerSessionId) return null;
+  }
   const runId = current.runId;
   const command = binding.authority.queueCommand(
     input.type,
@@ -208,7 +280,7 @@ export function queueLiveRunnerPrpCommand(input: {
           throw new Error(`runner_prp_command_missing:${command.commandId}`);
         }
         if (outcome.status === "completed") return outcome.result;
-        if (outcome.status === "failed" || outcome.status === "rejected") {
+        if (outcome.status === "failed" || outcome.status === "rejected" || outcome.status === "indeterminate") {
           const message =
             outcome.result && typeof outcome.result.message === "string"
               ? outcome.result.message

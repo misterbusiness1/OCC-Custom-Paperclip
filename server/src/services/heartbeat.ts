@@ -1,3 +1,7 @@
+import { assertBoardCommentWorkspaceMaterializationAllowed } from "./board-comment-workspace-reservation.js";
+import { boardCommentRequestDelivery } from "./board-comment-request-delivery.js";
+import { assertBoardCommentWakeClaim, type BoardCommentWakeClaim } from "./board-comment-wake-claim.js";
+import { admitBoardCommentCancellation, type BoardCommentCancellationClaim } from "./board-comment-cancellation.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
@@ -3632,6 +3636,8 @@ function normalizeMaxConcurrentRuns(value: unknown) {
 }
 
 interface WakeupOptions {
+  /** Internal durable ordinary Board comment claim, never copied from caller JSON. */
+  boardCommentClaim?: BoardCommentWakeClaim;
   /** Set only by authenticated board wake routes; never copied from caller payloads. */
   manualUserWake?: boolean;
   /** Internal resume of a queue with persisted board interruption intent. */
@@ -19470,7 +19476,24 @@ export function heartbeatService(
     return { scanned: pending.length, enqueued, alreadyQueued, invalid };
   }
 
+  async function waitForRunExecutionDrain(runId: string, options: { timeoutMs?: number; intervalMs?: number } = {}) {
+      const timeoutMs = options.timeoutMs ?? 5_000;
+      const intervalMs = options.intervalMs ?? 25;
+      const deadline = Date.now() + timeoutMs;
+
+      while (liveRunExecutions.has(runId)) {
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `Timed out waiting for heartbeat run ${runId} execution to drain`,
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+  }
+
   async function reconcileStrandedAssignedIssues() {
+    await boardCommentRequestDelivery(db, { wakeup: trackWakeup, cancelRun: cancelRunInternal,
+      waitForRunExecutionDrain }, options.pluginWorkerManager).recover();
     return recovery.reconcileStrandedAssignedIssues({
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
     });
@@ -21190,6 +21213,8 @@ export function heartbeatService(
       const existingExecutionWorkspace = requestedExecutionWorkspaceId
         ? await executionWorkspacesSvc.getById(requestedExecutionWorkspaceId)
         : null;
+      if (existingExecutionWorkspace) await assertBoardCommentWorkspaceMaterializationAllowed(db,
+        existingExecutionWorkspace.id, existingExecutionWorkspace.metadata);
       const nativeRecoveryExecutionWorkspaceId =
         resolveNativeRecoveryExecutionWorkspaceBinding({
           bindingId: persistedNativeExecutionWorkspaceId,
@@ -26500,6 +26525,13 @@ export function heartbeatService(
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+    if (opts.boardCommentClaim) {
+      if (!issueId) throw conflict("Board comment wakes require an issue");
+      const companyId = agent.companyId;
+      await db.transaction(async (tx) => assertBoardCommentWakeClaim(tx, opts.boardCommentClaim!, {
+        companyId, agentId, issueId, idempotencyKey: opts.idempotencyKey,
+      }));
+    }
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
       if (isConversation(conversation)) {
@@ -26675,13 +26707,23 @@ export function heartbeatService(
       if (waitCondition && issueId && isUuidLike(issueId)) {
         const waitIssueId = issueId;
         return db.transaction(async (tx) => {
+          if (opts.boardCommentClaim) await assertBoardCommentWakeClaim(tx, opts.boardCommentClaim, {
+            companyId: agent.companyId, agentId, issueId: waitIssueId, idempotencyKey: opts.idempotencyKey,
+          });
           await tx.execute(sql`select id from issues where id = ${waitIssueId} and company_id = ${agent.companyId} for update`);
           return recordExecutionWait(tx as unknown as Db, {
             issueId: waitIssueId, request, condition: waitCondition, coalesce: coalesceExecutionWait,
           });
         });
       }
-      await db.insert(agentWakeupRequests).values(request);
+      if (opts.boardCommentClaim) {
+        await db.transaction(async (tx) => {
+          await assertBoardCommentWakeClaim(tx, opts.boardCommentClaim!, {
+            companyId: agent.companyId, agentId, issueId, idempotencyKey: opts.idempotencyKey,
+          });
+          await tx.insert(agentWakeupRequests).values(request);
+        });
+      } else await db.insert(agentWakeupRequests).values(request);
       return { created: true };
     };
     const writeSkippedHeartbeatRequest = async (
@@ -27014,6 +27056,9 @@ export function heartbeatService(
 
       const outcome = await db
         .transaction(async (tx) => {
+          const boardCommentReceipt = opts.boardCommentClaim ? await assertBoardCommentWakeClaim(tx, opts.boardCommentClaim, {
+            companyId: agent.companyId, agentId, issueId, idempotencyKey: opts.idempotencyKey,
+          }) : undefined;
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
@@ -28075,7 +28120,7 @@ export function heartbeatService(
                       id: durableRequest.id,
                       requestedAt: durableRequest.requestedAt,
                     }
-                  : undefined,
+                  : boardCommentReceipt,
                 reason,
                 liveRunExecutions,
                 wakeCommentId,
@@ -29102,6 +29147,8 @@ export function heartbeatService(
   }
 
   type CancelRunOptions = {
+    /** Internal durable Board request claim; never accepted from request payloads. */
+    boardCommentClaim?: BoardCommentCancellationClaim;
     errorCode?: string;
     resultJson?: Record<string, unknown>;
     eventMessage?: string;
@@ -29128,6 +29175,13 @@ export function heartbeatService(
     reason = "Cancelled by control plane",
     options: CancelRunOptions = {},
   ) {
+    if (options.boardCommentClaim) {
+      const correlation = await admitBoardCommentCancellation(db, runId, options.boardCommentClaim);
+      options = { ...options,
+        resultJson: { ...options.resultJson, boardCommentCancellation: correlation },
+        eventPayload: { ...options.eventPayload, boardCommentCancellation: correlation },
+      };
+    }
     let run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     const pendingNativeRetry =
@@ -29597,23 +29651,7 @@ export function heartbeatService(
   }
 
   return {
-    waitForRunExecutionDrain: async (
-      runId: string,
-      options: { timeoutMs?: number; intervalMs?: number } = {},
-    ) => {
-      const timeoutMs = options.timeoutMs ?? 5_000;
-      const intervalMs = options.intervalMs ?? 25;
-      const deadline = Date.now() + timeoutMs;
-
-      while (liveRunExecutions.has(runId)) {
-        if (Date.now() >= deadline) {
-          throw new Error(
-            `Timed out waiting for heartbeat run ${runId} execution to drain`,
-          );
-        }
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
-      }
-    },
+    waitForRunExecutionDrain,
     list: async (
       companyId: string,
       agentId?: string,

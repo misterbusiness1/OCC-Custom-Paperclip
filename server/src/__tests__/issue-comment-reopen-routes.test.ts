@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -315,6 +315,9 @@ async function waitForWakeup(assertion: () => void) {
 }
 
 describe.sequential("issue comment reopen routes", () => {
+  beforeAll(async () => {
+    await Promise.all([import("../routes/issues.js"), import("../middleware/index.js")]);
+  }, 60_000);
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getCommentByClientRequestId.mockReset();
@@ -507,93 +510,8 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("returns a persisted idempotent interrupt comment without reopening or dispatching", async () => {
-    const issue = makeIssue("done");
-    const clientRequestId = "b5324ca9-c7c3-4da3-8f69-41a6750d4e91";
-    const savedComment = {
-      id: "d14b0e25-f747-48cf-9011-be86842105e0",
-      companyId: issue.companyId,
-      issueId: issue.id,
-      authorType: "user",
-      authorUserId: "local-board",
-      body: "interrupt and continue",
-      clientRequestId,
-    };
-    mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.getCommentByClientRequestId.mockResolvedValue(
-      savedComment,
-    );
-    mockAccessService.decide.mockResolvedValue({
-      allowed: true,
-      reason: "allow_board",
-    });
-    mockAccessService.hasPermission.mockResolvedValue(true);
-
-    const [firstApp, restartedApp] = await Promise.all([
-      installActor(createApp()),
-      installActor(createApp()),
-    ]);
-    const responses = await Promise.all([
-      request(firstApp).post(`/api/issues/${issue.id}/comments`).send({
-        body: savedComment.body,
-        clientRequestId,
-        interrupt: true,
-        reopen: true,
-      }),
-      request(restartedApp).post(`/api/issues/${issue.id}/comments`).send({
-        body: savedComment.body,
-        clientRequestId,
-        interrupt: true,
-        reopen: true,
-      }),
-    ]);
-
-    expect(responses.map((response) => response.status)).toEqual([201, 201]);
-    expect(responses.map((response) => response.body.id)).toEqual([
-      savedComment.id,
-      savedComment.id,
-    ]);
-    expect(mockIssueService.getCommentByClientRequestId).toHaveBeenCalledTimes(2);
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
-    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
-    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-    expect(mockLogActivity).not.toHaveBeenCalled();
-    expect(mockExternalObjectService.syncCommentSafely).not.toHaveBeenCalled();
-  }, 30_000);
-
-  it("fails closed when a request id is replayed with different content", async () => {
-    const issue = makeIssue("done");
-    const clientRequestId = "b5324ca9-c7c3-4da3-8f69-41a6750d4e91";
-    mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.getCommentByClientRequestId.mockResolvedValue({
-      id: "d14b0e25-f747-48cf-9011-be86842105e0",
-      companyId: issue.companyId,
-      issueId: issue.id,
-      authorType: "user",
-      authorUserId: "local-board",
-      body: "original intent",
-      clientRequestId,
-    });
-    mockAccessService.decide.mockResolvedValue({
-      allowed: true,
-      reason: "allow_board",
-    });
-    mockAccessService.hasPermission.mockResolvedValue(true);
-
-    const response = await request(await installActor(createApp()))
-      .post(`/api/issues/${issue.id}/comments`)
-      .send({ body: "forged replacement", clientRequestId, interrupt: true });
-
-    expect(response.status).toBe(409);
-    expect(response.body.error).toBe(
-      "Message request ID was already used for different content",
-    );
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-  });
+  // Keyed human replay/concurrency coverage uses actual PostgreSQL in
+  // board-comment-request-real-routes.test.ts; this suite covers legacy paths.
 
   it("treats reopen=true as a no-op when the issue is already open", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));

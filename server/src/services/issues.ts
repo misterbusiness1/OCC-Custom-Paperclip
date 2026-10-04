@@ -50,6 +50,8 @@ import {
   issueApprovals,
   issueAttachments,
   issueCreateIdempotencyKeys,
+  issueCommentRequests,
+  issueCommentRequestEffects,
   issueInboxArchives,
   issueLabels,
   issueWatchdogs,
@@ -10534,7 +10536,7 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
       postCommitActions?: IssuePostCommitAction[],
-      options: { bindRuntimeSharedWorkspace?: boolean } = {},
+      options: { bindRuntimeSharedWorkspace?: boolean; deferredTerminalInteractionTelemetry?: { interactionIds: string[] } } = {},
     ) => {
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications =
@@ -10953,7 +10955,7 @@ export function issueService(db: Db) {
             ).expirePendingInteractionsForTerminalIssue(updated, {
               agentId: actorAgentId ?? null,
               userId: actorUserId ?? null,
-            });
+            }, options.deferredTerminalInteractionTelemetry);
             const {
               nativeQuestionCancellationIdentity,
               requestNativeQuestionRunCancellation,
@@ -11003,7 +11005,7 @@ export function issueService(db: Db) {
                   source: "issue.status_transition.issue_closed",
                   result: interaction.result ?? null,
                 },
-              });
+              }, options.deferredTerminalInteractionTelemetry ? activityPublications : undefined);
             }
           }
           // A status-card generation task that goes done/cancelled/blocked stops
@@ -12002,6 +12004,11 @@ export function issueService(db: Db) {
 
       return db.transaction(async (tx) => {
         const now = new Date();
+        const [identity] = await tx.select({ issueId: issueComments.issueId }).from(issueComments).where(eq(issueComments.id, commentId));
+        if (identity) await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, identity.issueId)).for("update");
+        const [request] = await tx.select().from(issueCommentRequests).where(eq(issueCommentRequests.commentId, commentId)).for("update");
+        if (request) await tx.select({ id: issueCommentRequestEffects.id }).from(issueCommentRequestEffects)
+          .where(eq(issueCommentRequestEffects.requestId, request.id)).for("update");
         const [comment] = await tx
           .update(issueComments)
           .set({
@@ -12026,6 +12033,13 @@ export function issueService(db: Db) {
           .returning();
 
         if (!comment) return null;
+        if (request) {
+          await tx.update(issueCommentRequests).set({ contentInvalidatedAt: now, updatedAt: now,
+            status: "cancelled", lastErrorCode: "comment_deleted" }).where(eq(issueCommentRequests.id, request.id));
+          await tx.update(issueCommentRequestEffects).set({ status: "cancelled", lastErrorCode: "comment_deleted", updatedAt: now })
+            .where(and(eq(issueCommentRequestEffects.requestId, request.id), inArray(issueCommentRequestEffects.status, ["pending", "claimed"]),
+              sql`${issueCommentRequestEffects.kind} not in ('workspace_cleanup', 'sandbox_cleanup')`));
+        }
 
         await tx
           .update(issues)
@@ -12083,6 +12097,8 @@ export function issueService(db: Db) {
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
         clientRequestId?: string;
+        /** Internal accepted-request policy, never copied from request JSON. */
+        acceptedRedactionPolicy?: { enabled: boolean };
       },
       dbOrTx: any = db,
     ): Promise<IssueComment> {
@@ -12120,7 +12136,7 @@ export function issueService(db: Db) {
         // Keep every read on the caller's transaction connection. Re-entering
         // the outer pool here can deadlock when concurrent transactions fill
         // the pool while waiting on the same issue or delivery row.
-        enabled: (await instanceSettings.getGeneral({ db: dbOrTx }))
+        enabled: options?.acceptedRedactionPolicy?.enabled ?? (await instanceSettings.getGeneral({ db: dbOrTx }))
           .censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);

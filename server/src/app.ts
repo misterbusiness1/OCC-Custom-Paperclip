@@ -1,3 +1,4 @@
+import { boardCommentRequestProtocolRoutes } from "./routes/board-comment-request-protocol.js";
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
 import { projectToolRoutes } from "./routes/project-tools.js";
 import { emailChannelService } from "./services/email-channels.js";
@@ -783,6 +784,7 @@ export async function createApp(
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  api.use(boardCommentRequestProtocolRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
