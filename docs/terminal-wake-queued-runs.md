@@ -20,6 +20,14 @@ terminal wake ID and status and that no provider work was dispatched. The wake,
 issue, and comments are not changed. A new Board request or authorized wake is
 required to restart work. Ordinary claim admission checks the locked wake
 again so a wake cancelled after the recovery scan cannot launch a provider.
+The same transaction records a retryable status notification and a lifecycle
+run-log event. The run-log event is published to live subscribers after commit;
+the stored row remains available if publication is interrupted. Terminal
+task-run telemetry is best-effort after commit.
+If recovery observes execution evidence on a queued run, it records
+`queued_wakeup_execution_ownership_unverified` and one audit entry. Later scans
+keep that run queued for operator reconciliation even if a transient lease or
+other evidence record has since disappeared.
 If startup suppression returns a claimed run to the queue, it returns the
 bound wake only when that wake is still claimed by the same run. A cancelled
 wake stays cancelled.

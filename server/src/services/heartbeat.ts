@@ -136,6 +136,7 @@ import {
   documentAnnotationThreads,
   documentRevisions,
   environmentLeases,
+  executionWorkspaceRuntimeLeases,
   issueDocuments,
   executionWorkspaces,
   heartbeatRunEvents,
@@ -19696,6 +19697,10 @@ export function heartbeatService(
         eq(heartbeatRuns.agentId, candidate.agentId),
       )).for("update");
       if (!run || run.status !== "queued" || run.wakeupRequestId !== wake.id) return null;
+      // Recorded execution ownership survives removal of transient evidence.
+      if (run.errorCode === "queued_wakeup_execution_ownership_unverified") {
+        return { held: true as const, reason: "prior_reconciliation_required", run: null };
+      }
       const [conflictingIssue] = issueId && isUuidLike(issueId)
         ? await tx.select({ id: issues.id }).from(issues).where(and(
           eq(issues.companyId, run.companyId),
@@ -19722,11 +19727,68 @@ export function heartbeatService(
           isNull(heartbeatRuns.errorCode)));
         return { held: true as const, reason: "issue_identity_unverified", run: null };
       }
-      // A row with controller evidence needs ownership reconciliation, not a
-      // synthetic cancellation or a new provider dispatch.
-      if (run.startedAt || run.processPid || run.processGroupId || run.controllerBootId ||
-          isNativeRunnerOwnershipHeld(run)) return { held: true as const,
-            reason: "controller_ownership_unverified", run: null };
+      // Queued is not proof of never-started execution. Preserve any retained
+      // controller, provider, output, lease or finalization evidence before
+      // changing the saved Board receipt or releasing the issue owner.
+      const hasRecordedExecution = Boolean(
+        run.startedAt || run.finishedAt || run.controllerBootId ||
+        run.controllerLeaseExpiresAt || run.processPid || run.processGroupId ||
+        run.processStartedAt || run.runnerInstanceId || run.nativeSessionId ||
+        run.sessionIdAfter || run.externalRunId || run.executionStage ||
+        run.nativePhase || run.nativePhaseUpdatedAt || run.activeIdentityContextId ||
+        run.executionControlDeadlineAt || run.executionStatusDeliveryId ||
+        run.lastOutputAt || run.lastOutputSeq > 0 || run.lastOutputStream || run.lastOutputBytes !== null ||
+        run.exitCode !== null || run.signal !== null ||
+        (run.usageJson && Object.keys(run.usageJson).length > 0) ||
+        (run.resultJson && Object.keys(run.resultJson).length > 0) ||
+        run.logStore || run.logRef || run.logCompressed || run.logBytes !== null || run.logSha256 ||
+        run.stdoutExcerpt || run.stderrExcerpt || run.driverKind || run.driverVersion ||
+        run.completionContractId || run.completionContractSha256 || run.nativeIssueId ||
+        run.issueCommentStatus !== "not_applicable" || run.issueCommentSatisfiedByCommentId ||
+        run.issueCommentRetryQueuedAt || run.lastUsefulActionAt || run.livenessState ||
+        run.livenessReason || run.nextAction || run.runnerProfileJson?.adapterDispatch
+      );
+      const hasRows = async <T extends { id: unknown }>(query: PromiseLike<T[]>) =>
+        (await query).length > 0;
+      if (hasRecordedExecution ||
+          await hasRows(tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents)
+            .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id))).limit(1)) ||
+          await hasRows(tx.select({ id: agentTaskSessions.id }).from(agentTaskSessions)
+            .where(and(eq(agentTaskSessions.companyId, run.companyId), eq(agentTaskSessions.lastRunId, run.id))).limit(1)) ||
+          await hasRows(tx.select({ id: environmentLeases.id }).from(environmentLeases)
+            .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id))).limit(1)) ||
+          await hasRows(tx.select({ id: executionWorkspaceRuntimeLeases.id }).from(executionWorkspaceRuntimeLeases)
+            .where(and(eq(executionWorkspaceRuntimeLeases.companyId, run.companyId), or(
+              eq(executionWorkspaceRuntimeLeases.ownerRunId, run.id),
+              eq(executionWorkspaceRuntimeLeases.ownerKey, `run:${run.id}`),
+              eq(executionWorkspaceRuntimeLeases.ownerIssueId, issueId),
+            ))).limit(1)) ||
+          await hasRows(tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+            .where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id))).limit(1)) ||
+          await hasRows(tx.select({ id: workspaceOperations.id }).from(workspaceOperations)
+            .where(and(eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.heartbeatRunId, run.id))).limit(1))) {
+        const [heldRun] = await tx.update(heartbeatRuns).set({
+          error: "Queued Board interrupt retains execution evidence; operator reconciliation required",
+          errorCode: "queued_wakeup_execution_ownership_unverified",
+          updatedAt: now,
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, "queued"),
+          eq(heartbeatRuns.wakeupRequestId, wake.id), isNull(heartbeatRuns.errorCode)))
+          .returning({ id: heartbeatRuns.id });
+        if (heldRun) await logActivity(tx as unknown as Db, {
+          companyId: run.companyId,
+          actorType: "system",
+          actorId: "heartbeat-recovery",
+          agentId: run.agentId,
+          runId: run.id,
+          action: "heartbeat.queued_board_interrupt_execution_ownership_unverified",
+          entityType: "heartbeat_run",
+          entityId: run.id,
+          details: { issueId, wakeupRequestId: wake.id,
+            code: "queued_wakeup_execution_ownership_unverified", providerDispatched: false },
+        });
+        return { held: true as const, reason: "execution_ownership_unverified", run: null };
+      }
       const receiptId = wake.idempotencyKey!.slice("queued-comment-interrupt:".length);
       // Issue admission and release take this same issue lock first. A new
       // same-issue receipt cannot slip between this selection and the hold.
@@ -20006,17 +20068,39 @@ export function heartbeatService(
                   publishLiveEvent({
                     companyId: terminalWake.run.companyId,
                     type: "heartbeat.run.status",
+                    payload: buildHeartbeatRunStatusLiveEventPayload(terminalWake.run),
+                  });
+                } catch (error) {
+                  logger.error({ error, runId: terminalWake.run.id }, "terminal-wake status notification failed");
+                }
+                try {
+                  publishRunLifecyclePluginEvent(terminalWake.run);
+                } catch (error) {
+                  logger.error({ error, runId: terminalWake.run.id }, "terminal-wake plugin notification failed");
+                }
+                try {
+                  const event = terminalWake.event;
+                  publishLiveEvent({
+                    companyId: terminalWake.run.companyId,
+                    type: "heartbeat.run.event",
                     payload: {
                       runId: terminalWake.run.id,
                       agentId: terminalWake.run.agentId,
-                      status: terminalWake.run.status,
-                      errorCode: terminalWake.run.errorCode,
-                      error: terminalWake.run.error,
+                      issueId: readRuntimeStatusIssueIdCandidate(terminalWake.run) ?? null,
+                      seq: event.seq,
+                      eventType: event.eventType,
+                      stream: event.stream ?? null,
+                      level: event.level ?? null,
+                      color: event.color ?? null,
+                      message: event.message ?? null,
+                      currentToolName: null,
+                      lastAssistantSnippet: null,
+                      lastEventAt: event.createdAt.toISOString(),
+                      payload: event.payload ?? null,
                     },
                   });
-                  publishRunLifecyclePluginEvent(terminalWake.run);
                 } catch (error) {
-                  logger.error({ error, runId: terminalWake.run.id }, "terminal-wake reconciliation notification failed");
+                  logger.error({ error, runId: terminalWake.run.id }, "terminal-wake run event notification failed");
                 }
               }
               continue;

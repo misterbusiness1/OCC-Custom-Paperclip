@@ -10,6 +10,7 @@ import {
   companyMemberships,
   companySkills,
   createDb,
+  environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -661,11 +662,14 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     },
   );
 
-  it.each(["missing_primary", "wrong_primary_issue", "claimed_primary", "controller_owned", "malformed_key"] as const)(
+  it.each(["missing_primary", "wrong_primary_issue", "claimed_primary", "controller_owned", "malformed_key", "provider_session_owned", "native_session_owned", "output_owned", "output_stream_owned", "compressed_log_owned", "lease_owned", "lease_removed_after_hold"] as const)(
     "leaves an unverified terminal Board successor for review (%s)", async (mode) => {
       const { companyId, agentId, ownerUserId } = await seedCompany();
       const issueId = randomUUID(), receiptId = randomUUID(), runId = randomUUID();
       const wakeId = randomUUID(), commentId = randomUUID();
+      const retainedExecution = mode === "provider_session_owned" || mode === "native_session_owned" ||
+        mode === "output_owned" || mode === "output_stream_owned" || mode === "compressed_log_owned" ||
+        mode === "lease_owned" || mode === "lease_removed_after_hold";
       await db.insert(issues).values({ id: issueId, companyId, title: "Saved Board request",
         status: "todo", assigneeAgentId: agentId, responsibleUserId: ownerUserId });
       await db.insert(issueComments).values({ id: commentId, companyId, issueId,
@@ -685,9 +689,49 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
         status: "queued", runtimeMode: "legacy", invocationSource: "on_demand",
         wakeupRequestId: wakeId, responsibleUserId: ownerUserId,
         startedAt: mode === "controller_owned" ? new Date() : null,
+        sessionIdAfter: mode === "provider_session_owned" ? "retained-provider-session" : null,
+        nativeSessionId: mode === "native_session_owned" ? randomUUID() : null,
+        lastOutputAt: mode === "output_owned" ? new Date() : null,
+        lastOutputSeq: mode === "output_owned" ? 1 : 0,
+        lastOutputStream: mode === "output_stream_owned" ? "stdout" : null,
+        logCompressed: mode === "compressed_log_owned",
         contextSnapshot: { issueId, wakeReason: "issue_commented", wakeCommentIds: [commentId] } });
+      if (retainedExecution) {
+        await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+      }
+      if (mode === "lease_owned" || mode === "lease_removed_after_hold") await db.insert(environmentLeases).values({
+        companyId, issueId, heartbeatRunId: runId, status: "active", provider: "test", providerLeaseId: "retained-lease",
+      });
       await heartbeat.resumeQueuedRuns();
       expect(await heartbeat.getRun(runId)).toMatchObject({ status: "queued" });
+      if (retainedExecution) {
+        if (mode === "lease_removed_after_hold") {
+          expect(await heartbeat.getRun(runId)).toMatchObject({
+            errorCode: "queued_wakeup_execution_ownership_unverified" });
+          await db.delete(environmentLeases).where(eq(environmentLeases.heartbeatRunId, runId));
+        }
+        await heartbeat.resumeQueuedRuns();
+        expect(await heartbeat.getRun(runId)).toMatchObject({ status: "queued",
+          errorCode: "queued_wakeup_execution_ownership_unverified" });
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].executionRunId).toBe(runId);
+        expect(await db.select().from(activityLog).where(and(eq(activityLog.runId, runId),
+          eq(activityLog.action, "heartbeat.queued_board_interrupt_execution_ownership_unverified"))))
+          .toHaveLength(1);
+      }
+      if (mode === "provider_session_owned") {
+        expect(await heartbeat.getRun(runId)).toMatchObject({ sessionIdAfter: "retained-provider-session" });
+      } else if (mode === "native_session_owned") {
+        expect((await heartbeat.getRun(runId))?.nativeSessionId).not.toBeNull();
+      } else if (mode === "output_owned") {
+        expect(await heartbeat.getRun(runId)).toMatchObject({ lastOutputSeq: 1 });
+      } else if (mode === "output_stream_owned") {
+        expect(await heartbeat.getRun(runId)).toMatchObject({ lastOutputStream: "stdout" });
+      } else if (mode === "compressed_log_owned") {
+        expect(await heartbeat.getRun(runId)).toMatchObject({ logCompressed: true });
+      } else if (mode === "lease_owned") {
+        expect((await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, runId)))[0])
+          .toMatchObject({ status: "active", providerLeaseId: "retained-lease" });
+      }
       if (mode !== "missing_primary") {
         expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receiptId)))[0])
           .toMatchObject({ status: mode === "claimed_primary" ? "claimed" : "deferred_issue_execution" });

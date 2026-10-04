@@ -1,4 +1,5 @@
-import { and, eq, or, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -12,13 +13,16 @@ import {
   nativeRunFinalizations,
   workspaceOperations,
 } from "@paperclipai/db";
+import { emitAgentTaskRun } from "./agent-task-run-telemetry.js";
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 
 export const TERMINAL_WAKE_QUEUED_RUN_CODE = "queued_run_terminal_wake_without_execution";
+export const TERMINAL_WAKE_EXECUTION_OWNERSHIP_UNVERIFIED_CODE = "queued_wakeup_execution_ownership_unverified";
 
 type Reconciliation =
   | { kind: "not_terminal_wake" }
   | { kind: "held_for_operator" }
-  | { kind: "terminalized"; run: typeof heartbeatRuns.$inferSelect };
+  | { kind: "terminalized"; run: typeof heartbeatRuns.$inferSelect; event: typeof heartbeatRunEvents.$inferSelect };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const terminalWakeStatuses = ["cancelled", "failed", "skipped"];
@@ -46,7 +50,7 @@ export async function reconcileTerminalWakeQueuedRun(
   const contextIssueId = issueIdFrom(candidate.contextSnapshot);
   if (contextIssueId === undefined) return { kind: "held_for_operator" };
 
-  return db.transaction(async (tx) => {
+  const reconciliation = await db.transaction(async (tx): Promise<Reconciliation> => {
     const issue = contextIssueId
       ? await tx.select().from(issues).where(and(
           eq(issues.companyId, candidate.companyId), eq(issues.id, contextIssueId),
@@ -77,32 +81,36 @@ export async function reconcileTerminalWakeQueuedRun(
       issueIdFrom(run.contextSnapshot) !== contextIssueId ||
       issueIdFrom(wake.payload) !== contextIssueId
     ) return { kind: "held_for_operator" };
+    if (run.errorCode === TERMINAL_WAKE_EXECUTION_OWNERSHIP_UNVERIFIED_CODE) {
+      return { kind: "held_for_operator" };
+    }
 
     // A queued row may contain a previous session to resume, but no session
     // created by this run, controller, output or execution receipt may exist.
-    if (
+    const hasRecordedExecution = Boolean(
       run.startedAt || run.finishedAt || run.controllerBootId ||
       run.controllerLeaseExpiresAt || run.processPid || run.processGroupId ||
       run.processStartedAt || run.runnerInstanceId || run.nativeSessionId ||
       run.sessionIdAfter || run.externalRunId || run.executionStage ||
       run.nativePhase || run.nativePhaseUpdatedAt || run.activeIdentityContextId ||
       run.executionControlDeadlineAt || run.executionStatusDeliveryId ||
-      run.lastOutputAt || run.lastOutputSeq > 0 || run.lastOutputBytes !== null ||
+      run.lastOutputAt || run.lastOutputSeq > 0 || run.lastOutputStream ||
+      run.lastOutputBytes !== null ||
       run.exitCode !== null || run.signal !== null || run.usageJson && Object.keys(run.usageJson).length > 0 ||
       run.resultJson && Object.keys(run.resultJson).length > 0 ||
       run.logStore || run.logRef || run.logBytes !== null || run.logSha256 ||
+      run.logCompressed ||
       run.stdoutExcerpt || run.stderrExcerpt || run.driverKind || run.driverVersion ||
       run.completionContractId || run.completionContractSha256 || run.nativeIssueId ||
       run.issueCommentStatus !== "not_applicable" || run.issueCommentSatisfiedByCommentId ||
       run.issueCommentRetryQueuedAt || run.lastUsefulActionAt || run.livenessState ||
       run.livenessReason || run.nextAction ||
-      Boolean(run.runnerProfileJson?.adapterDispatch) ||
-      issue?.executionRunId === run.id || issue?.checkoutRunId === run.id
-    ) return { kind: "held_for_operator" };
+      run.runnerProfileJson?.adapterDispatch
+    );
 
     const first = async <T extends { id: unknown }>(query: PromiseLike<T[]>): Promise<boolean> =>
       (await query).length > 0;
-    if (
+    const hasRelatedExecution = hasRecordedExecution ||
       await first(tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents)
         .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id))).limit(1)) ||
       await first(tx.select({ id: agentTaskSessions.id }).from(agentTaskSessions)
@@ -118,7 +126,35 @@ export async function reconcileTerminalWakeQueuedRun(
       await first(tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
         .where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id))).limit(1)) ||
       await first(tx.select({ id: workspaceOperations.id }).from(workspaceOperations)
-        .where(and(eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.heartbeatRunId, run.id))).limit(1)) ||
+        .where(and(eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.heartbeatRunId, run.id))).limit(1));
+    if (hasRelatedExecution) {
+      const now = new Date();
+      const [marked] = await tx.update(heartbeatRuns).set({
+        error: "Queued run retains execution evidence; operator reconciliation required",
+        errorCode: TERMINAL_WAKE_EXECUTION_OWNERSHIP_UNVERIFIED_CODE,
+        updatedAt: now,
+      }).where(and(
+        eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, "queued"),
+        eq(heartbeatRuns.wakeupRequestId, wake.id), isNull(heartbeatRuns.errorCode),
+      )).returning({ id: heartbeatRuns.id });
+      if (marked) await tx.insert(activityLog).values({
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        action: "heartbeat.terminal_wake_queued_run_execution_ownership_unverified",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        agentId: run.agentId,
+        runId: run.id,
+        responsibleUserId: run.responsibleUserId,
+        details: { code: TERMINAL_WAKE_EXECUTION_OWNERSHIP_UNVERIFIED_CODE,
+          wakeupRequestId: wake.id, issueId: contextIssueId },
+      });
+      return { kind: "held_for_operator" };
+    }
+    if (
+      issue?.executionRunId === run.id || issue?.checkoutRunId === run.id ||
       await first(tx.select({ id: issues.id }).from(issues).where(and(
         eq(issues.companyId, run.companyId),
         or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
@@ -141,6 +177,7 @@ export async function reconcileTerminalWakeQueuedRun(
       errorCode: TERMINAL_WAKE_QUEUED_RUN_CODE,
       error,
       finishedAt: now,
+      executionStatusDeliveryId: randomUUID(),
       resultJson: {
         ...(run.resultJson ?? {}),
         terminalWakeReconciliation: {
@@ -176,6 +213,29 @@ export async function reconcileTerminalWakeQueuedRun(
         providerDispatched: false,
       },
     });
-    return { kind: "terminalized", run: closed };
+    // Persist the run log with the status transition. A process restart after
+    // commit must not erase the only inspectable record of this cancellation.
+    const lifecycleEvent = await appendHeartbeatRunEvent(tx as unknown as Db, {
+      companyId: run.companyId,
+      runId: run.id,
+      agentId: run.agentId,
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: error,
+      payload: {
+        code: TERMINAL_WAKE_QUEUED_RUN_CODE,
+        wakeupRequestId: wake.id,
+        wakeStatus: wake.status,
+        providerDispatched: false,
+      },
+    });
+    return { kind: "terminalized", run: closed, event: lifecycleEvent.row };
   });
+  // Telemetry can query committed state, so emit it only after the transaction
+  // succeeds. It is best-effort and must not delay queued-work recovery.
+  if (reconciliation.kind === "terminalized") {
+    void emitAgentTaskRun(db, reconciliation.run);
+  }
+  return reconciliation;
 }
