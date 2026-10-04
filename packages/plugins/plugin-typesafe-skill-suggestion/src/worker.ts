@@ -1,5 +1,5 @@
 import { definePlugin, runWorker, type EnvSecretRefBinding, type PluginEvent } from "@paperclipai/plugin-sdk";
-import { CONTRACT_VERSION, DEFAULT_MODEL_VERSION, QUESTION_VERSION, createDecisionClient, requestFingerprint, suggest, type SuggestionRequest } from "./selector.js";
+import { CONTRACT_VERSION, DEFAULT_MODEL_VERSION, QUESTION_VERSION, createDecisionClient, requestFingerprint, suggest, type DecisionClient, type SuggestionRequest } from "./selector.js";
 import { classifyIssue, createIssueClassificationClient, ISSUE_CLASSIFICATION_STATE_KEY, isCurrentIssueRevision, issueInputRevision,
   type ClassificationClient, type IssueClassificationRecommendation, type IssueClassificationRevisionState, type WorkType } from "./issue-classifier.js";
 
@@ -20,6 +20,7 @@ function humanAuthorityRule(title: string, summary: string): string | null {
 
 type SkillSuggestionPluginOptions = {
   issueClassificationClientFactory?: (apiKey: string, timeoutMs: number, maxRetries: number) => ClassificationClient;
+  suggestionClientFactory?: (apiKey: string, model: string, timeoutMs: number, maxRetries: number) => DecisionClient;
 };
 
 function mandatorySkillNames(event: PluginEvent): string[] | null {
@@ -42,6 +43,7 @@ function revisionState(issue: { assigneeAgentId?: string | null; assigneeUserId?
 
 export function createSkillSuggestionPlugin(options: SkillSuggestionPluginOptions = {}) {
   const classificationClientFactory = options.issueClassificationClientFactory ?? createIssueClassificationClient;
+  const suggestionClientFactory = options.suggestionClientFactory ?? createDecisionClient;
   return definePlugin({
     async setup(ctx) {
       ctx.actions.register("skill-suggestion-shadow-v1", async (params, actionContext) => {
@@ -73,7 +75,7 @@ export function createSkillSuggestionPlugin(options: SkillSuggestionPluginOption
           cacheTtlMs: typeof config.cacheTtlMs === "number" ? config.cacheTtlMs : undefined,
           cacheMaxEntries: typeof config.cacheMaxEntries === "number" ? config.cacheMaxEntries : undefined,
         };
-        const result = await suggest(suggestionRequest, createDecisionClient(credential.value, model, timeoutMs, maxRetries));
+        const result = await suggest(suggestionRequest, suggestionClientFactory(credential.value, model, timeoutMs, maxRetries));
         const [freshConfig, freshCredential] = await Promise.all([
           ctx.config.getWithRevision(companyId), ctx.secrets.resolveWithMetadata(ref, { companyId, configPath: "apiKeyRef" }),
         ]);
