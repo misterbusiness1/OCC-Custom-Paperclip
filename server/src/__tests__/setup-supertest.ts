@@ -1,9 +1,3 @@
-import { beforeEach } from "vitest";
-import { resetHeartbeatShutdownForTests } from "../services/heartbeat-shutdown-admission.js";
-
-// Each test models a fresh process lifetime; production has no reset path.
-beforeEach(() => resetHeartbeatShutdownForTests());
-
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import type { AddressInfo, Server as NetServer } from "node:net";

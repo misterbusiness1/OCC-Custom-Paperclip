@@ -1,3 +1,4 @@
+import { resetHeartbeatShutdownForTests } from "../services/heartbeat-shutdown-admission.js";
 import * as controllerLeases from "../services/legacy-controller-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
@@ -13,6 +14,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq, or, inArray, sql } from "drizzle-orm";
 import {
+  beforeEach,
   afterAll,
   afterEach,
   beforeAll,
@@ -15423,3 +15425,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(1);
   });
 });
+
+// Each case in this suite models a separate retiring process.
+beforeEach(() => resetHeartbeatShutdownForTests());

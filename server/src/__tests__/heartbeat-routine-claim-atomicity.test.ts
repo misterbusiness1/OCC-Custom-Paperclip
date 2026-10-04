@@ -1,7 +1,8 @@
+import { resetHeartbeatShutdownForTests } from "../services/heartbeat-shutdown-admission.js";
 import { coordinateHeartbeatSchedulerShutdown } from "../shutdown.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { releaseRunClaimedJustBeforeSuppression } from "../services/heartbeat-queued-claim-release.js";
 import { heartbeatService, stopTaskDrain } from "../services/heartbeat.js";
@@ -251,3 +252,6 @@ suite("atomic routine execution claim", () => {
   });
 
 });
+
+// Each case in this suite models a separate retiring process.
+beforeEach(() => resetHeartbeatShutdownForTests());

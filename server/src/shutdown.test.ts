@@ -1,5 +1,6 @@
+import { resetHeartbeatShutdownForTests } from "./services/heartbeat-shutdown-admission.js";
 import { EventEmitter } from "node:events";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   closeHttpListenerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
@@ -523,3 +524,6 @@ describe("coordinateHeartbeatSchedulerShutdown", () => {
     });
   });
 });
+
+// Each case in this suite models a separate retiring process.
+beforeEach(() => resetHeartbeatShutdownForTests());

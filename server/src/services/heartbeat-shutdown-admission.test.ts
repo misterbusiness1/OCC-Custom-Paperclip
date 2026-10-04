@@ -1,6 +1,7 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { beginHeartbeatClaim, beginHeartbeatShutdown, isHeartbeatShuttingDown, resetHeartbeatShutdownForTests, waitForHeartbeatClaimsToSettle } from "./heartbeat-shutdown-admission.js";
 
+beforeEach(() => resetHeartbeatShutdownForTests());
 afterEach(() => vi.unstubAllEnvs());
 
 it("closes synchronously and waits for every admitted claim without allowing new claims", async () => {
