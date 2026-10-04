@@ -151,7 +151,9 @@ Remove only the pilot's `paperclipai/paperclip/typesafe-judge` assignment using
 the skill sync API with `mode: "remove"`; retain other assignments. Restore the
 recorded isolated tool flag and timeout and reload that isolated instance if
 needed. Keep recommendation/classification disabled unless separately authorized.
-Revert this skill/documentation commit to remove the shipped bundle; retain task
-history and secret bindings. No database rollback or credential rotation is
-required by this change. Remove a newly installed vendor skill only if this pilot
+Revert the entire shared-skill PR delta to remove the shipped bundle, including
+its follow-up documentation changes. If the PR was squash-merged, revert that
+squash commit; otherwise revert its commits in reverse order, newest first.
+Retain task history and secret bindings. No database rollback or credential
+rotation is required by this change. Remove a newly installed vendor skill only if this pilot
 installed it and no other agent or task depends on it.
