@@ -44,6 +44,7 @@ type SecretSnapshot = { value: string; secretVersionId: string };
 
 function hash(value: unknown) { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 function probability(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1; }
+function versionedJevModel(value: string) { return /^jev-\d+\.\d+\.\d+$/.test(value); }
 function distribution(value: unknown, keys: string[]) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const rows = value as Record<string, unknown>;
@@ -83,8 +84,9 @@ export function validateTypeSafeAnswers(input: Input, payload: unknown) {
     || !usage || !Number.isInteger(usage.input_tokens) || !Number.isInteger(usage.output_tokens)
     || Number(usage.input_tokens) < 0 || Number(usage.output_tokens) < 0) throw new Error("invalid_response");
   const rows = sourceAnswers as Record<string, unknown>;
-  // Aliases resolve to versioned IDs; an explicitly requested model must match.
-  if (!body.model || (!["jev-latest", "jev-preview"].includes(input.model) && body.model !== input.model)) throw new Error("invalid_response");
+  // Aliases must resolve to a versioned Jev ID; an explicitly pinned model must match exactly.
+  const aliasRequested = ["jev-latest", "jev-preview"].includes(input.model);
+  if (!body.model || (aliasRequested ? !versionedJevModel(body.model) : body.model !== input.model)) throw new Error("invalid_response");
   if (Object.keys(rows).length !== Object.keys(input.questions).length) throw new Error("invalid_response");
   const answers: Record<string, unknown> = {};
   for (const [id, question] of Object.entries(input.questions)) {
