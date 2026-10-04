@@ -1,3 +1,4 @@
+import { assertStartupWorkAllowed, isStartupWorkHeld } from "./startup-work-barrier.js";
 import { HttpError } from "../errors.js";
 import { createHash, randomUUID } from "node:crypto";
 import WebSocket from "ws";
@@ -620,6 +621,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     input: EmailEndpointSetupInput,
     actor: EmailActor,
   ) {
+    assertStartupWorkAllowed();
     await requireEnabled();
     const [agent] = await db
       .select()
@@ -919,6 +921,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
   }
 
   async function admit(endpoint: Endpoint, value: unknown) {
+    assertStartupWorkAllowed();
     await requireEnabled();
     await active(endpoint);
     const event = normalizeAgentmailEvent(value);
@@ -947,6 +950,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     body: Buffer,
     headers: Record<string, string>,
   ) {
+    assertStartupWorkAllowed();
     const [endpoint] = await db
       .select()
       .from(chatEndpoints)
@@ -1176,6 +1180,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     delivery: typeof chatDeliveries.$inferSelect,
     prefetched?: AgentmailMessage,
   ) {
+    assertStartupWorkAllowed();
     const event = delivery.normalizedEvent as {
       kind: string;
       inbox_id: string;
@@ -1452,6 +1457,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     input: EmailSendInput,
     actor: EmailActor,
   ): Promise<EmailPublicationSummary> {
+    assertStartupWorkAllowed();
     await requireEnabled();
     const endpoint = await getEndpoint(input.endpointId);
     if (endpoint.companyId !== companyId)
@@ -1616,6 +1622,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     send: typeof emailSends.$inferSelect,
     fence: () => Promise<void>,
   ) {
+    assertStartupWorkAllowed();
     const [pub] = await db
       .select()
       .from(chatPublications)
@@ -1845,6 +1852,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     }
   }
   async function catchUp(endpoint: Endpoint) {
+    assertStartupWorkAllowed();
     const config = await getConfig(endpoint.id);
     if (!config.activationAt) return;
     const scanStarted = new Date();
@@ -1920,6 +1928,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     }
   }
   async function maintainSocket(endpoint: Endpoint) {
+    assertStartupWorkAllowed();
     const existing = sockets.get(endpoint.id);
     if (existing && (await lease(endpoint, "email-socket", existing.token)))
       return;
@@ -2052,6 +2061,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       await Promise.all(items.slice(i, i + 4).map(work));
   }
   async function tick() {
+    if (isStartupWorkHeld()) return;
     if (activeTick) return activeTick;
     activeTick = runTick();
     try {
@@ -2061,6 +2071,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     }
   }
   async function runTick() {
+    if (isStartupWorkHeld()) return;
     if (ticking || stopped) return;
     ticking = true;
     try {
@@ -2266,6 +2277,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     action: "pause" | "resume" | "remove",
     actor: EmailActor,
   ) {
+    assertStartupWorkAllowed();
     const endpoint = await getEndpoint(id);
     const result = await withLease(endpoint, async () => {
       const config = await getConfig(id);
@@ -2368,6 +2380,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     receiveMode: "websocket" | "webhook",
     actor: EmailActor,
   ) {
+    assertStartupWorkAllowed();
     await requireEnabled();
     const endpoint = await getEndpoint(id);
     if (endpoint.status === "archived" || !endpoint.botExternalId)
@@ -2454,6 +2467,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     resolution: { outcome: "sent" | "failed"; providerMessageId?: string },
     actor: EmailActor,
   ) {
+    assertStartupWorkAllowed();
     const pub = await publication(publicationId, companyId);
     if (pub.outcome !== "uncertain")
       throw conflict("This send is not uncertain");

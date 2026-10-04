@@ -26,6 +26,8 @@ const apiPrefixes: Record<string, string> = {
   "assets.ts": "/api",
   "auth.ts": "/api/auth",
   "board-chat.ts": "/api",
+  "board-comment-request-protocol.ts": "/api",
+  "startup-work-barrier.ts": "/api",
   "built-in-agents.ts": "/api",
   "chat-channels.ts": "/api",
   "email.ts": "/api",
@@ -224,6 +226,34 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents exact startup release authority and content-free Board request status", () => {
+    const { spec } = loadSpecRoutes();
+    const protocol = spec.paths["/api/board-comment-request-protocol"].get;
+    const held = spec.paths["/api/startup-work-barrier"].get;
+    const release = spec.paths["/api/startup-work-barrier/release"].post;
+    for (const operation of [protocol, held, release]) {
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board", instanceAdmin: true });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(operation.responses["200"].headers["Cache-Control"].schema.enum).toEqual(["no-store"]);
+    }
+    const body = release.requestBody.content["application/json"].schema;
+    expect(body.additionalProperties).toBe(false);
+    expect(body.required).toEqual(["expectedBootId", "expectedGeneration", "qualificationSha256", "expectedProtocolVersion", "expectedConfiguredControls"]);
+    expect(body.properties.expectedConfiguredControls.additionalProperties).toBe(false);
+    expect(body.properties.qualificationSha256.pattern).toBe("^[a-f0-9]{64}$");
+    expect(release.responses["409"]).toBeDefined();
+    expect(release.responses["503"]).toBeDefined();
+    expect(release.description).toContain("HTTP response is lost");
+    const requestStatus = spec.paths["/api/issues/{id}/comment-requests/{clientRequestId}"].get;
+    expect(requestStatus["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(requestStatus.responses["404"]).toBeDefined();
+    expect(requestStatus.description).toContain("another author's request is not visible");
+    const properties = requestStatus.responses["200"].content["application/json"].schema.properties;
+    expect(properties.effects.items.properties.attempts.type).toBe("integer");
+    expect(properties.body).toBeUndefined();
+    expect(properties.payload).toBeUndefined();
+  });
+
   it("documents personal board-only announcements and private responses", () => {
     const { spec } = loadSpecRoutes();
     const current = spec.paths["/api/announcements/current"].get;

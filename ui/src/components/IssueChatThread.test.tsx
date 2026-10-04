@@ -14,6 +14,7 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
+import { saveDraft, saveDraftSubmission, loadDraftSubmission } from "../lib/composer-draft";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 import {
   IssueAssigneePausedNotice,
@@ -3655,6 +3656,27 @@ describe("IssueChatThread", () => {
       await act(async () => root.unmount());
     },
   );
+
+  it.each([false, true])("settles a restored legacy receipt once (StrictMode=%s)", async (strict) => {
+    const key = "legacy-confirmed-mount";
+    const submitted = "One text-only save interrupted by reload.";
+    const next = "A newer draft written while delivery was pending.";
+    const attemptId = "b668d2ed-47b6-4080-b89b-cd89bfc245ed";
+    saveDraft(key, `${submitted}\n\n${next}`);
+    saveDraftSubmission(key, { attemptId, reviewed: false, nextDraftOffset: submitted.length + 2 });
+    const root = createRoot(container);
+    const composer = <MemoryRouter><IssueChatThread
+      comments={[{ ...issueChatLongThreadComments[0]!, id: "confirmed-mount-comment", body: submitted,
+        authorAgentId: null, authorUserId: "user-1", clientRequestId: attemptId }]}
+      currentUserId="user-1" linkedRuns={[]} timelineEvents={[]} liveRuns={[]}
+      onAdd={vi.fn()} draftKey={key} enableLiveTranscriptPolling={false}
+    /></MemoryRouter>;
+    await act(async () => root.render(strict ? <StrictMode>{composer}</StrictMode> : composer));
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Issue chat editor"]')!.value).toBe(next);
+    expect(localStorage.getItem(key)).toBe(next);
+    expect(loadDraftSubmission(key)).toBeNull();
+    await act(async () => root.unmount());
+  });
 
   it.each(["late receipt", "reload receipt", "navigation success"])(
     "preserves a newer legacy draft after %s",

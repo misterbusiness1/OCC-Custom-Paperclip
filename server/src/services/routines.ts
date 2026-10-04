@@ -1,3 +1,4 @@
+import { assertStartupWorkAllowed, isStartupWorkHeld } from "./startup-work-barrier.js";
 import crypto from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1715,6 +1716,7 @@ export function routineService(
     nextRunAtOverride?: Date | null;
     actor?: Actor;
   }) {
+    assertStartupWorkAllowed();
     const projectId = input.projectId ?? input.routine.projectId ?? null;
     const projectWorkspaceId = input.projectWorkspaceId ?? null;
     const assigneeAgentId = input.assigneeAgentId ?? input.routine.assigneeAgentId ?? null;
@@ -2819,6 +2821,7 @@ export function routineService(
     },
 
     runRoutine: async (id: string, input: RunRoutine, actor?: Actor) => {
+      assertStartupWorkAllowed();
       const routine = await getRoutineById(id);
       if (!routine) throw notFound("Routine not found");
       if (routine.status === "archived") throw conflict("Routine is archived");
@@ -2847,6 +2850,7 @@ export function routineService(
     },
 
     runPipelineStageEntryRoutine: async (id: string, input: RunRoutine & { descriptionAppendix?: string | null }, actor?: Actor) => {
+      assertStartupWorkAllowed();
       const routine = await getRoutineById(id);
       if (!routine) throw notFound("Routine not found");
       if (routine.status === "archived") throw conflict("Routine is archived");
@@ -2881,6 +2885,7 @@ export function routineService(
       rawBody?: Buffer | null;
       payload?: Record<string, unknown> | null;
     }) => {
+      assertStartupWorkAllowed();
       const trigger = await db
         .select()
         .from(routineTriggers)
@@ -3054,6 +3059,7 @@ export function routineService(
     },
 
     tickScheduledTriggers: async (now: Date = new Date()) => {
+      if (isStartupWorkHeld()) return { triggered: 0 };
       const worktreeActivation = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)
         ? await resolveWorktreeRunExecutionActivationState({
           getExperimental: instanceSettings.getExperimental,

@@ -265,6 +265,23 @@ look like a zero-loss restart.
 
 A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
 
+The shutdown signal closes a process-wide heartbeat admission gate synchronously,
+before notification or scheduler waits. Route, routine, recovery and scheduler
+service instances share this irreversible gate; stopping an operator task drain
+cannot reopen it. Shutdown preparation waits for every previously admitted claim
+to commit or roll back before taking its running-work snapshot. This includes a
+claim whose transaction callback finished just before the signal but whose commit
+was still pending. Queue resumption from completion callbacks remains suppressed.
+Pending work stays queued for the next process; the same contract applies to
+ordinary shutdown and explicitly requested hot restart. Tests reset the gate only
+between simulated process lifetimes, with no unfinished claim and only under
+Vitest; there is no production reset endpoint. A blocked database claim keeps
+preparation waiting with admission closed; there is no timeout that proceeds to
+snapshot or drain while that claim is unaccounted for. Operators must allow enough
+outer stop grace for database contention to settle. A forced process termination
+before settlement is an interrupted shutdown, not proof of a completed drain;
+the next process must use normal durable lease and orphan recovery.
+
 ### Recovering a deploy blocked by missing process metadata
 
 If the currently installed version already has a running local-agent heartbeat

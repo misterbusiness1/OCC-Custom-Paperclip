@@ -1754,10 +1754,23 @@ impl CodexProvider {
     }
 
     pub fn steer_turn(&mut self, message: &str) -> Result<Value, LocalRunnerError> {
+        self.steer_turn_for_expected(message, None)
+    }
+
+    pub fn steer_turn_for_expected(
+        &mut self,
+        message: &str,
+        expected_turn_id: Option<&str>,
+    ) -> Result<Value, LocalRunnerError> {
         let turn_id = self
             .active_provider_turn_id
             .clone()
             .ok_or_else(|| LocalRunnerError::invalid("Codex has no active provider turn"))?;
+        if expected_turn_id.is_some_and(|expected| expected != turn_id) {
+            return Err(LocalRunnerError::invalid(
+                "Codex steering target is no longer active",
+            ));
+        }
         if message.is_empty() || message.len() > MAX_INSTRUCTIONS_BYTES {
             return Err(LocalRunnerError::invalid(
                 "Codex steering text is empty or oversized",

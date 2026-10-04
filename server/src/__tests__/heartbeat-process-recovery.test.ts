@@ -1,3 +1,4 @@
+import { resetHeartbeatShutdownForTests } from "../services/heartbeat-shutdown-admission.js";
 import * as controllerLeases from "../services/legacy-controller-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
@@ -13,6 +14,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq, or, inArray, sql } from "drizzle-orm";
 import {
+  beforeEach,
   afterAll,
   afterEach,
   beforeAll,
@@ -2998,6 +3000,22 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.retryOfRunId, runId)),
       ).toEqual([]);
+    });
+  });
+
+  it("keeps pending work queued once ordinary shutdown preparation begins", async () => {
+    await withTempPaperclipHome(async () => {
+      const { runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+      const heartbeat = heartbeatService(db);
+      await expect(heartbeat.prepareHotRestartShutdown("SIGTERM")).resolves.toMatchObject({ mode: "not_requested" });
+
+      // A completion callback can request queue resumption after the periodic
+      // scheduler has stopped. The old controller must not launch that work.
+      await heartbeat.resumeQueuedRuns();
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "queued", startedAt: null });
+      expect(await db.select({ status: agentWakeupRequests.status }).from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))).toEqual([{ status: "queued" }]);
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
     });
   });
 
@@ -12166,6 +12184,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { source, child };
   }
 
+  it("preserves native recovery ownership when shutdown suppresses provider admission", async () => {
+    await withTempPaperclipHome(async () => {
+      await fs.mkdir(resolvePaperclipInstanceRoot(), { recursive: true });
+      const { source, child } = await seedPreparedChatRecovery("admitted");
+      const factory = vi.fn(() => { throw new Error("Provider must not start during shutdown"); });
+      const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: factory });
+      await heartbeat.prepareHotRestartShutdown("SIGTERM");
+      const recovery = await heartbeat.recoverNativeRunsAfterRestart();
+      expect(recovery.claims).toEqual([expect.objectContaining({runId: child.runId, kind: "bootstrap_incomplete"})]);
+      await heartbeat.drainActiveRunExecutions();
+      expect(factory).not.toHaveBeenCalled();
+      expect(await heartbeat.getRun(child.runId)).toMatchObject({status:"running", runtimeMode:"native"});
+      const [issue] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(issue?.executionRunId).toBe(child.runId);
+    });
+  });
+
   it.each(["required", "admitted", "historical"] as const)(
     "rechecks only unadmitted native bootstrap recovery after a committed close: %s",
     async (admission) => {
@@ -15390,3 +15425,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(1);
   });
 });
+
+// Each case in this suite models a separate retiring process.
+beforeEach(() => resetHeartbeatShutdownForTests());

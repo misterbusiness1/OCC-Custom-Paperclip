@@ -1,3 +1,5 @@
+import { beginHeartbeatShutdown, waitForHeartbeatClaimsToSettle } from "./services/heartbeat-shutdown-admission.js";
+
 type HotRestartShutdownPreparation = {
   skipDrain: boolean;
 };
@@ -249,6 +251,7 @@ export async function coordinateHeartbeatSchedulerShutdown<
   preparationError: unknown;
   waitedForSchedulerIdle: boolean;
 }> {
+  beginHeartbeatShutdown();
   let hotRestart: TPreparation | null = null;
   let preparationError: unknown = null;
 
@@ -257,6 +260,7 @@ export async function coordinateHeartbeatSchedulerShutdown<
   // rows for the shutdown snapshot, otherwise a late queue claim can create a
   // run that is absent from both the snapshot and the selective drain set.
   await input.waitForHeartbeatSchedulerIdle();
+  await waitForHeartbeatClaimsToSettle();
 
   if (input.prepareHotRestartShutdown) {
     try {

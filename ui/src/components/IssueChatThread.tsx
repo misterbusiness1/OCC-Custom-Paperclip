@@ -4845,8 +4845,17 @@ const IssueChatComposer = forwardRef<
 
   // A server receipt for this exact request settles a restored submission.
   // Text equality is not delivery proof: users may intentionally repeat text.
+  const settledReceiptRef = useRef<{ draftKey: string | undefined; attemptId: string } | null>(null);
   useEffect(() => {
     if (!uncertainSubmission || !confirmedSubmissionIds.has(uncertainSubmission.attemptId)) return;
+    // Effect replay must not remove the submitted prefix from the newer draft
+    // a second time before React commits the cleared submission state.
+    const settled = settledReceiptRef.current;
+    if (settled && settled.draftKey === draftKey && settled.attemptId === uncertainSubmission.attemptId) {
+      setUncertainSubmission(null);
+      return;
+    }
+    settledReceiptRef.current = { draftKey, attemptId: uncertainSubmission.attemptId };
     const nextDraft = uncertainSubmission.nextDraftOffset === undefined
       ? "" : bodyRef.current.slice(uncertainSubmission.nextDraftOffset);
     if (draftKey) settleDraftSubmission(draftKey, uncertainSubmission.attemptId, nextDraft);

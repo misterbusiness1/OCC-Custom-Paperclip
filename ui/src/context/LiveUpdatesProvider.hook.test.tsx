@@ -181,6 +181,22 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
     })));
   }
 
+  it("suppresses duplicate durable activity before subscriber delivery while preserving distinct audits", async () => {
+    const received = vi.fn();
+    function Consumer() { useCompanyLiveEvent(received); return null; }
+    await reactAct(async () => {
+      root!.render(<QueryClientProvider client={queryClient}><LiveUpdatesProvider><Consumer /></LiveUpdatesProvider></QueryClientProvider>);
+    });
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    for (const [id, activityId] of [[1, "audit-a"], [2, "audit-a"], [3, "audit-b"]] as const) {
+      await reactAct(async () => sockets[0]!.onmessage!(new MessageEvent("message", { data: JSON.stringify({
+        id, companyId: "company-1", type: "activity.logged", createdAt: "2026-10-04T00:00:00Z",
+        payload: { activityId, action: "issue.updated", entityType: "issue", entityId: "root" },
+      }) })));
+    }
+    expect(received.mock.calls.map(([event]) => event.payload.activityId)).toEqual(["audit-a", "audit-b"]);
+  });
+
   it("disconnects while hidden and reconciles active queries once on return", async () => {
     await receiveStatus({ runId: "child-run", agentId: "child-agent", status: "running" });
     const invalidate = vi.spyOn(queryClient, "invalidateQueries");

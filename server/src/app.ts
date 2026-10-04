@@ -1,3 +1,6 @@
+import { isStartupWorkHeld, waitForStartupWorkRelease } from "./services/startup-work-barrier.js";
+import { startupWorkBarrierRoutes, startupWorkBarrierHttpGate } from "./routes/startup-work-barrier.js";
+import { boardCommentRequestProtocolRoutes } from "./routes/board-comment-request-protocol.js";
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
 import { projectToolRoutes } from "./routes/project-tools.js";
 import { emailChannelService } from "./services/email-channels.js";
@@ -551,6 +554,7 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+  app.use(startupWorkBarrierHttpGate());
   app.use(cloudRuntimeIdentityMiddleware(db));
   // Connection-intent tools carry their own short-lived, run-bound bearer and
   // must be reachable by remote adapters that intentionally do not receive an
@@ -783,6 +787,8 @@ export async function createApp(
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  api.use(boardCommentRequestProtocolRoutes(db));
+  api.use(startupWorkBarrierRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
@@ -1112,7 +1118,7 @@ export async function createApp(
     }
   };
   const flushPendingFeedbackExports = async () => {
-    if (feedbackExportShuttingDown) return;
+    if (feedbackExportShuttingDown || isStartupWorkHeld()) return;
     try {
       await opts.feedbackExportService?.flushPendingFeedbackTraces();
     } catch (err) {
@@ -1139,6 +1145,7 @@ export async function createApp(
   }
   emailChannels.start();
   const flushChatPublications = async () => {
+    if (isStartupWorkHeld()) return;
     await chatChannels.schedulePendingPublications();
   };
   const chatReconciliation = createChatReconciliationCoordinator({
@@ -1161,18 +1168,18 @@ export async function createApp(
   });
   const unsubscribeChatPublicationSignals = subscribeAllCompanyLiveEvents(
     (event) => {
-      if (isChatPublicationCommitSignal(event))
+      if (!isStartupWorkHeld() && isChatPublicationCommitSignal(event))
         chatReconciliation.notifyPublications();
     },
   );
   let chatPublicationTimer: ReturnType<typeof setInterval> | null = setInterval(
     () => {
-      chatReconciliation.reconcile();
+      if (!isStartupWorkHeld()) chatReconciliation.reconcile();
     },
     CHAT_PUBLICATION_FLUSH_INTERVAL_MS,
   );
   chatPublicationTimer.unref?.();
-  chatReconciliation.reconcile();
+  if (!isStartupWorkHeld()) chatReconciliation.reconcile();
   // Abandoned chunked-import spool sweep: hourly (plus once at startup),
   // deleting spool dirs whose transfer saw no activity for 24h and cancelling
   // their still-open ledger runs. Same setInterval + unref + shutdown-clear
@@ -1219,7 +1226,7 @@ export async function createApp(
     .finally(() => {
       sweepImportTransferSpools();
     });
-  void toolDispatcher.initialize().catch((err) => {
+  void waitForStartupWorkRelease().then(() => toolDispatcher.initialize()).catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
   const devWatcher = createPluginDevWatcher(
@@ -1259,14 +1266,14 @@ export async function createApp(
   // that must not outrun plugin availability — managed sandbox environments
   // (`applyManagedEnvironments`) run before the heartbeat resumes queued
   // runs — can sequence on it. It never rejects.
-  const bundledPluginsStartup = ensureBundledPlugins(
+  const bundledPluginsStartup = waitForStartupWorkRelease().then(() => ensureBundledPlugins(
     bundledPluginInstalls,
     { registry: pluginRegistry, loader, lifecycle, logger },
     // Managed mode reinstalls soft-uninstalled bundles (the control plane
     // owns provisioning); self-hosted leaves an operator's uninstall alone.
     // Operator-DISABLED plugins are never touched in either mode.
     { reinstallUninstalled: managedAutoInstallKeys !== null },
-  )
+  ))
     .then(() => loader.loadAll())
     .then((result) => {
       if (!result) return;

@@ -1,8 +1,11 @@
+import { assertBoardCommentWatchdogClaim, withBoardCommentWatchdogMutation, boardCommentWatchdogConfigurationSha256, type BoardCommentWatchdogClaim, type BoardCommentWatchdogTarget } from "./board-comment-watchdog-claim.js";
 import { createHash } from "node:crypto";
 import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
+  issueCommentRequests,
+  issueCommentRequestEffects,
   agents,
   approvals,
   heartbeatRuns,
@@ -16,11 +19,12 @@ import {
   issueWorkProducts,
 } from "@paperclipai/db";
 import type { IssueWatchdog, IssueWatchdogSummary } from "@paperclipai/shared";
+import { appendBoardCommentWatchdogWake } from "./board-comment-request-runtime-effects.js";
 import { conflict, notFound } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, persistActivity, publishActivity, publishActivityObserved, type ActivityPublication } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
-import { issueService } from "./issues.js";
+import { issueService, executeIssuePostCommitActions, type IssuePostCommitAction } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
 
@@ -223,6 +227,7 @@ type TaskWatchdogWakeup = (
 ) => Promise<{ id: string } | null>;
 
 export type TaskWatchdogServiceDeps = {
+  boardCommentClaim?: BoardCommentWatchdogClaim;
   enqueueWakeup?: TaskWatchdogWakeup;
 };
 
@@ -1266,6 +1271,35 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return Boolean(interaction || approval);
   }
 
+  async function logAcceptedWatchdogActivity(watchdogId: string, input: Parameters<typeof logActivity>[1]) {
+    if (!deps.boardCommentClaim) return logActivity(db, input);
+    const saved = await withBoardCommentWatchdogMutation(db, deps.boardCommentClaim, watchdogId,
+      tx => persistActivity(tx, input));
+    await publishActivityObserved(saved.publication);
+    return saved.activity;
+  }
+
+  async function updateAcceptedWatchdogIssue<T>(watchdogId: string,
+    update: (tx: Db, publications: ActivityPublication[], actions: IssuePostCommitAction[]) => Promise<T>) {
+    const publications: ActivityPublication[] = [];
+    const actions: IssuePostCommitAction[] = [];
+    const result = await withBoardCommentWatchdogMutation(db, deps.boardCommentClaim, watchdogId, async tx => {
+      publications.length = 0;
+      actions.length = 0;
+      const value = await update(tx, publications, actions);
+      // Reopening to todo must not invent an unplanned cancellation. A future
+      // transition that produces one needs a typed durable effect before commit.
+      if (deps.boardCommentClaim && actions.length) throw conflict("Watchdog update requires an unplanned native cancellation");
+      return value;
+    });
+    for (const publication of publications) {
+      if (deps.boardCommentClaim) await publishActivityObserved(publication);
+      else publishActivity(publication);
+    }
+    if (!deps.boardCommentClaim) await executeIssuePostCommitActions(db, actions);
+    return result;
+  }
+
   async function markTerminalWatchdogIssueReviewed(watchdog: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
     if (!watchdog.watchdogIssueId || !watchdog.lastObservedFingerprint) return watchdog;
     const watchdogIssue = await db
@@ -1288,7 +1322,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       watchdog.lastReviewedFingerprint === reviewedFingerprint &&
       canonicalJson(parseStopSnapshot(watchdog.lastReviewedStopSnapshot)) === canonicalJson(reviewedStopSnapshot)
     ) return watchdog;
-    const [updated] = await db
+    const [updated] = await withBoardCommentWatchdogMutation(db, deps.boardCommentClaim, watchdog.id, tx => tx
       .update(issueWatchdogs)
       .set({
         lastReviewedFingerprint: reviewedFingerprint,
@@ -1297,8 +1331,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         updatedAt: new Date(),
       })
       .where(eq(issueWatchdogs.id, watchdog.id))
-      .returning();
-    await logActivity(db, {
+      .returning());
+    await logAcceptedWatchdogActivity(watchdog.id, {
       companyId: watchdog.companyId,
       actorType: "system",
       actorId: "system",
@@ -1308,6 +1342,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       entityType: "issue",
       entityId: watchdog.issueId,
       details: {
+        ...(deps.boardCommentClaim ? { boardCommentClaim: deps.boardCommentClaim } : {}),
         source: "task_watchdogs.review_disposition",
         watchdogId: watchdog.id,
         watchdogIssueId: watchdogIssue.id,
@@ -1344,7 +1379,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         fallback.status === "backlog" ||
         await watchdogIssueNeedsFreshWake(fallback);
       const watchdogIssue = shouldReopen
-        ? await issuesSvc.update(fallback.id, {
+        ? await updateAcceptedWatchdogIssue(input.watchdog.id, async (tx, publications, actions) => await issueService(tx).update(fallback.id, {
           status: "todo",
           assigneeAgentId: input.watchdog.watchdogAgentId,
           parentId: input.sourceIssue.id,
@@ -1352,16 +1387,16 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           goalId: input.sourceIssue.goalId,
           billingCode: input.sourceIssue.billingCode,
           originFingerprint: input.classification.stopFingerprint,
-        }) ?? fallback
+        }, tx, publications, actions)) ?? fallback
         : fallback;
       if (!shouldReopen && watchdogIssue.originFingerprint !== input.classification.stopFingerprint) {
-        await db
+        await withBoardCommentWatchdogMutation(db, deps.boardCommentClaim, input.watchdog.id, tx => tx
           .update(issues)
           .set({ originFingerprint: input.classification.stopFingerprint, updatedAt: new Date() })
-          .where(and(eq(issues.companyId, input.watchdog.companyId), eq(issues.id, watchdogIssue.id)));
+          .where(and(eq(issues.companyId, input.watchdog.companyId), eq(issues.id, watchdogIssue.id))));
         watchdogIssue.originFingerprint = input.classification.stopFingerprint;
       }
-      await issuesSvc.addComment(
+      await withBoardCommentWatchdogMutation(db, deps.boardCommentClaim, input.watchdog.id, async tx => await issueService(tx).addComment(
         watchdogIssue.id,
         buildStoppedFingerprintComment({
           sourceIssue: input.sourceIssue,
@@ -1379,12 +1414,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
             waitsByIssueId: input.classification.stopSnapshot.waitsByIssueId,
             resumed: true,
           }),
-        },
-      );
+        }, tx));
       return watchdogIssue;
     }
 
-    const created = await issuesSvc.create(input.sourceIssue.companyId, {
+    const created = await withBoardCommentWatchdogMutation(db, deps.boardCommentClaim, input.watchdog.id, async tx => await issueService(tx).create(input.sourceIssue.companyId, {
         title: `Watchdog review for ${input.sourceIssue.identifier ?? input.sourceIssue.title}`,
         description: [
           "Task watchdog review issue.",
@@ -1405,14 +1439,14 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         originFingerprint: input.classification.stopFingerprint,
         billingCode: input.sourceIssue.billingCode,
         inheritExecutionWorkspaceFromIssueId: input.sourceIssue.id,
-      })
+      }, tx))
       .catch(async (error: unknown) => {
         if (!isActiveTaskWatchdogUniqueConflict(error)) throw error;
         const winner = await findTaskWatchdogIssue(input.watchdog.companyId, input.sourceIssue.id);
         if (!winner) throw error;
         return winner;
       });
-    await issuesSvc.addComment(
+    await withBoardCommentWatchdogMutation(db, deps.boardCommentClaim, input.watchdog.id, async tx => await issueService(tx).addComment(
       created.id,
       buildStoppedFingerprintComment({
         sourceIssue: input.sourceIssue,
@@ -1430,8 +1464,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           waitsByIssueId: input.classification.stopSnapshot.waitsByIssueId,
           resumed: false,
         }),
-      },
-    );
+      }, tx));
     return created;
   }
 
@@ -1457,7 +1490,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       sourceIssue.id,
     ))?.id ?? null;
     if (existingWatchdogIssueId && await hasLivePathForIssue(watchdog.companyId, existingWatchdogIssueId)) {
-      await db
+      await withBoardCommentWatchdogMutation(db, deps.boardCommentClaim, watchdog.id, tx => tx
         .update(issueWatchdogs)
         .set({
           watchdogIssueId: existingWatchdogIssueId,
@@ -1465,7 +1498,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           lastObservedStopSnapshot: classification.stopSnapshot,
           updatedAt: new Date(),
         })
-        .where(eq(issueWatchdogs.id, watchdog.id));
+        .where(eq(issueWatchdogs.id, watchdog.id)));
       return { state: "watchdog_live" as const, classification, watchdogIssueId: existingWatchdogIssueId };
     }
     const existingWatchdogIssue = existingWatchdogIssueId
@@ -1485,7 +1518,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         watchdog.lastObservedFingerprint !== classification.stopFingerprint ||
         canonicalJson(parseStopSnapshot(watchdog.lastObservedStopSnapshot)) !== canonicalJson(classification.stopSnapshot)
       ) {
-        await db
+        await withBoardCommentWatchdogMutation(db, deps.boardCommentClaim, watchdog.id, tx => tx
           .update(issueWatchdogs)
           .set({
             watchdogIssueId: existingWatchdogIssue!.id,
@@ -1493,7 +1526,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
             lastObservedStopSnapshot: classification.stopSnapshot,
             updatedAt: new Date(),
           })
-          .where(eq(issueWatchdogs.id, watchdog.id));
+          .where(eq(issueWatchdogs.id, watchdog.id)));
       }
       return {
         state: "watchdog_review_open" as const,
@@ -1509,7 +1542,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       runId: opts.runId ?? null,
     });
     const now = new Date();
-    await db
+    await withBoardCommentWatchdogMutation(db, deps.boardCommentClaim, watchdog.id, tx => tx
       .update(issueWatchdogs)
       .set({
         watchdogIssueId: watchdogIssue.id,
@@ -1519,9 +1552,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         triggerCount: sql`${issueWatchdogs.triggerCount} + 1`,
         updatedAt: now,
       })
-      .where(eq(issueWatchdogs.id, watchdog.id));
+      .where(eq(issueWatchdogs.id, watchdog.id)));
 
-    await logActivity(db, {
+    await logAcceptedWatchdogActivity(watchdog.id, {
       companyId: sourceIssue.companyId,
       actorType: "system",
       actorId: "system",
@@ -1531,6 +1564,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       entityType: "issue",
       entityId: sourceIssue.id,
       details: {
+        ...(deps.boardCommentClaim ? { boardCommentClaim: deps.boardCommentClaim } : {}),
         source: "task_watchdogs.evaluate",
         watchdogId: watchdog.id,
         watchdogIssueId: watchdogIssue.id,
@@ -1540,30 +1574,39 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       },
     });
 
-    const context = watchdogWakeContext({
+    const context = { ...watchdogWakeContext({
       watchdog,
       watchdogIssue,
       sourceIssue,
       classification,
-    });
-    const wake = deps.enqueueWakeup
-      ? await deps.enqueueWakeup(watchdog.watchdogAgentId, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: "task_watchdog_stopped_subtree",
-        payload: context,
-        contextSnapshot: context,
-        idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, classification.stopFingerprint),
-        requestedByActorType: "system",
-        requestedByActorId: null,
+    }), ...(deps.boardCommentClaim ? { boardCommentClaim: deps.boardCommentClaim } : {}) };
+    let durableWakeEffectId: string | null = null;
+    const wake = deps.boardCommentClaim
+      ? await withBoardCommentWatchdogMutation(db, deps.boardCommentClaim, watchdog.id, async tx => {
+        const claim = deps.boardCommentClaim!;
+        const [request] = await tx.select().from(issueCommentRequests).where(eq(issueCommentRequests.id, claim.requestId));
+        const [parent] = await tx.select().from(issueCommentRequestEffects).where(eq(issueCommentRequestEffects.id, claim.effectId));
+        if (!request || !parent) throw conflict("Watchdog request disappeared before wake admission");
+        durableWakeEffectId = await appendBoardCommentWatchdogWake(tx as unknown as Parameters<typeof appendBoardCommentWatchdogWake>[0], request, parent, {
+          version: 1, agentId: watchdog.watchdogAgentId, wakeup: { source: "automation", triggerDetail: "system",
+            reason: "task_watchdog_stopped_subtree", payload: context, contextSnapshot: context },
+        });
+        return null;
       })
-      : null;
+      : deps.enqueueWakeup
+      ? await deps.enqueueWakeup(watchdog.watchdogAgentId, {
+        source: "automation", triggerDetail: "system", reason: "task_watchdog_stopped_subtree",
+        payload: context, contextSnapshot: context,
+        idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, classification.stopFingerprint),
+        requestedByActorType: "system", requestedByActorId: null,
+      }) : null;
 
     return {
       state: "triggered" as const,
       classification,
       watchdogIssueId: watchdogIssue.id,
       wakeupRunId: wake?.id ?? null,
+      durableWakeEffectId,
     };
   }
 
@@ -1774,6 +1817,24 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         }
       }
       return result;
+    },
+
+    captureBoardCommentTargets: async (companyId: string, issueId: string): Promise<BoardCommentWatchdogTarget[]> =>
+      (await activeWatchdogsForIssueAndAncestors(companyId, issueId)).map(row => ({ watchdogId: row.id,
+        watchedIssueId: row.issueId, configurationSha256: boardCommentWatchdogConfigurationSha256(row) })),
+    reconcileAcceptedBoardCommentTargets: async (companyId: string, targets: BoardCommentWatchdogTarget[]) => {
+      if (!deps.boardCommentClaim) throw conflict("Board watchdog claim is required");
+      const outcomes: Array<{ watchdogId: string; state: string; durableWakeEffectId?: string | null }> = [];
+      for (const target of targets) {
+        await assertBoardCommentWatchdogClaim(db, deps.boardCommentClaim, target.watchdogId);
+        const [row] = await db.select().from(issueWatchdogs).where(and(eq(issueWatchdogs.companyId, companyId),
+          eq(issueWatchdogs.id, target.watchdogId), eq(issueWatchdogs.issueId, target.watchedIssueId)));
+        if (!row) throw conflict("Accepted watchdog target is unavailable");
+        const outcome = await evaluateWatchdog(row);
+        outcomes.push({ watchdogId: target.watchdogId, state: outcome.state,
+          ...("durableWakeEffectId" in outcome ? { durableWakeEffectId: outcome.durableWakeEffectId } : {}) });
+      }
+      return outcomes;
     },
 
     reconcileForIssueAndAncestors: async (

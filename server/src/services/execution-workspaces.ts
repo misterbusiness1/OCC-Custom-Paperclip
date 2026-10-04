@@ -1,3 +1,4 @@
+import { hasBoardCommentWorkspaceReservation, type BoardCommentWorkspaceCapability } from "./board-comment-workspace-reservation.js";
 import { createWorkspaceGitInspectionCache } from "./workspace-git-inspection-cache.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -207,7 +208,7 @@ export function clearMetadataReopenPendingConsumption(
 // Both the reopen path and the destructive cleanup path acquire the same lock,
 // so they never run against the same workspace at the same time, even on
 // different server processes.
-async function acquireExecutionWorkspaceLifecycleLock(
+export async function acquireExecutionWorkspaceLifecycleLock(
   tx: DbTransaction,
   workspaceId: string,
 ): Promise<void> {
@@ -1271,6 +1272,121 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
 
 const inspectGitForDisplay = createWorkspaceGitInspectionCache(inspectGitCloseReadiness);
 
+/** Materialize one captured workspace through the canonical runtime. The caller
+ * owns lifecycle admission; this helper performs no lifecycle publication. */
+export async function materializeClosedExecutionWorkspace(
+  db: Db,
+  row: typeof executionWorkspaces.$inferSelect,
+  issue: { id: string },
+  actor: { agentId: string | null; actorType: string },
+  materializationDb: Db = db,
+  boardCommentCapability?: BoardCommentWorkspaceCapability,
+): Promise<string | null> {
+  const [
+    { ensurePersistedExecutionWorkspaceAvailable },
+    { workspaceOperationService },
+    { ensureManagedProjectWorkspace },
+  ] = await Promise.all([
+    import("./workspace-runtime.js"),
+    import("./workspace-operations.js"),
+    // heartbeat.js imports this module, so a static import creates a
+    // cycle. Load ensureManagedProjectWorkspace dynamically instead.
+    import("./heartbeat.js"),
+  ]);
+  const [projectWorkspace, projectPolicy] = await Promise.all([
+    row.projectWorkspaceId
+      ? db
+          .select({ cwd: projectWorkspaces.cwd })
+          .from(projectWorkspaces)
+          .where(and(
+            eq(projectWorkspaces.companyId, row.companyId),
+            eq(projectWorkspaces.id, row.projectWorkspaceId),
+          ))
+          .then((rows) => rows[0] ?? null)
+      : null,
+    db
+      .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+      .from(projects)
+      .where(and(eq(projects.companyId, row.companyId), eq(projects.id, row.projectId)))
+      .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy)),
+  ]);
+  // Resolve the base checkout that the rebuild spawns git in. A
+  // local-folder project stores its base path in projectWorkspaces.cwd.
+  // A managed_checkout project stores null there, so resolve its live
+  // managed checkout instead. Never use row.cwd for a git_worktree
+  // rebuild: row.cwd is the archived worktree path, which the reaper
+  // already removed from disk. A spawn in that missing directory fails
+  // with "spawn git ENOENT" and hides the real cause.
+  let resolvedBaseCwd = projectWorkspace?.cwd ?? null;
+  if (resolvedBaseCwd == null && row.strategyType === "git_worktree" && row.projectId) {
+    const managedWorkspace = await ensureManagedProjectWorkspace({
+      companyId: row.companyId,
+      projectId: row.projectId,
+      repoUrl: row.repoUrl,
+      resolveGitAuth: createGitRemoteAuthProvider(db, row.companyId, {
+        issueId: row.sourceIssueId ?? issue.id,
+      }),
+    });
+    resolvedBaseCwd = managedWorkspace.cwd;
+  }
+  const config = readExecutionWorkspaceConfig(row.metadata as Record<string, unknown> | null);
+  const recorder = workspaceOperationService(db).createRecorder({
+    companyId: row.companyId,
+    executionWorkspaceId: row.id,
+  });
+
+  let rebuildError: string | null = null;
+  try {
+    const realized = await ensurePersistedExecutionWorkspaceAvailable({
+      db: materializationDb,
+      boardCommentCapability,
+      base: {
+        baseCwd: resolvedBaseCwd ?? row.cwd ?? "",
+        source: "task_session",
+        projectId: row.projectId,
+        workspaceId: row.projectWorkspaceId,
+        repoUrl: row.repoUrl,
+        repoRef: row.baseRef,
+      },
+      workspace: {
+        id: row.id,
+        mode: row.mode,
+        strategyType: row.strategyType,
+        cwd: row.cwd,
+        providerRef: row.providerRef,
+        projectId: row.projectId,
+        projectWorkspaceId: row.projectWorkspaceId,
+        repoUrl: row.repoUrl,
+        baseRef: row.baseRef,
+        branchName: row.branchName,
+        metadata: row.metadata as Record<string, unknown> | null,
+        config: {
+          ...config,
+          provisionCommand:
+            config?.provisionCommand
+            ?? projectPolicy?.workspaceStrategy?.provisionCommand
+            ?? null,
+        },
+      },
+      issue: row.sourceIssueId
+        ? { id: row.sourceIssueId, identifier: null, title: row.name }
+        : null,
+      agent: {
+        id: actor.agentId ?? null,
+        name: actor.actorType === "user" ? "Board" : "Agent",
+        companyId: row.companyId,
+      },
+      recorder,
+    });
+    if (!realized) {
+      rebuildError = "Execution workspace could not be rebuilt";
+    }
+  } catch (error) {
+    rebuildError = error instanceof Error ? error.message : String(error);
+  }
+  return rebuildError;
+}
+
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
   const inspectDisplay = opts.inspectGitCloseReadiness
     ? createWorkspaceGitInspectionCache(opts.inspectGitCloseReadiness)
@@ -1564,6 +1680,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const currentGeneration = fresh ? readExecutionWorkspaceLifecycleGeneration(fresh.metadata) : null;
       if (
         !fresh
+        || hasBoardCommentWorkspaceReservation(fresh.metadata)
         || currentGeneration !== input.expectedGeneration
         || !input.isWriteTarget(fresh)
       ) {
@@ -2753,6 +2870,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         // lock, so it never archives a workspace that a reopen just restored.
         const archived = await db.transaction(async (tx) => {
           await acquireExecutionWorkspaceLifecycleLock(tx, workspace.id);
+          const [reservationRow] = await tx.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+          if (hasBoardCommentWorkspaceReservation(reservationRow?.metadata)) return null;
           return tx
             .update(executionWorkspaces)
             .set({
@@ -2907,7 +3026,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const row = await db
         .update(executionWorkspaces)
         .set({ ...patch, updatedAt: new Date() })
-        .where(eq(executionWorkspaces.id, id))
+        .where(and(eq(executionWorkspaces.id, id),
+          sql`coalesce(${executionWorkspaces.metadata}, '{}'::jsonb)->'boardCommentReopenReservation' IS NULL`))
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toExecutionWorkspace(row) : null;
@@ -2949,6 +3069,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // disclose no workspace detail.
           return { ok: false, code: "not_reopenable", message: "Execution workspace is not reopenable" };
         }
+        if (hasBoardCommentWorkspaceReservation(row.metadata)) throw conflict("Workspace is reserved by an accepted Board request");
         if (!isClosedExecutionWorkspaceStatus(row.status)) {
           // A concurrent reopen already restored the row. Report success without a
           // second rebuild so the caller continues normally. The other request
@@ -2962,113 +3083,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           };
         }
 
-        const [
-          { ensurePersistedExecutionWorkspaceAvailable },
-          { workspaceOperationService },
-          { ensureManagedProjectWorkspace },
-        ] = await Promise.all([
-          import("./workspace-runtime.js"),
-          import("./workspace-operations.js"),
-          // heartbeat.js imports this module, so a static import creates a
-          // cycle. Load ensureManagedProjectWorkspace dynamically instead.
-          import("./heartbeat.js"),
-        ]);
-        const [projectWorkspace, projectPolicy] = await Promise.all([
-          row.projectWorkspaceId
-            ? db
-                .select({ cwd: projectWorkspaces.cwd })
-                .from(projectWorkspaces)
-                .where(and(
-                  eq(projectWorkspaces.companyId, row.companyId),
-                  eq(projectWorkspaces.id, row.projectWorkspaceId),
-                ))
-                .then((rows) => rows[0] ?? null)
-            : null,
-          db
-            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
-            .from(projects)
-            .where(and(eq(projects.companyId, row.companyId), eq(projects.id, row.projectId)))
-            .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy)),
-        ]);
-        // Resolve the base checkout that the rebuild spawns git in. A
-        // local-folder project stores its base path in projectWorkspaces.cwd.
-        // A managed_checkout project stores null there, so resolve its live
-        // managed checkout instead. Never use row.cwd for a git_worktree
-        // rebuild: row.cwd is the archived worktree path, which the reaper
-        // already removed from disk. A spawn in that missing directory fails
-        // with "spawn git ENOENT" and hides the real cause.
-        let resolvedBaseCwd = projectWorkspace?.cwd ?? null;
-        if (resolvedBaseCwd == null && row.strategyType === "git_worktree" && row.projectId) {
-          const managedWorkspace = await ensureManagedProjectWorkspace({
-            companyId: row.companyId,
-            projectId: row.projectId,
-            repoUrl: row.repoUrl,
-            resolveGitAuth: createGitRemoteAuthProvider(db, row.companyId, {
-              issueId: row.sourceIssueId ?? issue.id,
-            }),
-          });
-          resolvedBaseCwd = managedWorkspace.cwd;
-        }
-        const config = readExecutionWorkspaceConfig(row.metadata as Record<string, unknown> | null);
         const nextGeneration = readExecutionWorkspaceLifecycleGeneration(
           row.metadata as Record<string, unknown> | null,
         ) + 1;
         const nextMetadata = bumpExecutionWorkspaceLifecycleGeneration(
           row.metadata as Record<string, unknown> | null,
         );
-        const recorder = workspaceOperationService(db).createRecorder({
-          companyId: row.companyId,
-          executionWorkspaceId: row.id,
-        });
-
-        let rebuildError: string | null = null;
-        try {
-          const realized = await ensurePersistedExecutionWorkspaceAvailable({
-            db: tx as unknown as Db,
-            base: {
-              baseCwd: resolvedBaseCwd ?? row.cwd ?? "",
-              source: "task_session",
-              projectId: row.projectId,
-              workspaceId: row.projectWorkspaceId,
-              repoUrl: row.repoUrl,
-              repoRef: row.baseRef,
-            },
-            workspace: {
-              id: row.id,
-              mode: row.mode,
-              strategyType: row.strategyType,
-              cwd: row.cwd,
-              providerRef: row.providerRef,
-              projectId: row.projectId,
-              projectWorkspaceId: row.projectWorkspaceId,
-              repoUrl: row.repoUrl,
-              baseRef: row.baseRef,
-              branchName: row.branchName,
-              metadata: row.metadata as Record<string, unknown> | null,
-              config: {
-                ...config,
-                provisionCommand:
-                  config?.provisionCommand
-                  ?? projectPolicy?.workspaceStrategy?.provisionCommand
-                  ?? null,
-              },
-            },
-            issue: row.sourceIssueId
-              ? { id: row.sourceIssueId, identifier: null, title: row.name }
-              : null,
-            agent: {
-              id: actor.agentId ?? null,
-              name: actor.actorType === "user" ? "Board" : "Agent",
-              companyId: row.companyId,
-            },
-            recorder,
-          });
-          if (!realized) {
-            rebuildError = "Execution workspace could not be rebuilt";
-          }
-        } catch (error) {
-          rebuildError = error instanceof Error ? error.message : String(error);
-        }
+        const rebuildError = await materializeClosedExecutionWorkspace(
+          db, row, issue, actor, tx as unknown as Db,
+        );
 
         if (rebuildError) {
           // The rebuild failed. Keep the row closed and retryable. Raise the
@@ -3275,6 +3298,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     > => {
       return db.transaction(async (tx) => {
         await acquireExecutionWorkspaceLifecycleLock(tx, input.id);
+        const [reservationRow] = await tx.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(eq(executionWorkspaces.id, input.id));
+        if (hasBoardCommentWorkspaceReservation(reservationRow?.metadata)) return { outcome: "reopen_pending" as const };
         const fresh = await tx
           .select()
           .from(executionWorkspaces)

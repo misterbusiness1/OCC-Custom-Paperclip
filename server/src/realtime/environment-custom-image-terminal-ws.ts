@@ -1,3 +1,4 @@
+import { isStartupWorkHeld } from "../services/startup-work-barrier.js";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
@@ -740,6 +741,11 @@ export function setupEnvironmentCustomImageTerminalWebSocketServer(
 
     socket.on("error", onRawSocketError);
     socket.once("close", cleanupRawSocketListeners);
+
+    if (isStartupWorkHeld()) {
+      rejectUpgrade(socket, "503 Service Unavailable", "startup work is held");
+      return;
+    }
 
     const terminalSessionId = url.searchParams.get("terminalSessionId")?.trim() ?? "";
     const initialCols = parseTerminalDimension(url.searchParams.get("cols"), 80);

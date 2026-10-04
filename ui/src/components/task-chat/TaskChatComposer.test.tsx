@@ -349,6 +349,22 @@ describe("TaskChatComposer", () => {
     expect(onAdd).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])("settles a confirmed restored receipt only once (StrictMode=%s)", async (strict) => {
+    const key = "strict-confirmed-next-draft";
+    const submitted = "One text-only save interrupted by reload.";
+    const next = "A newer draft written while delivery was pending.";
+    const attemptId = "b668d2ed-47b6-4080-b89b-cd89bfc245ed";
+    saveDraft(key, `${submitted}\n\n${next}`);
+    saveDraftSubmission(key, { attemptId, reviewed: false, nextDraftOffset: submitted.length + 2 });
+    const composer = <TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={key}
+      confirmedSubmissionIds={new Set([attemptId])} />;
+    render(strict ? <StrictMode>{composer}</StrictMode> : composer);
+    await flushAsync();
+    expect(editable().textContent).toBe(next);
+    expect(localStorage.getItem(key)).toBe(next);
+    expect(loadDraftSubmission(key)).toBeNull();
+  });
+
   it.each(["acknowledgment", "receipt after reload"])("preserves a next draft across navigation before %s", async (confirmation) => {
     const key = "navigate-with-next-draft";
     let resolveSend!: () => void;

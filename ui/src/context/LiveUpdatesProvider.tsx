@@ -1,3 +1,4 @@
+import { createActivityEventDedupe } from "../lib/activity-event-dedupe";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import {
   createContext,
@@ -1837,6 +1838,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { data: health } = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const socketAuthKey = session?.session?.id ?? currentUserId ?? "signed_out";
+  const activityDedupe = useMemo(() => createActivityEventDedupe(), [socketAuthKey]);
   const liveCompanyId = resolveLiveCompanyId(selectedCompanyId, selectedCompany?.id ?? null);
   const canConnectSocket = canUseLiveSession(sessionStatus, session != null, health?.deploymentMode) && liveCompanyId !== null;
   const currentActorRef = useRef<{ userId: string | null; agentId: string | null }>({
@@ -1948,6 +1950,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
+          if (parsed.companyId !== liveCompanyId || activityDedupe.has(parsed)) return;
           handleLiveEvent(
             coalescingClient,
             liveCompanyId,
@@ -1967,6 +1970,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
             liveCompanyId,
             parsed,
           );
+          activityDedupe.record(parsed);
         } catch {
           // Ignore non-JSON payloads.
         }
@@ -2007,6 +2011,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     pushToast,
     canConnectSocket,
     socketAuthKey,
+    activityDedupe,
   ]);
 
   return (

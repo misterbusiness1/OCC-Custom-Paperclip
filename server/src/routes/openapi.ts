@@ -1292,6 +1292,7 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/issues/{id}/comment-requests/{clientRequestId}",
   "GET /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections/local",
@@ -1493,6 +1494,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
+  "GET /api/board-comment-request-protocol",
+  "GET /api/startup-work-barrier",
+  "POST /api/startup-work-barrier/release",
   "POST /api/companies",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
@@ -5913,6 +5917,70 @@ registry.registerPath({
   summary: "Restore an inbox dismissal or snooze",
   request: { params: z.object({ companyId: z.string(), itemKey: z.string() }) },
   responses: { 204: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+// ─── Qualified startup and durable Board request status ───────────────────────
+
+const boardRequestControlsSchema = z.object({ admission: z.boolean(), dispatch: z.boolean() }).strict();
+const startupWorkSnapshotSchema = z.object({
+  bootId: z.string().uuid(), generation: z.number().int().nonnegative(),
+  configuredHold: z.boolean(), held: z.boolean(), qualificationSha256: z.string().nullable(),
+});
+const boardRequestProtocolSnapshotSchema = z.object({
+  protocolVersion: z.number().int().nonnegative(), processBootId: z.string().uuid(),
+  controls: boardRequestControlsSchema, configuredControls: boardRequestControlsSchema,
+  startupWork: startupWorkSnapshotSchema,
+  inFlight: z.object({ admission: z.number().int().nonnegative(), dispatch: z.number().int().nonnegative() }),
+});
+const startupWorkStatusSchema = z.object({
+  startupWork: startupWorkSnapshotSchema,
+  startupRecovery: z.object({ phase: z.enum(["starting", "recovering", "ready"]), updatedAt: z.string().datetime() }),
+  protocol: boardRequestProtocolSnapshotSchema,
+});
+const noStoreResponse = (schema: z.ZodTypeAny) => ({
+  ...r.ok(schema), headers: { "Cache-Control": { schema: { type: "string", enum: ["no-store"] } } },
+});
+const startupUnavailableResponse = {
+  description: "Startup work is held or protocol/bootstrap readiness is unavailable",
+  content: { "application/json": { schema: ErrorSchema } },
+};
+
+registry.registerPath({
+  method: "get", path: "/api/board-comment-request-protocol", tags: ["instance"],
+  summary: "Inspect process-local Board comment protocol controls and queue counts",
+  description: "Instance administrators only. Configured flags and effective controls are separate: held startup makes both effective controls false. Collect every serving writer; this read does not establish database quiescence or authorize release. No comment contents or credentials are returned.",
+  responses: { 200: noStoreResponse(boardRequestProtocolSnapshotSchema.extend({
+    queue: z.object({ pendingCount: z.number().int(), reconciliationRequiredCount: z.number().int(), oldestPendingAgeSeconds: z.number() }).optional(),
+  })), 401: r.unauthorized, 403: r.forbidden },
+});
+registry.registerPath({
+  method: "get", path: "/api/issues/{id}/comment-requests/{clientRequestId}", tags: ["issues"],
+  summary: "Read the current Board author's durable comment request status",
+  description: "Board-only and company-scoped. Foreign-company or missing issues return 404; another author's request is not visible. Current authority is rechecked. Returns content-free effect status and attempt metadata; no replay or dispatch is performed.",
+  request: { params: z.object({ id: z.string(), clientRequestId: z.string() }) },
+  responses: { 200: noStoreResponse(z.object({
+    id: z.string().uuid(), protocolVersion: z.number().int(), commentId: z.string().uuid().nullable(),
+    status: z.string(), reason: z.string().nullable(), createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
+    controls: boardRequestControlsSchema,
+    effects: z.array(z.object({ id: z.string().uuid(), kind: z.string(), status: z.string(), attempts: z.number().int().nonnegative(), reason: z.string().nullable(), lastAttemptAt: z.string().datetime().nullable() })),
+  })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 503: startupUnavailableResponse },
+});
+registry.registerPath({
+  method: "get", path: "/api/startup-work-barrier", tags: ["instance"],
+  summary: "Inspect the current process startup hold and protocol readiness",
+  description: "Instance administrators only. Checks required protocol tables and retained compatibility. A ready held boot has not started business recovery or plugin execution. This status is not a database-quiescence or provider-health assertion.",
+  responses: { 200: noStoreResponse(startupWorkStatusSchema), 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 503: startupUnavailableResponse },
+});
+registry.registerPath({
+  method: "post", path: "/api/startup-work-barrier/release", tags: ["instance"],
+  summary: "Release business work once on the exact qualified process",
+  description: "Instance administrators only. After independent release qualification, submit the observed boot, generation, protocol version and configured controls. The server rechecks schema compatibility, bootstrap readiness and zero in-flight protocol operations before a single-use transition. The digest records operator qualification provenance; it is not proof of its contents. Release can start business work even if the HTTP response is lost: inspect the same boot rather than replaying or restarting. A restart with the hold configured starts held again.",
+  request: { body: jsonBody(z.object({
+    expectedBootId: z.string().uuid(), expectedGeneration: z.number().int().nonnegative(),
+    qualificationSha256: z.string().regex(/^[a-f0-9]{64}$/), expectedProtocolVersion: z.number().int().nonnegative(),
+    expectedConfiguredControls: boardRequestControlsSchema,
+  }).strict()) },
+  responses: { 200: noStoreResponse(startupWorkStatusSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 503: startupUnavailableResponse },
 });
 
 // ─── Instance settings ────────────────────────────────────────────────────────

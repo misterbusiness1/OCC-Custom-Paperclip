@@ -275,12 +275,14 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         await request.get(`/api/issues/${parent.id}/comments`),
       );
       expect(JSON.stringify(comments)).toContain("Please check mobile too.");
-      const queue = await json(
-        await request.get(`/api/issues/${parent.id}/queued-comments`),
-      );
-      expect(JSON.stringify(queue.entries)).toContain(
-        "Please check mobile too.",
-      );
+      // HTTP 201 confirms durable comment admission. Its wake is dispatched
+      // asynchronously; observe delivery before exercising Stop on the queue.
+      await expect.poll(async () => {
+        const queue = await json(
+          await request.get(`/api/issues/${parent.id}/queued-comments`),
+        );
+        return JSON.stringify(queue.entries);
+      }, { timeout: 30_000 }).toContain("Please check mobile too.");
 
       let dispatchedAt = 0;
       page.on("request", (req) => {

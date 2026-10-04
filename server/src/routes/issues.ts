@@ -1,3 +1,10 @@
+import { boardCommentRequestDelivery } from "../services/board-comment-request-delivery.js";
+import { classifyBoardCommentSourceRecovery } from "../services/board-comment-request-recovery-effects.js";
+import { issueCommentRequestService } from "../services/issue-comment-requests.js";
+import { authorizeBoardCommentRequest } from "../services/board-comment-request-authority.js";
+import { captureBoardCommentSteerDescriptor } from "../services/board-comment-request-steer-effect.js";
+import { captureBoardCommentSandboxCleanupTargets } from "../services/board-comment-request-environment-effects.js";
+import type { CommentEffectPlan } from "../services/issue-comment-requests.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
@@ -526,6 +533,11 @@ function applyCreateIssueStatusDefault(
 function noopTaskWatchdogService(): TaskWatchdogService {
   return {
     getActiveForIssue: async () => null,
+    captureBoardCommentTargets: async () => [],
+    reconcileAcceptedBoardCommentTargets: async (_companyId, targets) => {
+      if (targets.length) throw unprocessable("Task watchdog service is unavailable");
+      return [];
+    },
     listActiveSummariesForIssues: async () => new Map(),
     upsertForIssue: async () => {
       throw unprocessable("Task watchdog service is unavailable");
@@ -3867,6 +3879,234 @@ export function issueRoutes(
       });
   }
 
+  /** Database-only admission for ordinary keyed Board comments. Runtime effects are immutable descriptors. */
+  async function persistDurableBoardComment(
+    tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
+    lockedIssue: typeof issueRows.$inferSelect,
+    req: Request,
+    normalization: { body: string; censorUsername: boolean },
+    presentation: IssueCommentPresentation | null | undefined,
+    authorizationReason: string,
+  ) {
+    const txDb = tx as unknown as Db;
+    const txIssues = issueService(txDb);
+    const txReferences = issueReferenceService(txDb);
+    const actor = getActorInfo(req);
+    if (actor.actorType !== "user" || actor.runId) throw forbidden("Durable Board admission requires a human request");
+    const effects: CommentEffectPlan[] = [];
+    const publications: ActivityPublication[] = [];
+    const postCommitActions: IssuePostCommitAction[] = [];
+    const deferredTerminalInteractionTelemetry = { interactionIds: [] as string[] };
+    const pause = await issueTreeControlFactory?.(txDb).getActivePauseHoldGate(lockedIssue.companyId, lockedIssue.id);
+    if (pause) throw conflict("Task is paused. Resume it before sending a message.");
+    const resumeRequested = req.body.resume === true;
+    const reopenRequested = req.body.reopen === true;
+    if (resumeRequested && !isExplicitResumeCapableStatus(lockedIssue.status)) throw conflict("Issue is not resumable through comment follow-up intent");
+    const closed = isClosedIssueStatus(lockedIssue.status);
+    const scheduledRetry = shouldHumanCommentResumeInProgressScheduledRetry({ hasComment: true,
+      issueStatus: lockedIssue.status, assigneeAgentId: lockedIssue.assigneeAgentId, actorType: "user" })
+      ? await txIssues.getCurrentScheduledRetry(lockedIssue.id) : null;
+    const supersedesRetry = Boolean(scheduledRetry && scheduledRetry.agentId === lockedIssue.assigneeAgentId);
+    const moveToTodo = reopenRequested || resumeRequested || supersedesRetry || shouldImplicitlyMoveCommentedIssueToTodo({
+      issueStatus: lockedIssue.status, assigneeAgentId: lockedIssue.assigneeAgentId, actorType: "user", actorId: actor.actorId,
+      actorRunId: null, checkoutRunId: lockedIssue.checkoutRunId, executionRunId: lockedIssue.executionRunId,
+    });
+    const blocked = lockedIssue.status === "blocked" && moveToTodo
+      ? (await txIssues.getDependencyReadiness(lockedIssue.id, tx)).unresolvedBlockerCount > 0 : false;
+    if (resumeRequested && blocked) throw conflict("Issue follow-up blocked by unresolved blockers");
+    if (lockedIssue.executionWorkspaceId) {
+      const [workspace] = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, lockedIssue.executionWorkspaceId), eq(executionWorkspaces.companyId, lockedIssue.companyId)));
+      if (workspace && isClosedIsolatedExecutionWorkspace(workspace as ExecutionWorkspace)) effects.push({ kind: "workspace_reopen", descriptor: {
+        version: 1, workspaceId: workspace.id, projectId: lockedIssue.projectId,
+      } });
+    }
+    const beforeReferences = await txReferences.listIssueReferenceSummary(lockedIssue.id);
+    let currentIssue = lockedIssue;
+    const reopened = moveToTodo && (closed || (lockedIssue.status === "blocked" && !blocked));
+    if (moveToTodo && (reopened || supersedesRetry)) {
+      if (supersedesRetry && scheduledRetry) effects.push({ kind: "scheduled_retry_cancel", descriptor: { version: 1, targetRunId: scheduledRetry.runId } });
+      const updated = await txIssues.update(lockedIssue.id, { status: "todo" }, tx, publications, postCommitActions, { deferredTerminalInteractionTelemetry });
+      if (!updated) throw notFound("Issue not found");
+      currentIssue = updated as typeof issueRows.$inferSelect;
+      await logActivity(txDb, { companyId: currentIssue.companyId, actorType: "user", actorId: actor.actorId,
+        action: "issue.updated", entityType: "issue", entityId: currentIssue.id,
+        details: { status: "todo", source: "comment", identifier: currentIssue.identifier,
+          ...(reopened ? { reopened: true, reopenedFrom: lockedIssue.status } : {}),
+          ...(supersedesRetry ? { scheduledRetrySupersededByComment: true, scheduledRetryRunId: scheduledRetry?.runId } : {}),
+          ...(resumeRequested ? { resumeIntent: true, followUpRequested: true } : {}) },
+      }, publications);
+    }
+    let interruptedRunId: string | null = null;
+    if (req.body.interrupt === true) {
+      const runs = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, currentIssue.companyId),
+        inArray(heartbeatRuns.status, ["queued", "running"]),
+        sql`(${heartbeatRuns.id} = ${lockedIssue.executionRunId}::uuid or
+          (${heartbeatRuns.agentId} = ${lockedIssue.assigneeAgentId}::uuid and
+            coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${lockedIssue.id}))`,
+      )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
+      interruptedRunId = runs[0]?.id ?? null;
+      if (interruptedRunId) effects.push({ kind: "interrupt", descriptor: { version: 1, targetRunId: interruptedRunId } });
+    }
+    const executionState = parseIssueExecutionState(currentIssue.executionState);
+    const autoApprove = currentIssue.status === "in_review" && executionState?.status === "pending"
+      && actorMatchesExecutionParticipant(actor, executionState.currentParticipant ?? null) && isApprovalReviewComment(normalization.body);
+    const sourceTrust = await resolveActorSourceTrustForIssue({ db: txDb, issue: currentIssue, actor });
+    const comment = await txIssues.addComment(currentIssue.id, normalization.body, {
+      userId: actor.actorId, onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
+    }, { authorType: "user", presentation, metadata: req.body.metadata ?? null,
+      attachmentIds: req.body.attachmentIds, clientRequestId: req.body.clientRequestId,
+      authorizationReason, sourceTrust, acceptedRedactionPolicy: { enabled: normalization.censorUsername } }, tx);
+    const beforeDecision = currentIssue;
+    if (autoApprove) {
+      const transition = applyIssueExecutionPolicyTransition({ issue: currentIssue,
+        policy: normalizeIssueExecutionPolicy(currentIssue.executionPolicy), requestedStatus: "done", requestedAssigneePatch: {},
+        actor: { agentId: null, userId: actor.actorId }, commentBody: normalization.body });
+      const decisionId = transition.decision ? randomUUID() : null;
+      if (decisionId) transition.patch.executionState = { ...transition.patch.executionState!, lastDecisionId: decisionId };
+      const updated = await txIssues.update(currentIssue.id, { ...transition.patch,
+        status: typeof transition.patch.status === "string" ? transition.patch.status : "done", actorUserId: actor.actorId,
+      }, tx, publications, postCommitActions, { deferredTerminalInteractionTelemetry });
+      if (!updated) throw notFound("Issue not found");
+      currentIssue = updated as typeof issueRows.$inferSelect;
+      if (transition.decision && decisionId) await tx.insert(issueExecutionDecisions).values({
+        id: decisionId, companyId: currentIssue.companyId, issueId: currentIssue.id,
+        stageId: transition.decision.stageId, stageType: transition.decision.stageType,
+        actorUserId: actor.actorId, outcome: transition.decision.outcome, body: transition.decision.body,
+      });
+      if (beforeDecision.status !== currentIssue.status) await logActivity(txDb, {
+        companyId: currentIssue.companyId, actorType: "user", actorId: actor.actorId, action: "issue.updated",
+        entityType: "issue", entityId: currentIssue.id, details: { status: currentIssue.status,
+          identifier: currentIssue.identifier, source: "auto_approval_comment", _previous: { status: beforeDecision.status } },
+      }, publications);
+    }
+    await txReferences.syncComment(comment.id, txDb);
+    const afterReferences = await txReferences.listIssueReferenceSummary(currentIssue.id);
+    const referenceDiff = txReferences.diffIssueReferenceSummary(beforeReferences, afterReferences);
+    await logActivity(txDb, { companyId: currentIssue.companyId, actorType: "user", actorId: actor.actorId,
+      responsibleUserIdOverride: authenticatedActorResponsibleUserId(req), action: "issue.comment_added",
+      entityType: "issue", entityId: currentIssue.id, details: {
+        commentId: comment.id, bodySnippet: comment.body.slice(0, 120), identifier: currentIssue.identifier,
+        issueTitle: currentIssue.title, authorizationReason,
+        ...(resumeRequested ? { resumeIntent: true, followUpRequested: true } : {}),
+        ...(reopened ? { reopened: true, reopenedFrom: lockedIssue.status, source: "comment" } : {}),
+        ...(supersedesRetry ? { scheduledRetrySupersededByComment: true, scheduledRetryRunId: scheduledRetry?.runId } : {}),
+        ...(interruptedRunId ? { interruptedRunId } : {}),
+        ...summarizeIssueReferenceActivityDetails({
+          addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+          removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+          currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+        }),
+      },
+    }, publications);
+    effects.push({ kind: "external_objects", descriptor: { version: 1, commentId: comment.id } });
+    const steerDescriptor = currentIssue.assigneeAgentId
+      ? await captureBoardCommentSteerDescriptor(txDb, { companyId: currentIssue.companyId, issueId: currentIssue.id, agentId: currentIssue.assigneeAgentId })
+      : null;
+    const steerOrdinal = steerDescriptor ? effects.length : undefined;
+    if (steerDescriptor) effects.push({ kind: "steer", descriptor: { ...steerDescriptor } });
+    const expiryOrdinal = effects.length;
+    const expiryOrdinals = [expiryOrdinal];
+    const recoveryOrdinals: number[] = [];
+    effects.push({ kind: "confirmation_expiry", descriptor: { version: 1, commentId: comment.id } });
+    const activeRecovery = await issueRecoveryActionService(txDb).getActiveForIssue(currentIssue.companyId, currentIssue.id);
+    if (activeRecovery) recoveryOrdinals.push(effects.length);
+    if (activeRecovery) effects.push({ kind: "source_recovery_revalidation", descriptor: {
+      version: 1, targetRecoveryActionId: activeRecovery.id, statusChanged: reopened || supersedesRetry,
+      resumeRequested, reopened, blockedToTodoRecovery: reopened && lockedIssue.status === "blocked" && currentIssue.status === "todo",
+    } });
+    const wakeups = new Map<string, { agentId: string; wakeup: Record<string, unknown>; skipIfSteeredOrdinal?: number }>();
+    const addWake = (agentId: string, wakeup: Record<string, unknown>, skipIfSteeredOrdinal?: number) => {
+      const payload = wakeup.payload as Record<string, unknown>;
+      const key = `${agentId}:${payload.issueId}`;
+      if (!wakeups.has(key)) wakeups.set(key, { agentId, wakeup, skipIfSteeredOrdinal });
+    };
+    const stage = buildExecutionStageWakeup({ issueId: currentIssue.id, previousState: executionState,
+      nextState: parseIssueExecutionState(currentIssue.executionState), interruptedRunId,
+      requestedByActorType: "user", requestedByActorId: actor.actorId });
+    if (stage) {
+      const { requestedByActorType: _actorType, requestedByActorId: _actorId, ...wakeup } = stage.wakeup;
+      addWake(stage.agentId, wakeup);
+    }
+    if (currentIssue.assigneeAgentId && shouldWakeAssigneeForIssueComment({ selfComment: false, resumeRequested,
+      issueAtCommentStart: lockedIssue, reopened, currentStatus: currentIssue.status })) {
+      const reason = reopened ? "issue_reopened_via_comment" : "issue_commented";
+      const intent = { ...(resumeRequested ? { resumeIntent: true, followUpRequested: true } : {}),
+        ...(interruptedRunId ? { interruptedRunId } : {}), ...(reopened ? { reopenedFrom: lockedIssue.status } : {}) };
+      addWake(currentIssue.assigneeAgentId, { source: "automation", triggerDetail: "system", reason,
+        payload: { issueId: currentIssue.id, commentId: comment.id, mutation: "comment", ...intent },
+        contextSnapshot: { issueId: currentIssue.id, taskId: currentIssue.id, commentId: comment.id, wakeCommentId: comment.id,
+          source: reopened ? "issue.comment.reopen" : "issue.comment", wakeReason: reason, ...intent },
+        issueStateGuard: { assigneeAgentId: currentIssue.assigneeAgentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
+      }, steerOrdinal);
+    }
+    for (const agentId of await txIssues.findMentionedAgents(currentIssue.companyId, normalization.body)) addWake(agentId, {
+      source: "automation", triggerDetail: "system", reason: "issue_comment_mentioned",
+      payload: { issueId: currentIssue.id, commentId: comment.id },
+      contextSnapshot: { issueId: currentIssue.id, taskId: currentIssue.id, commentId: comment.id,
+        wakeCommentId: comment.id, wakeReason: "issue_comment_mentioned", source: "comment.mention" },
+    });
+    const becameDone = beforeDecision.status !== "done" && currentIssue.status === "done";
+    if (becameDone) {
+      for (const dependent of await txIssues.listWakeableBlockedDependents(currentIssue.id)) {
+        const stateKey = buildIssueBlockersResolvedWakeStateKey({ dependentIssueId: dependent.id,
+          blockerIssueIds: dependent.blockerIssueIds, blockedTransitionAt: dependent.blockedTransitionAt });
+        const existing = await findExistingIssueBlockersResolvedWakeForReadyState(txDb, {
+          companyId: currentIssue.companyId, dependentIssueId: dependent.id,
+          blockerIssueIds: dependent.blockerIssueIds, blockedTransitionAt: dependent.blockedTransitionAt,
+        });
+        if (existing) continue;
+        addWake(dependent.assigneeAgentId, { source: "automation", triggerDetail: "system", reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+          payload: { issueId: dependent.id, resolvedBlockerIssueId: currentIssue.id, blockerIssueIds: dependent.blockerIssueIds, mutation: "comment", dependencyReadyStateKey: stateKey },
+          contextSnapshot: { issueId: dependent.id, taskId: dependent.id, source: "issue.blockers_resolved",
+            wakeReason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON, resolvedBlockerIssueId: currentIssue.id, blockerIssueIds: dependent.blockerIssueIds },
+        });
+      }
+    }
+    const becameTerminal = !isClosedIssueStatus(beforeDecision.status) && isClosedIssueStatus(currentIssue.status);
+    if (becameTerminal) {
+      const interactions = await tx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.companyId, currentIssue.companyId), eq(issueThreadInteractions.issueId, currentIssue.id),
+        eq(issueThreadInteractions.status, "pending"),
+      ));
+      expiryOrdinals.push(effects.length);
+      effects.push({ kind: "terminal_interaction_expiry", descriptor: { version: 1, commentId: comment.id, interactionIds: interactions.map((row) => row.id) } });
+      effects.push({ kind: "sandbox_cleanup", descriptor: { version: 1, executionWorkspaceId: currentIssue.executionWorkspaceId, status: currentIssue.status,
+        leaseTargets: await captureBoardCommentSandboxCleanupTargets(tx, { companyId: currentIssue.companyId, issueId: currentIssue.id, executionWorkspaceId: currentIssue.executionWorkspaceId }) } });
+      if (currentIssue.parentId && !(await txIssues.shouldSuppressReviewChildCompletionWake(currentIssue.parentId, currentIssue.id))) {
+        const parent = await txIssues.getWakeableParentAfterChildCompletion(currentIssue.parentId);
+        if (parent) addWake(parent.assigneeAgentId, { source: "automation", triggerDetail: "system", reason: "issue_children_completed",
+          payload: { issueId: parent.id, completedChildIssueId: currentIssue.id, childIssueIds: parent.childIssueIds,
+            childIssueSummaries: parent.childIssueSummaries, childIssueSummaryTruncated: parent.childIssueSummaryTruncated },
+          contextSnapshot: { issueId: parent.id, taskId: parent.id, wakeReason: "issue_children_completed", source: "issue.children_completed",
+            completedChildIssueId: currentIssue.id, childIssueIds: parent.childIssueIds,
+            childIssueSummaries: parent.childIssueSummaries, childIssueSummaryTruncated: parent.childIssueSummaryTruncated },
+        });
+      }
+    }
+    for (const wake of wakeups.values()) effects.push({ kind: "wake", descriptor: { version: 1, ...wake, confirmationExpiryOrdinal: expiryOrdinal } });
+    for (const action of postCommitActions) effects.push({ kind: "cancel_native_question_run", descriptor: { version: 1, targetRunId: action.runId, issueStatus: action.issueStatus } });
+
+    const watchdogTargets = await (taskWatchdogFactory?.(txDb) ?? noopTaskWatchdogService()).captureBoardCommentTargets(currentIssue.companyId, currentIssue.id);
+    if (watchdogTargets.length) effects.push({ kind: "watchdog", descriptor: { version: 1, targets: watchdogTargets } });
+    if (effects.some((effect) => effect.kind === "workspace_reopen")) effects.push({ kind: "workspace_cleanup", descriptor: {
+      version: 1, workspaceId: lockedIssue.executionWorkspaceId, reopenEffectOrdinal: 0,
+    } });
+    const workspaceOrdinals = effects.flatMap((effect, ordinal) => ["workspace_reopen", "workspace_cleanup"].includes(effect.kind) ? [ordinal] : []);
+    const runtimeOrdinals = effects.flatMap((effect, ordinal) => ["interrupt", "scheduled_retry_cancel", "cancel_native_question_run"].includes(effect.kind) ? [ordinal] : []);
+    for (const publication of publications) {
+      const activityId = publication.payload.activityId;
+      if (typeof activityId !== "string") throw new Error("Accepted activity is missing durable identity");
+      await tx.update(activityLog).set({ details: sql`coalesce(${activityLog.details}, '{}'::jsonb) || ${JSON.stringify({ commentId: comment.id })}::jsonb` })
+        .where(and(eq(activityLog.id, activityId), eq(activityLog.companyId, currentIssue.companyId)));
+      effects.push({ kind: "activity_publication", descriptor: {
+        version: 1, activityId,
+        ...(publication.payload.action === "issue.comment_added" ? { expiryEffectOrdinals: expiryOrdinals,
+          recoveryEffectOrdinals: recoveryOrdinals, workspaceEffectOrdinals: workspaceOrdinals, runtimeEffectOrdinals: runtimeOrdinals } : {}),
+      } });
+    }
+    return { commentId: comment.id, effects, sourceTrust: sourceTrust as unknown as Record<string, unknown> | null };
+  }
+
   async function sourceTrustForActorWrite(
     issue: {
       id: string;
@@ -4274,103 +4514,7 @@ export function issueRoutes(
     reopened?: boolean;
     blockedToTodoRecovery?: boolean;
   }): Promise<string | null> {
-    const { issue } = input;
-    if (issue.status === "done" || issue.status === "cancelled") {
-      return `Recovery action became stale because the source issue reached ${issue.status}.`;
-    }
-    if (input.blockedToTodoRecovery === true) {
-      return "Recovery action became stale because the source issue was manually moved from blocked to todo.";
-    }
-
-    if (input.trigger === "read_projection") return null;
-    if (
-      input.trigger === "comment" &&
-      input.resumeRequested !== true &&
-      input.reopened !== true &&
-      input.statusChanged !== true
-    ) {
-      return null;
-    }
-
-    const durableSourceChange =
-      input.statusChanged === true ||
-      input.assigneeChanged === true ||
-      input.blockersChanged === true ||
-      input.executionPolicyChanged === true ||
-      input.monitorChanged === true ||
-      input.documentChanged === true ||
-      input.workProductChanged === true ||
-      input.resumeRequested === true ||
-      input.reopened === true;
-    if (!durableSourceChange) return null;
-
-    if (issue.status === "blocked") {
-      const readiness = await svc.getDependencyReadiness(issue.id);
-      if (readiness.unresolvedBlockerCount > 0) {
-        return "Recovery action became stale because the source issue now has unresolved first-class blockers.";
-      }
-      return null;
-    }
-
-    if (
-      issue.assigneeUserId &&
-      issue.status !== "done" &&
-      issue.status !== "cancelled"
-    ) {
-      return "Recovery action became stale because the source issue now has a human owner.";
-    }
-
-    if (
-      (issue.status === "todo" || issue.status === "in_progress") &&
-      issue.assigneeAgentId
-    ) {
-      return `Recovery action became stale because the source issue is ${issue.status} with an agent owner.`;
-    }
-
-    if (issue.status === "in_review") {
-      const executionState = parseIssueExecutionState(issue.executionState);
-      const participant =
-        executionState?.status === "pending"
-          ? executionState.currentParticipant
-          : null;
-      if (
-        (participant?.type === "agent" &&
-          readNonEmptyString(participant.agentId)) ||
-        (participant?.type === "user" && readNonEmptyString(participant.userId))
-      ) {
-        return "Recovery action became stale because the source issue now has a typed review participant.";
-      }
-
-      const interactions = await issueThreadInteractionsSvc.listForIssue(
-        issue.id,
-      );
-      if (
-        interactions.some((interaction) => interaction.status === "pending")
-      ) {
-        return "Recovery action became stale because the source issue now has a pending issue interaction.";
-      }
-
-      const approvals = await issueApprovalsSvc.listApprovalsForIssue(issue.id);
-      if (
-        approvals.some(
-          (approval) =>
-            approval.status === "pending" ||
-            approval.status === "revision_requested",
-        )
-      ) {
-        return "Recovery action became stale because the source issue now has a pending approval.";
-      }
-    }
-
-    const monitor = summarizeIssueMonitor(
-      issue,
-      normalizeIssueExecutionPolicy(issue.executionPolicy ?? null),
-    );
-    if (monitor.nextCheckAt && Date.parse(monitor.nextCheckAt) > Date.now()) {
-      return "Recovery action became stale because the source issue now has a scheduled monitor.";
-    }
-
-    return null;
+    return classifyBoardCommentSourceRecovery(db, input);
   }
 
   async function revalidateActiveSourceRecovery(input: {
@@ -17252,10 +17396,65 @@ export function issueRoutes(
         })
       )
         return;
+      const actor = getActorInfo(req);
+      if (req.actor.type === "board" && actor.actorType === "user" && !actor.runId && req.body.clientRequestId) {
+        const presentation = req.body.presentation ?? await deriveRecoveryCommentPresentation(req, issue.companyId, req.body.body);
+        const requests = issueCommentRequestService(db, { authorize: authorizeBoardCommentRequest, handlers: {} });
+        let commentId: string;
+        let acceptedRequestId: string | null = null;
+        try {
+          const accepted = await requests.admit({
+            companyId: issue.companyId, issueId: issue.id, authorUserId: actor.actorId,
+            responsibleUserId: authenticatedActorResponsibleUserId(req), actorSource: req.actor.source,
+            authorizationDecision: commentAuthorizationReason, clientRequestId: req.body.clientRequestId,
+            body: req.body.body, attachmentIds: req.body.attachmentIds, interrupt: req.body.interrupt,
+            resume: req.body.resume, reopen: req.body.reopen, authorType: req.body.authorType ?? "user",
+            presentation: presentation ?? null, metadata: req.body.metadata ?? null,
+          }, (tx, lockedIssue, normalization) => persistDurableBoardComment(tx, lockedIssue, req,
+            normalization, presentation, commentAuthorizationReason));
+          commentId = accepted.request.commentId;
+          acceptedRequestId = accepted.request.id;
+        } catch (error) {
+          const details = error instanceof HttpError && error.details && typeof error.details === "object"
+            ? error.details as Record<string, unknown> : null;
+          if (details?.code !== "legacy_comment_request" || typeof details.commentId !== "string") throw error;
+          commentId = details.commentId;
+        }
+        const [acceptedComment] = await db.select().from(issueComments).where(and(
+          eq(issueComments.id, commentId), eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id),
+        ));
+        if (!acceptedComment || acceptedComment.deletedAt) throw new HttpError(410, "Accepted comment was deleted");
+        res.status(201).json(acceptedComment);
+        if (acceptedRequestId) {
+          const requestId = acceptedRequestId;
+          setImmediate(() => {
+            void boardCommentRequestDelivery(db, heartbeat, opts.pluginWorkerManager)
+              .dispatchRequest(issue.companyId, requestId).catch(error => {
+                logger.warn({ err: error, requestId, companyId: issue.companyId }, "Accepted Board comment awaits recovery");
+              });
+          });
+        }
+        return;
+      }
+      if (actor.actorType === "user" && req.body.clientRequestId) {
+        const replayedComment = await svc.getCommentByClientRequestId(
+          issue.id,
+          actor.actorId,
+          req.body.clientRequestId,
+        );
+        if (replayedComment) {
+          if (replayedComment.body !== req.body.body) {
+            throw conflict(
+              "Message request ID was already used for different content",
+            );
+          }
+          res.status(201).json(replayedComment);
+          return;
+        }
+      }
       const closedExecutionWorkspace =
         await getClosedIssueExecutionWorkspace(issue);
 
-      const actor = getActorInfo(req);
       const commentPresentation =
         req.body.presentation ??
         (await deriveRecoveryCommentPresentation(

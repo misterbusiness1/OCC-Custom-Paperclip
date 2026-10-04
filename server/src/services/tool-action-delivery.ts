@@ -1,3 +1,4 @@
+import { assertStartupWorkAllowed, isStartupWorkHeld } from "./startup-work-barrier.js";
 import {
   and,
   asc,
@@ -37,6 +38,7 @@ export function toolActionDeliveryService(
   heartbeat: Pick<ReturnType<typeof heartbeatService>, "wakeup">,
 ) {
   async function deliver(actionRequestId: string) {
+    assertStartupWorkAllowed();
     return db.transaction(async (tx) => {
       const [source] = await tx
         .select()
@@ -338,6 +340,7 @@ export function toolActionDeliveryService(
   return {
     deliver,
     async sweepPending() {
+      if (isStartupWorkHeld()) return { scanned: 0, delivered: 0 };
       let cursor: string | undefined;
       let scanned = 0;
       let delivered = 0;

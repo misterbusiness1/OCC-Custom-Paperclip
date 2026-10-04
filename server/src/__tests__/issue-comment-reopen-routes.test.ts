@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -9,6 +9,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  getCommentByClientRequestId: vi.fn(),
   getDependencyReadiness: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -314,8 +315,12 @@ async function waitForWakeup(assertion: () => void) {
 }
 
 describe.sequential("issue comment reopen routes", () => {
+  beforeAll(async () => {
+    await Promise.all([import("../routes/issues.js"), import("../middleware/index.js")]);
+  }, 60_000);
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIssueService.getCommentByClientRequestId.mockReset();
     mockIssueService.getById.mockReset();
     mockIssueService.getByIdForUpdate.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
@@ -376,6 +381,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.getByIdForUpdate.mockImplementation(async () =>
       mockIssueService.getById(),
     );
+    mockIssueService.getCommentByClientRequestId.mockResolvedValue(null);
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
     mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
     mockHeartbeatService.getRun.mockResolvedValue(null);
@@ -503,6 +509,9 @@ describe.sequential("issue comment reopen routes", () => {
       },
     );
   });
+
+  // Keyed human replay/concurrency coverage uses actual PostgreSQL in
+  // board-comment-request-real-routes.test.ts; this suite covers legacy paths.
 
   it("treats reopen=true as a no-op when the issue is already open", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));

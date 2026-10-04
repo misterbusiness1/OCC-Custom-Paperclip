@@ -1051,8 +1051,18 @@ export function TaskChatComposer({
     }
   }
 
+  const settledReceiptRef = useRef<{ draftKey: string | undefined; attemptId: string } | null>(null);
   useEffect(() => {
     if (!uncertainSubmission || !confirmedSubmissionIds?.has(uncertainSubmission.attemptId)) return;
+    // Mount effects can run again before the state clear below is committed.
+    // The ref is updated synchronously so the accepted prefix is removed only
+    // once, including when browser storage is unavailable.
+    const settled = settledReceiptRef.current;
+    if (settled && settled.draftKey === draftKey && settled.attemptId === uncertainSubmission.attemptId) {
+      setUncertainSubmission(null);
+      return;
+    }
+    settledReceiptRef.current = { draftKey, attemptId: uncertainSubmission.attemptId };
     const nextDraft = uncertainSubmission.nextDraftOffset === undefined
       ? "" : bodyRef.current.slice(uncertainSubmission.nextDraftOffset);
     if (draftKey) settleDraftSubmission(draftKey, uncertainSubmission.attemptId, nextDraft);

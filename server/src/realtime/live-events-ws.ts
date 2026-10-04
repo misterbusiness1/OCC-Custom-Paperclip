@@ -1,3 +1,4 @@
+import { isStartupWorkHeld } from "../services/startup-work-barrier.js";
 import { createHash } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { createRequire } from "node:module";
@@ -313,6 +314,11 @@ export function setupLiveEventsWebSocketServer(
     const companyId = parseCompanyId(url.pathname);
     if (!companyId) {
       closeUpgradeSocket(socket);
+      return;
+    }
+
+    if (isStartupWorkHeld()) {
+      rejectUpgrade(socket, "503 Service Unavailable", "startup work is held");
       return;
     }
 
