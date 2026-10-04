@@ -19,10 +19,11 @@ suite("actual HTTP durable Board comment admission", () => {
   let db: ReturnType<typeof createDb>;
   let app: express.Express;
   let restartedApp: express.Express;
-  const makeApp = (connection: ReturnType<typeof createDb>) => {
+  const makeApp = (connection: ReturnType<typeof createDb>, actor: express.Request["actor"] =
+    { type: "board", userId: "local-board", source: "local_implicit", isInstanceAdmin: false }) => {
     const server = express(); server.use(express.json());
     server.use((req, _res, next) => {
-      req.actor = { type: "board", userId: "local-board", source: "local_implicit", isInstanceAdmin: false }; next();
+      req.actor = actor; next();
     });
     server.use("/api", issueRoutes(connection, {} as StorageService));
     server.use("/api", boardCommentRequestProtocolRoutes(connection)); server.use(errorHandler);
@@ -157,6 +158,20 @@ suite("actual HTTP durable Board comment admission", () => {
       heartbeat.stopTaskDrain();
       if (oldDispatch === undefined) delete process.env.PAPERCLIP_BOARD_COMMENT_REQUEST_DISPATCH_ENABLED;
       else process.env.PAPERCLIP_BOARD_COMMENT_REQUEST_DISPATCH_ENABLED = oldDispatch;
+    }
+  });
+  it("hides cross-company request status identically to missing issues, including from instance admins", async () => {
+    const input = await seed();
+    const accepted = await request(app).post(`/api/issues/${input.issueId}/comments`).send(input);
+    expect(accepted.status).toBe(201);
+    for (const isInstanceAdmin of [false, true]) {
+      const foreignApp = makeApp(db, { type: "board", userId: "local-board", source: "session",
+        companyIds: [randomUUID()], isInstanceAdmin });
+      const foreign = await request(foreignApp).get(`/api/issues/${input.issueId}/comment-requests/${input.clientRequestId}`);
+      const missing = await request(foreignApp).get(`/api/issues/${randomUUID()}/comment-requests/${input.clientRequestId}`);
+      expect(foreign.status).toBe(404);
+      expect(foreign.body).toEqual(missing.body);
+      expect(foreign.body).not.toHaveProperty("effects");
     }
   });
   it("fails closed while admission is paused without legacy mutation", async () => {

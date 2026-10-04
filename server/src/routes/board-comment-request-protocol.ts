@@ -5,7 +5,7 @@ import { issueCommentRequestService } from "../services/issue-comment-requests.j
 import { authorizeBoardCommentRequest } from "../services/board-comment-request-authority.js";
 import { issueService } from "../services/issues.js";
 import { notFound } from "../errors.js";
-import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { boardCommentRequestOperationalSnapshot } from "../services/board-comment-request-operational.js";
 
 /** Process-local evidence: operators must collect this from every serving writer. */
@@ -28,7 +28,7 @@ export function boardCommentRequestProtocolRoutes(db?: Db) {
     router.get("/issues/:id/comment-requests/:clientRequestId", async (req, res) => {
       assertBoard(req);
       const issue = await issueService(db).getById(String(req.params.id));
-      if (!issue) throw notFound("Issue not found");
+      if (!issue || !hasCompanyAccess(req, issue.companyId)) throw notFound("Issue not found");
       assertCompanyAccess(req, issue.companyId);
       const actor = getActorInfo(req);
       res.setHeader("Cache-Control", "no-store");
