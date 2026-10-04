@@ -44,15 +44,17 @@ overrides:
   react-dom: "^19.2.8"
   # Fork production dependency audit pins (#44, OXFA-27638); mirrored from
   # package.json#pnpm.overrides.
-  "brace-expansion@<2": "1.1.18"
-  "brace-expansion@>=2 <3": "2.1.4"
-  fast-uri: "3.1.6"
+  "brace-expansion@<2": "1.1.20"
+  "brace-expansion@>=2 <3": "2.1.6"
+  fast-uri: "3.1.8"
   js-yaml: "4.3.2"
   "nanoid@<4": "3.3.18"
   path-to-regexp: "8.4.0"
   react-router: "7.18.2"
   tar: "7.5.21"
   "undici@<7": "6.28.1"
+  "undici@>=8 <9": "8.10.2"
+  "@grpc/grpc-js": "1.14.5"
   # CodeMirror validates extensions with instanceof, so exactly one copy of
   # these two packages may resolve. Different CodeMirror packages pin
   # different transitive minors, which resolves two copies and crashes the
