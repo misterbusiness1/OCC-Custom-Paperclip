@@ -278,6 +278,85 @@ function reviewQueueRow(page: Page, title: string): Locator {
 test.describe("Pipelines tutorial UI flow", () => {
   test.setTimeout(240_000);
 
+  test("accepts a fresh pointer click on move confirmation immediately after a drag", async ({ page }) => {
+    const board = await pwRequest.newContext({ baseURL: BASE_URL });
+    const company = await createCompany(board);
+    const response = await board.post(`/api/companies/${company.id}/pipelines`, {
+      data: {
+        key: "rapid-move-confirmation",
+        name: "Rapid move confirmation",
+        stages: [
+          { key: "drafting", name: "Drafting", kind: "working", position: 0 },
+          { key: "assets", name: "Assets", kind: "working", position: 1 },
+          { key: "published", name: "Published", kind: "done", position: 2 },
+          { key: "dropped", name: "Dropped", kind: "cancelled", position: 3 },
+        ],
+      },
+    });
+    await expectOk(response, "create rapid-move pipeline");
+    const pipeline = await response.json() as { id: string };
+    const item = await createItem(board, pipeline.id, { title: "Rapid move item", stageKey: "drafting" });
+    await expectOk(
+      await board.patch("/api/instance/settings/experimental", { data: { enablePipelines: true } }),
+      "enable pipelines experimental flag",
+    );
+
+    try {
+      await page.goto("/");
+      await page.evaluate((companyId) => {
+        window.localStorage.setItem("paperclip.selectedCompanyId", companyId);
+      }, company.id);
+      await page.goto(`/${company.issuePrefix}/pipelines/${pipeline.id}`);
+      const card = page.getByLabel("Drafting column").getByText("Rapid move item", { exact: true });
+      const column = page.getByLabel("Assets column");
+      await expect(card).toBeVisible();
+      await expect(column).toBeVisible();
+
+      // Dispatch a distinct pointer activation as soon as React mounts the
+      // confirmation. This exposes dnd-kit's lingering document click blocker
+      // without depending on the browser or CI machine's timing.
+      await page.evaluate(() => {
+        const result = { attempted: false, targetReceivedClick: false };
+        (window as typeof window & { rapidMoveResult?: typeof result }).rapidMoveResult = result;
+        const observer = new MutationObserver(() => {
+          const dialog = document.querySelector('[role="dialog"]');
+          const button = [...(dialog?.querySelectorAll("button") ?? [])]
+            .find((candidate) => candidate.textContent?.trim() === "Move it");
+          if (!button) return;
+          observer.disconnect();
+          result.attempted = true;
+          button.addEventListener("click", () => { result.targetReceivedClick = true; }, { once: true });
+          button.dispatchEvent(new PointerEvent("pointerdown", {
+            bubbles: true, pointerId: 1, pointerType: "mouse", isPrimary: true, button: 0,
+          }));
+          button.click();
+        });
+        observer.observe(document.body, { subtree: true, childList: true });
+      });
+
+      const cardBox = await card.boundingBox();
+      const columnBox = await column.boundingBox();
+      expect(cardBox).not.toBeNull();
+      expect(columnBox).not.toBeNull();
+      await page.mouse.move(cardBox!.x + cardBox!.width / 2, cardBox!.y + cardBox!.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(columnBox!.x + columnBox!.width / 2, columnBox!.y + Math.max(88, columnBox!.height / 2), { steps: 25 });
+      await page.mouse.up();
+
+      await expect.poll(() => page.evaluate(() =>
+        (window as typeof window & { rapidMoveResult?: { attempted: boolean; targetReceivedClick: boolean } })
+          .rapidMoveResult,
+      )).toEqual({ attempted: true, targetReceivedClick: true });
+      await expect(column.getByText("Rapid move item", { exact: true })).toBeVisible();
+      expect((await getItem(board, item.id)).case.stageId).toBe(
+        (await getPipeline(board, pipeline.id)).stages.find((stage) => stage.key === "assets")?.id,
+      );
+    } finally {
+      await board.patch("/api/instance/settings/experimental", { data: { enablePipelines: false } });
+      await board.dispose();
+    }
+  });
+
   test("covers agent fan-out, drift acknowledgement gates, child-terminal gates, and stale approvals", async () => {
     const board = await pwRequest.newContext({ baseURL: BASE_URL });
     const company = await createCompany(board);
