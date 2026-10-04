@@ -72,6 +72,10 @@ export default defineConfig({
     env: {
       ...process.env,
       NODE_ENV: "test",
+      // Exercise the enabled protocol on this fresh, fully migrated fixture.
+      // Dedicated API tests separately verify fail-closed paused admission.
+      PAPERCLIP_BOARD_COMMENT_REQUEST_ADMISSION_ENABLED: "true",
+      PAPERCLIP_BOARD_COMMENT_REQUEST_DISPATCH_ENABLED: "true",
       NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${path.resolve(import.meta.dirname, "fixtures/agent-chat-github.mjs")}`,
       PORT: String(PORT),
       PAPERCLIP_OPEN_ON_LISTEN: "false",
