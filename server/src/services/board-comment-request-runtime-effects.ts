@@ -120,17 +120,21 @@ export function boardCommentRequestRuntimeEffects(db: Db, heartbeat: Heartbeat):
       const interrupted = effect.kind === "interrupt";
       const nativeQuestion = effect.kind === "cancel_native_question_run";
       if (nativeQuestion && !["done", "cancelled"].includes(String(descriptor.issueStatus))) throw conflict("Invalid native question cancellation status");
+      const source = interrupted ? "issue_comment_interrupt" : nativeQuestion
+        ? "issue_status_transition_native_question" : "issue_comment_scheduled_retry_superseded";
+      const interruptActor = interrupted ? { interruptedByActorType: "user", interruptedByActorId: request.authorUserId } : {};
       await heartbeat.cancelRun(target.id, interrupted ? "Interrupted by board comment" : nativeQuestion
         ? "Task closed while waiting for operator input" : "Scheduled retry superseded by board comment", {
         boardCommentClaim: { companyId: request.companyId, requestId: request.id, effectId: effect.id, generation: effect.generation,
           kind: effect.kind as "interrupt" | "scheduled_retry_cancel" | "cancel_native_question_run" },
         errorCode: interrupted ? "operator_interrupted" : nativeQuestion ? "cancelled" : "scheduled_retry_superseded", suppressImmediateRecovery: true,
-        resultJson: { operatorInterrupted: interrupted, interruptionSource: "issue_comment_interrupt",
-          interruptedIssueId: request.issueId, interruptedByActorType: "user", interruptedByActorId: request.authorUserId,
-          ...(effect.kind === "cancel_native_question_run" ? { cancelledByIssueStatus: descriptor.issueStatus, cancelledIssueId: request.issueId } : {}) },
+        resultJson: interrupted ? { operatorInterrupted: true, interruptionSource: source,
+          interruptedIssueId: request.issueId, ...interruptActor }
+          : nativeQuestion ? { cancelledByIssueStatus: descriptor.issueStatus, cancelledIssueId: request.issueId }
+          : { scheduledRetrySupersededByComment: true, supersededIssueId: request.issueId },
         eventMessage: interrupted ? "run interrupted by board comment" : nativeQuestion ? "task closed while waiting for operator input" : "scheduled retry superseded by board comment",
-        eventPayload: { issueId: request.issueId, source: "issue_comment_interrupt", requestId: request.id,
-          commentId: request.commentId, interruptedByActorType: "user", interruptedByActorId: request.authorUserId },
+        eventPayload: { issueId: request.issueId, source, requestId: request.id, commentId: request.commentId,
+          requestedByActorType: "user", requestedByActorId: request.authorUserId, ...interruptActor },
       });
       await heartbeat.waitForRunExecutionDrain(target.id, { timeoutMs: 5_000 });
       return recordCancellationCompletion(request, effect, target.id, "normal_control_and_drain");

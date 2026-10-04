@@ -1,3 +1,4 @@
+import { admitBoardCommentCancellation } from "../services/board-comment-cancellation.js";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { recordNativeLocalProcessStop } from "../services/native-local-process-stop.js";
@@ -21,6 +22,57 @@ suite("Board comment concrete runtime wake delivery", () => {
     db = createDb(database.connectionString, { maxConnections: 4 });
   }, 30_000);
   afterAll(async () => { await closeRegisteredClients(database.connectionString); await database.cleanup(); });
+  it.each([
+    ["interrupt", "issue_comment_interrupt"],
+    ["scheduled_retry_cancel", "issue_comment_scheduled_retry_superseded"],
+    ["cancel_native_question_run", "issue_status_transition_native_question"],
+  ] as const)("preserves truthful %s cancellation attribution", async (kind, source) => {
+    const companyId = randomUUID(), issueId = randomUUID(), agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Attribution proof", issuePrefix: `A${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Attributed agent" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Attributed request", status: "todo", assigneeAgentId: agentId });
+    const native = kind === "cancel_native_question_run";
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", executionStage: "preparing",
+      runtimeMode: native ? "native" : "legacy", nativeIssueId: native ? issueId : null }).returning();
+    if (native) await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId: run.id, phase: "observed", attempt: 0 });
+    type Options = NonNullable<Parameters<ReturnType<typeof heartbeatService>["cancelRun"]>[2]>;
+    let captured: Options | undefined;
+    const control = { wakeup: async () => null, waitForRunExecutionDrain: async () => {},
+      cancelRun: async (id: string, _reason?: string, options?: Options) => {
+        captured = options;
+        const marker = await admitBoardCommentCancellation(db, id, options!.boardCommentClaim!);
+        const [cancelled] = await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(),
+          resultJson: { ...options!.resultJson, boardCommentCancellation: marker,
+            ...(native ? { startupPreparationSettledAt: new Date().toISOString() } : {}) } }).where(eq(heartbeatRuns.id, id)).returning();
+        return cancelled;
+      } };
+    const service = issueCommentRequestService(db, { controls: () => ({ admission: true, dispatch: true }),
+      authorize: authorizeBoardCommentRequest, handlers: boardCommentRequestRuntimeEffects(db, control) });
+    const input = { companyId, issueId, authorUserId: "local-board", actorSource: "local_implicit", clientRequestId: randomUUID(), body: "Approved action" };
+    const accepted = await service.admit(input, async tx => {
+      const [comment] = await tx.insert(issueComments).values({ companyId, issueId, authorType: "user",
+        authorUserId: input.authorUserId, clientRequestId: input.clientRequestId, body: input.body }).returning();
+      return { commentId: comment.id, effects: [{ kind, descriptor: { version: 1, targetRunId: run.id,
+        ...(native ? { issueStatus: "done" } : {}) } }] };
+    });
+    await service.dispatchOne(companyId, accepted.request.id);
+    expect(captured).toBeDefined();
+    expect(captured!.eventPayload).toMatchObject({ source, requestedByActorType: "user", requestedByActorId: "local-board",
+      requestId: accepted.request.id, commentId: accepted.request.commentId });
+    if (kind === "interrupt") {
+      expect(captured!.resultJson).toMatchObject({ operatorInterrupted: true, interruptionSource: source,
+        interruptedByActorType: "user", interruptedByActorId: "local-board" });
+    } else {
+      for (const key of ["operatorInterrupted", "interruptionSource", "interruptedIssueId", "interruptedByActorType", "interruptedByActorId"]) {
+        expect(captured!.resultJson).not.toHaveProperty(key); expect(captured!.eventPayload).not.toHaveProperty(key);
+      }
+      expect(captured!.resultJson).toMatchObject(native
+        ? { cancelledByIssueStatus: "done", cancelledIssueId: issueId }
+        : { scheduledRetrySupersededByComment: true, supersededIssueId: issueId });
+    }
+    const [effect] = await db.select().from(issueCommentRequestEffects).where(eq(issueCommentRequestEffects.requestId, accepted.request.id));
+    expect(effect.status, JSON.stringify(effect)).toBe("delivered");
+  });
   it("keeps native cancellation ambiguous until physical stop evidence arrives, then admits one successor", async () => {
     const companyId = randomUUID(), issueId = randomUUID(), agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Native proof", issuePrefix: `N${companyId.slice(0, 6)}` });
