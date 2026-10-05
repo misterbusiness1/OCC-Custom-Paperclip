@@ -17,6 +17,8 @@ The existing **OCC PR Review Queue and Weekly Quality Sweep** Paperclip routine 
 
 The routine owns overlap prevention and uploads both artifacts to its execution issue with 13-month retention. The JSON is canonical and the Markdown is derived. Generated reports must not be committed.
 
+The collector supplies `gh` with the value-free `GH_TOKEN=onecli-managed` placeholder required by the CLI's local authentication preflight. OneCLI resolves the real credential at its gateway, while the existing `x-onecli-connection-id` header continues to pin every request to the governed `occ-review-bot` GitHub App. The placeholder is not a credential and no credential value is copied into the collector process or its output.
+
 [`routine-invocation.v1.json`](routine-invocation.v1.json) is the durable control-plane evidence record. It pins the active routine revision, CTO approval record, governed connection, invocation contract, artifact retention, and the reversible removal boundary. The routine owner must set `COLLECTOR_SHA` to the immutable merged collector commit; a feature-branch SHA is not a production schedule target.
 
 The live readback captured on 2026-09-07 pins immutable routine revision `2b8da2f8-1d26-4e90-ac41-b9970816529a` (revision 5). The routine description contains the command above on its Monday leg, and the existing trigger remains `0 9,15 * * 1-5` in `America/New_York`; no second schedule, cron, or webhook was created. Authorized reviewers can inspect the revision history at `/api/routines/d346fd46-927a-47fa-86f4-5bc3ac9aca75/revisions` and compare its snapshot with the readback record.
@@ -40,4 +42,4 @@ Collector/runtime/schema failure, any difference from the pinned 45-repository m
 
 Run deterministic tests with `npm test` from this directory. A live dry run must use the governed OneCLI identity and record the exact collector SHA and run issue.
 
-Rollback removes the single invocation from the existing Monday routine and removes `tools/occ-fleet-cqe/` from a later repository commit. Delete only the generated artifact pair from a run issue if policy requires removing that run's output; historical artifacts otherwise remain audit evidence. No repository-local cleanup is required because the collector performs no target writes.
+Rollback for the GitHub CLI transport fix is a revert of the commit that adds the value-free `GH_TOKEN` placeholder; this restores the prior child-process environment without changing the governed connection header or repository settings. Full collector rollback removes the single invocation from the existing Monday routine and removes `tools/occ-fleet-cqe/` from a later repository commit. Delete only the generated artifact pair from a run issue if policy requires removing that run's output; historical artifacts otherwise remain audit evidence. No repository-local cleanup is required because the collector performs no target writes.

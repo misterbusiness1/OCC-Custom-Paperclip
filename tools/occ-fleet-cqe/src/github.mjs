@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 
 export const ONECLI_CONNECTION_HEADER = "x-onecli-connection-id: d26cdfbb-fa91-458f-b76f-1556918c427e";
+export const ONECLI_GH_TOKEN_PLACEHOLDER = "onecli-managed";
 
 export function githubApiArgs(endpoint, { method = "GET", paginate = false } = {}) {
   return [
@@ -20,6 +21,7 @@ export function githubApi(endpoint, { method = "GET", paginate = false, allow = 
   try {
     const stdout = exec("gh", githubApiArgs(endpoint, { method, paginate }), {
       encoding: "utf8",
+      env: { ...process.env, GH_TOKEN: ONECLI_GH_TOKEN_PLACEHOLDER },
       maxBuffer: 16 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
     });
