@@ -360,12 +360,71 @@ describe("terminal-wake queued-run reconciliation", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("reconciles a terminal-wake run even while another run fills the agent's only slot", async () => {
+    await seedCompany();
+    const staleIssueId = randomUUID();
+    const activeIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: staleIssueId, companyId, title: "Blocked task", status: "blocked", assigneeAgentId: agentId },
+      { id: activeIssueId, companyId, title: "Active task", status: "in_progress", assigneeAgentId: agentId },
+    ]);
+    const stale = await seedPair({ issueId: staleIssueId, wakeStatus: "cancelled" });
+    await db.update(issues).set({
+      executionRunId: stale.runId,
+      executionAgentNameKey: "worker",
+      executionLockedAt: new Date(),
+    }).where(eq(issues.id, staleIssueId));
+
+    const active = await seedPair({ issueId: activeIssueId, wakeStatus: "claimed" });
+    const controllerBootId = randomUUID();
+    await db.update(agents).set({ status: "running" }).where(eq(agents.id, agentId));
+    await db.update(heartbeatRuns).set({
+      status: "running",
+      startedAt: new Date(),
+      controllerBootId,
+      controllerLeaseExpiresAt: new Date(Date.now() + 60_000),
+      executionStage: "preparing",
+    }).where(eq(heartbeatRuns.id, active.runId));
+    await db.update(agentWakeupRequests).set({
+      status: "claimed", claimedAt: new Date(),
+    }).where(eq(agentWakeupRequests.id, active.wakeId));
+
+    await heartbeat.resumeQueuedRuns();
+
+    const { run: closed, wake } = await state(stale.runId, stale.wakeId);
+    const [staleIssue] = await db.select().from(issues).where(eq(issues.id, staleIssueId));
+    const [stillRunning] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, active.runId));
+    expect(closed).toMatchObject({ status: "cancelled", errorCode: TERMINAL_WAKE_QUEUED_RUN_CODE });
+    expect(wake.status).toBe("cancelled");
+    expect(staleIssue).toMatchObject({
+      status: "blocked", assigneeAgentId: agentId, executionRunId: null,
+      executionAgentNameKey: null, executionLockedAt: null,
+    });
+    expect(stillRunning).toMatchObject({ status: "running", controllerBootId });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("keeps a terminal-wake run held when a different issue points to its execution lock", async () => {
     await seedCompany();
     const { runId, wakeId } = await seedPair();
     await db.insert(issues).values({
       id: randomUUID(), companyId, title: "Other issue", status: "todo",
       executionRunId: runId,
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    expect((await state(runId, wakeId)).run).toMatchObject({ status: "queued" });
+    expect((await state(runId, wakeId)).wake.status).toBe("cancelled");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("keeps a terminal-wake run held when a different issue points to its checkout", async () => {
+    await seedCompany();
+    const { runId, wakeId } = await seedPair();
+    await db.insert(issues).values({
+      id: randomUUID(), companyId, title: "Other checkout", status: "todo",
+      checkoutRunId: runId,
     });
 
     await heartbeat.resumeQueuedRuns();
