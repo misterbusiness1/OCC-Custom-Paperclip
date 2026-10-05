@@ -161,7 +161,10 @@ Recovery lifecycle events retain the original structured failure code, retry att
 
 When an ordinary queued run has a cancelled, failed, or skipped wake, recovery
 may cancel it only after verifying that it never started and has no retained
-execution ownership. The cancellation transaction also persists one `lifecycle`
+execution evidence. If the issue's execution lock still points to that exact
+run, recovery clears that lock in the same transaction as cancellation. A
+checkout lock or a lock on another issue remains an operator hold. The
+cancellation transaction also persists one `lifecycle`
 event on the `system` stream at `warn` level. Its payload contains
 `code: "queued_run_terminal_wake_without_execution"`, `wakeupRequestId`,
 `wakeStatus`, and `providerDispatched: false`. The message describes the ended
