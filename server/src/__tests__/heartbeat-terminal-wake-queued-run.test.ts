@@ -294,7 +294,7 @@ describe("terminal-wake queued-run reconciliation", () => {
     },
   );
 
-  it.each(["execution pointer", "checkout pointer", "deferred receipt", "controller", "event", "session", "lease", "result", "output stream", "compressed log"] as const)(
+  it.each(["checkout pointer", "deferred receipt", "controller", "event", "session", "lease", "result", "output stream", "compressed log"] as const)(
     "fails closed when ownership is ambiguous: %s",
     async evidence => {
       await seedCompany();
@@ -330,6 +330,50 @@ describe("terminal-wake queued-run reconciliation", () => {
       expect(execute).not.toHaveBeenCalled();
     },
   );
+
+  it("releases this run's stale execution lock when its cancelled wake proves it never started", async () => {
+    await seedCompany();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Blocked task with a stranded queue lock",
+      status: "blocked", assigneeAgentId: agentId,
+    });
+    const { runId, wakeId } = await seedPair({ issueId, wakeStatus: "cancelled" });
+    const executionLockedAt = new Date();
+    await db.update(issues).set({
+      executionRunId: runId,
+      executionAgentNameKey: "worker",
+      executionLockedAt,
+    }).where(eq(issues.id, issueId));
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const { run, wake } = await state(runId, wakeId);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(run).toMatchObject({ status: "cancelled", errorCode: TERMINAL_WAKE_QUEUED_RUN_CODE });
+    expect(wake.status).toBe("cancelled");
+    expect(issue).toMatchObject({
+      status: "blocked", assigneeAgentId: agentId, executionRunId: null,
+      executionAgentNameKey: null, executionLockedAt: null,
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("keeps a terminal-wake run held when a different issue points to its execution lock", async () => {
+    await seedCompany();
+    const { runId, wakeId } = await seedPair();
+    await db.insert(issues).values({
+      id: randomUUID(), companyId, title: "Other issue", status: "todo",
+      executionRunId: runId,
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    expect((await state(runId, wakeId)).run).toMatchObject({ status: "queued" });
+    expect((await state(runId, wakeId)).wake.status).toBe("cancelled");
+    expect(execute).not.toHaveBeenCalled();
+  });
 
   it("keeps an observed execution hold after its lease disappears", async () => {
     await seedCompany();

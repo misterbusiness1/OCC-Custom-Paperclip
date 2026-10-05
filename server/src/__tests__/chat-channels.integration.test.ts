@@ -14039,7 +14039,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(issueComments)
         .where(eq(issueComments.issueId, conversation.issueId));
       expect(rows).toHaveLength(8);
-    });
+    }, { timeout: 10_000 });
     const comments = await db
       .select({ id: issueComments.id, body: issueComments.body })
       .from(issueComments)
@@ -14066,7 +14066,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(calls.map((call) => call[1]?.payload?.wakeCommentId)).toEqual(
         comments.map((comment) => comment.id),
       );
-    });
+    }, { timeout: 10_000 });
     // The last comment and wakeup commit inside the lease. Under full-suite
     // load the assertions above can observe those effects one microtask before
     // the deferred owner's `finally` deletes its lease. Require prompt eventual

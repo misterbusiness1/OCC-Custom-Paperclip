@@ -1690,6 +1690,11 @@ describe("realizeExecutionWorkspace", () => {
     // Keep this server-side fixture on provision-worktree.sh's config writer path;
     // CLI/database seeding is covered by the CLI worktree tests.
     await fs.symlink(process.execPath, path.join(isolatedBin, "node"));
+    // This fixture intentionally exercises the config-writer fallback. Mask a
+    // host-installed CLI so the test stays isolated on servers with one.
+    const unavailablePaperclipCli = path.join(isolatedBin, "paperclipai");
+    await fs.writeFile(unavailablePaperclipCli, "#!/bin/sh\nexit 127\n", "utf8");
+    await fs.chmod(unavailablePaperclipCli, 0o755);
     process.env.PATH = `${isolatedBin}${path.delimiter}/usr/bin${path.delimiter}/bin`;
 
     await fs.mkdir(sharedConfigDir, { recursive: true });
