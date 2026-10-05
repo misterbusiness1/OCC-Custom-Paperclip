@@ -2,6 +2,8 @@
 
 This isolated operations tool produces a deterministic, report-only inventory for the 45 repositories installed on the governed `occ-review-bot` GitHub App. The reviewed contract is pinned by [`repository-manifest.v1.json`](repository-manifest.v1.json), so installation drift fails with named added and missing repository deltas instead of a count-only error. The same manifest drives an effective-ruleset audit that requires exactly one active `Require exact-head OCC Review Bot` rule on each default branch, with no bypass actors and the `OCC Review Bot` context pinned to GitHub App integration `3604655`. It does not import Paperclip server modules and it never mutates GitHub, repositories, workflows, dependencies, Paperclip tasks, staging, or production.
 
+The pinned inventory follows repository renames without changing its cardinality. The former `misterbusiness1/paperclip` entry is now `misterbusiness1/OCC-Custom-Paperclip`; the exact contract remains 45 repositories.
+
 ## Scheduled invocation
 
 The existing **OCC PR Review Queue and Weekly Quality Sweep** Paperclip routine invokes the collector during its Monday 09:00 ET quality-sweep leg. Do not create another schedule. The routine must invoke an immutable collector commit through OneCLI:
@@ -41,5 +43,7 @@ Collector/runtime/schema failure, any difference from the pinned 45-repository m
 ## Verification and rollback
 
 Run deterministic tests with `npm test` from this directory. A live dry run must use the governed OneCLI identity and record the exact collector SHA and run issue.
+
+Rollback for the repository rename update is a revert of the manifest, matching inventory fixture, invocation working-directory evidence, and rename regression assertion in the same commit. This restores the former repository name while preserving the exact 45-repository contract; it does not change repository settings.
 
 Rollback for the GitHub CLI transport fix is a revert of the commit that adds the value-free `GH_TOKEN` placeholder; this restores the prior child-process environment without changing the governed connection header or repository settings. Full collector rollback removes the single invocation from the existing Monday routine and removes `tools/occ-fleet-cqe/` from a later repository commit. Delete only the generated artifact pair from a run issue if policy requires removing that run's output; historical artifacts otherwise remain audit evidence. No repository-local cleanup is required because the collector performs no target writes.

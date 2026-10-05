@@ -19,7 +19,7 @@
     "connection_id": "d26cdfbb-fa91-458f-b76f-1556918c427e"
   },
   "invocation": {
-    "working_directory": "misterbusiness1/paperclip",
+    "working_directory": "misterbusiness1/OCC-Custom-Paperclip",
     "command": "/usr/local/bin/onecli run -- node tools/occ-fleet-cqe/src/collect.mjs --collector-sha $COLLECTOR_SHA --run-issue $RUN_ISSUE --repository-owner misterbusiness1 --output fleet-cqe-coverage.v1.json --summary fleet-cqe-coverage.md",
     "collector_sha_contract": "COLLECTOR_SHA must be the immutable merged commit containing this collector",
     "artifact_contract": [
