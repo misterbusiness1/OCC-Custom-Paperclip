@@ -20020,13 +20020,6 @@ export function heartbeatService(
           return [];
         }
         const policy = parseHeartbeatPolicy(agent);
-        const runningCount = await countRunningRunsForAgent(agentId);
-        const availableSlots = Math.max(
-          0,
-          policy.maxConcurrentRuns - runningCount,
-        );
-        if (availableSlots <= 0) return [];
-
         const queuedRuns = await db
           .select()
           .from(heartbeatRuns)
@@ -20057,13 +20050,83 @@ export function heartbeatService(
           : [];
         const linkedWakeStatus = new Map(linkedWakes.map(wake => [wake.id, wake.status]));
 
+        const publishTerminalWake = (
+          result: Awaited<ReturnType<typeof reconcileTerminalWakeQueuedRun>>,
+        ) => {
+          if (result.kind !== "terminalized") return;
+          try {
+            publishLiveEvent({
+              companyId: result.run.companyId,
+              type: "heartbeat.run.status",
+              payload: buildHeartbeatRunStatusLiveEventPayload(result.run),
+            });
+          } catch (error) {
+            logger.error({ error, runId: result.run.id }, "terminal-wake status notification failed");
+          }
+          try {
+            publishRunLifecyclePluginEvent(result.run);
+          } catch (error) {
+            logger.error({ error, runId: result.run.id }, "terminal-wake plugin notification failed");
+          }
+          try {
+            const event = result.event;
+            publishLiveEvent({
+              companyId: result.run.companyId,
+              type: "heartbeat.run.event",
+              payload: {
+                runId: result.run.id,
+                agentId: result.run.agentId,
+                issueId: readRuntimeStatusIssueIdCandidate(result.run) ?? null,
+                seq: event.seq,
+                eventType: event.eventType,
+                stream: event.stream ?? null,
+                level: event.level ?? null,
+                color: event.color ?? null,
+                message: event.message ?? null,
+                currentToolName: null,
+                lastAssistantSnippet: null,
+                lastEventAt: event.createdAt.toISOString(),
+                payload: event.payload ?? null,
+              },
+            });
+          } catch (error) {
+            logger.error({ error, runId: result.run.id }, "terminal-wake run event notification failed");
+          }
+        };
+
+        // Terminal wakes withdraw authority even when all provider slots are
+        // occupied. Reconcile them before capacity checks so cleanup cannot be
+        // starved behind unrelated runnable tasks for the same agent.
+        const handledTerminalWakeRunIds = new Set<string>();
+        for (const queuedRun of queuedRuns) {
+          if (!queuedRun.wakeupRequestId) continue;
+          const wakeStatus = linkedWakeStatus.get(queuedRun.wakeupRequestId);
+          if (!wakeStatus || !["cancelled", "failed", "skipped"].includes(wakeStatus)) continue;
+          if (await settleQueuedRunWithTerminalWake(queuedRun, deferredPostCommitEffects)) {
+            handledTerminalWakeRunIds.add(queuedRun.id);
+            continue;
+          }
+          const result = await reconcileTerminalWakeQueuedRun(db, queuedRun);
+          if (result.kind === "not_terminal_wake") continue;
+          handledTerminalWakeRunIds.add(queuedRun.id);
+          publishTerminalWake(result);
+        }
+
+        const runningCount = await countRunningRunsForAgent(agentId);
+        const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+        if (availableSlots <= 0) return [];
+        const runsWithActiveWakeAuthority = queuedRuns.filter(
+          run => !handledTerminalWakeRunIds.has(run.id),
+        );
+        if (runsWithActiveWakeAuthority.length === 0) return [];
+
         const dependencyReadiness = await listQueuedRunDependencyReadiness(
           agent.companyId,
-          queuedRuns,
+          runsWithActiveWakeAuthority,
         );
         const queuedIssueIds = [
           ...new Set(
-            queuedRuns
+            runsWithActiveWakeAuthority
               .map((run) =>
                 readNonEmptyString(parseObject(run.contextSnapshot).issueId),
               )
@@ -20087,7 +20150,7 @@ export function heartbeatService(
           );
         const issueById = new Map(issueRows.map((row) => [row.id, row]));
         const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-        const prioritizedRuns = [...queuedRuns].sort((left, right) => {
+        const prioritizedRuns = [...runsWithActiveWakeAuthority].sort((left, right) => {
           const leftIssueId = readNonEmptyString(
             parseObject(left.contextSnapshot).issueId,
           );
@@ -20144,46 +20207,7 @@ export function heartbeatService(
               ? await reconcileTerminalWakeQueuedRun(db, queuedRun)
               : { kind: "not_terminal_wake" as const };
             if (terminalWake.kind !== "not_terminal_wake") {
-              if (terminalWake.kind === "terminalized") {
-                try {
-                  publishLiveEvent({
-                    companyId: terminalWake.run.companyId,
-                    type: "heartbeat.run.status",
-                    payload: buildHeartbeatRunStatusLiveEventPayload(terminalWake.run),
-                  });
-                } catch (error) {
-                  logger.error({ error, runId: terminalWake.run.id }, "terminal-wake status notification failed");
-                }
-                try {
-                  publishRunLifecyclePluginEvent(terminalWake.run);
-                } catch (error) {
-                  logger.error({ error, runId: terminalWake.run.id }, "terminal-wake plugin notification failed");
-                }
-                try {
-                  const event = terminalWake.event;
-                  publishLiveEvent({
-                    companyId: terminalWake.run.companyId,
-                    type: "heartbeat.run.event",
-                    payload: {
-                      runId: terminalWake.run.id,
-                      agentId: terminalWake.run.agentId,
-                      issueId: readRuntimeStatusIssueIdCandidate(terminalWake.run) ?? null,
-                      seq: event.seq,
-                      eventType: event.eventType,
-                      stream: event.stream ?? null,
-                      level: event.level ?? null,
-                      color: event.color ?? null,
-                      message: event.message ?? null,
-                      currentToolName: null,
-                      lastAssistantSnippet: null,
-                      lastEventAt: event.createdAt.toISOString(),
-                      payload: event.payload ?? null,
-                    },
-                  });
-                } catch (error) {
-                  logger.error({ error, runId: terminalWake.run.id }, "terminal-wake run event notification failed");
-                }
-              }
+              publishTerminalWake(terminalWake);
               continue;
             }
             await recoverPersistedQueuedCommentInterruptReceipt(queuedRun);
