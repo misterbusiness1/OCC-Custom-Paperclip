@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { EXPECTED_REPOSITORY_COUNT, validateInstallationInventory } from "../src/inventory.mjs";
+import {
+  EXPECTED_REPOSITORIES,
+  EXPECTED_REPOSITORY_COUNT,
+  validateInstallationInventory,
+} from "../src/inventory.mjs";
 
 function fixture(name) {
   return JSON.parse(readFileSync(new URL(`fixtures/${name}`, import.meta.url), "utf8"))
@@ -11,6 +15,11 @@ function fixture(name) {
 test("accepts the governed pinned 45-repository installation inventory", () => {
   assert.equal(EXPECTED_REPOSITORY_COUNT, 45);
   assert.doesNotThrow(() => validateInstallationInventory(fixture("inventory-45.json"), "misterbusiness1"));
+});
+
+test("pins the renamed OCC Custom Paperclip repository without retaining its former name", () => {
+  assert.ok(EXPECTED_REPOSITORIES.includes("misterbusiness1/OCC-Custom-Paperclip"));
+  assert.ok(!EXPECTED_REPOSITORIES.includes("misterbusiness1/paperclip"));
 });
 
 test("reports the named missing repository delta", () => {
