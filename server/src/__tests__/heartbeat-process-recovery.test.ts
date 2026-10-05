@@ -7124,6 +7124,78 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(2);
   });
 
+  it.each([1, 2])("holds %i saved Board receipt(s) after a cancelled queued interrupt wake", async (receiptCount) => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedRunFixture({
+      runtimeMode: "legacy", adapterType: "kimi_local", agentStatus: "idle", runStatus: "queued",
+    });
+    await db.update(issues).set({ checkoutRunId: null }).where(eq(issues.id, issueId));
+    const comments = await db.insert(issueComments).values(Array.from({ length: receiptCount }, (_, index) => ({
+      companyId, issueId, authorType: "user" as const, authorUserId: "responsible-user",
+      body: `Saved Board input ${index + 1}`,
+    }))).returning();
+    const receiptId = randomUUID();
+    const interruptKey = `queued-comment-interrupt:${receiptId}`;
+    const savedReceipts = await db.insert(agentWakeupRequests).values([
+      {
+        id: receiptId, companyId, agentId, source: "automation", reason: "issue_commented",
+        status: "deferred_issue_execution", requestedByActorType: "user",
+        requestedByActorId: "responsible-user", idempotencyKey: `original:${receiptId}`,
+        payload: { issueId, commentId: comments[0]!.id,
+          queuedCommentInterrupt: { actorId: "responsible-user" },
+          _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comments[0]!.id] } },
+      },
+      ...(receiptCount === 2 ? [{
+        companyId, agentId, source: "automation", reason: "issue_commented",
+        status: "deferred_issue_execution" as const, requestedByActorType: "user",
+        requestedByActorId: "responsible-user", idempotencyKey: interruptKey,
+        payload: { issueId, commentId: comments[1]!.id,
+          _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comments[1]!.id] } },
+      }] : []),
+    ]).returning({ id: agentWakeupRequests.id });
+    await db.update(agentWakeupRequests).set({
+      status: "cancelled", idempotencyKey: interruptKey,
+      requestedByActorType: "user", requestedByActorId: "responsible-user",
+    }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    const run = await heartbeat.getRun(runId);
+    const held = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.status, "held_for_board_review"),
+    ));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "queued_wakeup_terminal", startedAt: null,
+      resultJson: { queuedBoardInterruptHeldForReview: { version: 1, issueId,
+        receiptIds: expect.arrayContaining(held.map(wake => wake.id)) } } });
+    expect(held).toHaveLength(receiptCount);
+    expect(held.map(wake => wake.id).sort()).toEqual(savedReceipts.map(wake => wake.id).sort());
+    expect(issue!.executionRunId).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const restarted = heartbeatService(db);
+    await restarted.resumeQueuedRuns();
+    expect((await restarted.reconcileStrandedAssignedIssues()).operatorCancelExempted).toBeGreaterThan(0);
+    const subsequentRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(subsequentRuns).toHaveLength(1);
+    const stillHeld = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.status, "held_for_board_review"),
+    ));
+    expect(stillHeld).toHaveLength(receiptCount);
+    expect(stillHeld.map(wake => wake.id).sort()).toEqual(savedReceipts.map(wake => wake.id).sort());
+    expect(stillHeld.every(wake => wake.runId === null)).toBe(true);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.executionRunId).toBeNull();
+    const laterRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: laterRunId, companyId, agentId, invocationSource: "on_demand", status: "queued",
+      contextSnapshot: { issueId }, createdAt: new Date(Date.now() + 1_000),
+    });
+    expect((await restarted.reconcileStrandedAssignedIssues()).operatorCancelExempted).toBe(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(2);
+  });
+
   it.each(["pending", "discarded", "wrong queue"] as const)(
     "resumes only the authorized %s queue after an acknowledged legacy interrupt",
     async (state) => {

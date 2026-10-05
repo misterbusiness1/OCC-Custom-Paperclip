@@ -1171,6 +1171,10 @@ function isOperatorCancelledRun(
   if (!latestRun || latestRun.status !== "cancelled") return false;
   if (latestRun.errorCode === "operator_interrupted") return true;
   const result = parseObject(latestRun.resultJson);
+  if (latestRun.agentId === currentAgentId &&
+      latestRun.errorCode === "queued_wakeup_terminal" &&
+      parseObject(result.queuedBoardInterruptHeldForReview).version === 1)
+    return true;
   return (
     result.cancelledByActorType === "user" ||
     result.cancelledByActorType === "board"
