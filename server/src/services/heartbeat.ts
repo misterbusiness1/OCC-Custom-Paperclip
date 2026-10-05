@@ -19882,6 +19882,11 @@ export function heartbeatService(
         errorCode: "queued_wakeup_terminal",
         resultJson: {
           ...parseObject(run.resultJson),
+          queuedBoardInterruptHeldForReview: {
+            version: 1,
+            issueId,
+            receiptIds: heldIds,
+          },
           ...(run.runtimeMode !== "native"
             ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
             : {}),
