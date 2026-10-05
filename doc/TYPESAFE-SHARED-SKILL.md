@@ -62,10 +62,11 @@ On an instance running this revision:
    On Codex, inspect the next run's injected skill snapshot; a `configured` entry
    means scheduled for delivery, not proof it loaded. For Kimi with explicitly
    configured CLI engine, inspect the next run's prepared `--skills-dir` snapshot.
-   Kimi's default ACP custom-agent path does not implement this skill delivery
-   contract; a persistent skill-sync check does not prove ACP loading. Choose an
-   already eligible runtime for the pilot. The complete directory must contain
-   both skill files. Existing assignments stay intact.
+   Kimi's default ACP custom-agent path does not prepare selected skills or add
+   the task-bound runtime gateway to its MCP server list. A persistent skill-sync
+   check does not prove ACP loading or `typesafe_judge` discovery. Use an existing
+   `codex_local` agent with native MCP delivery for this pilot. The complete skill
+   directory must contain both files. Existing assignments stay intact.
 4. Have the task-bound agent explicitly load `typesafe-judge` and enumerate its
    tools. Require `typesafe_judge` in that run's actual tool discovery.
 
