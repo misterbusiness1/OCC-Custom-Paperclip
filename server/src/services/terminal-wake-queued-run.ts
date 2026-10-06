@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -153,12 +153,13 @@ export async function reconcileTerminalWakeQueuedRun(
       });
       return { kind: "held_for_operator" };
     }
+    const conflictingIssueOwnership = await first(tx.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.companyId, run.companyId),
+      or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
+      issue ? ne(issues.id, issue.id) : undefined,
+    )).limit(1));
     if (
-      issue?.executionRunId === run.id || issue?.checkoutRunId === run.id ||
-      await first(tx.select({ id: issues.id }).from(issues).where(and(
-        eq(issues.companyId, run.companyId),
-        or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
-      )).limit(1)) ||
+      issue?.checkoutRunId === run.id || conflictingIssueOwnership ||
       await first(tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.companyId, run.companyId),
         eq(agentWakeupRequests.agentId, run.agentId),
@@ -194,6 +195,22 @@ export async function reconcileTerminalWakeQueuedRun(
       eq(heartbeatRuns.wakeupRequestId, wake.id),
     )).returning();
     if (!closed) return { kind: "held_for_operator" };
+    // This run may have claimed its issue before the provider ever started.
+    // Once the terminal wake and absence of execution evidence are proven,
+    // clear only this run's matching execution lock. Checkout ownership remains
+    // a hold above because it may represent an independent workspace operation.
+    if (issue?.executionRunId === run.id) {
+      await tx.update(issues).set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      }).where(and(
+        eq(issues.id, issue.id),
+        eq(issues.companyId, run.companyId),
+        eq(issues.executionRunId, run.id),
+      ));
+    }
     await tx.insert(activityLog).values({
       companyId: run.companyId,
       actorType: "system",
