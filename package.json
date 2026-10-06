@@ -142,7 +142,11 @@
       "hono": "4.13.13",
       "svix@1.76.1>uuid": "11.1.1",
       "@esbuild-kit/core-utils@3.3.2>esbuild": "0.25.12",
-      "form-data@>=4 <4.0.6": "4.0.6"
+      "form-data@>=4 <4.0.6": "4.0.6",
+      "proxy-addr": "2.0.8",
+      "source-map-js": "1.2.2",
+      "sharp": "0.35.5",
+      "@modelcontextprotocol/sdk": "1.32.1"
     }
   }
 }

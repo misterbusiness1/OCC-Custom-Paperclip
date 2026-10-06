@@ -1,0 +1,30 @@
+{
+  "model": "jev-latest",
+  "state": {
+    "request": "The export fails, but CSV still works."
+  },
+  "questions": {
+    "route": {
+      "type": "choice",
+      "instructions": "Choose the best handling route for the supplied request.",
+      "criteria": {
+        "support": "Help using a working feature",
+        "engineering": "Repair a product defect",
+        "no_match": "Neither route fits the evidence"
+      }
+    },
+    "is_blocking": {
+      "type": "noul",
+      "instructions": "Does the supplied request say there is no usable workaround?"
+    },
+    "severity": {
+      "type": "score",
+      "instructions": "Rate operational severity using only the supplied request.",
+      "criteria": [
+        "A cosmetic defect; the feature works",
+        "A failed feature with a usable workaround",
+        "A failed feature with no usable workaround"
+      ]
+    }
+  }
+}

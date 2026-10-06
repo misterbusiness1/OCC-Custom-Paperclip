@@ -2,30 +2,27 @@
 
 Task-bound agent runs discover `typesafe_judge` through Paperclip's run-scoped runtime MCP server. It is an optional bounded-judgment primitive, not a replacement for the agent's primary reasoning provider. Its output cannot grant permission, satisfy an approval, or override explicit/mandatory skill rules.
 
+## Shared operational skill
+
+The canonical usage instructions are [typesafe-judge](../skills/typesafe-judge/SKILL.md).
+They explain when a bounded judgment helps, how to call the existing tool, and how
+to handle unavailable advice without bypassing task authority. Its
+[pilot.json](../skills/typesafe-judge/pilot.json) is the single source for the
+synthetic pilot questions and criteria. The official vendor `typesafe-ai` skill
+remains the developer reference for API work.
+
+The runtime skill ships through the existing repo-root `skills/` inventory as
+`paperclipai/paperclip/typesafe-judge`. It is optional: library availability does
+not attach it to an agent, enable the tool, or grant credentials. See
+[installation and pilot verification](TYPESAFE-SHARED-SKILL.md) for the controlled
+setup. Automatic skill suggestions and background classification remain separate;
+further development is paused pending demonstrated benefit from direct use.
+
+## Runtime contract
+
 The tool accepts one shared `state`, a model (normally `jev-latest`), and one or more independent questions keyed by stable IDs. Supported question types are `choice`, `noul`, and `score`. Paperclip validates question schemas before sending them and validates every returned type, option/level distribution, finite range, question ID, model, and token count before returning a result.
 
-```json
-{
-  "state": { "request": "The export fails, but CSV still works." },
-  "model": "jev-latest",
-  "questions": {
-    "route": {
-      "type": "choice",
-      "instructions": "Choose the best handling route.",
-      "criteria": { "support": "Usage help", "engineering": "Product defect", "no_match": "Neither" }
-    },
-    "is_blocking": {
-      "type": "noul",
-      "instructions": "Is there no usable workaround?"
-    },
-    "severity": {
-      "type": "score",
-      "instructions": "Rate operational severity.",
-      "criteria": ["cosmetic", "degraded with workaround", "blocking"]
-    }
-  }
-}
-```
+Use [the shared pilot input](../skills/typesafe-judge/pilot.json) for a complete schema-valid example covering all three question types.
 
 The invoking agent must have a current company-scoped `TYPESAFE_API_KEY` `secret_ref` binding in its adapter environment. Paperclip resolves it at call time, never exposes it in the tool contract, and rejects configuration changes that race an invocation. `PAPERCLIP_TYPESAFE_TOOL_ENABLED=true` is the kill switch; it is off by default. `PAPERCLIP_TYPESAFE_TIMEOUT_MS` may lower or raise the request timeout within 1–15 seconds. All failures return a code without typed answers, so callers must fall back to their existing authorized reasoning path.
 
