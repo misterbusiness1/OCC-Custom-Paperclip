@@ -21,6 +21,7 @@ import {
   useSettlingApprovals,
 } from "../components/ApprovalDecisionActions";
 import { ApprovalDecisionSummary, type ApprovalAgentNameResolver } from "../components/ApprovalDecisionSummary";
+import { APPROVE_AFTER_ADVANCE_MS } from "../components/ApprovalHold";
 import {
   APPROVAL_CHANGES_ASKED_LABEL,
   ApprovalRevisedNotice,
@@ -330,6 +331,8 @@ export function ApprovalDetail() {
           <div className="space-y-3 border-t border-border/60 pt-4">
             {showDecisionActions && (
               <ApprovalDecisionActions
+                key={approval.id}
+                approveArmDelayMs={APPROVE_AFTER_ADVANCE_MS}
                 subject={subject}
                 status={approval.status}
                 onApprove={(note) => approveMutation.mutate(note)}

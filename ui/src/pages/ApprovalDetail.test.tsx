@@ -538,6 +538,34 @@ describe("ApprovalDetail", () => {
       await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-1"));
     });
 
+    it("ignores a pointer press on Approve just after the page is drawn, and takes it after that", async () => {
+      // The press that opened this page (a row title, "View details") can be followed by a second,
+      // slower press at the same point, where Approve now is. This page sends at once, with no undo.
+      let now = 1_700_000_000_000;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+      try {
+        apiMocks.approve.mockResolvedValue(createApproval({ status: "approved" }));
+        await render(createApproval({ status: "revision_requested", decisionNote: "Quote the delivery date." }));
+        const press = () =>
+          act(async () => {
+            button(panel(), "Approve").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+          });
+
+        now += 450;
+        await press();
+        now += 250;
+        await press();
+        expect(apiMocks.approve).not.toHaveBeenCalled();
+
+        // A press by the keyboard reports no click count and is not held up; here the moment has passed.
+        now += 100;
+        await press();
+        await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-1"));
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
     it("shows the board's own note with its line breaks, for a change request and for a decision note", async () => {
       const note = "1. Quote the delivery date.\n2. Use the November price list.\n\nKeep the tone as it is.";
       const unbroken = "x".repeat(400);
