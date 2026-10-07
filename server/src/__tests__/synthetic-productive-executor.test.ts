@@ -15,7 +15,7 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
 });
 
-async function executeFixture(hasMarker: boolean) {
+async function executeFixture(hasMarker: boolean, options: { checkoutStatus?: number; cwd?: string } = {}) {
   const requests: Array<{ method: string; url: string; body: string; runId: string | undefined }> = [];
   const server = createServer((request, response) => {
     let body = "";
@@ -28,10 +28,20 @@ async function executeFixture(hasMarker: boolean) {
         runId: request.headers["x-paperclip-run-id"] as string | undefined,
       });
       response.setHeader("content-type", "application/json");
-      if (request.url?.endsWith("/comments") && request.method === "GET") {
+      if (request.url === `/api/issues/${issueId}/checkout` && request.method === "POST") {
+        response.statusCode = options.checkoutStatus ?? 200;
+        response.end(options.checkoutStatus && options.checkoutStatus !== 200
+          ? JSON.stringify({ error: "Issue checkout conflict" })
+          : JSON.stringify({
+              id: issueId,
+              status: "in_progress",
+              checkoutRunId: "22222222-2222-4222-8222-222222222222",
+              executionRunId: "22222222-2222-4222-8222-222222222222",
+            }));
+      } else if (request.url?.endsWith("/comments") && request.method === "GET") {
         response.end(JSON.stringify(hasMarker ? [{ body: "[synthetic-timer-provenance] productive terminal marker" }] : []));
       } else if (request.url === `/api/issues/${issueId}` && request.method === "GET") {
-        response.end(JSON.stringify({ id: issueId, status: "in_progress" }));
+        response.end(JSON.stringify({ id: issueId, status: "in_progress", assigneeAgentId: "33333333-3333-4333-8333-333333333333" }));
       } else {
         response.end(JSON.stringify({ ok: true, status: "done" }));
       }
@@ -44,6 +54,7 @@ async function executeFixture(hasMarker: boolean) {
 
   const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
     const child = spawn(process.execPath, [script, issueId], {
+      cwd: options.cwd,
       env: {
         ...process.env,
         PAPERCLIP_API_URL: `http://127.0.0.1:${address.port}`,
@@ -68,6 +79,15 @@ describe("synthetic productive executor", () => {
     expect(result.stdout).toContain("leaving issue in progress");
     const mutation = requests.find((request) => request.method === "POST");
     expect(mutation).toMatchObject({
+      url: `/api/issues/${issueId}/checkout`,
+      runId: "22222222-2222-4222-8222-222222222222",
+    });
+    expect(JSON.parse(mutation?.body ?? "{}")).toEqual({
+      agentId: "33333333-3333-4333-8333-333333333333",
+      expectedStatuses: ["in_progress"],
+    });
+    const markerMutation = requests.find((request) => request.url.endsWith("/comments") && request.method === "POST");
+    expect(markerMutation).toMatchObject({
       url: `/api/issues/${issueId}/comments`,
       runId: "22222222-2222-4222-8222-222222222222",
     });
@@ -82,5 +102,20 @@ describe("synthetic productive executor", () => {
     const mutation = requests.find((request) => request.method === "PATCH");
     expect(mutation?.url).toBe(`/api/issues/${issueId}`);
     expect(JSON.parse(mutation?.body ?? "{}")).toMatchObject({ status: "done" });
+  });
+
+  it("runs from a non-root process-adapter cwd when configured with the absolute script path", async () => {
+    const { result } = await executeFixture(false, { cwd: path.dirname(script) });
+
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(result.stdout).toContain("leaving issue in progress");
+  });
+
+  it("fails closed when a different run already owns the issue", async () => {
+    const { requests, result } = await executeFixture(false, { checkoutStatus: 409 });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("Issue checkout conflict");
+    expect(requests.some((request) => request.url.endsWith("/comments"))).toBe(false);
   });
 });

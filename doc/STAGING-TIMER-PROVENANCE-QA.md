@@ -9,7 +9,7 @@ Configure a `process` adapter agent to run:
 {
   "command": "/absolute/path/to/node",
   "args": [
-    "scripts/qa/synthetic-productive-executor.mjs",
+    "/absolute/repository/path/scripts/qa/synthetic-productive-executor.mjs",
     "<synthetic-issue-uuid>"
   ]
 }
@@ -20,12 +20,15 @@ Set `runtimeConfig.heartbeat` to `{ "enabled": true, "intervalSec": 60,
 to that agent in `in_progress` state. `wakeOnDemand: false` prevents the
 assignment itself from replacing the required scheduled-timer origin.
 
-The first scheduled run writes one comment attributed to its real run ID and
-exits successfully while leaving the issue in progress. The normal recovery
-pass must enqueue the productive-terminal continuation. The second invocation
-marks the issue done. Record both run rows and assert:
+The fixture first checks out the explicit issue with the current run and fails
+closed unless the response binds both `checkoutRunId` and `executionRunId` to
+that run. The first scheduled run then writes one comment attributed to its real
+run ID and exits successfully while leaving the issue in progress. The normal
+recovery pass must enqueue the productive-terminal continuation. The second
+invocation marks the issue done. Record both run rows and assert:
 
-1. the source run has `contextSnapshot.wakeReason = heartbeat_timer`;
+1. the source run has `contextSnapshot.wakeReason = heartbeat_timer` and its
+   `issueId` / `taskId` equal the synthetic issue UUID;
 2. the continuation has source `issue.productive_terminal_continuation_recovery`;
 3. the continuation `retryOfRunId` equals that exact timer run ID; and
 4. heartbeat context still reports `heartbeat_timer` after coalescing.

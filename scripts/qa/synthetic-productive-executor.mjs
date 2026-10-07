@@ -5,7 +5,7 @@
  *
  * Configure an isolated synthetic agent with:
  *   command: process.execPath
- *   args: ["scripts/qa/synthetic-productive-executor.mjs", "<synthetic-issue-id>"]
+ *   args: ["/absolute/repository/path/scripts/qa/synthetic-productive-executor.mjs", "<synthetic-issue-id>"]
  *
  * The first run writes one run-attributed progress comment and exits cleanly
  * while the issue remains in progress. A continuation run observes that marker,
@@ -50,6 +50,20 @@ if (issue.status === "done") {
 }
 if (issue.status !== "in_progress") {
   throw new Error(`Synthetic issue must be in_progress, received ${String(issue.status)}`);
+}
+if (!issue.assigneeAgentId) {
+  throw new Error("Synthetic issue must have an agent assignee");
+}
+
+const claimedIssue = await request(`/api/issues/${issueId}/checkout`, {
+  method: "POST",
+  body: JSON.stringify({
+    agentId: issue.assigneeAgentId,
+    expectedStatuses: ["in_progress"],
+  }),
+});
+if (claimedIssue?.checkoutRunId !== runId || claimedIssue?.executionRunId !== runId) {
+  throw new Error("Synthetic issue checkout did not bind the current run");
 }
 
 const comments = await request(`/api/issues/${issueId}/comments`);
