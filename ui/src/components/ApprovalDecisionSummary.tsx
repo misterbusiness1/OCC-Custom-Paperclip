@@ -12,6 +12,7 @@ import {
   approvalReadableText,
   approvalStrategyBrief,
   approvalStrategyPlan,
+  approvalSummaryText,
   approvalTextPreview,
   OriginalRequestBlock,
   stripLeadingListMarker,
@@ -34,6 +35,7 @@ const SKILL_PREVIEW_COUNT = 6;
 const RECOMMENDATION_PREVIEW = { maxLines: 3, maxLength: 180 };
 const WHY_PREVIEW = { maxLines: 3, maxLength: 220 };
 const NEXT_ACTION_PREVIEW = { maxLines: 3, maxLength: 220 };
+const SUMMARY_PREVIEW = { maxLines: 3, maxLength: 220 };
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 /**
@@ -163,7 +165,9 @@ function ApprovalEmailDraftBlock({
   // A long draft is cut on compact surfaces only, and always behind a button that states its size.
   const preview = full ? null : approvalDraftPreview(draft.body);
   const canExpand = preview !== null;
+  // "Via" is the payload's free-text channel; "From" appears only when the request names a sender.
   const envelope = [
+    ["Via", draft.via],
     ["From", draft.from],
     ["To", draft.to],
     ["Subject", draft.subject],
@@ -475,18 +479,24 @@ export function ApprovalDecisionSummary({
   full = false,
   status,
   draftControl,
+  requestedByAgentId,
 }: {
   type: string;
   payload?: Record<string, unknown> | null;
   className?: string;
   /** The approval status. What a decision will do is stated only while a decision is still open. */
   status?: string;
-  /** Lets a hire request name the manager the agent reports to. */
+  /** Lets a hire request name the manager the agent reports to, and a Board approval the agent that wrote its original request. */
   resolveAgentName?: ApprovalAgentNameResolver;
   /** Show long text in full: for pages with room for it, such as the approval detail page. */
   full?: boolean;
   /** Hands the draft's expanded state to the parent (see {@link useApprovalDraftGate}); without it the summary keeps its own. */
   draftControl?: ApprovalDraftControl;
+  /**
+   * The agent that asked for the approval, if one did. A decision wakes that agent and nobody
+   * else, so what approval sets in motion is stated only when there is one.
+   */
+  requestedByAgentId?: string | null;
 }) {
   if (type === "hire_agent") {
     return (
@@ -531,9 +541,19 @@ export function ApprovalDecisionSummary({
   const showPoints = !isBareLegacyRequest && (isBoardApproval || brief.pros.length > 0 || brief.cons.length > 0);
   // In full, a Board approval states the fields its request leaves empty instead of dropping them.
   const emptyText = full && isBoardApproval ? "Not supplied." : undefined;
+  // Agents are told to send a summary and may put the cost in it. It leads, unless it is already on the surface.
+  const summary = isBoardApproval ? approvalSummaryText(payload, type) : null;
+  // The agent's own "If approved" line comes first; without one, the summary says what the server does.
+  const replyRecipient = draft?.to?.replace(/\s+/g, " ") ?? null;
+  const showReplyEffect =
+    Boolean(replyRecipient) &&
+    status === "pending" &&
+    Boolean(requestedByAgentId) &&
+    !approvalReadableText(brief.nextAction);
 
   return (
     <div className={cn("space-y-3", className)}>
+      <DecisionField label="Summary" value={summary} {...SUMMARY_PREVIEW} full={full} />
       <DecisionField
         label="Recommendation"
         value={brief.recommendation}
@@ -542,7 +562,9 @@ export function ApprovalDecisionSummary({
         emptyText={emptyText}
       />
       {/* Compact: an announced preview, and a missing source is noted once in the header line. In full: all of it. */}
-      {isBoardApproval && <OriginalRequestBlock payload={payload} compact={!full} />}
+      {isBoardApproval && (
+        <OriginalRequestBlock payload={payload} compact={!full} resolveAgentName={resolveAgentName} />
+      )}
       <DecisionField label="Why" value={brief.reasoning} {...WHY_PREVIEW} full={full} emptyText={emptyText} />
       {showPoints && (
         <div className="grid gap-3 sm:grid-cols-2">
@@ -560,6 +582,16 @@ export function ApprovalDecisionSummary({
         </p>
       )}
       {draft && <ApprovalEmailDraftBlock draft={draft} full={full} control={draftControl} />}
+      {/*
+        Written by the interface, from what the server does: a decision wakes the requesting agent.
+        Paperclip sends no email itself, so the line says who is told, not that the reply is sent.
+      */}
+      {showReplyEffect && (
+        <p className="break-words text-sm leading-5 text-foreground" data-approval-reply-effect>
+          If approved, the requester is told to send this reply to{" "}
+          <span className="font-medium">{replyRecipient}</span>.
+        </p>
+      )}
       <DecisionField label="If approved" value={brief.nextAction} {...NEXT_ACTION_PREVIEW} full={full} />
     </div>
   );

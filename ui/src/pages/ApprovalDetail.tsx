@@ -20,7 +20,7 @@ import {
   approvalDecisionErrorText,
   useSettlingApprovals,
 } from "../components/ApprovalDecisionActions";
-import { ApprovalDecisionSummary } from "../components/ApprovalDecisionSummary";
+import { ApprovalDecisionSummary, type ApprovalAgentNameResolver } from "../components/ApprovalDecisionSummary";
 import {
   APPROVAL_CHANGES_ASKED_LABEL,
   ApprovalRevisedNotice,
@@ -178,6 +178,9 @@ export function ApprovalDetail() {
   if (!approval) return <p className="text-sm text-muted-foreground">Approval not found.</p>;
 
   const payload = approval.payload as Record<string, unknown>;
+  // Null when the loaded agent list holds no such agent; undefined while the list is not known.
+  const resolveAgentName: ApprovalAgentNameResolver = (agentId) =>
+    agents ? (agentNameById.get(agentId) ?? null) : undefined;
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
@@ -276,7 +279,8 @@ export function ApprovalDetail() {
               type={approval.type}
               payload={payload}
               status={approval.status}
-              resolveAgentName={(agentId) => (agents ? (agentNameById.get(agentId) ?? null) : undefined)}
+              requestedByAgentId={approval.requestedByAgentId}
+              resolveAgentName={resolveAgentName}
               full
             />
           )}
@@ -359,7 +363,12 @@ export function ApprovalDetail() {
       <details className="rounded-lg border border-border">
         <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-foreground">Full request</summary>
         <div className="border-t border-border/60 px-4 pb-4">
-          <ApprovalPayloadRenderer type={approval.type} payload={payload} hidePrimaryTitle />
+          <ApprovalPayloadRenderer
+            type={approval.type}
+            payload={payload}
+            hidePrimaryTitle
+            resolveAgentName={resolveAgentName}
+          />
           <div className="mt-4 space-y-1 text-xs text-muted-foreground">
             <p>Request ID: <span className="font-mono break-all">{approval.id}</span></p>
             <p>Created: {new Date(approval.createdAt).toLocaleString()}</p>

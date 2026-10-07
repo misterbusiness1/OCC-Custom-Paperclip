@@ -569,7 +569,7 @@ describe("Inbox toolbar", () => {
       expect(source.classList.contains("line-clamp-4")).toBe(false);
       expect(source.textContent).toBe(original);
       expect(row.querySelector("script")).toBeNull();
-      expect(row.textContent).toContain("Requester-provided external source snapshot");
+      expect(row.textContent).toContain("Customer · Quoted by the requesting agent, not verified");
       const text = row.textContent!;
       expect(text.indexOf("Recommendation")).toBeLessThan(text.indexOf("Original request"));
       expect(text.indexOf("Original request")).toBeLessThan(text.indexOf("Why"));
@@ -806,6 +806,12 @@ describe("Inbox toolbar", () => {
       expect(expander.getAttribute("aria-expanded")).toBe("false");
       expect(shownBody(short)).toBe(shortBody);
       expect(short.querySelector("[data-approval-draft] button")).toBeNull();
+      // Under each draft the row says what approval sets in motion: the requesting agent is told; nothing is sent here.
+      for (const row of [long, short]) {
+        expect(row.querySelector("[data-approval-reply-effect]")!.textContent).toBe(
+          "If approved, the requester is told to send this reply to buyer@example.test.",
+        );
+      }
 
       // The first Approve opens the draft and puts focus on it; nothing is sent.
       await act(async () => button(long, "Approve").click());
@@ -827,6 +833,77 @@ describe("Inbox toolbar", () => {
       expect(apiMocks.approve).toHaveBeenCalledTimes(2);
       expect(heldBack(long)).toBe(false);
       expect(apiMocks.reject).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("names who sent the original request and shows the summary with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    const authorId = "44444444-4444-4444-8444-444444444444";
+    apiMocks.agentsList.mockResolvedValue([{ id: authorId, name: "Infra Engineer" }]);
+    const sentAt = "2026-10-07T01:23:48.000Z";
+    const commentApproval = (id: string, title: string, sender: string) => createApproval({
+      id,
+      type: "request_board_approval",
+      requestedByAgentId: authorId,
+      payload: {
+        title,
+        summary: "Estimated cost is $42/month for provider X.",
+        recommendedAction: "Approve provider X",
+        reasoning: "It meets every condition in the request",
+        pros: ["Fixed monthly commitment"],
+        risks: ["The bill rises if traffic doubles"],
+        channel: "email from info@",
+        subject: "Re: hosting",
+        body: "We will go with provider X.",
+        originalRequest: {
+          text: "Use provider X if it stays under $50.",
+          source: {
+            kind: "paperclip_comment",
+            commentId: "22222222-2222-4222-8222-222222222222",
+            issueId: "33333333-3333-4333-8333-333333333333",
+            sender,
+            sentAt,
+            snapshotOrigin: "server",
+          },
+        },
+      },
+    });
+    apiMocks.approvalsList.mockResolvedValue([
+      commentApproval("approval-agent", "Asked by an agent", authorId),
+      commentApproval("approval-board", "Asked by the board", "local-board"),
+      commentApproval("approval-unknown", "Asked by someone unknown", "55555555-5555-4555-8555-555555555555"),
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Asked by an agent"));
+      const rowFor = (title: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(title))!;
+      const time = new Date(sentAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+      const note = `${time} · Saved from the original comment · View comment`;
+
+      await vi.waitFor(() => expect(rowFor("Asked by an agent").textContent).toContain(`Infra Engineer · ${note}`));
+      expect(rowFor("Asked by the board").textContent).toContain(`Board · ${note}`);
+      expect(rowFor("Asked by someone unknown").textContent).toContain(`Original request${note}`);
+      // No id of a sender and no storage jargon reaches the row.
+      for (const leaked of ["local-board", authorId, "55555555-5555-4555-8555-555555555555", "snapshot"]) {
+        expect(container.textContent).not.toContain(leaked);
+      }
+      expect(time).not.toMatch(/\d:\d\d:\d\d/);
+
+      const text = rowFor("Asked by an agent").textContent!;
+      expect(text).toContain("SummaryEstimated cost is $42/month for provider X.");
+      expect(text.indexOf("SummaryEstimated cost")).toBeLessThan(text.indexOf("RecommendationApprove provider X"));
+      // The channel is not a sender address. With no recipient, the row names nobody the reply goes to.
+      const draft = rowFor("Asked by an agent").querySelector("[data-approval-draft]")!;
+      expect(draft.textContent).toContain("Viaemail from info@");
+      expect(draft.textContent).not.toContain("From");
+      expect(container.querySelector("[data-approval-reply-effect]")).toBeNull();
     } finally {
       act(() => root.unmount());
       queryClient.clear();

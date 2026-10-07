@@ -26,7 +26,13 @@ import {
   useApprovalHolds,
   type HeldApproval,
 } from "../components/ApprovalHold";
-import { approvalExcerpt, approvalSubject, isEmailReplyPayload, typeLabel } from "../components/ApprovalPayload";
+import {
+  APPROVAL_TITLE_LENGTH,
+  approvalExcerpt,
+  approvalSubject,
+  isEmailReplyPayload,
+  typeLabel,
+} from "../components/ApprovalPayload";
 import { ApprovalChangesAskedFor, ApprovalSentBackTime, approvalSentBackAt } from "../components/ApprovalRevision";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { StatusBadge } from "../components/StatusBadge";
@@ -116,7 +122,7 @@ function kindLabel(kind: string): string {
 /** The name a request goes by on its card, in its compact row and in announcements. */
 function approvalDisplaySubject(approval: Approval): string {
   return (
-    approvalExcerpt(approvalSubject(approval.payload, approval.type), 120) ?? typeLabel[approval.type] ?? approval.type
+    approvalExcerpt(approvalSubject(approval.payload, approval.type), APPROVAL_TITLE_LENGTH) ?? typeLabel[approval.type] ?? approval.type
   );
 }
 

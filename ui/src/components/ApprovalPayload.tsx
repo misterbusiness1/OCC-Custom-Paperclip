@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -125,12 +125,48 @@ export function approvalOriginalRequest(
   };
 }
 
+/** Resolves an agent id to a display name; null or undefined when it is not known. */
+type OriginalRequestSenderResolver = (agentId: string) => string | null | undefined;
+
+const SENDER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Who sent the original request, as a name the board can read. The server
+ * stores the author's user or agent id for a Paperclip comment; an id is
+ * resolved to a name or left out, never printed. A sender the requesting agent
+ * supplied for an external source is kept as written unless it is an id.
+ */
+export function approvalOriginalRequestSender(
+  source: ApprovalOriginalRequest["source"],
+  resolveAgentName?: OriginalRequestSenderResolver,
+): string | null {
+  const sender = source.sender?.trim();
+  if (!sender) return null;
+  const isId =
+    source.kind === "paperclip_comment" || SENDER_ID_PATTERN.test(sender) || sender.startsWith("local-");
+  if (!isId) return sender;
+  const name = resolveAgentName?.(sender)?.trim();
+  if (name) return name;
+  return sender === "local-board" ? "Board" : null;
+}
+
+/** The time a request was sent, to the minute. Null when the value is not a date. */
+function originalRequestSentAt(sentAt: string | undefined): string | null {
+  if (!sentAt) return null;
+  const date = new Date(sentAt);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
 export function OriginalRequestBlock({
   payload,
   compact = false,
+  resolveAgentName,
 }: {
   payload?: Record<string, unknown> | null;
   compact?: boolean;
+  /** Names the agent that wrote a Paperclip comment. Without it, or for an unknown id, no sender is shown. */
+  resolveAgentName?: OriginalRequestSenderResolver;
 }) {
   const original = approvalOriginalRequest(payload);
   if (!original) {
@@ -152,38 +188,44 @@ export function OriginalRequestBlock({
     original.source.kind === "paperclip_comment" && original.source.issueId && original.source.commentId
       ? `/issues/${original.source.issueId}#comment-${original.source.commentId}`
       : null;
-  const provenance = [
-    original.source.kind === "external" ? original.source.channel : null,
-    original.source.sender,
-    original.source.sentAt ? new Date(original.source.sentAt).toLocaleString() : null,
-    // The comment link below replaces the raw comment reference.
-    commentHref ? null : original.source.reference,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const sentAt = originalRequestSentAt(original.source.sentAt);
+  // What the board needs to know about the text below, not how it is stored.
   const sourceNote =
     original.source.kind === "external" && original.source.snapshotOrigin === "requester"
-      ? "Requester-provided external source snapshot"
+      ? "Quoted by the requesting agent, not verified"
       : original.source.kind === "paperclip_comment" && original.source.snapshotOrigin === "server"
-        ? "Paperclip source snapshot"
+        ? "Saved from the original comment"
         : null;
+  const provenance: Array<{ key: string; node: ReactNode }> = [
+    { key: "channel", node: original.source.kind === "external" ? original.source.channel : null },
+    { key: "sender", node: approvalOriginalRequestSender(original.source, resolveAgentName) },
+    { key: "sentAt", node: sentAt ? <time dateTime={original.source.sentAt}>{sentAt}</time> : null },
+    // The comment link below replaces the raw comment reference.
+    { key: "reference", node: commentHref ? null : original.source.reference },
+    { key: "note", node: sourceNote },
+    {
+      key: "comment",
+      node: commentHref ? (
+        <Link to={commentHref} className="underline underline-offset-2 hover:text-foreground">
+          View comment
+        </Link>
+      ) : null,
+    },
+  ].filter((part) => Boolean(part.node));
 
   return (
     <div>
       <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
         Original request
       </p>
-      {(provenance || sourceNote || commentHref) && (
+      {provenance.length > 0 && (
         <p className="mt-1 break-words text-xs text-muted-foreground">
-          {[provenance, sourceNote].filter(Boolean).join(" · ")}
-          {commentHref && (
-            <>
-              {provenance || sourceNote ? " · " : ""}
-              <Link to={commentHref} className="underline underline-offset-2 hover:text-foreground">
-                View comment
-              </Link>
-            </>
-          )}
+          {provenance.map((part, index) => (
+            <Fragment key={part.key}>
+              {index > 0 ? " · " : ""}
+              {part.node}
+            </Fragment>
+          ))}
         </p>
       )}
       <OriginalRequestText text={original.text} collapsible={compact && isLongOriginalRequest(original.text)} />
@@ -418,6 +460,34 @@ export function approvalAskLine(
   return text ? { label: "Recommendation", text } : null;
 }
 
+/** How much of a request's subject a card or queue row shows as its title. */
+export const APPROVAL_TITLE_LENGTH = 120;
+
+function comparableText(value: string | null | undefined): string | null {
+  return approvalReadableText(value)?.replace(/\s+/g, " ").trim().toLocaleLowerCase() ?? null;
+}
+
+/**
+ * The request's `summary`, when the surface does not already show the same
+ * text: as the recommendation, as the rationale (which falls back to the
+ * summary when the request gives no other), or as the title. Agents are told to
+ * send a summary and may put the cost in it, so it must not go unshown. A
+ * summary that is the title is still returned when the title is too long to be
+ * shown whole.
+ */
+export function approvalSummaryText(payload?: Record<string, unknown> | null, type?: string): string | null {
+  const summary = firstNonEmptyString(payload?.summary);
+  const comparable = comparableText(summary);
+  if (!summary || !comparable) return null;
+  const brief = approvalDecisionBrief(payload);
+  if (comparable === comparableText(brief.recommendation) || comparable === comparableText(brief.reasoning)) {
+    return null;
+  }
+  const isShownAsTitle =
+    comparable === comparableText(approvalSubject(payload, type)) && comparable.length <= APPROVAL_TITLE_LENGTH;
+  return isShownAsTitle ? null : summary;
+}
+
 export function approvalSubject(payload?: Record<string, unknown> | null, type?: string): string | null {
   // A hire is about a named agent; its `title` is the job title, not the subject.
   if (type === "hire_agent") return firstNonEmptyString(payload?.name, payload?.title);
@@ -440,6 +510,9 @@ export function isEmailReplyPayload(payload?: Record<string, unknown> | null): b
 }
 
 export type ApprovalEmailDraft = {
+  /** The payload's `channel`: a free-text description of how the reply goes out, not an address. */
+  via: string | null;
+  /** The sender, only when the payload names one in `from`. */
   from: string | null;
   to: string | null;
   subject: string | null;
@@ -450,7 +523,8 @@ export type ApprovalEmailDraft = {
 export function approvalEmailDraft(payload?: Record<string, unknown> | null): ApprovalEmailDraft | null {
   if (!payload || !isEmailReplyPayload(payload)) return null;
   return {
-    from: firstNonEmptyString(payload.channel),
+    via: firstNonEmptyString(payload.channel),
+    from: firstNonEmptyString(payload.from),
     to: firstNonEmptyString(payload.recipient),
     subject: firstNonEmptyString(payload.subject),
     body: String(payload.body),
@@ -601,13 +675,15 @@ export function BudgetOverridePayload({ payload }: { payload: Record<string, unk
 export function BoardApprovalPayload({
   payload,
   hideTitle = false,
+  resolveAgentName,
 }: {
   payload: Record<string, unknown>;
   hideTitle?: boolean;
+  resolveAgentName?: OriginalRequestSenderResolver;
 }) {
   const nextPayload = hideTitle ? { ...payload, title: undefined } : payload;
   return (
-    <BoardApprovalPayloadContent payload={nextPayload} />
+    <BoardApprovalPayloadContent payload={nextPayload} resolveAgentName={resolveAgentName} />
   );
 }
 
@@ -620,7 +696,13 @@ export function stripLeadingListMarker(value: string): string {
   return value.replace(/^(?:[-*•]|\d{1,3}[.)])[^\S\n]+/, "");
 }
 
-function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unknown> }) {
+function BoardApprovalPayloadContent({
+  payload,
+  resolveAgentName,
+}: {
+  payload: Record<string, unknown>;
+  resolveAgentName?: OriginalRequestSenderResolver;
+}) {
   const brief = approvalDecisionBrief(payload);
   const title = firstNonEmptyString(payload.title);
   const summary = firstNonEmptyString(payload.summary);
@@ -649,7 +731,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
           <MarkdownBody className="mt-1 leading-6 text-foreground">{brief.recommendation}</MarkdownBody>
         </div>
       )}
-      <OriginalRequestBlock payload={payload} />
+      <OriginalRequestBlock payload={payload} resolveAgentName={resolveAgentName} />
       {reasoning && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Why</p>
@@ -715,9 +797,17 @@ function DecisionList({ label, items }: { label: string; items: string[] }) {
   );
 }
 
-export function EmailReplyPayload({ payload }: { payload: Record<string, unknown> }) {
+export function EmailReplyPayload({
+  payload,
+  resolveAgentName,
+}: {
+  payload: Record<string, unknown>;
+  resolveAgentName?: OriginalRequestSenderResolver;
+}) {
   const brief = approvalDecisionBrief(payload);
+  // `channel` describes how the reply goes out ("email from info@"); only `from` names a sender.
   const channel = firstNonEmptyString(payload.channel);
+  const sender = firstNonEmptyString(payload.from);
   const recipient = firstNonEmptyString(payload.recipient);
   const subject = firstNonEmptyString(payload.subject);
   const orderRef = firstNonEmptyString(payload.threadOrOrderRef);
@@ -730,7 +820,8 @@ export function EmailReplyPayload({ payload }: { payload: Record<string, unknown
     <div className="mt-4 space-y-3.5 text-sm">
       <div className="overflow-hidden rounded-lg border border-border/60 bg-background/60">
         <div className="space-y-1 border-b border-border/60 bg-muted/30 px-3.5 py-2.5">
-          {channel && <EmailHeaderRow label="From" value={channel} />}
+          {channel && <EmailHeaderRow label="Via" value={channel} />}
+          {sender && <EmailHeaderRow label="From" value={sender} />}
           {recipient && <EmailHeaderRow label="To" value={recipient} />}
           {subject && <EmailHeaderRow label="Subject" value={subject} />}
           {orderRef && <EmailHeaderRow label="Ref" value={orderRef} />}
@@ -761,7 +852,7 @@ export function EmailReplyPayload({ payload }: { payload: Record<string, unknown
           <p className="mt-1 leading-6 text-foreground">{brief.recommendation}</p>
         </div>
       )}
-      <OriginalRequestBlock payload={payload} />
+      <OriginalRequestBlock payload={payload} resolveAgentName={resolveAgentName} />
       {reasoning && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Why</p>
@@ -790,16 +881,21 @@ export function ApprovalPayloadRenderer({
   type,
   payload,
   hidePrimaryTitle = false,
+  resolveAgentName,
 }: {
   type: string;
   payload: Record<string, unknown>;
   hidePrimaryTitle?: boolean;
+  /** Names the agent that wrote the original request's comment. */
+  resolveAgentName?: OriginalRequestSenderResolver;
 }) {
   if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
   if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
   if (type === "request_board_approval") {
-    if (isEmailReplyPayload(payload)) return <EmailReplyPayload payload={payload} />;
-    return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
+    if (isEmailReplyPayload(payload)) return <EmailReplyPayload payload={payload} resolveAgentName={resolveAgentName} />;
+    return (
+      <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} resolveAgentName={resolveAgentName} />
+    );
   }
   return <CeoStrategyPayload payload={payload} />;
 }

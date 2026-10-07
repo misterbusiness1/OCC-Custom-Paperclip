@@ -6,10 +6,14 @@ import type { Approval } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ApprovalCard } from "./ApprovalCard";
 import {
+  APPROVAL_TITLE_LENGTH,
   ApprovalPayloadRenderer,
   approvalDecisionBrief,
+  approvalEmailDraft,
   approvalExcerpt,
   approvalLabel,
+  approvalOriginalRequestSender,
+  approvalSummaryText,
   isEmailReplyPayload,
 } from "./ApprovalPayload";
 import { ThemeProvider } from "../context/ThemeContext";
@@ -117,6 +121,79 @@ describe("ApprovalCard", () => {
   });
 });
 
+describe("approvalSummaryText", () => {
+  const brief = { recommendedAction: "Approve provider X.", reasoning: "It meets every condition." };
+
+  it("returns the summary when the surface shows it nowhere else", () => {
+    expect(
+      approvalSummaryText({ title: "Hosting spend", summary: " Estimated cost is $42/month. ", ...brief }, "request_board_approval"),
+    ).toBe("Estimated cost is $42/month.");
+    expect(approvalSummaryText({ title: "Hosting spend", ...brief })).toBeNull();
+    expect(approvalSummaryText({ title: "Hosting spend", summary: "   ", ...brief })).toBeNull();
+    expect(approvalSummaryText({ title: "Hosting spend", summary: 42, ...brief })).toBeNull();
+    expect(approvalSummaryText(null)).toBeNull();
+  });
+
+  it("returns nothing for a summary shown as the rationale, the recommendation or the title", () => {
+    // `reasoning` falls back to the summary, which is then shown under "Why".
+    expect(approvalSummaryText({ title: "Hosting spend", summary: "Costs $42/month.", recommendedAction: "Approve." })).toBeNull();
+    expect(approvalSummaryText({ title: "Hosting spend", summary: "it  MEETS\nevery condition.", ...brief })).toBeNull();
+    expect(approvalSummaryText({ title: "Hosting spend", summary: "**Approve** provider X.", ...brief })).toBeNull();
+    expect(approvalSummaryText({ title: "Hosting  spend", summary: "hosting spend", ...brief })).toBeNull();
+    expect(approvalSummaryText({ summary: "Costs $42/month.", ...brief })).toBeNull();
+  });
+
+  it("returns a summary that is the title when the title is too long to be shown whole", () => {
+    const fits = "x".repeat(APPROVAL_TITLE_LENGTH);
+    expect(approvalSummaryText({ summary: fits, ...brief })).toBeNull();
+    expect(approvalSummaryText({ summary: `${fits}y`, ...brief })).toBe(`${fits}y`);
+  });
+});
+
+describe("approvalEmailDraft", () => {
+  it("reads the channel as the way the reply goes out and the sender only from `from`", () => {
+    expect(
+      approvalEmailDraft({ channel: "email from info@", recipient: "a@example.com", subject: "Hello", body: "Hi" }),
+    ).toEqual({ via: "email from info@", from: null, to: "a@example.com", subject: "Hello", body: "Hi" });
+    expect(approvalEmailDraft({ from: " info@example.test ", subject: "Hello", body: "Hi" })).toEqual({
+      via: null,
+      from: "info@example.test",
+      to: null,
+      subject: "Hello",
+      body: "Hi",
+    });
+    expect(approvalEmailDraft({ from: ["info@example.test"], subject: "Hello", body: "Hi" })?.from).toBeNull();
+  });
+});
+
+describe("approvalOriginalRequestSender", () => {
+  const agentId = "44444444-4444-4444-8444-444444444444";
+  const resolve = (id: string) => (id === agentId ? "Operations Lead" : null);
+
+  it("resolves the id the server stores for a Paperclip comment, or shows nothing", () => {
+    const comment = (sender?: string) => ({ kind: "paperclip_comment" as const, sender });
+    expect(approvalOriginalRequestSender(comment(agentId), resolve)).toBe("Operations Lead");
+    expect(approvalOriginalRequestSender(comment("local-board"), resolve)).toBe("Board");
+    expect(approvalOriginalRequestSender(comment("local-board"))).toBe("Board");
+    expect(approvalOriginalRequestSender(comment(agentId))).toBeNull();
+    expect(approvalOriginalRequestSender(comment(agentId), () => undefined)).toBeNull();
+    // An auth user id is an id whatever it looks like.
+    expect(approvalOriginalRequestSender(comment("u_8Hq2LmZx0PaYt4Wc"), resolve)).toBeNull();
+    expect(approvalOriginalRequestSender(comment(), resolve)).toBeNull();
+  });
+
+  it("keeps the sender of an external source as written unless it is an id", () => {
+    const external = (sender: string) => ({ kind: "external" as const, sender });
+    expect(approvalOriginalRequestSender(external("Sam Example <sam@example.test>"), resolve)).toBe(
+      "Sam Example <sam@example.test>",
+    );
+    expect(approvalOriginalRequestSender(external("Customer"))).toBe("Customer");
+    expect(approvalOriginalRequestSender(external(agentId), resolve)).toBe("Operations Lead");
+    expect(approvalOriginalRequestSender(external("55555555-5555-4555-8555-555555555555"), resolve)).toBeNull();
+    expect(approvalOriginalRequestSender(external("local-implicit"), resolve)).toBeNull();
+  });
+});
+
 describe("isEmailReplyPayload", () => {
   it("detects email replies by a body plus at least one envelope field", () => {
     expect(isEmailReplyPayload({ body: "Hi there", subject: "Re: order #90210" })).toBe(true);
@@ -213,8 +290,10 @@ describe("ApprovalPayloadRenderer", () => {
 
     const text = container.textContent ?? "";
     expect(text).toContain("Update on Oxford Cigar order #90210");
-    expect(text).toContain("Marcus Bellweather <m@example.com>");
-    expect(text).toContain("email from info@");
+    expect(text).toContain("ToMarcus Bellweather <m@example.com>");
+    // `channel` describes how the reply goes out; it is not a sender address and is not labelled as one.
+    expect(text).toContain("Viaemail from info@");
+    expect(text).not.toContain("From");
     expect(text).toContain("WooCommerce order #90210");
     expect(text).toContain("Gate B");
     expect(text).toContain("Hi Marcus,");
@@ -376,6 +455,69 @@ describe("ApprovalPayloadRenderer", () => {
     });
   });
 
+  it("shows the sender an email-reply approval names under From, beside the channel under Via", () => {
+    const root = createRoot(container);
+    const render = (payload: Record<string, unknown>) =>
+      act(() => {
+        root.render(
+          <ThemeProvider>
+            <ApprovalPayloadRenderer type="request_board_approval" payload={payload} />
+          </ThemeProvider>,
+        );
+      });
+    const payload = { channel: "email from info@", recipient: "m@example.com", subject: "Order update", body: "Hi Marcus." };
+
+    render({ ...payload, from: "info@example.test" });
+    expect(container.textContent).toContain("Viaemail from info@Frominfo@example.testTom@example.comSubjectOrder update");
+
+    render({ ...payload, from: 42 });
+    expect(container.textContent).toContain("Viaemail from info@Tom@example.comSubjectOrder update");
+    expect(container.textContent).not.toContain("From");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("resolves the author of a Paperclip comment in the full request, and prints no id", () => {
+    const root = createRoot(container);
+    const authorId = "44444444-4444-4444-8444-444444444444";
+    const render = (sender: string, resolveAgentName?: (agentId: string) => string | null) =>
+      act(() => {
+        root.render(
+          <ThemeProvider>
+            <ApprovalPayloadRenderer
+              type="request_board_approval"
+              resolveAgentName={resolveAgentName}
+              payload={{
+                title: "Approve staging hosting spend",
+                recommendedAction: "Approve provider X.",
+                originalRequest: {
+                  text: "Use provider X if it stays under $50.",
+                  source: { kind: "paperclip_comment", sender, snapshotOrigin: "server" },
+                },
+              }}
+            />
+          </ThemeProvider>,
+        );
+      });
+
+    render(authorId, (agentId) => (agentId === authorId ? "Operations Lead" : null));
+    expect(container.textContent).toContain("Original requestOperations Lead · Saved from the original comment");
+
+    render("local-board");
+    expect(container.textContent).toContain("Original requestBoard · Saved from the original comment");
+    expect(container.textContent).not.toContain("local-board");
+
+    render(authorId);
+    expect(container.textContent).toContain("Original requestSaved from the original comment");
+    expect(container.textContent).not.toContain(authorId);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders the verbatim original request as inert multiline text in decision order", () => {
     const root = createRoot(container);
     const original = "First line\n<script>alert('no')</script>\n**keep markdown markers**";
@@ -440,7 +582,16 @@ describe("ApprovalPayloadRenderer", () => {
     expect(proposedReply?.className).not.toMatch(/max-h-|overflow-|line-clamp/);
     expect(container.querySelector("script")).toBeNull();
     expect(container.querySelector("pre")?.textContent).toBe(original);
-    expect(text).toContain("Requester-provided external source snapshot");
+    expect(text).toContain("Quoted by the requesting agent, not verified");
+    expect(text).not.toContain("snapshot");
+    // The time is printed to the minute.
+    const sentAt = container.querySelector("time")!;
+    expect(sentAt.getAttribute("datetime")).toBe("2026-10-03T12:00:00.000Z");
+    expect(sentAt.textContent).toBe(
+      new Date("2026-10-03T12:00:00.000Z").toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
+    );
+    expect(sentAt.textContent).not.toMatch(/\d:\d\d:\d\d/);
+    expect(text).toContain(`Synthetic Sender · ${sentAt.textContent} · fixture-message-1 · Quoted by the requesting agent, not verified`);
 
     act(() => {
       root.unmount();

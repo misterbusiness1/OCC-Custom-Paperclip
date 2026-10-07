@@ -7,6 +7,7 @@ import {
   DollarSign,
   History,
   Search,
+  ShieldCheck,
   SquarePen,
   Network,
   Boxes,
@@ -37,6 +38,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { attentionBadgeCount } from "../lib/attention";
 import { useInboxBadge } from "../hooks/useInboxBadge";
+import { usePendingApprovalCount } from "../hooks/usePendingApprovalCount";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
@@ -54,6 +56,8 @@ export function Sidebar() {
   const { collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
   const inboxBadge = useInboxBadge(selectedCompanyId);
+  // The queue the board decides from; the badge counts what the Approvals page lists under "To decide".
+  const pendingApprovalCount = usePendingApprovalCount(selectedCompanyId);
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -161,6 +165,13 @@ export function Sidebar() {
             badgeLabel="unread"
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
+          />
+          <SidebarNavItem
+            to="/approvals/pending"
+            label="Approvals"
+            icon={ShieldCheck}
+            badge={pendingApprovalCount}
+            badgeLabel="to decide"
           />
           {showDecisions ? (
             <SidebarNavItem
