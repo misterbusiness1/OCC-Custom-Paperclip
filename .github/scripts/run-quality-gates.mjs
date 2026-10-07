@@ -23,7 +23,7 @@ const COMMENT_SIGNATURE = '— commitperclip';
 
 function buildComment(author, failures, informational) {
   if (failures.length === 0 && informational.length === 0) {
-    return `✅ All checks passing — ready for Greptile review and maintainer approval.\n\n${COMMENT_SIGNATURE}`;
+    return `✅ Repository checks passed for this head. Merge still requires independent adversarial review, required team approval, and resolution of substantive findings at the exact current head. Automated reviewer output is optional advisory evidence, not a merge blocker.\n\n${COMMENT_SIGNATURE}`;
   }
 
   const lines = [
