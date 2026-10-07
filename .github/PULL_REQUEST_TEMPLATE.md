@@ -103,6 +103,7 @@
 - [ ] I have added or updated tests where applicable
 - [ ] I have updated relevant documentation to reflect my changes
 - [ ] I have considered and documented any risks above
-- [ ] All Paperclip CI gates are green
-- [ ] Greptile is 5/5 with no open P2s, recommendations, or follow-ups
-- [ ] I will address all Greptile and reviewer comments before requesting merge
+- [ ] All required Paperclip CI gates are green at the exact current PR head
+- [ ] An independent reviewer completed an adversarial review and gave the required team or maintainer approval at the exact current PR head
+- [ ] I have resolved every substantive finding, or documented why it does not apply
+- [ ] I understand that Greptile scores, reviewer-bot output, and automated reviewer availability are optional advisory evidence and are not merge blockers
