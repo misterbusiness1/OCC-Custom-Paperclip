@@ -94,11 +94,14 @@ export function useApprovalDecisionFeedback() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   // Read at click time, before the state above has rendered.
   const sending = useRef(new Set<string>());
+  // The ids in `errors`, kept beside it for the same reason: a response handler reads them at once.
+  const failed = useRef(new Set<string>());
 
   /** Marks the decision as sent and clears the request's last error. False when one is already on its way. */
   const start = useCallback((id: string, action: ApprovalDecisionKind) => {
     if (sending.current.has(id)) return false;
     sending.current.add(id);
+    failed.current.delete(id);
     setInFlight((current) => ({ ...current, [id]: action }));
     setErrors((current) => withoutKey(current, id));
     return true;
@@ -107,23 +110,32 @@ export function useApprovalDecisionFeedback() {
   const settle = useCallback((id: string, error?: string | null) => {
     sending.current.delete(id);
     setInFlight((current) => withoutKey(current, id));
-    if (error) setErrors((current) => ({ ...current, [id]: error }));
+    if (error) {
+      failed.current.add(id);
+      setErrors((current) => ({ ...current, [id]: error }));
+    }
   }, []);
   const clearError = useCallback((id: string) => {
+    failed.current.delete(id);
     setErrors((current) => withoutKey(current, id));
   }, []);
-  const clearErrors = useCallback(() => setErrors({}), []);
+  const clearErrors = useCallback(() => {
+    failed.current.clear();
+    setErrors({});
+  }, []);
   /**
-   * True while a decision for another request is still on its way. Read from the set, not the
-   * rendered state, so a response handler gets the answer of that moment. A caller that would
-   * leave the page on success asks this first: leaving would drop the other request's outcome.
+   * True while a decision for another request is still on its way, or has come back with an error
+   * that is still shown. Read from the sets, not the rendered state, so a response handler gets
+   * the answer of that moment. A caller that would leave the page on success asks this first:
+   * leaving would drop the other request's outcome, or the error and the note already on its row.
    */
-  const hasOthersInFlight = useCallback((id: string) => {
+  const hasOthersUnsettled = useCallback((id: string) => {
     for (const other of sending.current) if (other !== id) return true;
+    for (const other of failed.current) if (other !== id) return true;
     return false;
   }, []);
 
-  return { inFlight, errors, start, settle, clearError, clearErrors, hasOthersInFlight };
+  return { inFlight, errors, start, settle, clearError, clearErrors, hasOthersUnsettled };
 }
 
 /**

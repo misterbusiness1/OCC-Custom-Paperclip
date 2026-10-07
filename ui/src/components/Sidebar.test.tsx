@@ -37,6 +37,7 @@ vi.mock("@/lib/router", async () => {
         <router.NavLink to={`${mockLocation.companyPrefix}${to}`} {...props} />
       </router.MemoryRouter>
     ),
+    useLocation: () => ({ pathname: mockLocation.pathname }),
   };
 });
 
@@ -236,14 +237,17 @@ describe("Sidebar", () => {
     });
   });
 
+  // On To decide the item links to that page itself, so that pressing it there changes nothing: it
+  // does not leave the queue, where an approval may be held and a note half typed. Everywhere else
+  // it links to the short address, under which every Approvals page is the current one.
   it.each([
-    ["/approvals/pending", ""],
-    ["/approvals/all", ""],
-    ["/approvals/9b2d7c1e-approval", ""],
-    ["/PAP/approvals/pending", "/PAP"],
-    ["/PAP/approvals/all", "/PAP"],
-    ["/PAP/approvals/9b2d7c1e-approval", "/PAP"],
-  ])("marks Approvals as the current item on %s", async (pathname, companyPrefix) => {
+    ["/approvals/pending", "", "/approvals/pending"],
+    ["/approvals/all", "", "/approvals"],
+    ["/approvals/9b2d7c1e-approval", "", "/approvals"],
+    ["/PAP/approvals/pending", "/PAP", "/PAP/approvals/pending"],
+    ["/PAP/approvals/all", "/PAP", "/PAP/approvals"],
+    ["/PAP/approvals/9b2d7c1e-approval", "/PAP", "/PAP/approvals"],
+  ])("marks Approvals as the current item on %s", async (pathname, companyPrefix, href) => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableDecisions: true });
     mockLocation.pathname = pathname;
     mockLocation.companyPrefix = companyPrefix;
@@ -251,7 +255,7 @@ describe("Sidebar", () => {
 
     const current = [...container.querySelectorAll('nav a[aria-current="page"]')];
     expect(current.map((anchor) => anchor.textContent)).toEqual(["Approvals"]);
-    expect(current[0].getAttribute("href")).toBe(`${companyPrefix}/approvals`);
+    expect(current[0].getAttribute("href")).toBe(href);
     expect(current[0].className).toContain("bg-sidebar-accent text-sidebar-accent-foreground");
     const inbox = container.querySelector(`nav a[href="${companyPrefix}/inbox"]`)!;
     expect(inbox.getAttribute("aria-current")).toBeNull();

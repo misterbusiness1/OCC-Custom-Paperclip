@@ -3,17 +3,19 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Approval } from "@paperclipai/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApprovalCard } from "./ApprovalCard";
 import {
   APPROVAL_TITLE_LENGTH,
   ApprovalPayloadRenderer,
   approvalDecisionBrief,
+  approvalDraftPreview,
   approvalEmailDraft,
   approvalExcerpt,
   approvalLabel,
   approvalOriginalRequestSender,
   approvalSummaryText,
+  approvalTextPreview,
   isEmailReplyPayload,
 } from "./ApprovalPayload";
 import { ThemeProvider } from "../context/ThemeContext";
@@ -132,6 +134,103 @@ describe("ApprovalCard", () => {
     expect(container.textContent).not.toContain("Not supplied.");
     act(() => root.unmount());
     container.remove();
+  });
+});
+
+describe("a cut never falls inside one character as the reader sees it", () => {
+  const ACCENTED = "e\u0301"; // e with a combining acute accent
+  const FLAG = "\u{1F1FA}\u{1F1F8}"; // two regional indicators
+  const KEYCAP = "1\uFE0F\u20E3";
+  const FAMILY = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}";
+  const THUMB = "\u{1F44D}\u{1F3FD}"; // thumbs up with a skin tone
+  const clusters: Array<[string, string]> = [
+    ["a letter and its accent", ACCENTED],
+    ["a flag", FLAG],
+    ["a keycap", KEYCAP],
+    ["a joined emoji", FAMILY],
+    ["an emoji and its skin tone", THUMB],
+  ];
+  /** Where the reader's characters start, read with the platform's own segmentation. */
+  const boundaries = (text: string) => {
+    const starts = new Set<number>([text.length]);
+    for (const part of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)) starts.add(part.index);
+    return starts;
+  };
+
+  it.each(clusters)("keeps %s whole at the end of a one-line excerpt", (_name, cluster) => {
+    // No space near the limit, and the cluster lies across it at every possible offset.
+    for (let before = 120 - cluster.length + 1; before < 120; before += 1) {
+      const text = `${"x".repeat(before)}${cluster}${"y".repeat(60)}`;
+      expect(approvalExcerpt(text, 120)).toBe(`${"x".repeat(before)}\u2026`);
+    }
+    // A cluster that ends at the limit, or starts at it, is not touched.
+    expect(approvalExcerpt(`${"x".repeat(120 - cluster.length)}${cluster}${"y".repeat(60)}`, 120)).toBe(
+      `${"x".repeat(120 - cluster.length)}${cluster}\u2026`,
+    );
+    expect(approvalExcerpt(`${"x".repeat(120)}${cluster}${"y".repeat(60)}`, 120)).toBe(`${"x".repeat(120)}\u2026`);
+  });
+
+  it("pairs flag letters from the start of the text, not from the cut", () => {
+    // Thirty flags fill 120 characters exactly; one letter in front moves every pair by one.
+    expect(approvalExcerpt(FLAG.repeat(50), 120)).toBe(`${FLAG.repeat(30)}\u2026`);
+    expect(approvalExcerpt(`a${FLAG.repeat(50)}`, 120)).toBe(`a${FLAG.repeat(29)}\u2026`);
+    expect(approvalExcerpt(`ab${FLAG.repeat(50)}`, 120)).toBe(`ab${FLAG.repeat(29)}\u2026`);
+  });
+
+  it("ends a Thai title on a whole syllable wherever the limit falls", () => {
+    const sentence = "\u0E15\u0E31\u0E49\u0E07\u0E41\u0E15\u0E48\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48\u0E1C\u0E39\u0E49\u0E08\u0E31\u0E14\u0E01\u0E32\u0E23\u0E2D\u0E19\u0E38\u0E21\u0E31\u0E15\u0E34\u0E04\u0E33\u0E02\u0E2D\u0E19\u0E35\u0E49".repeat(8);
+    let movedBack = 0;
+    for (let offset = 0; offset < 60; offset += 1) {
+      const text = sentence.slice(offset);
+      if (!boundaries(sentence).has(offset)) continue;
+      const excerpt = approvalExcerpt(text, 120)!;
+      const kept = excerpt.slice(0, -1);
+      expect(excerpt.endsWith("\u2026")).toBe(true);
+      expect(text.startsWith(kept)).toBe(true);
+      expect(boundaries(text).has(kept.length)).toBe(true);
+      expect(kept.length).toBeGreaterThan(110);
+      if (kept.length < 120) movedBack += 1;
+    }
+    // The limit does fall inside a syllable for some of these starts: the check above is not idle.
+    expect(movedBack).toBeGreaterThan(5);
+  });
+
+  it.each(clusters)("keeps %s whole at the end of a preview and of a draft preview", (_name, cluster) => {
+    for (let before = 480 - cluster.length + 1; before < 480; before += 1) {
+      const text = `${"x".repeat(before)}${cluster}${"y".repeat(60)}`;
+      expect(approvalTextPreview(text, 6, 480)).toEqual({ preview: `${"x".repeat(before)}\u2026`, truncated: true });
+    }
+    // The draft is cut from its first characters only; the cut still sees the character it would split.
+    for (let before = 1500 - cluster.length + 1; before < 1500; before += 1) {
+      expect(approvalDraftPreview(`${"x".repeat(before)}${cluster}${"y".repeat(600)}`)).toBe("x".repeat(before));
+    }
+    expect(approvalDraftPreview(`${"x".repeat(1500 - cluster.length)}${cluster}${"y".repeat(600)}`)).toBe(
+      `${"x".repeat(1500 - cluster.length)}${cluster}`,
+    );
+  });
+
+  it("cuts a run of stacked marks at the limit and does not drop the whole text", () => {
+    const stacked = `e${"\u0301".repeat(500)}`;
+    expect(approvalExcerpt(stacked, 120)).toBe(`${stacked.slice(0, 120)}\u2026`);
+    expect(approvalTextPreview(stacked, 6, 480).preview).toBe(`${stacked.slice(0, 480)}\u2026`);
+  });
+
+  it("still keeps the halves of a surrogate pair together in a browser without Intl.Segmenter", async () => {
+    const segmenter = Object.getOwnPropertyDescriptor(Intl, "Segmenter")!;
+    Object.defineProperty(Intl, "Segmenter", { ...segmenter, value: undefined });
+    try {
+      vi.resetModules();
+      const fallback = await import("./ApprovalPayload");
+      expect(fallback.approvalExcerpt("\u{1F600}".repeat(10), 5)).toBe(`${"\u{1F600}".repeat(2)}\u2026`);
+      expect(fallback.approvalExcerpt(`${"x".repeat(119)}${FLAG}${"y".repeat(60)}`, 120)).toBe(`${"x".repeat(119)}\u2026`);
+      expect(fallback.approvalDraftPreview(`x${"\u{1F600}".repeat(800)}`)).toBe(`x${"\u{1F600}".repeat(749)}`);
+      expect(fallback.approvalTextPreview("word ".repeat(200).trim(), 6, 480).preview.endsWith("word\u2026")).toBe(true);
+      // Without it a letter loses its accent, as before: nothing throws and no half character is left.
+      expect(fallback.approvalExcerpt(`${"x".repeat(119)}${ACCENTED}${"y".repeat(60)}`, 120)).toBe(`${"x".repeat(119)}e\u2026`);
+    } finally {
+      Object.defineProperty(Intl, "Segmenter", segmenter);
+      vi.resetModules();
+    }
   });
 });
 

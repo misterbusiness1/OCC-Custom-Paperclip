@@ -777,6 +777,73 @@ describe("Inbox toolbar", () => {
     }
   });
 
+  it.each([true, false])("stays on the inbox when a hire is approved after another decision has failed, with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    apiMocks.agentsList.mockResolvedValue([{ id: "agent-1", name: "Infra Engineer" }]);
+    apiMocks.approvalsList.mockResolvedValue([
+      createApproval({
+        id: "approval-hire",
+        type: "hire_agent",
+        requestedByAgentId: "agent-1",
+        payload: { name: "Pricing Analyst", role: "researcher", capabilities: "Tracks competitor prices weekly." },
+      }),
+      createApproval({
+        id: "approval-strategy",
+        type: "approve_ceo_strategy",
+        requestedByAgentId: "agent-1",
+        payload: { plan: "1. Grow wholesale.\n2. Cut returns." },
+      }),
+    ]);
+    const sent = new Map<string, ReturnType<typeof createDeferred<Approval>>>();
+    apiMocks.approve.mockImplementation((id: string) => {
+      const deferred = createDeferred<Approval>();
+      sent.set(id, deferred);
+      return deferred.promise;
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Hire Agent: Pricing Analyst"));
+      const rowFor = (text: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(text))!;
+      const button = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
+
+      await act(async () => button(rowFor("Hire Agent: Pricing Analyst"), "Approve").click());
+      await act(async () => button(rowFor("CEO Strategy"), "Approve").click());
+      await vi.waitFor(() => expect(sent.size).toBe(2));
+
+      // The strategy fails first. It is no longer on its way, but its error is on its row.
+      await act(async () => sent.get("approval-strategy")!.reject(new Error("Session expired")));
+      await vi.waitFor(() =>
+        expect(rowFor("CEO Strategy").textContent).toContain("Error while approving: Session expired"));
+
+      // The hire lands afterwards. Leaving now would drop that error with the inbox.
+      await act(async () => {
+        sent.get("approval-hire")!.resolve(createApproval({ id: "approval-hire", type: "hire_agent", status: "approved" }));
+      });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(routerMock.navigate).not.toHaveBeenCalled();
+      expect(rowFor("CEO Strategy").textContent).toContain("Error while approving: Session expired");
+
+      // A row's own error does not hold back its own retry: the strategy opens its confirmation page.
+      await act(async () => button(rowFor("CEO Strategy"), "Approve").click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(3));
+      await act(async () => {
+        sent.get("approval-strategy")!.resolve(
+          createApproval({ id: "approval-strategy", type: "approve_ceo_strategy", status: "approved" }),
+        );
+      });
+      await vi.waitFor(() =>
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith("/approvals/approval-strategy?resolved=approved"));
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it.each([true, false])("shows an honest missing-source state in the inbox with streamlined UI %s", async (streamlinedUi) => {
     routerMock.location.pathname = "/inbox/mine";
     apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });

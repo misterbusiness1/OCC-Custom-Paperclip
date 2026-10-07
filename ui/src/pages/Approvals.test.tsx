@@ -181,6 +181,41 @@ describe("Approvals", () => {
     expect(button(container, "Sort: Newest first")).toBeDefined();
   });
 
+  it.each(["/approvals", "/PAP/approvals", "/PAP/approvals/"])(
+    "shows To decide on the short address %s and corrects the address in place, once",
+    async (pathname) => {
+      routerMock.location.pathname = pathname;
+      routerMock.location.search = "?from=mail";
+      routerMock.location.hash = "#approval-email";
+      const carried = { paperclipSidebarScrollReset: true };
+      (routerMock.location as { state?: unknown }).state = carried;
+      try {
+        await render();
+        // The queue, not All decisions: the decided request is not listed.
+        expect(order()).toEqual(["oldest", "email", "newest"]);
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith(
+          { pathname: "/approvals/pending", search: "?from=mail", hash: "#approval-email" },
+          { replace: true, state: carried },
+        );
+        // Drawing the page again does not ask for it a second time.
+        await click(button(container, "Sort: Oldest first"));
+        expect(routerMock.navigate).toHaveBeenCalledTimes(1);
+      } finally {
+        routerMock.location.search = "";
+        delete (routerMock.location as { state?: unknown }).state;
+      }
+    },
+  );
+
+  it.each(["/approvals/pending", "/PAP/approvals/pending", "/PAP/approvals/all", "/approvals/all"])(
+    "leaves the address %s as it is",
+    async (pathname) => {
+      routerMock.location.pathname = pathname;
+      await render();
+      expect(routerMock.navigate).not.toHaveBeenCalled();
+    },
+  );
+
   it("filters the queue by kind of request", async () => {
     await render();
     await click(button(container, "Email replies"));

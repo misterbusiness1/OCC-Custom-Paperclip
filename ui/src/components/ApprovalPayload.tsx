@@ -375,6 +375,42 @@ export function approvalStrategyBrief(payload?: Record<string, unknown> | null) 
   return approvalDecisionBrief(rest);
 }
 
+/** How far a cut moves back to stay out of a character cluster; a longer cluster is cut as any long run is. */
+const CLUSTER_REACH = 64;
+
+/** Undefined until first asked for; null where the browser has no `Intl.Segmenter`. */
+let graphemeSegmenter: Intl.Segmenter | null | undefined;
+
+/**
+ * The cut position at or before `end` that does not fall inside one character
+ * as the reader sees it: a letter with its accent or tone mark, a flag, an
+ * emoji joined from several, a keycap. A cut inside one changes the last thing
+ * read before the ellipsis (a Thai syllable without its tone mark is another
+ * syllable). Where the browser cannot tell, and for a cluster longer than
+ * {@link CLUSTER_REACH}, only the two halves of a surrogate pair are kept
+ * together.
+ */
+function clusterSafeEnd(text: string, end: number): number {
+  if (end <= 0 || end >= text.length) return end;
+  if (graphemeSegmenter === undefined) {
+    try {
+      graphemeSegmenter =
+        typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
+          ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+          : null;
+    } catch {
+      graphemeSegmenter = null;
+    }
+  }
+  if (graphemeSegmenter) {
+    // Read from the start of the text: whether two flag letters pair up depends on how many precede them.
+    const cluster = graphemeSegmenter.segment(text.slice(0, end + CLUSTER_REACH)).containing(end);
+    if (cluster && cluster.index > 0 && end - cluster.index <= CLUSTER_REACH) return cluster.index;
+  }
+  const last = text.charCodeAt(end - 1);
+  return last >= 0xd800 && last <= 0xdbff ? end - 1 : end;
+}
+
 /** The first lines of a long text, cut at a line or word boundary, with nothing added to mark the cut. */
 function cutTextPreview(text: string, maxLines: number, maxLength: number): { preview: string; truncated: boolean } {
   const lines = text.split("\n");
@@ -383,10 +419,8 @@ function cutTextPreview(text: string, maxLines: number, maxLength: number): { pr
   if (preview.length > maxLength) {
     const clipped = preview.slice(0, maxLength + 1);
     const boundary = Math.max(clipped.lastIndexOf(" "), clipped.lastIndexOf("\n"));
-    let end = boundary > maxLength / 2 ? boundary : maxLength;
-    // Never cut between the two halves of one character (an emoji, for example).
-    const last = preview.charCodeAt(end - 1);
-    if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+    // Never cut inside one character (an emoji, or a letter and its accent, for example).
+    const end = clusterSafeEnd(preview, boundary > maxLength / 2 ? boundary : maxLength);
     preview = preview.slice(0, end);
     truncated = true;
   }
@@ -425,9 +459,7 @@ export function approvalExcerpt(value: string | null, maxLength = 240): string |
     // Cut between words where one is near, so that no half of a token or of a rule line is left.
     const boundary = Math.max(raw.lastIndexOf(" ", end), raw.lastIndexOf("\n", end));
     if (boundary > end - EXCERPT_RAW_BOUNDARY_REACH) end = boundary;
-    const last = raw.charCodeAt(end - 1);
-    if (last >= 0xd800 && last <= 0xdbff) end -= 1;
-    raw = raw.slice(0, end);
+    raw = raw.slice(0, clusterSafeEnd(raw, end));
     rawWasCut = true;
   }
   const plain = approvalReadableText(raw)?.replace(/\s+/g, " ");
@@ -437,10 +469,8 @@ export function approvalExcerpt(value: string | null, maxLength = 240): string |
 
   const clipped = plain.slice(0, maxLength + 1);
   const wordBoundary = clipped.lastIndexOf(" ");
-  let end = wordBoundary > maxLength / 2 ? wordBoundary : maxLength;
-  // Never cut between the two halves of one character (an emoji, for example).
-  const last = plain.charCodeAt(end - 1);
-  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  // Never cut inside one character (an emoji, or a letter and its accent, for example).
+  const end = clusterSafeEnd(plain, wordBoundary > maxLength / 2 ? wordBoundary : maxLength);
   return `${plain.slice(0, end).trimEnd()}…`;
 }
 
@@ -492,12 +522,17 @@ function comparableText(value: string | null | undefined): string | null {
 export function approvalSummaryText(payload?: Record<string, unknown> | null, type?: string): string | null {
   const summary = firstNonEmptyString(payload?.summary);
   if (!summary) return null;
-  // A summary this long is not compared with the other fields: it is shown. Comparing a prefix
-  // instead would treat a summary that only starts like the recommendation as already shown.
-  if (summary.length > SUMMARY_COMPARE_LIMIT) return summary;
+  const brief = approvalDecisionBrief(payload);
+  // A summary this long is not converted and compared with the other fields: it is shown, unless
+  // it is the very text shown as the recommendation or the rationale (which falls back to the
+  // summary), and would be on the page twice. That check takes the two texts whole, as they are.
+  // Comparing a prefix instead would treat a summary that only starts like the recommendation as
+  // already shown.
+  if (summary.length > SUMMARY_COMPARE_LIMIT) {
+    return summary === brief.recommendation || summary === brief.reasoning ? null : summary;
+  }
   const comparable = comparableText(summary);
   if (!comparable) return null;
-  const brief = approvalDecisionBrief(payload);
   if (comparable === comparableText(brief.recommendation) || comparable === comparableText(brief.reasoning)) {
     return null;
   }
@@ -564,9 +599,10 @@ export const APPROVAL_DRAFT_PREVIEW_LENGTH = 1500;
  */
 export function approvalDraftPreview(body: string): string | null {
   if (body.trimEnd().length <= APPROVAL_DRAFT_PREVIEW_LENGTH) return null;
-  // The cut depends only on the first characters; a very long body is not scanned whole.
+  // The cut depends only on the first characters; a very long body is not scanned whole. The
+  // characters past the limit are there so that the cut can see the character it would split.
   return cutTextPreview(
-    body.slice(0, APPROVAL_DRAFT_PREVIEW_LENGTH + 1),
+    body.slice(0, APPROVAL_DRAFT_PREVIEW_LENGTH + CLUSTER_REACH),
     Number.MAX_SAFE_INTEGER,
     APPROVAL_DRAFT_PREVIEW_LENGTH,
   ).preview;

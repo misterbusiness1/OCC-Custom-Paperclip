@@ -120,13 +120,48 @@ function linkWithTarget(label: string, target: string): string {
   return target && target !== label ? `${label} (${target})` : label;
 }
 
+// `**bold**` pairs only where they are markup: the opening pair does not follow
+// a word character, a slash, or another asterisk and is not followed by a
+// slash, and the closing pair is not followed by a word character or an
+// asterisk. `2**10 to 2**12` is arithmetic, and two asterisks beside a slash
+// are a glob path (`src/**/a.ts`, `**/dist/**`): both stay as written. The
+// price is that bold text which starts with a slash keeps its asterisks.
+// (Line comments, because the glob examples would end a block comment.)
+const BOLD_PAIR = /(?<![\w/*])\*\*(?=[^\s/])([^\n*]{0,200}?\S)\*\*(?![\w*])/g;
+
+const SPACE = 32;
+const DASH = 45; // "-"
+const ASTERISK = 42; // "*"
+const UNDERSCORE = 95; // "_"
+
 /**
- * `**bold**` pairs only where they are markup: the opening pair does not follow
- * a word character, a slash, or another asterisk, and the closing pair is not
- * followed by a word character or an asterisk. `2**10 to 2**12` is arithmetic
- * and two asterisks between slashes are a glob path: both stay as written.
+ * A line that is only a rule: up to three spaces, then three or more of one
+ * marker (`-`, `*` or `_`) with at most two spaces between them. It is the
+ * pattern `^ {0,3}([-*_])(?: {0,2}\1){2,}$` written as a loop, because the
+ * pattern overflowed the regular expression stack on a line of a few million
+ * markers and the error replaced the whole page.
  */
-const BOLD_PAIR = /(?<![\w/*])\*\*(?=\S)([^\n*]{0,200}?\S)\*\*(?![\w*])/g;
+function isRuleLine(line: string): boolean {
+  let index = 0;
+  while (index < 3 && line.charCodeAt(index) === SPACE) index += 1;
+  const marker = line.charCodeAt(index);
+  if (marker !== DASH && marker !== ASTERISK && marker !== UNDERSCORE) return false;
+  let markers = 1;
+  let spaces = 0;
+  for (index += 1; index < line.length; index += 1) {
+    const code = line.charCodeAt(index);
+    if (code === marker) {
+      markers += 1;
+      spaces = 0;
+    } else if (code === SPACE) {
+      spaces += 1;
+      if (spaces > 2) return false;
+    } else {
+      return false;
+    }
+  }
+  return markers >= 3 && spaces === 0;
+}
 
 /**
  * Agent-written text as readable plain text. Line breaks, numbering, bullets
@@ -134,7 +169,10 @@ const BOLD_PAIR = /(?<![\w/*])\*\*(?=\S)([^\n*]{0,200}?\S)\*\*(?![\w*])/g;
  * words goes. Identifiers keep their underscores and tildes, and a leading
  * ">" or "+" stays where it is (it may be a comparison or a sign): the board
  * must read what the agent wrote. An image becomes `[image: alt] (target)`.
- * Every step is bounded and linear, so a hostile payload cannot stall the page.
+ * Every step is bounded and linear, so a hostile payload cannot stall the page
+ * for long or make it throw. Each per-line replace runs only on a line that
+ * holds its marker: text of many short lines otherwise paid for four patterns
+ * on every line. The checks change no output, only which lines are looked at.
  */
 export function approvalReadableText(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -143,14 +181,16 @@ export function approvalReadableText(value: string | null | undefined): string |
     .split("\n")
     .map((line) => line.trimEnd())
     // A line that is only a rule (---, ***, ___) carries no words.
-    .filter((line) => !/^ {0,3}([-*_])(?: {0,2}\1){2,}$/.test(line))
-    .map((line) =>
-      line
-        .replace(/^ {0,3}#{1,6} +/, "")
-        .replace(/^( {0,12})[-*] +/, "$1• ")
-        .replace(BOLD_PAIR, "$1")
-        .replace(/`([^`\n]{1,200})`/g, "$1"),
-    )
+    .filter((line) => !isRuleLine(line))
+    .map((line) => {
+      if (line === "") return line;
+      let next = line;
+      if (next.includes("#")) next = next.replace(/^ {0,3}#{1,6} +/, "");
+      if (next.includes("-") || next.includes("*")) next = next.replace(/^( {0,12})[-*] +/, "$1• ");
+      if (next.includes("**")) next = next.replace(BOLD_PAIR, "$1");
+      if (next.includes("`")) next = next.replace(/`([^`\n]{1,200})`/g, "$1");
+      return next;
+    })
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
