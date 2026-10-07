@@ -1,5 +1,6 @@
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { Router, type Request } from "express";
+import type { ZodError } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   CONNECTION_REQUEST_TOOL_DESCRIPTION,
@@ -28,6 +29,28 @@ function runtimeClaims(req: Request) {
   const claims = verifyRuntimeToolsToken(bearer(req));
   if (!claims) throw unauthorized("Runtime tools token is missing, invalid, or expired");
   return claims;
+}
+
+const TYPESAFE_JUDGE_INPUT_HINT = "criteria is JSON, never text. choice: {\"option_id\":\"meaning\",\"other_id\":\"meaning\"}. score: [\"lowest level\",\"next level\",\"highest level\"]. noul: leave criteria out, or {\"true\":\"what yes means\",\"false\":\"what no means\"}.";
+
+const TYPESAFE_QUESTION_ID_RULE = "A question ID starts with a letter and holds only letters, digits, \"_\" or \"-\", 64 characters at most.";
+
+/** What a caller must change, one entry per path, without any input value. */
+function typeSafeInputIssues(error: ZodError) {
+  const issues: Array<{ path: string; message: string }> = [];
+  const seen = new Set<string>();
+  for (const issue of error.issues) {
+    const path = issue.path.join(".");
+    // For a value of the wrong type Zod also reports the checks it could not
+    // apply: prose where a Score needs an array comes back as "expected array"
+    // and then "string too long", from the level limit. Only the first issue at
+    // a path says what to change.
+    if (seen.has(path)) continue;
+    seen.add(path);
+    issues.push({ path, message: issue.code === "invalid_key" ? TYPESAFE_QUESTION_ID_RULE : issue.message });
+    if (issues.length === 8) break;
+  }
+  return issues;
 }
 
 function resultContent(value: unknown) {
@@ -88,8 +111,14 @@ export function runtimeConnectionIntentRoutes(db: Db) {
       });
       return;
     }
-    if (request.method === "notifications/initialized") {
+    // A notification carries no id and gets no JSON-RPC response. Answering one
+    // with 404 would tell a Streamable HTTP client its session is gone.
+    if (typeof request.method === "string" && request.method.startsWith("notifications/")) {
       res.status(202).end();
+      return;
+    }
+    if (request.method === "ping") {
+      res.json({ jsonrpc: "2.0", id, result: {} });
       return;
     }
     if (request.method === "tools/list") {
@@ -120,7 +149,24 @@ export function runtimeConnectionIntentRoutes(db: Db) {
         return;
       }
       if (name === "typesafe_judge") {
-        const result = await typeSafe.judge(claims, typeSafeJudgeInputSchema.parse(params.arguments ?? {}));
+        const parsed = typeSafeJudgeInputSchema.safeParse(params.arguments ?? {});
+        if (!parsed.success) {
+          // Malformed arguments are the caller's to correct, so they come back
+          // as a tool result it can read. An HTTP 400 here reads as a broken
+          // transport to an MCP client and hides the reason from the agent.
+          const rejected = {
+            ok: false,
+            error: {
+              code: "invalid_input",
+              retryable: false,
+              issues: typeSafeInputIssues(parsed.error),
+              hint: TYPESAFE_JUDGE_INPUT_HINT,
+            },
+          };
+          res.json({ jsonrpc: "2.0", id, result: { ...resultContent(rejected), isError: true } });
+          return;
+        }
+        const result = await typeSafe.judge(claims, parsed.data);
         res.json({ jsonrpc: "2.0", id, result: { ...resultContent(result), ...(result.ok === false ? { isError: true } : {}) } });
         return;
       }

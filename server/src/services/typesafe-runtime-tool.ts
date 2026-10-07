@@ -18,12 +18,17 @@ const structuredValue = z.union([
 const questionId = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
 const noul = z.object({
   type: z.literal("noul"), instructions: structuredValue,
-  criteria: z.object({ true: structuredValue.optional(), false: structuredValue.optional() }).strict().optional(),
+  // Tool callers often send an optional field as null instead of leaving it
+  // out. For a Noul that means "no criteria", so it is dropped here.
+  criteria: z.object({ true: structuredValue.optional(), false: structuredValue.optional() }).strict()
+    .nullish().transform((value) => value ?? undefined),
 }).strict();
 const choice = z.object({
   type: z.literal("choice"), instructions: structuredValue,
   criteria: z.record(z.string().min(1).max(128), structuredValue.nullable())
-    .refine((value) => Object.keys(value).length >= 2 && Object.keys(value).length <= 255),
+    .refine((value) => Object.keys(value).length >= 2 && Object.keys(value).length <= 255, {
+      message: "A choice needs 2 to 255 options",
+    }),
 }).strict();
 const score = z.object({
   type: z.literal("score"), instructions: structuredValue,
@@ -33,7 +38,9 @@ export const typeSafeJudgeInputSchema = z.object({
   state: structuredValue,
   model: z.string().min(1).max(80).default("jev-latest"),
   questions: z.record(questionId, z.discriminatedUnion("type", [choice, noul, score]))
-    .refine((value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 32),
+    .refine((value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 32, {
+      message: "Send 1 to 32 questions",
+    }),
 }).strict();
 
 type Input = z.infer<typeof typeSafeJudgeInputSchema>;
