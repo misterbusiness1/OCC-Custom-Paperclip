@@ -390,6 +390,21 @@ describe("the Approvals queue stays mounted when a link to /approvals is followe
       expect(lifecycle.events).toEqual(["mount"]);
     });
 
+    it("drops a kind the tab does not list from the address in place, and still opens the linked card", async () => {
+      await renderAt("/PAP/approvals/pending?kind=hire_agent&sort=newest#approval-middle", "Request newest");
+      const historyLength = window.history.length;
+      for (let step = 0; step < 100 && window.location.search.includes("kind"); step += 1) await pass(10);
+
+      expect(window.location.pathname).toBe("/PAP/approvals/pending");
+      expect(window.location.search).toBe("?sort=newest");
+      expect(window.location.hash).toBe("#approval-middle");
+      expect(window.history.length).toBe(historyLength);
+      expect(order()).toEqual(["newest", "middle", "mail", "oldest"]);
+      expect(kindChip("all").getAttribute("aria-pressed")).toBe("true");
+      expect(openIds()).toEqual(["middle"]);
+      expect(lifecycle.events).toEqual(["mount"]);
+    });
+
     it("keeps the query of the short address when it corrects it", async () => {
       await renderAt("/PAP/approvals?kind=email_reply", "Request mail");
       expect(window.location.pathname).toBe("/PAP/approvals/pending");

@@ -2406,6 +2406,39 @@ describe("Inbox toolbar", () => {
         await press("j");
         expect(document.activeElement).toBe(outside);
 
+        // A mouse click leaves focus on the second row's Approve and the pointer then moves to
+        // the first row: Enter opens the hovered row and does not press that button.
+        const hover = async (row: HTMLElement) => {
+          await act(async () => {
+            window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+            row.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+            row.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
+          });
+        };
+        routerMock.navigate.mockReset();
+        buttonIn(second, "Approve").focus();
+        await hover(first);
+        expect((await press("Enter")).defaultPrevented).toBe(true);
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith(`/approvals/${approvalIdOf(first)}`);
+
+        // With the pointer on the row that holds the focused button, Enter still presses it.
+        routerMock.navigate.mockReset();
+        await hover(second);
+        expect(document.activeElement).toBe(buttonIn(second, "Approve"));
+        expect((await press("Enter")).defaultPrevented).toBe(false);
+        expect(routerMock.navigate).not.toHaveBeenCalled();
+
+        // A held Enter repeats after its button is gone: the repeats open no page.
+        buttonIn(second, "Approve").blur();
+        const repeated = new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true });
+        await act(async () => {
+          document.body.dispatchEvent(repeated);
+        });
+        expect(repeated.defaultPrevented).toBe(false);
+        expect(routerMock.navigate).not.toHaveBeenCalled();
+        expect((await press("Enter")).defaultPrevented).toBe(true);
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith(`/approvals/${approvalIdOf(second)}`);
+
         expect(apiMocks.approve).not.toHaveBeenCalled();
         expect(apiMocks.reject).not.toHaveBeenCalled();
       } finally {

@@ -2467,7 +2467,14 @@ function StreamlinedInbox() {
         case "Enter": {
           // Enter on a focused button in a row (Approve, Send request, Show more) presses that
           // button. Only rows are exempt: from a tab or a toolbar button it still opens the row.
-          if (isInboxRowControlTarget(target)) return;
+          // A held Enter must not press a button and then, on key repeat, open a page.
+          if (e.repeat) return;
+          // A button left in focus by a mouse click in another row than the hovered one is not
+          // pressed: the key acts on the hovered row.
+          if (isInboxRowControlTarget(target)) {
+            const actedRow = listRef.current?.querySelectorAll("[data-inbox-item]")[effectiveIndex];
+            if (!(fromHover && actedRow && actedRow !== target.closest("[data-inbox-item]"))) return;
+          }
           if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
           const { issue, item } = resolveNavEntry(effectiveIndex);

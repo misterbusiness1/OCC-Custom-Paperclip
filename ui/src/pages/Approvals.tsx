@@ -473,6 +473,10 @@ export function Approvals() {
   // while it loaded), or by the reader pressing a row's header. Null once the reader has moved with
   // J/K or undone a hold. See APPROVE_AFTER_ADVANCE_MS.
   const autoAdvance = useRef<number | null>(null);
+  // Requests whose own approval went out on this visit and came back as an error. The server may
+  // hold that approval all the same: a reload that then shows the request approved shows the
+  // reader's own decision, not someone else's.
+  const ownApproveFailed = useRef(new Set<string>());
   // The card shown open, not yet pinned, while the list was still loading.
   const shownUnpinned = useRef<string | null>(null);
   const handledHash = useRef<string | null>(null);
@@ -703,6 +707,7 @@ export function Approvals() {
         // Measured now, while the request is still its compact row: the card that returns takes that place.
         const inView = onPage && isRowInView(heldRow);
         releaseHeldApproval(held.id);
+        ownApproveFailed.current.add(held.id);
         recordFailed("approve", err, held.id, held.subject, held.companyId);
         // The note is handed back with the card, also when the card is only seen again later.
         restoreCard(held);
@@ -953,10 +958,11 @@ export function Approvals() {
   /**
    * Stays on the page whatever the kind filter and the page size say: an approval that is held
    * (its Undo must stay within reach), a request whose decision failed (its error must be seen),
-   * and the open card (an undone approval returns as the open card).
+   * the open card (an undone approval returns as the open card), and a "Decided elsewhere" row
+   * (a held approval taken back must not vanish as if it had been sent).
    */
   const staysListed = (a: Approval) =>
-    Boolean(heldApprovals[a.id]) || Boolean(decisions.errors[a.id]) || a.id === openId;
+    Boolean(heldApprovals[a.id]) || Boolean(decisions.errors[a.id]) || Boolean(leftHere[a.id]) || a.id === openId;
   const inActiveKind = (a: Approval) => activeKind === "all" || approvalKind(a) === activeKind;
   // "To decide" is ordered by the time a request was created. "All decisions" is ordered by the
   // time of the last decision; a request that has none (it is pending) keeps its creation time.
@@ -1146,6 +1152,14 @@ export function Approvals() {
       if (!cancelled) continue;
       // Said on the request itself, where a failed decision is said: the line stays until the reader
       // approves again or edits the note, and it keeps the row on the page under any filter.
+      if (record.status === "approved" && ownApproveFailed.current.has(cancelled.id)) {
+        // The reader's first approval was stored though it was answered with an error: the row and
+        // the count show it as their own decision, and nothing is said about another session.
+        settleDecision(cancelled.id);
+        setDecidedHere((current) => ({ ...current, [cancelled.id]: record }));
+        announce(`${DECISION_LANDED_LEAD.approve}: ${cancelled.subject}`);
+        continue;
+      }
       if (decidedStatus) {
         // As after an Undo that came too late: the row shows the status and the note the server
         // holds, and the note typed with the approval is kept as a draft.
@@ -1228,6 +1242,7 @@ export function Approvals() {
     lastFocusedId.current = null;
     pendingMove.current = null;
     autoAdvance.current = null;
+    ownApproveFailed.current.clear();
     refocusLeftRow.current = null;
     clearDecisionErrors();
     setAnnouncement(null);
@@ -1277,6 +1292,23 @@ export function Approvals() {
     requestMove({ targetId: hashTarget, focus: true, block: "start" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hashTarget, data, isFetching]);
+
+  // A kind in the address that this tab does not list is dropped from the address once the list
+  // has loaded, in place and with the #target and the state kept. Left there it would be applied by
+  // a later reload that brings a request of that kind, and the queue would narrow by itself.
+  const unknownKind =
+    Boolean(data) && !isFetching && !onBareRoute && kindFilter !== "all" && !kinds.includes(kindFilter);
+  useEffect(() => {
+    if (!unknownKind) return;
+    const query = new URLSearchParams(locationSearch);
+    query.delete("kind");
+    const search = query.toString();
+    navigate(
+      { pathname: location.pathname, search: search ? `?${search}` : "", hash: locationHash },
+      { replace: true, state: locationState },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unknownKind]);
 
   // The open card's request is no longer shown as a card (it left the list, or it is a compact row
   // now): no card is open. A request that left and comes back, for example sent back elsewhere and
@@ -1334,6 +1366,9 @@ export function Approvals() {
     if (term === searchTerm) return;
     setVisibleCount(PAGE_SIZE);
     restartList(term);
+    // An emptied field draws the first card open again, by the page and maybe under a resting
+    // pointer: Approve waits as after any card the page opens. Set after the restart, which clears it.
+    if (!term) autoAdvance.current = Date.now();
   };
 
   // Carried by every "View details" link, so the request's own page can link back to this view.
@@ -1392,7 +1427,7 @@ export function Approvals() {
         </Tabs>
       </div>
 
-      {inTab.length > 0 && (
+      {(inTab.length > 0 || searchText !== "") && (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-1.5">
             <div className="relative w-full sm:w-64">
