@@ -2,9 +2,11 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
+  blurFocusedInboxRowControl,
   findPageSearchShortcutTarget,
   focusPageSearchShortcutTarget,
   hasBlockingShortcutDialog,
+  isInboxRowControlTarget,
   isKeyboardShortcutTextInputTarget,
   resolveAttentionQueueKeyAction,
   resolveIssueDetailGoKeyAction,
@@ -61,6 +63,35 @@ describe("keyboardShortcuts helpers", () => {
     expect(isKeyboardShortcutTextInputTarget(editableChild)).toBe(true);
     expect(isKeyboardShortcutTextInputTarget(textboxChild)).toBe(true);
     expect(isKeyboardShortcutTextInputTarget(button)).toBe(false);
+  });
+
+  it("tells a button inside an inbox row from one outside, and lets go of focus only on the first", () => {
+    const root = document.createElement("div");
+    root.innerHTML = `
+      <button id="toolbar">Filter</button>
+      <div data-inbox-item>
+        <button id="approve"><span id="label">Approve</span></button>
+        <details><summary id="summary">More</summary></details>
+        <span role="button" tabindex="0" id="role">Open</span>
+        <a href="/approvals/1" id="link">Title</a>
+      </div>`;
+    document.body.appendChild(root);
+    const byId = (id: string) => root.querySelector<HTMLElement>(`#${id}`)!;
+
+    for (const id of ["approve", "label", "summary", "role"]) expect(isInboxRowControlTarget(byId(id)), id).toBe(true);
+    // A toolbar button, the row's own link, and the page are not row controls: Enter there opens the row.
+    for (const id of ["toolbar", "link"]) expect(isInboxRowControlTarget(byId(id)), id).toBe(false);
+    expect(isInboxRowControlTarget(document.body)).toBe(false);
+    expect(isInboxRowControlTarget(null)).toBe(false);
+
+    byId("toolbar").focus();
+    blurFocusedInboxRowControl();
+    expect(document.activeElement).toBe(byId("toolbar"));
+    byId("approve").focus();
+    blurFocusedInboxRowControl();
+    expect(document.activeElement).toBe(document.body);
+
+    root.remove();
   });
 
   it("reports when a modal dialog is open", () => {

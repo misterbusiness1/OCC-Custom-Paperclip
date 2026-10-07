@@ -275,7 +275,8 @@ function OriginalRequestText({ text, collapsible }: { text: string; collapsible:
         {/* Shown whole or behind the announced preview: never in a box that scrolls its end out of sight. */}
         <pre
           className={cn(
-            "whitespace-pre-wrap wrap-anywhere text-sm leading-6 text-foreground",
+            // A pre is monospace by default. This is a person's message, so it takes the text face.
+            "whitespace-pre-wrap wrap-anywhere font-sans text-sm leading-6 text-foreground",
             clamped && "line-clamp-4",
           )}
         >
@@ -927,7 +928,7 @@ export function EmailReplyPayload({
         <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
           Draft reply
         </p>
-        <pre className="whitespace-pre-wrap wrap-anywhere rounded-md bg-muted/40 p-3 text-sm leading-6 text-foreground">
+        <pre className="whitespace-pre-wrap wrap-anywhere rounded-md bg-muted/40 p-3 font-sans text-sm leading-6 text-foreground">
           {body}
         </pre>
       </div>

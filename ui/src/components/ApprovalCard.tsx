@@ -62,6 +62,18 @@ export type ApprovalCardLinkedIssue = {
   title?: string | null;
 };
 
+/**
+ * The "View details" link, on the card and on the queue's compact rows. It is 16px tall. On a
+ * touch screen its tap area is 44px tall (16 + 2 x 14) and no wider than the link. The row keeps
+ * its height. The area stops short of the next row: rows are 12px apart, and it passes the
+ * row's edge by 1px at most.
+ */
+export const APPROVAL_DETAILS_LINK_CLASS = cn(
+  buttonVariants({ variant: "ghost", size: "sm" }),
+  "h-auto px-2 text-xs text-muted-foreground",
+  "relative pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-3.5",
+);
+
 function waitingLabel(createdAt: Date | string): { label: string; long: boolean } {
   const elapsed = Date.now() - new Date(createdAt).getTime();
   if (elapsed < HOUR_MS) return { label: "Waiting under an hour", long: false };
@@ -208,7 +220,7 @@ export function ApprovalCard({
   const detailsControl = detailLink ? (
     <Link
       to={detailLink}
-      className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
+      className={APPROVAL_DETAILS_LINK_CLASS}
     >
       View details
     </Link>

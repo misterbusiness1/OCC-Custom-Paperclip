@@ -92,6 +92,24 @@ function createApproval(id: string, createdAt: string, overrides: Partial<Approv
   };
 }
 
+/**
+ * "View details" is 16px tall. On a touch screen its tap area is 44px tall (16 + 2 x 14) and no
+ * wider than the link. jsdom cannot evaluate the media query, so the classes are checked.
+ */
+function expectTouchArea(link: HTMLElement) {
+  for (const name of [
+    "relative",
+    "pointer-coarse:after:absolute",
+    "pointer-coarse:after:inset-x-0",
+    "pointer-coarse:after:-inset-y-3.5",
+  ]) {
+    expect(link.classList.contains(name), name).toBe(true);
+  }
+  // The link itself is no taller, so no row grows.
+  expect(link.classList.contains("h-auto")).toBe(true);
+  expect(link.className).not.toMatch(/min-h-|(^|[\s:])py-/);
+}
+
 describe("Approvals", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -297,6 +315,12 @@ describe("Approvals", () => {
     await vi.waitFor(() => expect(rows()[0].hasAttribute("data-approval-decided-row")).toBe(true));
     expect(rowNote().textContent).toBe(`Your note. ${typed}`);
     expect(rowNote().classList.contains("whitespace-pre-wrap")).toBe(true);
+    // The decided row's link to the request is as easy to tap as the open card's.
+    const rowLink = rows()[0].querySelector<HTMLAnchorElement>("a")!;
+    expect(rowLink.textContent).toBe("View details");
+    expectTouchArea(rowLink);
+    const openCardLink = [...rows()[1].querySelectorAll("a")].find((anchor) => anchor.textContent === "View details")!;
+    expectTouchArea(openCardLink);
   });
 
   it("sends a rejection only after it is confirmed", async () => {
@@ -517,6 +541,13 @@ describe("Approvals", () => {
 
       expect(order()).toEqual(["oldest", "email", "newest"]);
       expect(toDecideTab()).toBe("To decide3");
+      // The count is the sidebar's pill, which reads in both themes. It was pale yellow on pale yellow.
+      const count = container.querySelector<HTMLElement>("[data-tab='pending'] [data-slot='badge']")!;
+      expect(count.textContent).toBe("3");
+      expect(count.classList.contains("bg-primary")).toBe(true);
+      expect(count.classList.contains("text-primary-foreground")).toBe(true);
+      expect(count.classList.contains("text-(length:--text-micro)")).toBe(true);
+      expect(count.className).not.toMatch(/yellow|text-\(length:--text-nano\)/);
       for (const card of rows()) expect(card.textContent).not.toContain("Request sent-back");
     });
 
@@ -549,6 +580,7 @@ describe("Approvals", () => {
       expect([...row.querySelectorAll("a")].map((anchor) => [anchor.textContent, anchor.getAttribute("href")])).toEqual([
         ["View details", "/approvals/sent-back"],
       ]);
+      expectTouchArea(row.querySelector("a")!);
       expect(row.textContent).not.toContain("user-board-1");
       expect(row.textContent).not.toContain("agent-requester");
       // The queue itself is unchanged.

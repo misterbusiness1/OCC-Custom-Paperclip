@@ -714,6 +714,8 @@ describe("ApprovalPayloadRenderer", () => {
     // Long unbroken strings must wrap without splitting ordinary words mid-word.
     expect(originalRequest?.classList.contains("wrap-anywhere")).toBe(true);
     expect(originalRequest?.classList.contains("break-all")).toBe(false);
+    // A pre is monospace unless a class says otherwise: a person's message takes the text face.
+    expect(originalRequest?.classList.contains("font-sans")).toBe(true);
     expect(originalRequest?.classList.contains("font-mono")).toBe(false);
     expect(originalRequest?.classList.contains("text-xs")).toBe(false);
     // The whole text flows in the page: no height cap, no inner scroll box, no clamp.
@@ -726,6 +728,7 @@ describe("ApprovalPayloadRenderer", () => {
     expect(proposedReply?.classList.contains("text-sm")).toBe(true);
     expect(proposedReply?.classList.contains("whitespace-pre-wrap")).toBe(true);
     expect(proposedReply?.classList.contains("wrap-anywhere")).toBe(true);
+    expect(proposedReply?.classList.contains("font-sans")).toBe(true);
     expect(proposedReply?.classList.contains("font-mono")).toBe(false);
     expect(proposedReply?.classList.contains("text-xs")).toBe(false);
     expect(proposedReply?.className).not.toMatch(/max-h-|overflow-|line-clamp/);

@@ -24,7 +24,7 @@ import { cn } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { ChevronDown, ChevronRight, ShieldCheck } from "lucide-react";
-import { ApprovalCard } from "../components/ApprovalCard";
+import { APPROVAL_DETAILS_LINK_CLASS, ApprovalCard } from "../components/ApprovalCard";
 import {
   approvalDecisionErrorText,
   useApprovalDecisionFeedback,
@@ -58,7 +58,7 @@ import {
 import { PageSkeleton } from "../components/PageSkeleton";
 import { StatusBadge } from "../components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 
 type StatusFilter = "pending" | "all";
 type SortOrder = "oldest" | "newest";
@@ -323,7 +323,7 @@ function DecidedApprovalRow({
       ) : (
         <Link
           to={`/approvals/${approval.id}`}
-          className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
+          className={APPROVAL_DETAILS_LINK_CLASS}
         >
           View details
         </Link>
@@ -361,7 +361,7 @@ function SentBackApprovalRow({ approval }: { approval: Approval }) {
       <ApprovalSentBackTime approval={approval} className="text-xs text-muted-foreground" />
       <Link
         to={`/approvals/${approval.id}`}
-        className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
+        className={APPROVAL_DETAILS_LINK_CLASS}
       >
         View details
       </Link>
@@ -1248,10 +1248,8 @@ export function Approvals() {
         <Tabs value={statusFilter} onValueChange={(v) => navigate(`/approvals/${v}`)}>
           <PageTabBar items={[
             { value: "pending", label: <>To decide{pendingCount > 0 && (
-              <Badge variant="ghost" className={cn(
-                "ml-1.5 px-1.5 text-(length:--text-nano)",
-                "bg-yellow-500/20 text-yellow-500"
-              )}>
+              // The pill the sidebar uses for the same number: it reads in both themes.
+              <Badge variant="ghost" className="ml-1.5 bg-primary px-1.5 text-(length:--text-micro) text-primary-foreground">
                 {pendingCount}
               </Badge>
             )}</> },

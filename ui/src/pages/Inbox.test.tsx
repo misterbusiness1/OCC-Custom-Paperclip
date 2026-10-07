@@ -1966,6 +1966,113 @@ describe("Inbox toolbar", () => {
     }
   });
 
+  it.each([true, false])(
+    "presses a focused button in an approval row on Enter and still opens the selected row otherwise, streamlined UI %s",
+    async (streamlinedUi) => {
+      routerMock.location.pathname = "/inbox/mine";
+      generalSettingsMock.keyboardShortcutsEnabled = true;
+      localStorage.setItem("paperclip:inbox:group-by", "none");
+      apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+      const boardApproval = (id: string, title: string, createdAt: string) =>
+        createApproval({
+          id,
+          type: "request_board_approval",
+          requestedByAgentId: "agent-1",
+          payload: { title, recommendedAction: "Approve it.", reasoning: "It fits the request." },
+          createdAt: new Date(createdAt),
+          updatedAt: new Date(createdAt),
+        });
+      apiMocks.approvalsList.mockResolvedValue([
+        boardApproval("approval-a", "First request", "2026-03-11T00:00:00.000Z"),
+        boardApproval("approval-b", "Second request", "2026-03-12T00:00:00.000Z"),
+      ]);
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      const root = createRoot(container);
+
+      const rows = () => [...container.querySelectorAll<HTMLElement>("[data-inbox-item]")];
+      const approvalIdOf = (row: HTMLElement) => (row.textContent?.includes("First request") ? "approval-a" : "approval-b");
+      const buttonIn = (row: HTMLElement, label: string) =>
+        [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
+      // A key press goes to the element that holds focus, as in a browser.
+      const press = async (key: string) => {
+        const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+        await act(async () => {
+          (document.activeElement ?? document.body).dispatchEvent(event);
+        });
+        return event;
+      };
+      // Stands for a tab or a toolbar button: a button that is in no inbox row.
+      const outside = document.createElement("button");
+
+      try {
+        await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+        await vi.waitFor(() => {
+          expect(rows()).toHaveLength(2);
+          expect(container.textContent).toContain("Second request");
+        });
+        const [first, second] = rows();
+
+        // j selects the first row; focus stays on the page.
+        await press("j");
+
+        // Enter on a focused button of the row is left to the browser, which presses the button.
+        // (Archive is left out: it takes Enter in a handler of its own.)
+        for (const label of ["Approve", "Request changes", "Reject", "Add a note"]) {
+          const control = buttonIn(first, label);
+          control.focus();
+          expect(document.activeElement).toBe(control);
+          expect((await press("Enter")).defaultPrevented, label).toBe(false);
+        }
+        expect(routerMock.navigate).not.toHaveBeenCalled();
+
+        // The same holds in the middle of a change request, and the typed note stays.
+        await act(async () => buttonIn(first, "Request changes").click());
+        const note = first.querySelector("textarea")!;
+        await act(async () => {
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(note, "Quote the delivery date");
+          note.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        buttonIn(first, "Send request").focus();
+        expect((await press("Enter")).defaultPrevented).toBe(false);
+        expect(routerMock.navigate).not.toHaveBeenCalled();
+        expect(first.querySelector("textarea")!.value).toBe("Quote the delivery date");
+        expect(apiMocks.requestRevision).not.toHaveBeenCalled();
+
+        // j moves the selection on and takes focus off the button, so Enter opens the new row.
+        await press("j");
+        expect(document.activeElement).toBe(document.body);
+        expect((await press("Enter")).defaultPrevented).toBe(true);
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith(`/approvals/${approvalIdOf(second)}`);
+
+        // k does the same on the way back.
+        routerMock.navigate.mockReset();
+        buttonIn(second, "Approve").focus();
+        await press("k");
+        expect(document.activeElement).toBe(document.body);
+        await press("Enter");
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith(`/approvals/${approvalIdOf(first)}`);
+
+        // From a button outside the rows, Enter still opens the selected row.
+        routerMock.navigate.mockReset();
+        document.body.appendChild(outside);
+        outside.focus();
+        expect((await press("Enter")).defaultPrevented).toBe(true);
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith(`/approvals/${approvalIdOf(first)}`);
+        // j from there keeps its focus: only a button inside a row is let go.
+        await press("j");
+        expect(document.activeElement).toBe(outside);
+
+        expect(apiMocks.approve).not.toHaveBeenCalled();
+        expect(apiMocks.reject).not.toHaveBeenCalled();
+      } finally {
+        outside.remove();
+        generalSettingsMock.keyboardShortcutsEnabled = false;
+        act(() => root.unmount());
+        queryClient.clear();
+      }
+    },
+  );
+
   it("holds the inbox order across a reordering poll, then re-sorts at an attention boundary (PAP-16015)", async () => {
     routerMock.location.pathname = "/inbox/mine";
     const base = new Date("2026-03-11T00:00:00.000Z").getTime();

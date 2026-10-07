@@ -466,7 +466,12 @@ export const ApprovalDecisionActions = forwardRef<
       ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
+        {/*
+          On a touch screen the "View details" link after these buttons has a tap area taller than
+          itself. On a line of its own it would reach 2px into this group. The group is drawn above
+          it, so a tap on a decision button is never a tap on that link.
+        */}
+        <div className="flex flex-wrap items-center gap-2 pointer-coarse:relative pointer-coarse:z-10" data-approval-decision-buttons="">
           <Button
             size="sm"
             className={cn(buttonClassName, approveClassName)}

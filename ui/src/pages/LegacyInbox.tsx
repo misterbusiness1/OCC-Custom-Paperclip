@@ -45,7 +45,9 @@ import {
 } from "../lib/issueDetailBreadcrumb";
 import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import {
+  blurFocusedInboxRowControl,
   hasBlockingShortcutDialog,
+  isInboxRowControlTarget,
   isKeyboardShortcutTextInputTarget,
   resolveInboxUndoArchiveKeyAction,
   shouldBlurPageSearchOnEnter,
@@ -2214,6 +2216,7 @@ export function Inbox() {
         case "ArrowDown": {
           e.preventDefault();
           pointerMovedSinceKeyNavRef.current = false;
+          blurFocusedInboxRowControl();
           setSelectedIndex(getInboxKeyboardSelectionIndex(effectiveIndex, navCount, "next"));
           break;
         }
@@ -2221,6 +2224,7 @@ export function Inbox() {
         case "ArrowUp": {
           e.preventDefault();
           pointerMovedSinceKeyNavRef.current = false;
+          blurFocusedInboxRowControl();
           setSelectedIndex(getInboxKeyboardSelectionIndex(effectiveIndex, navCount, "previous"));
           break;
         }
@@ -2301,6 +2305,9 @@ export function Inbox() {
           break;
         }
         case "Enter": {
+          // Enter on a focused button in a row (Approve, Send request, Show more) presses that
+          // button. Only rows are exempt: from a tab or a toolbar button it still opens the row.
+          if (isInboxRowControlTarget(target)) return;
           if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
           const { issue, item } = resolveNavEntry(effectiveIndex);
