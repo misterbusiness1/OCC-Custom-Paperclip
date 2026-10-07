@@ -186,9 +186,23 @@ export function OriginalRequestBlock({
           )}
         </p>
       )}
-      <OriginalRequestText text={original.text} collapsible={compact && original.text.length > 480} />
+      <OriginalRequestText text={original.text} collapsible={compact && isLongOriginalRequest(original.text)} />
     </div>
   );
+}
+
+const ORIGINAL_REQUEST_PREVIEW_LENGTH = 480;
+const ORIGINAL_REQUEST_PREVIEW_LINES = 16;
+
+/** A request this long is previewed on compact surfaces, behind a button that states its size. */
+function isLongOriginalRequest(text: string) {
+  if (text.length > ORIGINAL_REQUEST_PREVIEW_LENGTH) return true;
+  let lines = 1;
+  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
+    lines += 1;
+    if (lines > ORIGINAL_REQUEST_PREVIEW_LINES) return true;
+  }
+  return false;
 }
 
 function OriginalRequestText({ text, collapsible }: { text: string; collapsible: boolean }) {
@@ -198,10 +212,11 @@ function OriginalRequestText({ text, collapsible }: { text: string; collapsible:
   return (
     <>
       <div className="mt-2 rounded-md bg-muted/40 p-3">
+        {/* Shown whole or behind the announced preview: never in a box that scrolls its end out of sight. */}
         <pre
           className={cn(
             "whitespace-pre-wrap wrap-anywhere text-sm leading-6 text-foreground",
-            clamped ? "line-clamp-4" : "max-h-96 overflow-y-auto",
+            clamped && "line-clamp-4",
           )}
         >
           {text}
@@ -274,9 +289,10 @@ export function approvalHireFacts(payload?: Record<string, unknown> | null): App
 /**
  * Agent-written text as readable plain text. Line breaks, numbering, bullets
  * and indentation are structure, so they stay; only the markup around the
- * words goes. Identifiers keep their underscores and tildes: the board must
- * read what the agent wrote. Every pattern is bounded, so a hostile payload
- * cannot stall the page.
+ * words goes. Identifiers keep their underscores and tildes, and a leading
+ * ">" or "+" stays where it is (it may be a comparison or a sign): the board
+ * must read what the agent wrote. Every pattern is bounded, so a hostile
+ * payload cannot stall the page.
  */
 export function approvalReadableText(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -295,7 +311,7 @@ export function approvalReadableText(value: string | null | undefined): string |
     .map((line) =>
       line
         .replace(/^ {0,3}#{1,6} +/, "")
-        .replace(/^( {0,12})[-*+] +/, "$1• ")
+        .replace(/^( {0,12})[-*] +/, "$1• ")
         .replace(/\*\*(?=\S)([^\n*]{0,200}?\S)\*\*/g, "$1")
         .replace(/`([^`\n]{1,200})`/g, "$1"),
     )
@@ -356,36 +372,23 @@ export function approvalTextPreview(
   return { preview: truncated ? `${preview.trimEnd()}…` : preview, truncated };
 }
 
+/**
+ * One line for a title or a subject: the readable text with its line breaks
+ * folded into spaces, cut at a word boundary. Built on
+ * {@link approvalReadableText}, so it drops markup and nothing else.
+ */
 export function approvalExcerpt(value: string | null, maxLength = 240): string | null {
-  if (!value) return null;
-  const plain = value
-    .replace(/!\[([^\]\n]{0,300})\]\([^)\n]{0,2000}\)/g, "$1")
-    .replace(/\[([^\]\n]{1,300})\]\([^)\n]{0,2000}\)/g, "$1")
-    .replace(/^\s{0,3}(?:#{1,6}|>|[-+])\s+/gm, "")
-    .replace(/[`*_~]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const plain = approvalReadableText(value)?.replace(/\s+/g, " ");
+  if (!plain) return null;
   if (plain.length <= maxLength) return plain;
 
   const clipped = plain.slice(0, maxLength + 1);
   const wordBoundary = clipped.lastIndexOf(" ");
-  const end = wordBoundary > maxLength / 2 ? wordBoundary : maxLength;
+  let end = wordBoundary > maxLength / 2 ? wordBoundary : maxLength;
+  // Never cut between the two halves of one character (an emoji, for example).
+  const last = plain.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
   return `${plain.slice(0, end).trimEnd()}…`;
-}
-
-/** Like {@link approvalExcerpt} without the cut: plain text that keeps its line breaks. */
-export function approvalPlainText(value: string | null): string | null {
-  if (!value) return null;
-  const plain = value
-    .replace(/!\[([^\]\n]{0,300})\]\([^)\n]{0,2000}\)/g, "$1")
-    .replace(/\[([^\]\n]{1,300})\]\([^)\n]{0,2000}\)/g, "$1")
-    .replace(/^\s{0,3}(?:#{1,6}|>|[-+])\s+/gm, "")
-    .replace(/[`*_~]/g, "")
-    .replace(/[^\S\n]+/g, " ")
-    .replace(/ ?\n ?/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return plain || null;
 }
 
 export function approvalSubject(payload?: Record<string, unknown> | null, type?: string): string | null {
@@ -511,17 +514,17 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
 }
 
 export function CeoStrategyPayload({ payload }: { payload: Record<string, unknown> }) {
-  const plan = payload.plan ?? payload.description ?? payload.strategy ?? payload.text;
+  // The same field order the summary reads. A plan that is not text is shown as the request's data.
+  const plan = firstNonEmptyString(...STRATEGY_PLAN_FIELDS.map((field) => payload[field]));
   return (
     <div className="mt-3 space-y-1.5 text-sm">
       <PayloadField label="Title" value={payload.title} />
-      {!!plan && (
-        <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap font-mono text-xs max-h-48 overflow-y-auto">
-          {String(plan)}
+      {plan ? (
+        <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap wrap-anywhere font-mono text-xs">
+          {plan}
         </div>
-      )}
-      {!plan && (
-        <pre className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground overflow-x-auto max-h-48">
+      ) : (
+        <pre className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground whitespace-pre-wrap wrap-anywhere">
           {JSON.stringify(payload, null, 2)}
         </pre>
       )}
@@ -564,11 +567,11 @@ export function BoardApprovalPayload({
 
 /**
  * Decision-list items (pros, cons & risks) render inside a custom bullet row,
- * so a leading markdown list marker would nest a second bullet inside the
- * first. Strip one leading marker.
+ * so a leading list marker ("- ", "* ", "• ", "1. ", "1) ") would show a
+ * second marker beside the first. Strip exactly one leading marker.
  */
-function stripLeadingListMarker(value: string): string {
-  return value.replace(/^(?:[-*•]|\d+[.)])\s+/, "");
+export function stripLeadingListMarker(value: string): string {
+  return value.replace(/^(?:[-*•]|\d{1,3}[.)])[^\S\n]+/, "");
 }
 
 function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unknown> }) {
@@ -624,7 +627,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
             Proposed comment
           </p>
-          <pre className="max-h-48 overflow-auto rounded-lg border border-border/60 bg-muted/50 px-3.5 py-3 font-mono text-xs leading-5 text-muted-foreground whitespace-pre-wrap">
+          <pre className="rounded-lg border border-border/60 bg-muted/50 px-3.5 py-3 font-mono text-xs leading-5 text-muted-foreground whitespace-pre-wrap wrap-anywhere">
             {proposedComment}
           </pre>
         </div>
@@ -729,7 +732,7 @@ export function EmailReplyPayload({ payload }: { payload: Record<string, unknown
         <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
           Proposed reply
         </p>
-        <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap wrap-anywhere rounded-md bg-muted/40 p-3 text-sm leading-6 text-foreground">
+        <pre className="whitespace-pre-wrap wrap-anywhere rounded-md bg-muted/40 p-3 text-sm leading-6 text-foreground">
           {body}
         </pre>
       </div>
