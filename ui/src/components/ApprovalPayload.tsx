@@ -391,6 +391,33 @@ export function approvalExcerpt(value: string | null, maxLength = 240): string |
   return `${plain.slice(0, end).trimEnd()}…`;
 }
 
+/**
+ * What a request asks for, as one line for a collapsed queue row: the
+ * recommendation of a Board approval, what a hire will do, or the first line
+ * of a strategy's plan. Null when the request carries none of it. The line is
+ * the readable text itself; the row cuts it to its width with CSS.
+ */
+export function approvalAskLine(
+  type: string,
+  payload?: Record<string, unknown> | null,
+): { label: string; text: string } | null {
+  if (type === "hire_agent") {
+    const text = approvalExcerpt(firstNonEmptyString(payload?.capabilities));
+    return text ? { label: "What it will do", text } : null;
+  }
+  if (type === "approve_ceo_strategy") {
+    const plan = approvalStrategyPlan(payload);
+    // With no plan field the summary shows the rationale as the plan; the row follows it.
+    const planText =
+      plan.kind === "text" ? plan.text : approvalReadableText(approvalStrategyBrief(payload).reasoning);
+    const firstLine = planText?.split("\n").find((line) => line.trim()) ?? null;
+    const text = approvalExcerpt(firstLine);
+    return text ? { label: "Plan", text } : null;
+  }
+  const text = approvalExcerpt(approvalDecisionBrief(payload).recommendation);
+  return text ? { label: "Recommendation", text } : null;
+}
+
 export function approvalSubject(payload?: Record<string, unknown> | null, type?: string): string | null {
   // A hire is about a named agent; its `title` is the job title, not the subject.
   if (type === "hire_agent") return firstNonEmptyString(payload?.name, payload?.title);

@@ -90,6 +90,8 @@ describe("Approvals", () => {
     for (const mock of Object.values(apiMocks)) mock.mockReset();
     routerMock.navigate.mockReset();
     routerMock.location.pathname = "/approvals/pending";
+    routerMock.location.hash = "";
+    window.localStorage.clear();
     generalSettingsMock.keyboardShortcutsEnabled = true;
     approvals = [
       createApproval("newest", "2026-10-05T00:00:00.000Z"),
@@ -123,12 +125,19 @@ describe("Approvals", () => {
     container.remove();
   });
 
-  const render = async () => {
+  const render = async (firstTitle = "Request oldest") => {
     await act(async () => {
       root.render(<QueryClientProvider client={queryClient}><Approvals /></QueryClientProvider>);
     });
-    await vi.waitFor(() => expect(container.textContent).toContain("Request oldest"));
+    await vi.waitFor(() => expect(container.textContent).toContain(firstTitle));
   };
+  const VIEW_KEY = "paperclip.approvals.view";
+  /** The reader chose "Full cards" on an earlier visit: every card under To decide is open. */
+  const chooseFullCards = () => window.localStorage.setItem(VIEW_KEY, "full");
+  /** The button in a collapsible card's header; a compact decided row has none. */
+  const header = (row: HTMLElement) => row.querySelector<HTMLButtonElement>("h3 > button[aria-expanded]");
+  const openIds = () =>
+    rows().filter((row) => header(row)?.getAttribute("aria-expanded") === "true").map((row) => row.dataset.approvalCard);
   const rows = () => [...container.querySelectorAll<HTMLElement>("[data-approval-card]")];
   const order = () => rows().map((row) => row.dataset.approvalCard);
   const button = (scope: ParentNode, label: string) =>
@@ -225,6 +234,8 @@ describe("Approvals", () => {
 
     it("keeps each card's own busy state, error and note when two decisions are sent close together", async () => {
       const sent = holdOpen(apiMocks.approve);
+      // Two cards are open at once only in the "Full cards" view.
+      chooseFullCards();
       await render();
 
       await click(button(rows()[0], "Add a note"));
@@ -539,7 +550,11 @@ describe("Approvals", () => {
       await act(async () => {
         await queryClient.invalidateQueries({ queryKey: ["approvals", "company-1"] });
       });
-      await vi.waitFor(() => expect(button(rows()[0], "Approve")).toBeDefined());
+      // Its card returns closed: the request after it opened when this one was sent back.
+      await vi.waitFor(() => expect(header(rows()[0])).not.toBeNull());
+      expect(openIds()).toEqual(["email"]);
+      await click(header(rows()[0])!);
+      expect(button(rows()[0], "Approve")).toBeDefined();
       expect(toDecideTab()).toBe("To decide3");
       expect(order()).toEqual(["oldest", "email", "newest"]);
     });
@@ -550,12 +565,438 @@ describe("Approvals", () => {
       await render();
 
       expect(section()).toBeNull();
-      const card = rows().find((row) => row.dataset.approvalCard === "sent-back")!;
+      const cardFor = (id: string) => rows().find((row) => row.dataset.approvalCard === id)!;
+      // Every card under All decisions starts closed; each is opened to be read.
+      await click(header(cardFor("sent-back"))!);
+      const card = cardFor("sent-back");
       expect(card.textContent).toContain("Waiting on the requester to revise");
       expect(card.textContent).toContain("Changes you asked forQuote the delivery date.");
       expect(button(card, "Approve")).toBeUndefined();
       expect(button(card, "Reject")).toBeUndefined();
-      expect(button(rows().find((row) => row.dataset.approvalCard === "oldest")!, "Approve")).toBeDefined();
+      await click(header(cardFor("oldest"))!);
+      expect(button(cardFor("oldest"), "Approve")).toBeDefined();
+    });
+  });
+
+  describe("a queue that can be scanned and keeps the reader's place", () => {
+    const press = (key: string, target: EventTarget = document, init: KeyboardEventInit = {}) =>
+      act(async () => {
+        target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...init }));
+      });
+    const approveAs = (status: Approval["status"] = "approved") =>
+      apiMocks.approve.mockImplementation(async (id: string) => {
+        const decided = {
+          ...approvals.find((approval) => approval.id === id)!,
+          status,
+          decidedAt: new Date(),
+        } as Approval;
+        approvals = approvals.map((approval) => (approval.id === id ? decided : approval));
+        return decided;
+      });
+    /** `count` pending requests, r01 the longest waiting. */
+    const pendingRequests = (count: number) =>
+      Array.from({ length: count }, (_, index) => {
+        const number = String(index + 1).padStart(2, "0");
+        return createApproval(`r${number}`, `2026-09-${number}T00:00:00.000Z`);
+      });
+    const cards = () => rows().filter((row) => !row.hasAttribute("data-approval-decided-row"));
+    const showMore = () =>
+      [...container.querySelectorAll("button")].find((candidate) => /^Show \d+ more$/.test(candidate.textContent ?? ""));
+    const progress = () => container.querySelector("[data-approval-progress]")?.textContent ?? null;
+    const blur = () => act(async () => (document.activeElement as HTMLElement | null)?.blur());
+
+    it("opens the first request on load and shows the others as compact rows that cannot be decided", async () => {
+      await render();
+
+      expect(openIds()).toEqual(["oldest"]);
+      expect(button(rows()[0], "Approve")).toBeDefined();
+      expect(rows()[0].textContent).toContain("It fits the request.");
+
+      for (const row of rows().slice(1)) {
+        expect(header(row)!.getAttribute("aria-expanded")).toBe("false");
+        expect(row.querySelectorAll("button")).toHaveLength(1);
+        expect(row.querySelector("textarea")).toBeNull();
+        // The row still says what the request is and what it asks, in one line.
+        expect(row.textContent).toContain("Waiting");
+        expect(row.textContent).not.toContain("It fits the request.");
+        expect(row.textContent).not.toContain("It answers the question.");
+      }
+      expect(header(rows()[1])!.textContent).toBe("Request email");
+      expect(rows()[1].querySelector("[data-approval-ask]")!.textContent).toBe("Recommendation: Send the reply.");
+      expect(rows()[1].textContent).toContain("Email reply");
+      // The draft is part of the open card only.
+      expect(rows()[1].textContent).not.toContain("Draft body");
+      expect([...container.querySelectorAll("button")].filter((b) => b.textContent === "Approve")).toHaveLength(1);
+    });
+
+    it("opens a request from its header, closes the one that was open, and closes an open one again", async () => {
+      await render();
+
+      await click(header(rows()[2])!);
+      expect(openIds()).toEqual(["newest"]);
+      expect(button(rows()[2], "Approve")).toBeDefined();
+      expect(button(rows()[0], "Approve")).toBeUndefined();
+
+      await click(header(rows()[2])!);
+      expect(openIds()).toEqual([]);
+      expect([...container.querySelectorAll("button")].filter((b) => b.textContent === "Approve")).toHaveLength(0);
+    });
+
+    it("opens each request J and K move to", async () => {
+      await render();
+
+      await press("j");
+      expect(document.activeElement).toBe(rows()[0]);
+      expect(openIds()).toEqual(["oldest"]);
+      await press("j");
+      expect(document.activeElement).toBe(rows()[1]);
+      expect(openIds()).toEqual(["email"]);
+      expect(button(rows()[1], "Approve")).toBeDefined();
+      expect(button(rows()[0], "Approve")).toBeUndefined();
+      await press("k");
+      expect(document.activeElement).toBe(rows()[0]);
+      expect(openIds()).toEqual(["oldest"]);
+    });
+
+    it("carries on from the row that last held focus when focus has dropped to the page", async () => {
+      await render();
+      await press("j");
+      await press("j");
+      expect(document.activeElement).toBe(rows()[1]);
+
+      await blur();
+      expect(document.activeElement).toBe(document.body);
+      await press("j");
+      expect(document.activeElement).toBe(rows()[2]);
+      expect(openIds()).toEqual(["newest"]);
+
+      // The same from a control outside the list.
+      await act(async () => button(container, "Sort: Oldest first").focus());
+      await press("k");
+      expect(document.activeElement).toBe(rows()[1]);
+      expect(openIds()).toEqual(["email"]);
+    });
+
+    it("remembers a row the reader clicked into, not only one reached with J", async () => {
+      await render();
+      await click(header(rows()[1])!);
+      await act(async () => header(rows()[1])!.focus());
+      await blur();
+
+      await press("j");
+      expect(document.activeElement).toBe(rows()[2]);
+    });
+
+    it("ignores Shift+A, Shift+C and Shift+X on a collapsed row", async () => {
+      approveAs();
+      await render();
+
+      await act(async () => rows()[1].focus());
+      await press("A", rows()[1], { shiftKey: true });
+      await press("X", rows()[1], { shiftKey: true });
+      await press("C", rows()[1], { shiftKey: true });
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+      expect(container.querySelector("textarea")).toBeNull();
+
+      // Open, the same key decides.
+      await click(header(rows()[1])!);
+      await press("A", rows()[1], { shiftKey: true });
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("email"));
+    });
+
+    it("opens the next undecided request after a decision and moves focus to it", async () => {
+      approveAs();
+      await render();
+
+      await act(async () => button(rows()[0], "Approve").focus());
+      await click(button(rows()[0], "Approve"));
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("approved"));
+
+      expect(rows()[0].hasAttribute("data-approval-decided-row")).toBe(true);
+      expect(openIds()).toEqual(["email"]);
+      expect(document.activeElement).toBe(rows()[1]);
+      expect(rows()[1].tabIndex).toBe(-1);
+      // J now goes on from there, not back to the top.
+      await press("j");
+      expect(document.activeElement).toBe(rows()[2]);
+      expect(openIds()).toEqual(["newest"]);
+    });
+
+    it("falls back to the nearest undecided request before the decided one, then to the decided row itself", async () => {
+      approveAs();
+      await render();
+
+      await click(header(rows()[2])!);
+      await click(button(rows()[2], "Approve"));
+      await vi.waitFor(() => expect(rows()[2].textContent).toContain("approved"));
+      // Nothing undecided follows "newest": the nearest one before it opens.
+      expect(openIds()).toEqual(["email"]);
+      expect(document.activeElement).toBe(rows()[1]);
+
+      await click(button(rows()[1], "Approve"));
+      await vi.waitFor(() => expect(rows()[1].textContent).toContain("approved"));
+      expect(openIds()).toEqual(["oldest"]);
+      expect(document.activeElement).toBe(rows()[0]);
+
+      await click(button(rows()[0], "Approve"));
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("approved"));
+      // Nothing is left to open; focus rests on the row just decided, never on the page.
+      expect(cards()).toHaveLength(0);
+      expect(document.activeElement).toBe(rows()[0]);
+    });
+
+    it("takes the reader on when focus sits on the pane around the list, as it does after the page opens", async () => {
+      approveAs();
+      await render();
+      // The app shell focuses its main pane after navigation; a tap on Approve need not move focus off it.
+      container.tabIndex = -1;
+      await act(async () => container.focus());
+
+      await click(button(rows()[0], "Approve"));
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("approved"));
+      expect(openIds()).toEqual(["email"]);
+      expect(document.activeElement).toBe(rows()[1]);
+    });
+
+    it("leaves focus where the reader put it when they moved on before the decision landed", async () => {
+      let land: (approval: Approval) => void = () => {};
+      apiMocks.approve.mockImplementation(
+        (id: string) =>
+          new Promise<Approval>((resolve) => {
+            land = () => resolve({ ...approvals.find((approval) => approval.id === id)!, status: "approved" } as Approval);
+          }),
+      );
+      await render();
+
+      await click(button(rows()[0], "Approve"));
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("oldest"));
+      // The reader opens the last request while the first is still sending.
+      await click(header(rows()[2])!);
+      await act(async () => button(rows()[2], "Add a note").focus());
+      expect(rows()[0].textContent).toContain("Sending your decision...");
+
+      await act(async () => land({} as Approval));
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("approved"));
+      expect(openIds()).toEqual(["newest"]);
+      expect(document.activeElement).toBe(button(rows()[2], "Add a note"));
+    });
+
+    it("shows a failed decision on its row when the reader has opened another request", async () => {
+      let fail: () => void = () => {};
+      apiMocks.approve.mockImplementation(
+        () => new Promise<Approval>((_resolve, reject) => { fail = () => reject(new Error("Session expired")); }),
+      );
+      await render();
+
+      await click(button(rows()[0], "Approve"));
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("oldest"));
+      await click(header(rows()[1])!);
+      await act(async () => fail());
+
+      await vi.waitFor(() => expect(rows()[0].querySelector("[role='alert']")).not.toBeNull());
+      expect(rows()[0].querySelector("[role='alert']")!.textContent).toBe("Error while approving: Session expired");
+      expect(openIds()).toEqual(["email"]);
+    });
+
+    it("brings the next request into view, and the decided row to the top first when its card began above the screen", async () => {
+      approveAs();
+      const scrolls: Array<[string | undefined, ScrollLogicalPosition | undefined]> = [];
+      const scrollIntoView = vi.fn(function (this: HTMLElement, options?: ScrollIntoViewOptions) {
+        scrolls.push([this.dataset.approvalCard, options?.block]);
+      });
+      const prototype = HTMLElement.prototype as unknown as { scrollIntoView?: unknown };
+      const original = prototype.scrollIntoView;
+      prototype.scrollIntoView = scrollIntoView;
+      try {
+        await render();
+
+        // A card that fits the screen: only the next request is scrolled, and only as far as needed.
+        await click(button(rows()[0], "Approve"));
+        await vi.waitFor(() => expect(rows()[0].textContent).toContain("approved"));
+        expect(scrolls).toEqual([["email", "nearest"]]);
+
+        // A tall card whose top has scrolled off: the row it becomes goes to the top before the next is shown.
+        scrolls.length = 0;
+        rows()[1].getBoundingClientRect = () => ({ top: -900 }) as DOMRect;
+        await click(button(rows()[1], "Approve"));
+        await vi.waitFor(() => expect(rows()[1].textContent).toContain("approved"));
+        expect(scrolls).toEqual([["email", "start"], ["newest", "nearest"]]);
+      } finally {
+        prototype.scrollIntoView = original;
+      }
+    });
+
+    it("keeps every card open in the Full cards view, remembers the choice, and still keeps the reader's place", async () => {
+      approveAs();
+      await render();
+      const viewButton = (label: string) => button(container, label);
+      expect(viewButton("Compact").getAttribute("aria-pressed")).toBe("true");
+      expect(viewButton("Full cards").getAttribute("aria-pressed")).toBe("false");
+
+      await click(viewButton("Full cards"));
+      expect(window.localStorage.getItem(VIEW_KEY)).toBe("full");
+      expect(viewButton("Full cards").getAttribute("aria-pressed")).toBe("true");
+      // Cards as before: all open, no header button.
+      for (const row of rows()) {
+        expect(header(row)).toBeNull();
+        expect(button(row, "Approve")).toBeDefined();
+      }
+
+      await click(button(rows()[0], "Approve"));
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("approved"));
+      expect(document.activeElement).toBe(rows()[1]);
+      expect(progress()).toBe("1 decided this visit · 2 left to decide");
+
+      // The choice holds on the next visit.
+      act(() => root.unmount());
+      root = createRoot(container);
+      await render("Request email");
+      expect(button(container, "Full cards").getAttribute("aria-pressed")).toBe("true");
+      expect(button(rows().find((row) => row.dataset.approvalCard === "newest")!, "Approve")).toBeDefined();
+
+      await click(button(container, "Compact"));
+      expect(window.localStorage.getItem(VIEW_KEY)).toBe("compact");
+      expect(openIds()).toHaveLength(1);
+    });
+
+    it("works without storage for the view choice", async () => {
+      const blocked = () => {
+        throw new Error("storage is blocked");
+      };
+      const setItem = vi.fn(blocked);
+      vi.stubGlobal("localStorage", { getItem: vi.fn(blocked), setItem, clear: () => {} });
+      try {
+        await render();
+        expect(openIds()).toEqual(["oldest"]);
+        await click(button(container, "Full cards"));
+        expect(setItem).toHaveBeenCalledWith(VIEW_KEY, "full");
+        for (const row of rows()) expect(button(row, "Approve")).toBeDefined();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("counts only undecided requests against the page, so each decision brings the next one in", async () => {
+      approveAs();
+      approvals = pendingRequests(23);
+      await render("Request r01");
+
+      expect(rows()).toHaveLength(20);
+      expect(showMore()!.textContent).toBe("Show 3 more");
+      expect(container.textContent).not.toContain("Request r21");
+
+      await click(button(rows()[0], "Approve"));
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("approved"));
+      // The compact row does not use up the page: 20 undecided requests are still on it.
+      expect(rows()).toHaveLength(21);
+      expect(cards()).toHaveLength(20);
+      expect(cards().at(-1)!.dataset.approvalCard).toBe("r21");
+      expect(showMore()!.textContent).toBe("Show 2 more");
+
+      await click(button(rows()[1], "Approve"));
+      await vi.waitFor(() => expect(rows()[1].textContent).toContain("approved"));
+      expect(cards()).toHaveLength(20);
+      expect(showMore()!.textContent).toBe("Show 1 more");
+      expect(progress()).toBe("2 decided this visit · 21 left to decide");
+    });
+
+    it("moves focus to the first request that Show more brings in", async () => {
+      approvals = pendingRequests(23);
+      await render("Request r01");
+
+      await act(async () => showMore()!.focus());
+      await click(showMore()!);
+      expect(rows()).toHaveLength(23);
+      expect(showMore()).toBeUndefined();
+      const firstNew = rows()[20];
+      expect(firstNew.dataset.approvalCard).toBe("r21");
+      expect(document.activeElement).toBe(firstNew);
+      expect(openIds()).toEqual(["r21"]);
+    });
+
+    it("says how many were decided this visit and how many are left, once there is one", async () => {
+      approveAs();
+      apiMocks.reject.mockImplementation(async (id: string) => {
+        const decided = { ...approvals.find((approval) => approval.id === id)!, status: "rejected" } as Approval;
+        approvals = approvals.map((approval) => (approval.id === id ? decided : approval));
+        return decided;
+      });
+      await render();
+      expect(progress()).toBeNull();
+
+      await click(button(rows()[0], "Approve"));
+      await vi.waitFor(() => expect(progress()).toBe("1 decided this visit · 2 left to decide"));
+
+      await click(button(rows()[1], "Reject"));
+      await click(button(rows()[1], "Reject request"));
+      await vi.waitFor(() => expect(progress()).toBe("2 decided this visit · 1 left to decide"));
+    });
+
+    it("starts every card under All decisions closed, in both views, with its decided time on the row", async () => {
+      approveAs();
+      chooseFullCards();
+      routerMock.location.pathname = "/approvals/all";
+      approvals = approvals.map((approval) =>
+        approval.id === "done" ? { ...approval, decidedAt: new Date(Date.now() - 3 * 60 * 60 * 1000 - 60_000) } : approval,
+      );
+      await render();
+
+      expect(order()).toEqual(["newest", "email", "oldest", "done"]);
+      expect(openIds()).toEqual([]);
+      expect([...container.querySelectorAll("button")].filter((b) => b.textContent === "Approve")).toHaveLength(0);
+      // The view choice belongs to the queue; it is not offered here.
+      expect(button(container, "Full cards")).toBeUndefined();
+      const done = rows()[3];
+      expect(done.textContent).toContain("approved");
+      expect(done.textContent).toContain("Approved 3h ago");
+
+      // A decided request can be opened to read it; it has nothing to decide.
+      await click(header(done)!);
+      expect(openIds()).toEqual(["done"]);
+      expect(done.textContent).toContain("It fits the request.");
+      expect(button(done, "Approve")).toBeUndefined();
+
+      // A pending one is decided only once it is open, and the reader is not sent down the history afterwards.
+      await press("A", rows()[2], { shiftKey: true });
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+      await click(header(rows()[2])!);
+      await click(button(rows()[2], "Approve"));
+      await vi.waitFor(() => expect(rows()[2].hasAttribute("data-approval-decided-row")).toBe(true));
+      expect(openIds()).toEqual([]);
+      expect(document.activeElement).toBe(rows()[2]);
+    });
+
+    it("opens and focuses the request a link points at, and puts it on the page", async () => {
+      approvals = pendingRequests(45);
+      routerMock.location.hash = "#approval-r43";
+      await render("Request r01");
+
+      // 43 is on the third page of 20.
+      await vi.waitFor(() => expect(openIds()).toEqual(["r43"]));
+      expect(rows()).toHaveLength(45);
+      const target = rows().find((row) => row.dataset.approvalCard === "r43")!;
+      expect(document.activeElement).toBe(target);
+      expect(button(target, "Approve")).toBeDefined();
+      expect(showMore()).toBeUndefined();
+    });
+
+    it("ignores a link to a request that is not listed, and unfolds the section a sent-back one sits in", async () => {
+      routerMock.location.hash = "#approval-done";
+      await render();
+      expect(openIds()).toEqual(["oldest"]);
+      expect(rows().includes(document.activeElement as HTMLElement)).toBe(false);
+
+      act(() => root.unmount());
+      root = createRoot(container);
+      approvals = [
+        ...approvals,
+        createApproval("sent-back", "2026-09-10T00:00:00.000Z", { status: "revision_requested" }),
+      ];
+      routerMock.location.hash = "#approval-sent-back";
+      await render();
+      await vi.waitFor(() =>
+        expect(container.querySelector("[data-approval-sent-back-row='sent-back']")).not.toBeNull());
+      expect(openIds()).toEqual(["oldest"]);
     });
   });
 
@@ -582,15 +1023,22 @@ describe("Approvals", () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true }));
     });
     expect(rows().includes(document.activeElement as HTMLElement)).toBe(false);
+    expect(openIds()).toEqual(["oldest"]);
     expect(container.textContent).not.toContain("Shift+A approve");
-    expect(rows()[0].hasAttribute("tabindex")).toBe(false);
+    await act(async () => {
+      rows()[0].dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true, bubbles: true }));
+    });
+    expect(apiMocks.approve).not.toHaveBeenCalled();
 
-    // The compact row left by a decision follows the same rule.
+    // The page still keeps the reader's place after a decision: the next card opens and takes focus,
+    // and the compact row left behind can take focus too.
     apiMocks.approve.mockImplementation(async (id: string) => (
       { ...approvals.find((approval) => approval.id === id)!, status: "approved" } as Approval
     ));
     await click(button(rows()[0], "Approve"));
     await vi.waitFor(() => expect(rows()[0].textContent).toContain("approved"));
-    expect(rows()[0].hasAttribute("tabindex")).toBe(false);
+    expect(rows()[0].tabIndex).toBe(-1);
+    expect(openIds()).toEqual(["email"]);
+    expect(document.activeElement).toBe(rows()[1]);
   });
 });

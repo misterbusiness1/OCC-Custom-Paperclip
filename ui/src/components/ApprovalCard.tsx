@@ -1,9 +1,11 @@
-import { useRef, type KeyboardEvent } from "react";
+import { useId, useRef, type KeyboardEvent } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Identity } from "./Identity";
 import {
+  approvalAskLine,
   approvalExcerpt,
   approvalMissingSourceNote,
   approvalSubject,
@@ -76,6 +78,10 @@ export function ApprovalCard({
   linkedIssues,
   enableShortcuts = false,
   resolveAgentName,
+  collapsible = false,
+  open = true,
+  onOpenChange,
+  focusable = false,
 }: {
   approval: Approval;
   requesterAgent: Agent | null;
@@ -95,8 +101,20 @@ export function ApprovalCard({
   enableShortcuts?: boolean;
   /** Lets a hire request name the manager the new agent reports to. */
   resolveAgentName?: ApprovalAgentNameResolver;
+  /**
+   * For a queue: the header becomes a button that opens and closes the card. A closed card is one
+   * compact row and carries no summary and no decision controls, so nothing is decided from it.
+   */
+  collapsible?: boolean;
+  /** Whether a collapsible card is open. A card that is not collapsible is always open. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** Lets the page move focus to the card itself, also when shortcuts are off. */
+  focusable?: boolean;
 }) {
   const actionsRef = useRef<ApprovalDecisionActionsHandle>(null);
+  const bodyId = useId();
+  const isOpen = !collapsible || open;
   const payload = approval.payload as Record<string, unknown> | null;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
   const subject = approvalExcerpt(approvalSubject(payload, approval.type), 120);
@@ -118,9 +136,14 @@ export function ApprovalCard({
   // A request resubmitted while this card is open is not approved until the board confirms it read the revision.
   const revision = useApprovalRevisionGuard(approval);
   const approveGuard = composeApproveGuards(revision.approveGuard, draftGate.approveGuard);
+  const title = subject ?? kindLabel;
+  // One line of what is asked, for the closed row only. A request titled by its own recommendation does not repeat it.
+  const ask = isOpen ? null : approvalAskLine(approval.type, payload);
+  const askLine = ask && ask.text !== title ? ask : null;
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+    // A held key decides nothing: the next card takes focus as soon as a decision lands.
+    if (!event.shiftKey || event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
     if (isKeyboardShortcutTextInputTarget(event.target)) return;
     const actions = actionsRef.current;
     if (!actions) return;
@@ -144,68 +167,67 @@ export function ApprovalCard({
     </Button>
   ) : null;
 
-  return (
-    <Card
-      className="block border-border/70 p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      data-approval-card={approval.id}
-      tabIndex={enableShortcuts ? -1 : undefined}
-      onKeyDown={enableShortcuts && showResolutionButtons ? handleKeyDown : undefined}
-    >
-      <div className="min-w-0 space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge
-            variant="outline"
-            className="border-border/70 px-2 py-0.5 text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground"
-          >
-            {kindLabel}
-          </Badge>
-          {isEmailReply && (
-            <Badge
-              variant="outline"
-              className="border-border/70 px-2 py-0.5 text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground"
-            >
-              Email reply
-            </Badge>
+  const badgeClass =
+    "border-border/70 px-2 py-0.5 text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground";
+  const badges = (
+    <>
+      <Badge variant="outline" className={badgeClass}>
+        {kindLabel}
+      </Badge>
+      {isEmailReply && (
+        <Badge variant="outline" className={badgeClass}>
+          Email reply
+        </Badge>
+      )}
+      <StatusBadge status={approval.status} />
+      {(linkedIssues ?? []).map((issue) => (
+        <Link
+          key={issue.id}
+          to={`/issues/${issue.identifier ?? issue.id}`}
+          title={issue.title ?? undefined}
+          className={cn(
+            "rounded border border-border/70 px-1.5 py-0.5 font-mono text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+            // Stays a link of its own, above the header button's click area.
+            collapsible && "relative z-10",
           )}
-          <StatusBadge status={approval.status} />
-          {(linkedIssues ?? []).map((issue) => (
-            <Link
-              key={issue.id}
-              to={`/issues/${issue.identifier ?? issue.id}`}
-              title={issue.title ?? undefined}
-              className="rounded border border-border/70 px-1.5 py-0.5 font-mono text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-            >
-              {issue.identifier ?? issue.id.slice(0, 8)}
-            </Link>
-          ))}
-        </div>
-        <h3 className="text-base font-semibold leading-6 text-foreground">
-          {subject ?? kindLabel}
-        </h3>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-          {requesterAgent && (
-            <span className="inline-flex min-w-0 items-center gap-1.5">
-              Requested by <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
-            </span>
-          )}
-          {waiting ? (
-            <span
-              className={cn(waiting.long && "font-medium text-amber-700 dark:text-amber-300")}
-              title={new Date(approval.createdAt).toLocaleString()}
-            >
-              {waiting.label}
-            </span>
-          ) : decidedLead && approval.decidedAt ? (
-            <span title={new Date(approval.decidedAt).toLocaleString()}>
-              {decidedLead} {timeAgo(approval.decidedAt)}
-            </span>
-          ) : (
-            <span>Created {timeAgo(approval.createdAt)}</span>
-          )}
-          {missingSourceNote && <span>{missingSourceNote}</span>}
-        </div>
-      </div>
+        >
+          {issue.identifier ?? issue.id.slice(0, 8)}
+        </Link>
+      ))}
+    </>
+  );
+  const meta = (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+      {requesterAgent && (
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          Requested by <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
+        </span>
+      )}
+      {waiting ? (
+        <span
+          className={cn(waiting.long && "font-medium text-amber-700 dark:text-amber-300")}
+          title={new Date(approval.createdAt).toLocaleString()}
+        >
+          {waiting.label}
+        </span>
+      ) : decidedLead && approval.decidedAt ? (
+        <span title={new Date(approval.decidedAt).toLocaleString()}>
+          {decidedLead} {timeAgo(approval.decidedAt)}
+        </span>
+      ) : (
+        <span>Created {timeAgo(approval.createdAt)}</span>
+      )}
+      {missingSourceNote && <span>{missingSourceNote}</span>}
+      {/* A closed row has no notice and no buttons, so it says these two things itself. */}
+      {!isOpen && revision.revised && (
+        <span className="font-medium text-amber-700 dark:text-amber-300">Revised while this page was open</span>
+      )}
+      {!isOpen && isPending && <span>Sending your decision...</span>}
+    </div>
+  );
 
+  const body = (
+    <>
       <ApprovalRevisedNotice guard={revision} className="mt-4" />
 
       <ApprovalDecisionSummary
@@ -228,7 +250,7 @@ export function ApprovalCard({
           {showResolutionButtons && onApprove && onReject ? (
             <ApprovalDecisionActions
               ref={actionsRef}
-              subject={subject ?? kindLabel}
+              subject={title}
               status={approval.status}
               onApprove={onApprove}
               onReject={onReject}
@@ -262,6 +284,88 @@ export function ApprovalCard({
           )}
         </div>
       ) : null}
+    </>
+  );
+
+  if (collapsible) {
+    const Chevron = isOpen ? ChevronDown : ChevronRight;
+    return (
+      <Card
+        className={cn(
+          "block border-border/70 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          // The open card is the one the shortcuts act on, so it is marked whether or not it holds focus.
+          isOpen && "border-ring ring-1 ring-ring",
+        )}
+        data-approval-card={approval.id}
+        tabIndex={enableShortcuts || focusable ? -1 : undefined}
+        onKeyDown={enableShortcuts && showResolutionButtons && isOpen ? handleKeyDown : undefined}
+      >
+        {/* The button's click area is stretched over this header; the task links sit above it. */}
+        <div
+          className={cn(
+            "relative min-w-0 space-y-1 rounded-lg px-4 pt-3",
+            isOpen ? "pb-0" : "pb-3 hover:bg-accent/40",
+          )}
+        >
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            {badges}
+            {meta}
+          </div>
+          <h3
+            className={cn(
+              "font-semibold text-foreground",
+              isOpen ? "text-base leading-6" : "text-sm leading-5",
+            )}
+          >
+            <button
+              type="button"
+              aria-expanded={isOpen}
+              aria-controls={bodyId}
+              onClick={() => onOpenChange?.(!isOpen)}
+              className="flex w-full min-w-0 cursor-pointer items-start gap-1.5 rounded text-left after:absolute after:inset-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Chevron
+                aria-hidden
+                className={cn("h-4 w-4 shrink-0 text-muted-foreground", isOpen ? "mt-1" : "mt-0.5")}
+              />
+              <span className={cn("min-w-0", isOpen ? "break-words" : "truncate")}>{title}</span>
+            </button>
+          </h3>
+          {askLine && (
+            <p className="truncate pl-5.5 text-xs leading-5 text-muted-foreground" data-approval-ask="">
+              <span className="font-medium">{askLine.label}:</span> {askLine.text}
+            </p>
+          )}
+          {!isOpen && error && (
+            <p role="alert" className="break-words pl-5.5 text-xs font-medium leading-5 text-destructive">
+              {error}
+            </p>
+          )}
+        </div>
+        <div id={bodyId} hidden={!isOpen} className="px-4 pb-4">
+          {isOpen ? body : null}
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card
+      className={cn(
+        "block border-border/70 p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        // With shortcuts on, the card that holds focus is the one they act on: mark it for mouse focus too.
+        enableShortcuts && "focus-within:border-ring focus-within:ring-1 focus-within:ring-ring",
+      )}
+      data-approval-card={approval.id}
+      tabIndex={enableShortcuts || focusable ? -1 : undefined}
+      onKeyDown={enableShortcuts && showResolutionButtons ? handleKeyDown : undefined}
+    >
+      <div className="min-w-0 space-y-2">
+        <div className="flex flex-wrap items-center gap-2">{badges}</div>
+        <h3 className="text-base font-semibold leading-6 text-foreground">{title}</h3>
+        {meta}
+      </div>
+      {body}
     </Card>
   );
 }
