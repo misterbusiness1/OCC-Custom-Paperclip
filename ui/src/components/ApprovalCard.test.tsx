@@ -2,7 +2,7 @@
 
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { Approval } from "@paperclipai/shared";
+import type { Agent, Approval } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/router", () => ({
@@ -196,18 +196,330 @@ describe("ApprovalCard", () => {
     expect(onRequestRevision).toHaveBeenCalledExactlyOnceWith("Confirm where the data is stored");
   });
 
-  it("offers Request changes only where it can be handled and only while pending", () => {
+  it("offers Request changes only where it can be handled", () => {
     render({ approval: createApproval(), onApprove: vi.fn(), onReject: vi.fn() });
     expect(button("Request changes")).toBeUndefined();
-
-    render({
-      approval: createApproval({ status: "revision_requested" }),
-      onApprove: vi.fn(),
-      onReject: vi.fn(),
-      onRequestRevision: vi.fn(),
-    });
-    expect(button("Request changes")).toBeUndefined();
     expect(button("Approve")).toBeDefined();
+  });
+
+  describe("sent back for changes", () => {
+    const SENT_BACK = {
+      status: "revision_requested",
+      decisionNote: "Quote the delivery date.\nUse the November price list.",
+      decidedByUserId: "user-board-1",
+      decidedAt: new Date("2026-10-06T10:00:00.000Z"),
+      updatedAt: new Date("2026-10-06T10:00:00.000Z"),
+    } as const;
+    const requester = { id: "agent-requester", name: "Pricing Agent" } as Agent;
+    const sentBack = () => container.querySelector<HTMLElement>("[data-approval-sent-back]")!;
+
+    it("offers no one-click decision and says who it is waiting on, since when, and what was asked", () => {
+      const onApprove = vi.fn();
+      const onReject = vi.fn();
+      render({
+        approval: createApproval(SENT_BACK),
+        requesterAgent: requester,
+        onApprove,
+        onReject,
+        onRequestRevision: vi.fn(),
+        detailLink: "/approvals/approval-1",
+        enableShortcuts: true,
+      });
+
+      for (const label of ["Approve", "Reject", "Request changes", "Add a note"]) {
+        expect(button(label)).toBeUndefined();
+      }
+      expect(container.querySelectorAll("button")).toHaveLength(0);
+      expect(sentBack().textContent).toContain("Waiting on Pricing Agent to revise");
+      expect(sentBack().textContent).toContain("Sent back 2h ago");
+      const asked = sentBack().querySelector("[data-approval-changes-asked]")!;
+      expect(asked.textContent).toBe("Changes you asked forQuote the delivery date.\nUse the November price list.");
+      // The note is the board's own text, shown as written with its line break.
+      expect(asked.querySelectorAll("p")[1].className).toContain("whitespace-pre-wrap");
+      expect(container.textContent).not.toContain("Decision note");
+      // The board is not told it has kept the request waiting, and no id is shown.
+      expect(container.textContent).not.toContain("Waiting 1 day");
+      expect(container.textContent).not.toContain("user-board-1");
+      expect(container.textContent).not.toContain("agent-requester");
+      const details = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "View details");
+      expect(details?.getAttribute("href")).toBe("/approvals/approval-1");
+
+      // The keyboard shortcuts decide nothing either.
+      for (const key of ["A", "X", "C"]) {
+        act(() => {
+          container
+            .querySelector("[data-approval-card]")!
+            .dispatchEvent(new KeyboardEvent("keydown", { key, shiftKey: true, bubbles: true }));
+        });
+      }
+      expect(onApprove).not.toHaveBeenCalled();
+      expect(onReject).not.toHaveBeenCalled();
+      expect(container.querySelector("textarea")).toBeNull();
+    });
+
+    it("names no one when the requester is unknown and falls back to the last change for the time", () => {
+      render({
+        approval: createApproval({
+          ...SENT_BACK,
+          decidedAt: null,
+          decisionNote: null,
+          updatedAt: new Date("2026-10-06T09:00:00.000Z"),
+        }),
+        onApprove: vi.fn(),
+        onReject: vi.fn(),
+      });
+      expect(sentBack().textContent).toContain("Waiting on the requester to revise");
+      expect(sentBack().textContent).toContain("Sent back 3h ago");
+      expect(container.textContent).not.toContain("Changes you asked for");
+      expect(button("Approve")).toBeUndefined();
+    });
+
+    it("keeps the error of a change request on the card, beside the link to its details", () => {
+      render({
+        approval: createApproval(SENT_BACK),
+        onApprove: vi.fn(),
+        onReject: vi.fn(),
+        detailLink: "/approvals/approval-1",
+        error: "Error while requesting changes: Session expired",
+      });
+      expect(container.querySelector("[role='alert']")!.textContent).toBe(
+        "Error while requesting changes: Session expired",
+      );
+      expect(sentBack().textContent).toContain("Waiting on the requester to revise");
+    });
+  });
+
+  it("says when a closed request was decided, and never by whom as an id", () => {
+    const decided = {
+      decidedAt: new Date("2026-10-06T10:00:00.000Z"),
+      decidedByUserId: "user-board-1",
+      decisionNote: "Month to month only",
+    };
+    for (const [status, line] of [
+      ["approved", "Approved 2h ago"],
+      ["rejected", "Rejected 2h ago"],
+      ["cancelled", "Cancelled 2h ago"],
+    ] as const) {
+      render({ approval: createApproval({ status, ...decided }) });
+      expect(container.textContent).toContain(line);
+      expect(container.textContent).not.toContain("Created");
+      expect(container.textContent).not.toContain("user-board-1");
+      // A closed request keeps the plain label for its note.
+      expect(container.textContent).toContain("Decision note. Month to month only");
+      expect(container.textContent).not.toContain("Changes you asked for");
+    }
+
+    // Without a recorded time the card falls back to when the request was created.
+    render({ approval: createApproval({ status: "approved" }) });
+    expect(container.textContent).toContain("Created 1d ago");
+    // A request still open is not said to be decided.
+    render({ approval: createApproval({ decidedAt: new Date("2026-10-06T10:00:00.000Z") }) });
+    expect(container.textContent).toContain("Waiting 1 day");
+    expect(container.textContent).not.toContain("2h ago");
+  });
+
+  describe("revised while open", () => {
+    const NOTICE = "The requester revised this request while it was open. Review it before you decide.";
+    const HELD_BACK = "Confirm that you have reviewed the revised request, then approve.";
+    const LATER = new Date("2026-10-06T11:00:00.000Z");
+    const scrollIntoView = vi.fn();
+    const notice = () => container.querySelector<HTMLElement>("[data-approval-revised]");
+    const heldBackMessage = () => container.querySelector("[role='status']")!.textContent;
+    const revisedPayload = (recommendedAction: string) => ({
+      ...(createApproval().payload as Record<string, unknown>),
+      recommendedAction,
+    });
+    const pressApprove = () =>
+      act(() => {
+        const target = container.contains(document.activeElement)
+          ? document.activeElement!
+          : container.querySelector("[data-approval-card]")!;
+        target.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true, bubbles: true }));
+      });
+
+    beforeEach(() => {
+      // jsdom does not implement scrollIntoView.
+      scrollIntoView.mockReset();
+      Element.prototype.scrollIntoView = scrollIntoView;
+    });
+
+    afterEach(() => {
+      delete (Element.prototype as Partial<Element>).scrollIntoView;
+    });
+
+    it("holds Approve back until the board confirms it has reviewed the revision, and keeps the typed note", () => {
+      const onApprove = vi.fn();
+      const onReject = vi.fn();
+      const props = { onApprove, onReject, onRequestRevision: vi.fn(), enableShortcuts: true };
+      render({ approval: createApproval(), ...props });
+      click("Add a note");
+      type("Month to month only");
+      expect(notice()).toBeNull();
+
+      render({
+        approval: createApproval({
+          updatedAt: LATER,
+          payload: revisedPayload("Approve provider Y at twice the quoted price."),
+        }),
+        ...props,
+      });
+
+      // The new text is on the card, under a notice that says it changed.
+      expect(container.textContent).toContain("Approve provider Y at twice the quoted price.");
+      expect(notice()!.dataset.approvalRevised).toBe("unreviewed");
+      expect(notice()!.querySelector("[role='alert']")!.textContent).toBe(NOTICE);
+      const summary = [...container.querySelectorAll("p")].find((p) => p.textContent === "Recommendation")!;
+      expect(notice()!.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(container.querySelector("textarea")!.value).toBe("Month to month only");
+
+      click("Approve");
+      expect(onApprove).not.toHaveBeenCalled();
+      expect(heldBackMessage()).toBe(HELD_BACK);
+      // Focus lands on the notice, not on its button: a second Enter confirms nothing.
+      expect(document.activeElement).toBe(notice());
+      expect(scrollIntoView.mock.contexts[0]).toBe(notice());
+      pressApprove();
+      expect(onApprove).not.toHaveBeenCalled();
+
+      click("I have reviewed it");
+      expect(button("I have reviewed it")).toBeUndefined();
+      expect(container.textContent).not.toContain(NOTICE);
+      expect(notice()!.dataset.approvalRevised).toBe("reviewed");
+      expect(container.querySelector("[role='alert']")).toBeNull();
+      expect(heldBackMessage()).toBe("");
+      // Focus stays inside the card when the button goes away.
+      expect(document.activeElement).toBe(notice());
+      expect(container.querySelector("textarea")!.value).toBe("Month to month only");
+
+      click("Approve");
+      expect(onApprove).toHaveBeenCalledExactlyOnceWith("Month to month only");
+      expect(onReject).not.toHaveBeenCalled();
+    });
+
+    it("blocks Shift+A the same way and never holds back Reject or Request changes", () => {
+      const onApprove = vi.fn();
+      const onReject = vi.fn();
+      const props = { onApprove, onReject, onRequestRevision: vi.fn(), enableShortcuts: true };
+      render({ approval: createApproval(), ...props });
+      render({
+        approval: createApproval({ updatedAt: LATER, payload: revisedPayload("Approve provider Y.") }),
+        ...props,
+      });
+
+      pressApprove();
+      expect(onApprove).not.toHaveBeenCalled();
+      expect(heldBackMessage()).toBe(HELD_BACK);
+
+      click("Reject");
+      click("Reject request");
+      expect(onReject).toHaveBeenCalledExactlyOnceWith(undefined);
+      expect(onApprove).not.toHaveBeenCalled();
+    });
+
+    it("raises nothing when only the time changed, or when the payload is the same in another key order", () => {
+      const onApprove = vi.fn();
+      const props = { onApprove, onReject: vi.fn() };
+      const first = createApproval();
+      render({ approval: first, ...props });
+
+      const samePayload = Object.fromEntries(Object.entries(first.payload).reverse());
+      expect(Object.keys(samePayload)).not.toEqual(Object.keys(first.payload));
+      render({ approval: createApproval({ updatedAt: LATER, payload: samePayload }), ...props });
+      expect(notice()).toBeNull();
+      expect(container.textContent).not.toContain(NOTICE);
+
+      click("Approve");
+      expect(onApprove).toHaveBeenCalledExactlyOnceWith(undefined);
+    });
+
+    it("raises nothing for a decision, for older data, or for another request shown in the same place", () => {
+      const props = { onApprove: vi.fn(), onReject: vi.fn() };
+      render({ approval: createApproval(), ...props });
+
+      // The reader's own decision changes the time and the status.
+      render({
+        approval: createApproval({ status: "approved", updatedAt: LATER, payload: revisedPayload("Changed.") }),
+        ...props,
+      });
+      expect(notice()).toBeNull();
+
+      render({ approval: createApproval(), ...props });
+      render({
+        approval: createApproval({
+          updatedAt: new Date("2026-10-04T12:00:00.000Z"),
+          payload: revisedPayload("An older version."),
+        }),
+        ...props,
+      });
+      expect(notice()).toBeNull();
+
+      render({
+        approval: createApproval({ id: "approval-2", updatedAt: LATER, payload: revisedPayload("Another request.") }),
+        ...props,
+      });
+      expect(notice()).toBeNull();
+      expect(button("Approve")).toBeDefined();
+    });
+
+    it("says so when a request sent back comes back revised, and again for each later revision", () => {
+      const onApprove = vi.fn();
+      const props = { onApprove, onReject: vi.fn() };
+      render({ approval: createApproval(), ...props });
+      render({
+        approval: createApproval({ status: "revision_requested", updatedAt: new Date("2026-10-06T10:00:00.000Z") }),
+        ...props,
+      });
+      expect(notice()).toBeNull();
+      expect(button("Approve")).toBeUndefined();
+
+      // Resubmitted unchanged: the board has read this version.
+      render({ approval: createApproval({ updatedAt: new Date("2026-10-06T10:30:00.000Z") }), ...props });
+      expect(notice()).toBeNull();
+
+      render({ approval: createApproval({ updatedAt: LATER, payload: revisedPayload("Second version.") }), ...props });
+      expect(notice()!.textContent).toContain(NOTICE);
+      click("I have reviewed it");
+      expect(container.textContent).not.toContain(NOTICE);
+
+      render({
+        approval: createApproval({
+          updatedAt: new Date("2026-10-06T11:30:00.000Z"),
+          payload: revisedPayload("Third version."),
+        }),
+        ...props,
+      });
+      expect(notice()!.textContent).toContain(NOTICE);
+      click("Approve");
+      expect(onApprove).not.toHaveBeenCalled();
+      click("I have reviewed it");
+      click("Approve");
+      expect(onApprove).toHaveBeenCalledTimes(1);
+    });
+
+    it("deals with the revision first and the cut draft second", () => {
+      const onApprove = vi.fn();
+      const props = { onApprove, onReject: vi.fn() };
+      const body = emailDraftBody(2000);
+      render({ approval: createApproval({ payload: emailPayload(body) }), ...props });
+      const revisedBody = body.replace("ship the same day", "ship within a month");
+      render({ approval: createApproval({ updatedAt: LATER, payload: emailPayload(revisedBody) }), ...props });
+      const shownBody = () => container.querySelector("[data-approval-draft-body]")!.textContent ?? "";
+
+      click("Approve");
+      expect(heldBackMessage()).toBe(HELD_BACK);
+      // The first press is about the revision only: the draft stays as it was.
+      expect(shownBody()).not.toContain("ship within a month");
+      expect(onApprove).not.toHaveBeenCalled();
+
+      click("I have reviewed it");
+      click("Approve");
+      expect(heldBackMessage()).toBe("Read the full reply, then approve.");
+      expect(shownBody()).toBe(revisedBody);
+      expect(onApprove).not.toHaveBeenCalled();
+
+      click("Approve");
+      expect(onApprove).toHaveBeenCalledExactlyOnceWith(undefined);
+    });
   });
 
   it("expands long text and extra pros and risks in place", () => {

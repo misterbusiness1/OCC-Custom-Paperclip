@@ -586,6 +586,8 @@ describe("Inbox toolbar", () => {
       const revised: Approval = {
         ...pending,
         status: "revision_requested",
+        decisionNote: "Quote the delivery date",
+        decidedAt: new Date("2026-03-11T00:05:00.000Z"),
         updatedAt: new Date("2026-03-11T00:05:00.000Z"),
       };
       const listed = createDeferred<Approval[]>();
@@ -610,23 +612,22 @@ describe("Inbox toolbar", () => {
       expect(button("Approve").disabled).toBe(true);
       expect(button("Send request").disabled).toBe(true);
       await act(async () => listed.resolve([revised]));
-      // Once the list catches up, the request can still be approved or rejected, but not revised again.
-      await vi.waitFor(() => expect(button("Approve").disabled).toBe(false));
-      expect(button("Request changes")).toBeUndefined();
-      if (streamlinedUi) {
-        apiMocks.approve.mockResolvedValue({ ...revised, status: "approved" });
-        await act(async () => button("Approve").click());
-        await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-1"));
-        expect(apiMocks.reject).not.toHaveBeenCalled();
-      } else {
-        apiMocks.reject.mockResolvedValue({ ...revised, status: "rejected" });
-        await act(async () => button("Reject").click());
-        expect(apiMocks.reject).not.toHaveBeenCalled();
-        await act(async () => button("Reject request").click());
-        await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("approval-1"));
+      // Once the list catches up, the row waits on the requester: the version sent back has no one-click decision.
+      await vi.waitFor(() => expect(row.querySelector("[data-approval-sent-back]")).not.toBeNull());
+      const sentBack = row.querySelector("[data-approval-sent-back]")!;
+      expect(sentBack.textContent).toContain("Waiting on the requester to revise");
+      expect(sentBack.textContent).toContain("Sent back ");
+      expect(sentBack.textContent).toContain("Changes you asked forQuote the delivery date");
+      for (const label of ["Approve", "Reject", "Request changes", "Send request", "Add a note"]) {
+        expect(button(label)).toBeUndefined();
       }
+      expect(row.querySelector("textarea")).toBeNull();
+      // The request itself stays readable in the row.
+      expect(row.querySelector("pre")!.textContent).toBe(original);
       // A Board request is decided in place: the Inbox stays on screen.
       await act(async () => {});
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+      expect(apiMocks.reject).not.toHaveBeenCalled();
       expect(routerMock.navigate).not.toHaveBeenCalled();
       expect(row.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
       expect(row.querySelector('button[aria-label="Archive"]')).not.toBeNull();
@@ -826,6 +827,187 @@ describe("Inbox toolbar", () => {
       expect(apiMocks.approve).toHaveBeenCalledTimes(2);
       expect(heldBack(long)).toBe(false);
       expect(apiMocks.reject).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("offers no decision on a request sent back for changes with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    apiMocks.agentsList.mockResolvedValue([{ id: "agent-1", name: "Pricing Agent" }]);
+    const sentBackAt = new Date(Date.now() - 2 * 60 * 60 * 1000 - 60_000);
+    const sentBack = (overrides: Partial<Approval>) => createApproval({
+      status: "revision_requested",
+      requestedByAgentId: "agent-1",
+      decisionNote: "Quote the delivery date.",
+      decidedByUserId: "user-board-1",
+      decidedAt: sentBackAt,
+      updatedAt: sentBackAt,
+      ...overrides,
+    });
+    apiMocks.approvalsList.mockResolvedValue([
+      sentBack({
+        id: "approval-board",
+        type: "request_board_approval",
+        payload: { title: "Sent back request", recommendedAction: "Approve it", reasoning: "It fits the request" },
+      }),
+      // A type with no decision summary would otherwise get the plain Approve / Reject buttons.
+      sentBack({
+        id: "approval-plain",
+        type: "custom_gate" as Approval["type"],
+        requestedByAgentId: null,
+        decidedAt: null,
+        decisionNote: null,
+        payload: { title: "Plain sent back request" },
+      }),
+      createApproval({
+        id: "approval-open",
+        type: "request_board_approval",
+        requestedByAgentId: "agent-1",
+        payload: { title: "Open request", recommendedAction: "Approve it", reasoning: "It fits the request" },
+      }),
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Waiting on Pricing Agent to revise"));
+      const rowFor = (title: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(title))!;
+      const buttons = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].filter((candidate) => candidate.textContent === label);
+
+      const board = rowFor("Sent back request");
+      const waiting = board.querySelector("[data-approval-sent-back]")!;
+      expect(waiting.textContent).toContain("Waiting on Pricing Agent to revise");
+      expect(waiting.textContent).toContain("Sent back 2h ago");
+      expect(waiting.textContent).toContain("Changes you asked forQuote the delivery date.");
+      // The summary of what was sent back is still there to read.
+      expect(board.textContent).toContain("Approve it");
+      for (const label of ["Approve", "Reject", "Request changes", "Add a note"]) {
+        expect(buttons(board, label)).toHaveLength(0);
+      }
+      expect(board.textContent).not.toContain("user-board-1");
+      expect(board.querySelector('a[to="/approvals/approval-board"]')).not.toBeNull();
+
+      const plain = rowFor("Plain sent back request");
+      expect(plain.querySelector("[data-approval-sent-back]")!.textContent).toContain(
+        "Waiting on the requester to revise",
+      );
+      expect(plain.textContent).not.toContain("Changes you asked for");
+      expect(buttons(plain, "Approve")).toHaveLength(0);
+      expect(buttons(plain, "Reject")).toHaveLength(0);
+
+      // A pending request beside them keeps its buttons.
+      const open = rowFor("Open request");
+      expect(open.querySelector("[data-approval-sent-back]")).toBeNull();
+      expect(buttons(open, "Approve")).toHaveLength(1);
+      expect(buttons(open, "Request changes")).toHaveLength(1);
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("holds Approve back when a request is revised while its row is open with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    const NOTICE = "The requester revised this request while it was open. Review it before you decide.";
+    const boardApproval = (overrides: Partial<Approval> = {}) => createApproval({
+      id: "approval-board",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      payload: { title: "Hosting request", recommendedAction: "Approve provider X", reasoning: "It fits the request" },
+      ...overrides,
+    });
+    const plainApproval = (overrides: Partial<Approval> = {}) => createApproval({
+      id: "approval-plain",
+      type: "custom_gate" as Approval["type"],
+      payload: { title: "Plain request", limit: 100 },
+      ...overrides,
+    });
+    const untouched = (overrides: Partial<Approval> = {}) => createApproval({
+      id: "approval-same",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      payload: { title: "Unchanged request", recommendedAction: "Approve it", reasoning: "It fits the request" },
+      ...overrides,
+    });
+    apiMocks.approvalsList.mockResolvedValue([boardApproval(), plainApproval(), untouched()]);
+    apiMocks.approve.mockImplementation(async (id: string) => createApproval({ id, status: "approved" }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Hosting request"));
+      const rowFor = (title: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(title))!;
+      const buttons = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].filter((candidate) => candidate.textContent === label);
+      const notice = (row: Element) => row.querySelector<HTMLElement>("[data-approval-revised]");
+      const board = rowFor("Hosting request");
+      const plain = rowFor("Plain request");
+      const same = rowFor("Unchanged request");
+      expect(container.textContent).not.toContain(NOTICE);
+
+      // The board starts a note, then the requester resubmits two of the three requests with new content.
+      await act(async () => buttons(board, "Add a note")[0].click());
+      await act(async () => {
+        const note = board.querySelector("textarea")!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(note, "Month to month only");
+        note.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      const later = new Date("2026-03-11T00:10:00.000Z");
+      apiMocks.approvalsList.mockResolvedValue([
+        boardApproval({
+          updatedAt: later,
+          payload: { title: "Hosting request", recommendedAction: "Approve provider Y at twice the price", reasoning: "It fits the request" },
+        }),
+        plainApproval({ updatedAt: later, payload: { title: "Plain request", limit: 900 } }),
+        // Only the time changed here.
+        untouched({ updatedAt: later }),
+      ]);
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["approvals", "company-1"] });
+      });
+      await vi.waitFor(() => expect(board.textContent).toContain("Approve provider Y at twice the price"));
+
+      expect(notice(board)!.textContent).toContain(NOTICE);
+      expect(notice(plain)!.textContent).toContain(NOTICE);
+      expect(notice(same)).toBeNull();
+      // The notice comes before the revised summary, and the note is still there.
+      const recommendation = [...board.querySelectorAll("p")].find((p) => p.textContent === "Recommendation")!;
+      expect(notice(board)!.compareDocumentPosition(recommendation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(board.querySelector("textarea")!.value).toBe("Month to month only");
+
+      // Approve sends nothing until the revision is confirmed, on the shared controls and on the plain buttons.
+      await act(async () => buttons(board, "Approve")[0].click());
+      for (const approve of buttons(plain, "Approve")) await act(async () => approve.click());
+      expect(buttons(plain, "Approve").length).toBeGreaterThan(0);
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+      expect(
+        [...board.querySelectorAll("[role='status']")].map((status) => status.textContent),
+      ).toContain("Confirm that you have reviewed the revised request, then approve.");
+
+      // A request whose content did not change is approved at once.
+      await act(async () => buttons(same, "Approve")[0].click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-same"));
+
+      await act(async () => buttons(board, "I have reviewed it")[0].click());
+      expect(board.textContent).not.toContain(NOTICE);
+      expect(board.contains(document.activeElement)).toBe(true);
+      expect(board.querySelector("textarea")!.value).toBe("Month to month only");
+      await act(async () => buttons(board, "Approve")[0].click());
+      await vi.waitFor(() =>
+        expect(apiMocks.approve).toHaveBeenCalledWith("approval-board", "Month to month only"));
+
+      await act(async () => buttons(plain, "I have reviewed it")[0].click());
+      await act(async () => buttons(plain, "Approve")[0].click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-plain"));
+      expect(apiMocks.approve).toHaveBeenCalledTimes(3);
     } finally {
       act(() => root.unmount());
       queryClient.clear();

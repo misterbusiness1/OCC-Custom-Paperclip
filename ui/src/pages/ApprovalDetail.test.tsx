@@ -307,6 +307,117 @@ describe("ApprovalDetail", () => {
     expect(panel().querySelectorAll("button")).toHaveLength(0);
   });
 
+  describe("sent back for changes, and revised while the page is open", () => {
+    const NOTICE = "The requester revised this request while it was open. Review it before you decide.";
+    const notice = () => panel().querySelector<HTMLElement>("[data-approval-revised]");
+    const typeInto = (field: HTMLTextAreaElement, value: string) =>
+      act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, value);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    /** What a live update does: the server holds a new version and the page reloads it. */
+    const reload = async (approval: Approval) => {
+      apiMocks.get.mockResolvedValue(approval);
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["approvals", "detail", "approval-1"] });
+      });
+    };
+    const revisedPayload = {
+      title: "Approve staging hosting spend",
+      recommendedAction: "Approve provider Y at twice the quoted price.",
+      reasoning: "Provider X withdrew its offer.",
+      pros: ["Available today."],
+      risks: ["Twice the monthly cost."],
+    };
+
+    it("keeps Approve and Reject for a request that was sent back, and labels the note as the board's own request", async () => {
+      apiMocks.approve.mockResolvedValue(createApproval({ status: "approved" }));
+      await render(
+        createApproval({
+          status: "revision_requested",
+          decisionNote: "Quote the delivery date.",
+          decidedAt: new Date("2026-10-06T10:00:00.000Z"),
+          updatedAt: new Date("2026-10-06T10:00:00.000Z"),
+        }),
+      );
+
+      expect(panel().textContent).toContain("Changes you asked forQuote the delivery date.");
+      expect(panel().textContent).not.toContain("Decision note");
+      expect(button(panel(), "Approve")).toBeDefined();
+      expect(button(panel(), "Reject")).toBeDefined();
+      expect(button(panel(), "Request changes")).toBeUndefined();
+      expect(notice()).toBeNull();
+
+      await act(async () => button(panel(), "Approve").click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-1"));
+    });
+
+    it("holds Approve back after a revision arrives, until the board confirms it has reviewed it", async () => {
+      apiMocks.approve.mockResolvedValue(createApproval({ status: "approved" }));
+      await render(createApproval());
+      await act(async () => button(panel(), "Add a note").click());
+      await typeInto(panel().querySelector("textarea")!, "Month to month only");
+      expect(notice()).toBeNull();
+
+      await reload(createApproval({ updatedAt: new Date("2026-10-06T11:00:00.000Z"), payload: revisedPayload }));
+      await vi.waitFor(() => expect(panel().textContent).toContain("Approve provider Y at twice the quoted price."));
+
+      expect(notice()!.querySelector("[role='alert']")!.textContent).toBe(NOTICE);
+      const recommendation = [...panel().querySelectorAll("p")].find((p) => p.textContent === "Recommendation")!;
+      expect(isBefore(notice()!, recommendation)).toBe(true);
+      expect(panel().querySelector("textarea")!.value).toBe("Month to month only");
+
+      await act(async () => button(panel(), "Approve").click());
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+      expect(panel().querySelector("[role='status']")!.textContent).toBe(
+        "Confirm that you have reviewed the revised request, then approve.",
+      );
+      expect(document.activeElement).toBe(notice());
+
+      await act(async () => button(panel(), "I have reviewed it").click());
+      expect(panel().textContent).not.toContain(NOTICE);
+      expect(panel().querySelector("[role='status']")!.textContent).toBe("");
+      expect(panel().contains(document.activeElement)).toBe(true);
+      expect(panel().querySelector("textarea")!.value).toBe("Month to month only");
+
+      await act(async () => button(panel(), "Approve").click());
+      await vi.waitFor(() =>
+        expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-1", "Month to month only"));
+    });
+
+    it("raises no notice when only the time changed", async () => {
+      await render(createApproval());
+      await reload(createApproval({ updatedAt: new Date("2026-10-06T11:00:00.000Z") }));
+      await vi.waitFor(() => expect(apiMocks.get.mock.calls.length).toBeGreaterThan(1));
+      await act(async () => {});
+      expect(notice()).toBeNull();
+      expect(panel().textContent).not.toContain(NOTICE);
+    });
+
+    it("keeps the note the board was typing when a request it sent back is resubmitted", async () => {
+      apiMocks.approve.mockResolvedValue(createApproval({ status: "approved" }));
+      await render(
+        createApproval({
+          status: "revision_requested",
+          decisionNote: "Quote the delivery date.",
+          decidedAt: new Date("2026-10-06T10:00:00.000Z"),
+          updatedAt: new Date("2026-10-06T10:00:00.000Z"),
+        }),
+      );
+      await act(async () => button(panel(), "Reject").click());
+      await typeInto(panel().querySelector("textarea")!, "Still no delivery date");
+
+      await reload(createApproval({ updatedAt: new Date("2026-10-06T11:00:00.000Z"), payload: revisedPayload }));
+      await vi.waitFor(() => expect(notice()).not.toBeNull());
+
+      expect(notice()!.textContent).toContain(NOTICE);
+      // The reject panel is still open with what was typed, and the board's old request is gone with the old version.
+      expect(panel().textContent).toContain("Reject this request?");
+      expect(panel().querySelector("textarea")!.value).toBe("Still no delivery date");
+      expect(panel().textContent).not.toContain("Changes you asked for");
+    });
+  });
+
   describe("when something fails", () => {
     const alerts = (scope: ParentNode = container) => [...scope.querySelectorAll("[role='alert']")];
     const typeInto = (field: HTMLTextAreaElement, value: string) =>

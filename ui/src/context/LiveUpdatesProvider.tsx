@@ -1464,6 +1464,18 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({
       queryKey: queryKeys.approvals.list(companyId),
     });
+    // An open approval page follows a resubmission, another member's decision and new comments too.
+    if (entityId) {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.approvals.detail(entityId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.approvals.comments(entityId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.approvals.issues(entityId),
+      });
+    }
     return;
   }
 

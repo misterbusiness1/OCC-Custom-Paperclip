@@ -127,6 +127,46 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("refreshes the approval list and the open approval's detail, comments and linked tasks for an approval event", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      { entityType: "approval", entityId: "approval-1", action: "approval.resubmitted", actorType: "agent", actorId: "agent-1" },
+      { userId: "user-1", agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({ queryKey: queryKeys.approvals.list("company-1") });
+    expect(invalidations).toContainEqual({ queryKey: queryKeys.approvals.detail("approval-1") });
+    expect(invalidations).toContainEqual({ queryKey: queryKeys.approvals.comments("approval-1") });
+    expect(invalidations).toContainEqual({ queryKey: queryKeys.approvals.issues("approval-1") });
+    // Only the approval the event names is reloaded.
+    expect(invalidations).not.toContainEqual({ queryKey: queryKeys.approvals.detail("approval-2") });
+
+    // An event without an entity id still refreshes the list and names no approval.
+    invalidations.length = 0;
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      { entityType: "approval", action: "approval.created" },
+      { userId: "user-1", agentId: null },
+    );
+    expect(invalidations).toContainEqual({ queryKey: queryKeys.approvals.list("company-1") });
+    expect(
+      invalidations.some((entry) => {
+        const key = (entry as { queryKey?: readonly unknown[] }).queryKey ?? [];
+        return key[0] === "approvals" && ["detail", "comments", "issues"].includes(String(key[1]));
+      }),
+    ).toBe(false);
+  });
+
   it("still refreshes comments when a comment activity event arrives", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

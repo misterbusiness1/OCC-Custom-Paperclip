@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, type ComponentProps } from "react";
+import { act, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Approval } from "@paperclipai/shared";
@@ -33,7 +33,16 @@ vi.mock("../context/BreadcrumbContext", () => ({
 vi.mock("../context/GeneralSettingsContext", () => ({
   useGeneralSettings: () => generalSettingsMock,
 }));
-vi.mock("../components/PageTabBar", () => ({ PageTabBar: () => null }));
+vi.mock("../components/PageTabBar", () => ({
+  // Shows each tab's label, so the count badge beside "To decide" can be read.
+  PageTabBar: ({ items }: { items: Array<{ value: string; label: ReactNode }> }) => (
+    <div>
+      {items.map((item) => (
+        <span key={item.value} data-tab={item.value}>{item.label}</span>
+      ))}
+    </div>
+  ),
+}));
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: ComponentProps<"a"> & { to: string }) => (
     <a href={to} {...props}>{children}</a>
@@ -354,6 +363,199 @@ describe("Approvals", () => {
       await vi.waitFor(() => expect(alerts()).toHaveLength(1));
       expect(alerts()[0].textContent).toBe("Could not reach the server");
       expect(alerts()[0].closest("[data-approval-card]")).toBeNull();
+    });
+  });
+
+  describe("requests sent back for changes", () => {
+    const HOUR_MS = 60 * 60 * 1000;
+    /** Created before every pending request, so the old rule would have put it at the top of the queue. */
+    const sentBackApproval = (overrides: Partial<Approval> = {}) =>
+      createApproval("sent-back", "2026-09-10T00:00:00.000Z", {
+        status: "revision_requested",
+        decisionNote: "Quote the delivery date.",
+        decidedByUserId: "user-board-1",
+        decidedAt: new Date(Date.now() - 2 * HOUR_MS - 60_000),
+        updatedAt: new Date(Date.now() - 2 * HOUR_MS - 60_000),
+        ...overrides,
+      });
+    const toDecideTab = () => container.querySelector("[data-tab='pending']")!.textContent;
+    const section = () => container.querySelector<HTMLElement>("[data-approval-sent-back-section]");
+    const sectionToggle = () => section()!.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
+    const sentBackRows = () => [...container.querySelectorAll<HTMLElement>("[data-approval-sent-back-row]")];
+
+    it("lists and counts only pending requests under To decide", async () => {
+      approvals = [...approvals, sentBackApproval()];
+      await render();
+
+      expect(order()).toEqual(["oldest", "email", "newest"]);
+      expect(toDecideTab()).toBe("To decide3");
+      for (const card of rows()) expect(card.textContent).not.toContain("Request sent-back");
+    });
+
+    it("keeps them in a section below the queue that is folded away until asked for, without decision buttons", async () => {
+      approvals = [...approvals, sentBackApproval()];
+      await render();
+
+      expect(sectionToggle().textContent).toBe("Waiting on the requester (1)");
+      expect(sectionToggle().getAttribute("aria-expanded")).toBe("false");
+      expect(sentBackRows()).toHaveLength(0);
+      expect(container.textContent).not.toContain("Request sent-back");
+      // The section sits after the last card of the queue.
+      expect(rows().at(-1)!.compareDocumentPosition(section()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+      await click(sectionToggle());
+      expect(sectionToggle().getAttribute("aria-expanded")).toBe("true");
+      expect(sentBackRows()).toHaveLength(1);
+      const row = sentBackRows()[0];
+      expect(row.textContent).toContain("revision requested");
+      expect(row.textContent).toContain("Request sent-back");
+      expect(row.textContent).toContain("Sent back 2h ago");
+      expect(row.querySelector("[data-approval-changes-asked]")!.textContent).toBe(
+        "Changes you asked forQuote the delivery date.",
+      );
+      expect(row.querySelectorAll("button")).toHaveLength(0);
+      expect([...row.querySelectorAll("a")].map((anchor) => [anchor.textContent, anchor.getAttribute("href")])).toEqual([
+        ["View details", "/approvals/sent-back"],
+      ]);
+      expect(row.textContent).not.toContain("user-board-1");
+      expect(row.textContent).not.toContain("agent-requester");
+      // The queue itself is unchanged.
+      expect(order()).toEqual(["oldest", "email", "newest"]);
+
+      await click(sectionToggle());
+      expect(sectionToggle().getAttribute("aria-expanded")).toBe("false");
+      expect(sentBackRows()).toHaveLength(0);
+    });
+
+    it("shows no such section when nothing is waiting on a requester", async () => {
+      await render();
+      expect(section()).toBeNull();
+      expect(container.textContent).not.toContain("Waiting on the requester");
+    });
+
+    it("falls back to the last change for the time, and lists the longest-waiting first", async () => {
+      approvals = [
+        ...approvals,
+        sentBackApproval({ decidedAt: new Date(Date.now() - 3 * HOUR_MS - 60_000) }),
+        createApproval("sent-back-earlier", "2026-10-02T00:00:00.000Z", {
+          status: "revision_requested",
+          decisionNote: null,
+          decidedAt: null,
+          updatedAt: new Date(Date.now() - 5 * HOUR_MS - 60_000),
+        }),
+      ];
+      await render();
+      await click(sectionToggle());
+
+      expect(sectionToggle().textContent).toBe("Waiting on the requester (2)");
+      expect(sentBackRows().map((row) => row.dataset.approvalSentBackRow)).toEqual(["sent-back-earlier", "sent-back"]);
+      expect(sentBackRows()[0].textContent).toContain("Sent back 5h ago");
+      expect(sentBackRows()[0].textContent).not.toContain("Changes you asked for");
+      expect(sentBackRows()[1].textContent).toContain("Sent back 3h ago");
+    });
+
+    it("applies the kind filter and the sort to the queue only", async () => {
+      approvals = [
+        ...approvals,
+        sentBackApproval({ type: "hire_agent", payload: { name: "Pricing Analyst" } }),
+      ];
+      await render();
+      await click(sectionToggle());
+
+      // A kind that only a sent-back request has is not offered as a filter.
+      expect(button(container, "Hire Agent")).toBeUndefined();
+      await click(button(container, "Email replies"));
+      expect(order()).toEqual(["email"]);
+      expect(sentBackRows()).toHaveLength(1);
+      await click(button(container, "Sort: Oldest first"));
+      expect(sentBackRows().map((row) => row.dataset.approvalSentBackRow)).toEqual(["sent-back"]);
+      expect(toDecideTab()).toBe("To decide3");
+    });
+
+    it("leaves them out of J and K", async () => {
+      approvals = [...approvals, sentBackApproval()];
+      await render();
+      await click(sectionToggle());
+      const press = (key: string) =>
+        act(async () => {
+          document.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+        });
+
+      for (let step = 0; step < 5; step += 1) await press("j");
+      expect(document.activeElement).toBe(rows()[2]);
+      expect(sentBackRows()[0].contains(document.activeElement)).toBe(false);
+      expect(sentBackRows()[0].hasAttribute("tabindex")).toBe(false);
+    });
+
+    it("says nothing needs a decision when every open request is waiting on its requester", async () => {
+      approvals = [sentBackApproval()];
+      await act(async () => {
+        root.render(<QueryClientProvider client={queryClient}><Approvals /></QueryClientProvider>);
+      });
+      await vi.waitFor(() => expect(section()).not.toBeNull());
+
+      expect(container.textContent).toContain("Nothing needs a decision.");
+      expect(rows()).toHaveLength(0);
+      expect(container.querySelector("[data-tab='pending']")!.textContent).toBe("To decide");
+      expect(sectionToggle().textContent).toBe("Waiting on the requester (1)");
+    });
+
+    it("keeps a request sent back on this visit in its place, once, and takes it out of the count", async () => {
+      apiMocks.requestRevision.mockImplementation(async (id: string, note: string) => {
+        const decided = {
+          ...approvals.find((approval) => approval.id === id)!,
+          status: "revision_requested",
+          decisionNote: note,
+          decidedAt: new Date(),
+          updatedAt: new Date(),
+        } as Approval;
+        approvals = approvals.map((approval) => (approval.id === id ? decided : approval));
+        return decided;
+      });
+      await render();
+      expect(toDecideTab()).toBe("To decide3");
+
+      await click(button(rows()[0], "Request changes"));
+      await act(async () => {
+        const note = rows()[0].querySelector("textarea")!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(note, "Quote the delivery date.");
+        note.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await click(button(rows()[0], "Send request"));
+      await vi.waitFor(() => expect(toDecideTab()).toBe("To decide2"));
+
+      expect(order()).toEqual(["oldest", "email", "newest"]);
+      expect(rows()[0].textContent).toContain("revision requested");
+      expect(rows()[0].querySelectorAll("button")).toHaveLength(0);
+      // It is already listed above, so it is not repeated below.
+      expect(section()).toBeNull();
+
+      // The requester resubmits during the visit: the request needs a decision again, so its card returns.
+      approvals = approvals.map((approval) =>
+        approval.id === "oldest"
+          ? { ...approval, status: "pending", decisionNote: null, decidedAt: null, updatedAt: new Date(Date.now() + 1000) }
+          : approval,
+      );
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["approvals", "company-1"] });
+      });
+      await vi.waitFor(() => expect(button(rows()[0], "Approve")).toBeDefined());
+      expect(toDecideTab()).toBe("To decide3");
+      expect(order()).toEqual(["oldest", "email", "newest"]);
+    });
+
+    it("shows them as cards without decision buttons under All decisions", async () => {
+      routerMock.location.pathname = "/approvals/all";
+      approvals = [...approvals, sentBackApproval()];
+      await render();
+
+      expect(section()).toBeNull();
+      const card = rows().find((row) => row.dataset.approvalCard === "sent-back")!;
+      expect(card.textContent).toContain("Waiting on the requester to revise");
+      expect(card.textContent).toContain("Changes you asked forQuote the delivery date.");
+      expect(button(card, "Approve")).toBeUndefined();
+      expect(button(card, "Reject")).toBeUndefined();
+      expect(button(rows().find((row) => row.dataset.approvalCard === "oldest")!, "Approve")).toBeDefined();
     });
   });
 
