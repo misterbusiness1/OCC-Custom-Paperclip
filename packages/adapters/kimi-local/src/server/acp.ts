@@ -7,6 +7,7 @@ import type {
   AdapterEnvironmentTestResult,
   AdapterExecutionContext,
   AdapterExecutionResult,
+  AdapterRuntimeMcpServer,
 } from "@paperclipai/adapter-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
@@ -152,6 +153,53 @@ export function prepareKimiRunContext(ctx: AdapterExecutionContext): AdapterExec
   };
 }
 
+/**
+ * The registry delivers the run-scoped runtime-tools capability to `kimi_local`
+ * as `PAPERCLIP_RUNTIME_TOOLS_*` environment variables only, which leaves the
+ * agent to hand-build raw HTTP calls. Kimi's ACP backend accepts HTTP MCP
+ * servers natively, so register the run's gateway as one of the MCP servers
+ * the shared engine will pass to `session/new` — the same descriptor the
+ * heartbeat builds for `native_mcp` adapters.
+ *
+ * Local task runs only: on a remote execution target the gateway URL is host
+ * authority and would need translation into the sandbox, which this adapter
+ * does not do. A configured server can never stand in for this authority, so
+ * any server already carrying the reserved connectionId is replaced, not
+ * duplicated. `ctx.runtimeTools` stays on the context: the environment
+ * delivery must keep working for the agent's shell.
+ */
+export function prepareKimiRuntimeMcpContext(ctx: AdapterExecutionContext): AdapterExecutionContext {
+  const target = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  if (target?.kind === "remote") return ctx;
+  // A session keeps the MCP registrations it was created with. A task run
+  // starts a fresh session every time (`prepareKimiRunContext`), so its
+  // registration always carries this run's bearer. A conversation resumes its
+  // session across turns, where a per-run bearer would go stale, so
+  // conversation turns keep the environment delivery only.
+  if (ctx.context.conversationMode === true) return ctx;
+  const runtimeTools = ctx.runtimeTools;
+  if (!runtimeTools) return ctx;
+  const reservedConnectionId = "paperclip-runtime-tools";
+  const runtimeServer: AdapterRuntimeMcpServer = {
+    name: "Paperclip connections",
+    url: runtimeTools.mcpEndpoint,
+    token: runtimeTools.bearerToken,
+    connectionId: reservedConnectionId,
+  };
+  const otherServers = (ctx.runtimeMcp?.getServers() ?? []).filter(
+    (server) => server.connectionId !== reservedConnectionId,
+  );
+  return {
+    ...ctx,
+    runtimeMcp: {
+      getServers: () => [runtimeServer, ...otherServers].map((server) => ({ ...server })),
+    },
+  };
+}
+
 function withKimiAcpDefaults(options: KimiAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     ...options,
@@ -172,7 +220,7 @@ export function createKimiAcpExecutor(options: KimiAcpExecutorOptions = {}): Kim
       executor = currentExecutor;
     }
     return currentExecutor({
-      ...runContext,
+      ...prepareKimiRuntimeMcpContext(runContext),
       config: buildKimiAcpConfig(runContext.config),
     });
   };

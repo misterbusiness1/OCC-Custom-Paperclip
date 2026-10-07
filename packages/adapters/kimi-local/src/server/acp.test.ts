@@ -4,6 +4,7 @@ import {
   buildKimiAcpConfig,
   nodeVersionMeetsKimiAcpMinimum,
   prepareKimiRunContext,
+  prepareKimiRuntimeMcpContext,
   resolveKimiExecutionEngine,
 } from "./acp.js";
 
@@ -34,6 +35,136 @@ describe("prepareKimiRunContext", () => {
     } as unknown as AdapterExecutionContext;
 
     expect(prepareKimiRunContext(ctx)).toBe(ctx);
+  });
+});
+
+describe("prepareKimiRuntimeMcpContext", () => {
+  it("adds the run's runtime-tools server alongside the servers already registered", () => {
+    const ctx = {
+      context: {},
+      runtimeTools: {
+        mcpEndpoint: "https://paperclip.test/mcp/runtime-tools",
+        bearerToken: "run-token-1",
+      },
+      runtimeMcp: {
+        getServers: () => [
+          { name: "Paperclip projects", url: "https://paperclip.test/api/mcp/project-tools", token: "project-token", connectionId: "paperclip-project-tools" },
+        ],
+      },
+    } as unknown as AdapterExecutionContext;
+
+    const prepared = prepareKimiRuntimeMcpContext(ctx);
+
+    expect(prepared.runtimeMcp?.getServers()).toEqual([
+      { name: "Paperclip connections", url: "https://paperclip.test/mcp/runtime-tools", token: "run-token-1", connectionId: "paperclip-runtime-tools" },
+      { name: "Paperclip projects", url: "https://paperclip.test/api/mcp/project-tools", token: "project-token", connectionId: "paperclip-project-tools" },
+    ]);
+    // The environment delivery stays on the context: the agent's shell still
+    // gets PAPERCLIP_RUNTIME_TOOLS_* for this run.
+    expect(prepared.runtimeTools).toBe(ctx.runtimeTools);
+    // The input context is never mutated.
+    expect(ctx.runtimeMcp?.getServers()).toHaveLength(1);
+  });
+
+  it("replaces a configured server carrying the reserved connectionId instead of duplicating it", () => {
+    const ctx = {
+      context: {},
+      runtimeTools: {
+        mcpEndpoint: "https://paperclip.test/mcp/runtime-tools",
+        bearerToken: "run-token-2",
+      },
+      runtimeMcp: {
+        getServers: () => [
+          { name: "Operator override", url: "https://override.test/mcp", token: "stale-token", connectionId: "paperclip-runtime-tools" },
+          { name: "Paperclip projects", url: "https://paperclip.test/api/mcp/project-tools", token: "project-token", connectionId: "paperclip-project-tools" },
+        ],
+      },
+    } as unknown as AdapterExecutionContext;
+
+    const servers = prepareKimiRuntimeMcpContext(ctx).runtimeMcp?.getServers() ?? [];
+
+    expect(servers.filter((server) => server.connectionId === "paperclip-runtime-tools")).toHaveLength(1);
+    expect(servers[0]).toEqual({
+      name: "Paperclip connections",
+      url: "https://paperclip.test/mcp/runtime-tools",
+      token: "run-token-2",
+      connectionId: "paperclip-runtime-tools",
+    });
+  });
+
+  it("leaves runtimeMcp exactly as it was when the run has no runtime-tools capability", () => {
+    const withoutMcp = { context: {}, runtimeTools: undefined } as unknown as AdapterExecutionContext;
+    expect(prepareKimiRuntimeMcpContext(withoutMcp).runtimeMcp).toBeUndefined();
+
+    const runtimeMcp = {
+      getServers: () => [
+        { name: "Paperclip projects", url: "https://paperclip.test/api/mcp/project-tools", token: "project-token", connectionId: "paperclip-project-tools" },
+      ],
+    };
+    const withMcp = { context: {}, runtimeTools: undefined, runtimeMcp } as unknown as AdapterExecutionContext;
+    expect(prepareKimiRuntimeMcpContext(withMcp).runtimeMcp).toBe(runtimeMcp);
+  });
+
+  it("leaves the context unchanged for a remote execution target", () => {
+    const ctx = {
+      context: {},
+      executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/work" },
+      runtimeTools: {
+        mcpEndpoint: "https://paperclip.test/mcp/runtime-tools",
+        bearerToken: "run-token-3",
+      },
+      runtimeMcp: {
+        getServers: () => [
+          { name: "Paperclip projects", url: "https://paperclip.test/api/mcp/project-tools", token: "project-token", connectionId: "paperclip-project-tools" },
+        ],
+      },
+    } as unknown as AdapterExecutionContext;
+
+    expect(prepareKimiRuntimeMcpContext(ctx)).toBe(ctx);
+  });
+  it("registers the bearer only on a run that starts a fresh session", () => {
+    const base = {
+      runtime: { sessionId: "saved-session", sessionParams: { acpSessionId: "saved-session" } },
+      runtimeTools: {
+        mcpEndpoint: "https://paperclip.test/mcp/runtime-tools",
+        bearerToken: "run-token-5",
+      },
+    };
+    const taskRun = prepareKimiRuntimeMcpContext(
+      prepareKimiRunContext({ ...base, context: {} } as unknown as AdapterExecutionContext),
+    );
+    const conversationTurn = prepareKimiRuntimeMcpContext(
+      prepareKimiRunContext({ ...base, context: { conversationMode: true } } as unknown as AdapterExecutionContext),
+    );
+
+    // An ACP session keeps the MCP registrations it was created with. A task
+    // run registers its bearer and never resumes; a conversation turn resumes
+    // and never registers one.
+    expect(taskRun.runtime.sessionId).toBeNull();
+    expect(taskRun.runtime.sessionParams).toBeNull();
+    expect(taskRun.runtimeMcp?.getServers().map((server) => server.connectionId)).toEqual(["paperclip-runtime-tools"]);
+    expect(conversationTurn.runtime.sessionId).toBe("saved-session");
+    expect(conversationTurn.runtimeMcp).toBeUndefined();
+  });
+
+  it("keeps a conversation turn on the environment delivery so its session can resume", () => {
+    const ctx = {
+      context: { conversationMode: true },
+      runtimeTools: {
+        mcpEndpoint: "https://paperclip.test/mcp/runtime-tools",
+        bearerToken: "run-token-4",
+      },
+      runtimeMcp: {
+        getServers: () => [
+          { name: "Paperclip projects", url: "https://paperclip.test/api/mcp/project-tools", token: "project-token", connectionId: "paperclip-project-tools" },
+        ],
+      },
+    } as unknown as AdapterExecutionContext;
+
+    const prepared = prepareKimiRuntimeMcpContext(ctx);
+
+    expect(prepared).toBe(ctx);
+    expect(prepared.runtimeTools).toBe(ctx.runtimeTools);
   });
 });
 

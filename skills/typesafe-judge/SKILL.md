@@ -31,6 +31,12 @@ message was sent, a test passed, or an approval exists.
 
 1. Discover `typesafe_judge` in this run's tool list and load this skill. Its
    presence in documentation alone does not mean this runtime can call it.
+   Some runtimes receive Paperclip's runtime tools through the environment
+   instead of the tool list: there, `PAPERCLIP_RUNTIME_TOOLS_AVAILABLE` names
+   the tool, and `PAPERCLIP_RUNTIME_TOOLS_TYPESAFE_JUDGE_URL` accepts the same
+   input as a JSON `POST` authorized with this run's
+   `PAPERCLIP_RUNTIME_TOOLS_TOKEN` as the bearer. That is the same governed
+   gateway. Never print or store the token.
 2. Supply minimal, non-sensitive context in `state`; it is sent to the external
    TypeSafe provider. Exclude credentials and unrelated data. Private customer
    information requires explicit authorization for that disclosure; otherwise

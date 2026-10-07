@@ -1102,11 +1102,12 @@ async function resolveSelectedRuntimeSkills(
   };
 }
 
-async function prepareClaudeSkillRuntime(input: {
+async function preparePromptSkillRuntime(input: {
   stateDir: string;
   config: Record<string, unknown>;
   moduleDir: string;
   onLog: AdapterExecutionContext["onLog"];
+  agent?: "claude" | "kimi";
 }): Promise<{
   identity: Record<string, unknown>;
   promptInstructions: string;
@@ -1121,10 +1122,17 @@ async function prepareClaudeSkillRuntime(input: {
    */
   bundleDir: string | null;
 }> {
+  const agent = input.agent ?? "claude";
+  // Display name for log lines, prompt text, and command notes. Claude's
+  // strings must stay exactly as they were before Kimi shared this helper.
+  const agentLabel = agent === "claude" ? "Claude" : "Kimi";
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
-  const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "claude" });
-  const bundleRoot = path.join(input.stateDir, "runtime-skills", "claude", skillSetKey);
-  const skillsHome = path.join(bundleRoot, ".claude", "skills");
+  const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: agent });
+  const bundleRoot = path.join(input.stateDir, "runtime-skills", agent, skillSetKey);
+  // Claude's bundle uses the layout the Claude Code SDK discovers
+  // (`.claude/skills`); every other agent gets a plain `skills` root that the
+  // prompt instructions name directly.
+  const skillsHome = agent === "claude" ? path.join(bundleRoot, ".claude", "skills") : path.join(bundleRoot, "skills");
   await fs.mkdir(skillsHome, { recursive: true });
 
   // A failed materialization, or a materialized copy with no usable
@@ -1144,7 +1152,7 @@ async function prepareClaudeSkillRuntime(input: {
         await fs.rm(target, { recursive: true, force: true });
         await input.onLog(
           "stderr",
-          `[paperclip] Skipped ACPX Claude skill "${entry.key}": the staged copy at ${target} has no usable SKILL.md.\n`,
+          `[paperclip] Skipped ACPX ${agentLabel} skill "${entry.key}": the staged copy at ${target} has no usable SKILL.md.\n`,
         );
         continue;
       }
@@ -1152,13 +1160,13 @@ async function prepareClaudeSkillRuntime(input: {
       if (result.skippedSymlinks.length > 0) {
         await input.onLog(
           "stdout",
-          `[paperclip] Materialized ACPX Claude skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
+          `[paperclip] Materialized ACPX ${agentLabel} skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
         );
       }
     } catch (err) {
       await input.onLog(
         "stderr",
-        `[paperclip] Failed to materialize ACPX Claude skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+        `[paperclip] Failed to materialize ACPX ${agentLabel} skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
   }
@@ -1166,7 +1174,7 @@ async function prepareClaudeSkillRuntime(input: {
   const selectedNames = materializedNames.sort();
   const promptInstructions = selectedNames.length > 0
     ? [
-        "Paperclip has materialized selected runtime skills for this ACPX Claude session.",
+        `Paperclip has materialized selected runtime skills for this ACPX ${agentLabel} session.`,
         `Skill root: ${skillsHome}`,
         `Selected skills: ${selectedNames.join(", ")}`,
         "When a task calls for one of these skills, read its SKILL.md from that root and follow it.",
@@ -1175,7 +1183,7 @@ async function prepareClaudeSkillRuntime(input: {
 
   return {
     identity: {
-      mode: "claude",
+      mode: agent,
       skillSetKey,
       desiredSkillNames,
       selectedSkills: selectedNames,
@@ -1183,7 +1191,7 @@ async function prepareClaudeSkillRuntime(input: {
     },
     promptInstructions,
     commandNotes: selectedNames.length > 0
-      ? [`Materialized ${selectedNames.length} Paperclip skill(s) for ACPX Claude at ${skillsHome}.`]
+      ? [`Materialized ${selectedNames.length} Paperclip skill(s) for ACPX ${agentLabel} at ${skillsHome}.`]
       : [],
     bundleDir: selectedNames.length > 0 ? skillsHome : null,
   };
@@ -2027,11 +2035,12 @@ async function buildRuntime(input: {
   // uses it to rewrite `skillPromptInstructions` and `skillsIdentity` onto
   // the in-sandbox copy, once `stagedRuntime` is known (see the rewrite
   // below, after `placeWorkspace` returns). This field is `null` for every
-  // non-Claude agent, and for a Claude run with no skill selected.
-  let claudeSkillsBundleDir: string | null = null;
+  // agent without prompt-based selected-skill delivery, and when no skill is
+  // selected.
+  let selectedSkillsBundleDir: string | null = null;
   let paperclipClaudeSettings: PaperclipClaudeSettingsResult | null = null;
   if (acpxAgent === "claude") {
-    const preparedSkills = await prepareClaudeSkillRuntime({
+    const preparedSkills = await preparePromptSkillRuntime({
       stateDir,
       config,
       moduleDir: input.engine.moduleDir,
@@ -2040,7 +2049,7 @@ async function buildRuntime(input: {
     skillPromptInstructions = preparedSkills.promptInstructions;
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
-    claudeSkillsBundleDir = preparedSkills.bundleDir;
+    selectedSkillsBundleDir = preparedSkills.bundleDir;
     paperclipClaudeSettings = await writePaperclipClaudeSettings({
       cwd,
       stateDir,
@@ -2052,6 +2061,26 @@ async function buildRuntime(input: {
         paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
       }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
     );
+  } else if (acpxAgent === "kimi" && !executionTargetIsRemote) {
+    // `kimi acp` takes no skills directory (a `--skills-dir` given before the
+    // subcommand is ignored), and the Kimi home is shared by every Kimi agent
+    // on the instance, so it cannot hold one agent's selection. Selected
+    // skills are therefore materialized into the run state dir and named in
+    // the prompt — the same bundle contract as Claude, plain `skills` layout.
+    // A remote target keeps the tracked-only branch below: the host bundle
+    // path is not valid inside a sandbox, and no Kimi remote staging hook
+    // advertises it.
+    const preparedSkills = await preparePromptSkillRuntime({
+      stateDir,
+      config,
+      moduleDir: input.engine.moduleDir,
+      onLog: input.ctx.onLog,
+      agent: "kimi",
+    });
+    skillPromptInstructions = preparedSkills.promptInstructions;
+    skillsIdentity = preparedSkills.identity;
+    skillCommandNotes.push(...preparedSkills.commandNotes);
+    selectedSkillsBundleDir = preparedSkills.bundleDir;
   } else if (acpxAgent === "codex") {
     // Step 2 — codex-home.seed: the codex managed-home + skills preparation.
     // The nested skills.reconcile boundary (step 3) is timed inside via the
@@ -2084,7 +2113,8 @@ async function buildRuntime(input: {
     // binding, so a Grok run authenticates from the credential a completed
     // device login wrote. This never touches `prepareCodexSkillRuntime` above
     // — that function stays Codex-only — and every other custom ACPX agent
-    // (for example `kimi`) falls through this branch unaffected.
+    // (a remote `kimi` target, plain `custom`) falls through this branch
+    // unaffected.
     if (acpxAgent === "grok" && !config.managedAiConnection) {
       env.GROK_HOME = resolveManagedGrokHomeDir(agent.companyId);
     }
@@ -2306,7 +2336,7 @@ async function buildRuntime(input: {
               env,
               onLog: input.ctx.onLog,
               onRuntimeProgress: input.ctx.onRuntimeProgress,
-              skillsBundleDir: claudeSkillsBundleDir,
+              skillsBundleDir: selectedSkillsBundleDir,
               stage,
             });
             return {
@@ -2413,7 +2443,7 @@ async function buildRuntime(input: {
   // the fingerprint: it only replaces the host bundle path with the
   // in-sandbox path, in the local copies used for the returned prompt,
   // identity, and command notes.
-  if (acpxAgent === "claude" && stagedRuntime && claudeSkillsBundleDir) {
+  if (acpxAgent === "claude" && stagedRuntime && selectedSkillsBundleDir) {
     const inSandboxSkillsRoot =
       stagedRuntime.assetDirs.skills ??
       path.posix.join(
@@ -2421,7 +2451,7 @@ async function buildRuntime(input: {
           path.posix.join(stagedRuntime.workspaceRemoteDir ?? cwd, ".paperclip-runtime", acpxAgent),
         "skills",
       );
-    const rebaseToSandbox = (value: string) => value.split(claudeSkillsBundleDir!).join(inSandboxSkillsRoot);
+    const rebaseToSandbox = (value: string) => value.split(selectedSkillsBundleDir!).join(inSandboxSkillsRoot);
     skillPromptInstructions = rebaseToSandbox(skillPromptInstructions);
     skillsIdentity = {
       ...skillsIdentity,
