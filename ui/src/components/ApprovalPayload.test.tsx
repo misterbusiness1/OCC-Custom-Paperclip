@@ -99,7 +99,8 @@ describe("ApprovalCard", () => {
       );
     });
 
-    expect(container.textContent).toContain("Older request: no original source, pros or risks were recorded.");
+    expect(container.textContent).toContain("No original request attached");
+    expect(container.textContent).toContain("Older request: no pros or risks were recorded.");
     expect(container.textContent).not.toContain("Not supplied.");
     act(() => root.unmount());
     container.remove();
@@ -451,7 +452,7 @@ describe("ApprovalPayloadRenderer", () => {
       );
     });
 
-    expect(container.textContent).toContain("Original source was not retained for this approval.");
+    expect(container.textContent).toContain("No original request was attached to this approval.");
     expect(container.textContent).toContain("Proposed replyDraft reply only");
     act(() => root.unmount());
   });

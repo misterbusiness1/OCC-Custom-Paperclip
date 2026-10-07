@@ -134,13 +134,15 @@ export function OriginalRequestBlock({
 }) {
   const original = approvalOriginalRequest(payload);
   if (!original) {
+    // Compact surfaces state this once in their header line (approvalMissingSourceNote).
+    if (compact) return null;
     return (
       <div>
         <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
           Original request
         </p>
         <p className="mt-1 text-sm leading-5 text-muted-foreground">
-          Original source was not retained for this approval.
+          No original request was attached to this approval.
         </p>
       </div>
     );
@@ -217,6 +219,95 @@ function OriginalRequestText({ text, collapsible }: { text: string; collapsible:
       )}
     </>
   );
+}
+
+/**
+ * A Board approval may answer a request from a person, or the agent may raise
+ * it by itself. Without an attached source the board should know that, but one
+ * quiet note is enough: it is the normal case for routine agent requests.
+ */
+export function approvalMissingSourceNote(
+  type: string,
+  payload?: Record<string, unknown> | null,
+): string | null {
+  if (type !== "request_board_approval" || approvalOriginalRequest(payload)) return null;
+  return "No original request attached";
+}
+
+export type ApprovalHireFacts = {
+  name: string | null;
+  role: string | null;
+  title: string | null;
+  reportsToAgentId: string | null;
+  adapterType: string | null;
+  model: string | null;
+  /** null when the request names no budget; 0 means no monthly limit is set. */
+  budgetMonthlyCents: number | null;
+  capabilities: string | null;
+  skills: string[];
+  /** True when a pending agent already exists and a rejection terminates it. */
+  hasPendingAgent: boolean;
+};
+
+export function approvalHireFacts(payload?: Record<string, unknown> | null): ApprovalHireFacts {
+  const adapterConfig =
+    payload?.adapterConfig && typeof payload.adapterConfig === "object" && !Array.isArray(payload.adapterConfig)
+      ? (payload.adapterConfig as Record<string, unknown>)
+      : null;
+  return {
+    name: firstNonEmptyString(payload?.name),
+    role: firstNonEmptyString(payload?.role),
+    title: firstNonEmptyString(payload?.title),
+    reportsToAgentId: firstNonEmptyString(payload?.reportsTo),
+    adapterType: firstNonEmptyString(payload?.adapterType),
+    model: firstNonEmptyString(adapterConfig?.model),
+    budgetMonthlyCents:
+      typeof payload?.budgetMonthlyCents === "number" && Number.isFinite(payload.budgetMonthlyCents)
+        ? payload.budgetMonthlyCents
+        : null,
+    capabilities: firstNonEmptyString(payload?.capabilities),
+    skills: uniqueStrings(payload?.desiredSkills),
+    hasPendingAgent: firstNonEmptyString(payload?.agentId) !== null,
+  };
+}
+
+/**
+ * The plan a strategy approval asks the board to accept, as readable plain
+ * text. Line breaks, numbering and bullets are the structure of a plan, so
+ * they stay; only the markup around them goes.
+ */
+export function approvalStrategyPlan(payload?: Record<string, unknown> | null): string | null {
+  const raw = firstNonEmptyString(payload?.plan, payload?.description, payload?.strategy, payload?.text);
+  if (!raw) return null;
+  const plain = raw
+    .replace(/\r\n?/g, "\n")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]*)\)/g, "$1")
+    .replace(/^[^\S\n]{0,3}#{1,6}[^\S\n]+/gm, "")
+    .replace(/^([^\S\n]*)[-*+][^\S\n]+/gm, "$1\u2022 ")
+    .replace(/\*\*|__|`/g, "")
+    .replace(/[^\S\n]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return plain || null;
+}
+
+/** The first lines of a long text, cut at a line or word boundary. */
+export function approvalTextPreview(
+  text: string,
+  maxLines = 6,
+  maxLength = 480,
+): { preview: string; truncated: boolean } {
+  const lines = text.split("\n");
+  let preview = lines.slice(0, maxLines).join("\n");
+  let truncated = lines.length > maxLines;
+  if (preview.length > maxLength) {
+    const clipped = preview.slice(0, maxLength + 1);
+    const boundary = Math.max(clipped.lastIndexOf(" "), clipped.lastIndexOf("\n"));
+    preview = preview.slice(0, boundary > maxLength / 2 ? boundary : maxLength);
+    truncated = true;
+  }
+  return { preview: truncated ? `${preview.trimEnd()}\u2026` : preview, truncated };
 }
 
 export function approvalExcerpt(value: string | null, maxLength = 240): string | null {
