@@ -43,7 +43,7 @@ function kindLabel(kind: string): string {
 /** What is left of a card once it is decided here, so the queue keeps its place. */
 function DecidedApprovalRow({ approval, focusable }: { approval: Approval; focusable: boolean }) {
   const subject =
-    approvalExcerpt(approvalSubject(approval.payload), 120) ?? typeLabel[approval.type] ?? approval.type;
+    approvalExcerpt(approvalSubject(approval.payload, approval.type), 120) ?? typeLabel[approval.type] ?? approval.type;
   return (
     <div
       className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border/70 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

@@ -223,7 +223,7 @@ function HireAgentSummary({
           )}
         </div>
       )}
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className={cn("grid gap-3", hire.hasPendingAgent && "sm:grid-cols-2")}>
         <div className="min-w-0">
           <p className={labelClass}>If approved</p>
           <p className="mt-1 text-sm leading-5 text-foreground">

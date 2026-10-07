@@ -342,7 +342,9 @@ export function approvalPlainText(value: string | null): string | null {
   return plain || null;
 }
 
-export function approvalSubject(payload?: Record<string, unknown> | null): string | null {
+export function approvalSubject(payload?: Record<string, unknown> | null, type?: string): string | null {
+  // A hire is about a named agent; its `title` is the job title, not the subject.
+  if (type === "hire_agent") return firstNonEmptyString(payload?.name, payload?.title);
   return firstNonEmptyString(
     payload?.title,
     payload?.name,
@@ -382,7 +384,7 @@ export function approvalEmailDraft(payload?: Record<string, unknown> | null): Ap
 /** Build a contextual label for an approval, e.g. "Hire Agent: Designer" */
 export function approvalLabel(type: string, payload?: Record<string, unknown> | null): string {
   const base = typeLabel[type] ?? type;
-  const subject = approvalSubject(payload);
+  const subject = approvalSubject(payload, type);
   if (subject) {
     return `${base}: ${subject}`;
   }
