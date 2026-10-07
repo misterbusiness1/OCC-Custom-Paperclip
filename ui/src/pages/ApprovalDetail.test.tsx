@@ -838,7 +838,10 @@ describe("ApprovalDetail", () => {
       await vi.waitFor(() => expect(alerts()).toHaveLength(1));
 
       expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-1", undefined, SHOWN_VERSION);
-      expect(alerts()[0].textContent).toBe(`Error while approving: ${message}`);
+      // In the page's own words: it reloads the request by itself.
+      expect(alerts()[0].textContent).toBe(
+        "Error while approving: This request changed after it was shown. It has been reloaded: check it and decide again.",
+      );
       // An error, never the approved page.
       expect(routerMock.navigate).not.toHaveBeenCalled();
       await vi.waitFor(() => expect(apiMocks.get.mock.calls.length).toBeGreaterThan(loads));
@@ -848,6 +851,23 @@ describe("ApprovalDetail", () => {
       await act(async () => button(panel(), "Approve").click());
       await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(2));
       expect(apiMocks.approve).toHaveBeenLastCalledWith("approval-1", undefined, { expectedUpdatedAt: revisedAt });
+    });
+
+    it("sends a change request for the version the page shows", async () => {
+      apiMocks.requestRevision.mockResolvedValue(createApproval({ status: "revision_requested" }));
+      await render(createApproval());
+
+      await act(async () => button(panel(), "Request changes").click());
+      await typeInto(panel().querySelector("textarea")!, "Quote the delivery date");
+      await act(async () => button(panel(), "Send request").click());
+
+      await vi.waitFor(() =>
+        expect(apiMocks.requestRevision).toHaveBeenCalledExactlyOnceWith(
+          "approval-1",
+          "Quote the delivery date",
+          SHOWN_VERSION,
+        ),
+      );
     });
 
     it("keeps the error on the page when the reload shows the decision was stored anyway", async () => {

@@ -706,8 +706,31 @@ export function Approvals() {
     const decided = status !== null && status !== "pending" && !sentBack;
     const hadFocus = Boolean(at.heldRow?.contains(document.activeElement));
     releaseHeldApproval(held.id);
-    // Not marked as an approval of the reader's own that may have been stored: the refusal proves
-    // it was not. An approval that shows up later is someone else's.
+    if (status === "approved" && ownApproveFailed.current.has(held.id)) {
+      // The reader's first approval was stored though it was answered with an error, and this
+      // second one was refused for it: the row and the count show the approval as their own
+      // decision, as when a reload shows it, and nothing is said about another session.
+      const listed = queryClient
+        .getQueryData<Approval[]>(queryKeys.approvals.list(held.companyId))
+        ?.find((candidate) => candidate.id === held.id);
+      settleDecision(held.id);
+      if (listed) {
+        // The note is the one typed with this press, until the reload brings the stored one.
+        const own = {
+          ...listed,
+          status: "approved",
+          decisionNote: held.note ?? null,
+          updatedAt: conflict.currentUpdatedAt ? new Date(conflict.currentUpdatedAt) : listed.updatedAt,
+        } as Approval;
+        setDecidedHere((current) => ({ ...current, [held.id]: own }));
+      }
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(held.companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(held.id) });
+      announce(`${DECISION_LANDED_LEAD.approve}: ${held.subject}`);
+      return;
+    }
+    // Otherwise not marked as an approval of the reader's own that may have been stored: the
+    // refusal proves this one was not. An approval that shows up later is someone else's.
     if (decided || sentBack) {
       // The list says so at once, before its reload answers: the row then shows the status the
       // server named. The note of that decision is not known yet; the reload brings it.
@@ -744,8 +767,10 @@ export function Approvals() {
         ? `Not approved: ${held.subject}. It was sent back for changes before your approval was sent. Nothing was sent.`
         : `Not approved: ${held.subject}. The requester revised it before it was sent. Nothing was sent.`,
     );
-    // A row out of view, or a page that no longer shows the request, cannot say it: then it is said where the reader is.
-    if (!at.inView) {
+    // A row out of view, or a page that no longer shows the request, cannot say it: then it is said
+    // where the reader is. So it is when the reader sent this request back earlier on this visit:
+    // it is drawn as a "decided elsewhere" row, which has no place for the line.
+    if (!at.inView || (sentBack && Boolean(decidedHere[held.id]))) {
       toasts?.pushToast({
         title: `Not approved: ${held.subject}`,
         body: statusText

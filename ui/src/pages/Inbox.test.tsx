@@ -116,8 +116,10 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
 
+const toastMock = vi.hoisted(() => ({ pushToast: vi.fn() }));
+
 vi.mock("../context/ToastContext", () => ({
-  useToastActions: () => ({ pushToast: vi.fn() }),
+  useToastActions: () => ({ pushToast: toastMock.pushToast }),
 }));
 
 vi.mock("../context/DialogContext", () => ({
@@ -358,6 +360,7 @@ function resetInboxApiMocks() {
   routerMock.location.search = "";
   routerMock.location.hash = "";
   routerMock.navigate.mockReset();
+  toastMock.pushToast.mockReset();
   apiMocks.approvalsList.mockResolvedValue([]);
   apiMocks.approve.mockResolvedValue(createApproval({ status: "approved" }));
   apiMocks.reject.mockResolvedValue(createApproval({ status: "rejected" }));
@@ -1350,7 +1353,12 @@ describe("Inbox toolbar", () => {
       await vi.waitFor(() => expect(row().querySelectorAll("[role='alert']")).toHaveLength(1));
 
       expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-stale", undefined, SHOWN_VERSION);
-      expect(row().querySelector("[role='alert']")!.textContent).toBe(`Error while approving: ${message}`);
+      // In the Inbox's own words: it reloads the row by itself.
+      expect(row().querySelector("[role='alert']")!.textContent).toBe(
+        "Error while approving: This request changed after it was shown. It has been reloaded: check it and decide again.",
+      );
+      // The row is still there to say so: no toast.
+      expect(toastMock.pushToast).not.toHaveBeenCalled();
       // An error, never an approved row.
       expect(row().querySelector("[data-approval-inbox-outcome]")).toBeNull();
       // The Inbox does not reload on other errors; on this one it does, so the row shows the version the server holds.
@@ -1365,6 +1373,143 @@ describe("Inbox toolbar", () => {
       act(() => root.unmount());
       queryClient.clear();
     }
+  });
+
+  describe.each([true, false])("a decision the server refuses for a request that changed, with streamlined UI %s", (streamlinedUi) => {
+    const message = "This request changed after you opened it. Reload it and decide again.";
+    const changedAt = new Date("2026-03-11T00:10:00.000Z");
+    const refusal = (currentStatus: string) =>
+      Object.assign(new Error(message), {
+        status: 409,
+        body: {
+          error: message,
+          code: "approval_version_conflict",
+          details: { currentStatus, currentUpdatedAt: changedAt.toISOString() },
+        },
+      });
+    // Asked for by an agent: once someone else has decided it, the Mine tab no longer lists it for this reader.
+    const request = (overrides: Partial<Approval> = {}) => createApproval({
+      id: "approval-stale",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      payload: { title: "Stale request", recommendedAction: "Approve it", reasoning: "It fits the request" },
+      ...overrides,
+    });
+    const row = () =>
+      [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes("Stale request"));
+    const button = (label: string) =>
+      [...row()!.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
+    const typeNote = (value: string) =>
+      act(async () => {
+        const note = row()!.querySelector("textarea")!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(note, value);
+        note.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    const inInbox = async (run: () => Promise<void>) => {
+      routerMock.location.pathname = "/inbox/mine";
+      apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+      apiMocks.approvalsList.mockResolvedValue([request()]);
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      const root = createRoot(container);
+      try {
+        await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+        await vi.waitFor(() => expect(row()).toBeDefined());
+        await run();
+      } finally {
+        act(() => root.unmount());
+        queryClient.clear();
+      }
+    };
+
+    it.each([
+      {
+        decision: "an approval",
+        mock: apiMocks.approve,
+        decide: async () => { await act(async () => button("Approve").click()); },
+        title: "Not approved: Board Approval: Stale request",
+      },
+      {
+        decision: "a rejection",
+        mock: apiMocks.reject,
+        decide: async () => {
+          await act(async () => button("Reject").click());
+          await act(async () => button("Reject request").click());
+        },
+        title: "Not rejected: Board Approval: Stale request",
+      },
+      {
+        decision: "a change request",
+        mock: apiMocks.requestRevision,
+        decide: async () => {
+          await act(async () => button("Request changes").click());
+          await typeNote("Quote the delivery date");
+          await act(async () => button("Send request").click());
+        },
+        title: "Changes not requested: Board Approval: Stale request",
+      },
+    ])("says in a toast that $decision was not stored when a colleague decided the request and its row leaves the tab", async ({ mock, decide, title }) => {
+      // A colleague rejected it; the Inbox has not reloaded.
+      mock.mockImplementation(async () => {
+        apiMocks.approvalsList.mockResolvedValue([
+          request({ status: "rejected", decidedByUserId: "other-board-user", decidedAt: changedAt, updatedAt: changedAt }),
+        ]);
+        throw refusal("rejected");
+      });
+      await inInbox(async () => {
+        await decide();
+        await vi.waitFor(() => expect(mock).toHaveBeenCalledTimes(1));
+        // The reload takes the row, and the error on it, off the Mine tab.
+        await vi.waitFor(() => expect(row()).toBeUndefined());
+        expect(container.querySelectorAll("[role='alert']")).toHaveLength(0);
+        // So the reader is told where they are: nothing was stored, and what the status is now.
+        expect(toastMock.pushToast).toHaveBeenCalledTimes(1);
+        expect(toastMock.pushToast.mock.calls[0][0]).toMatchObject({
+          title,
+          body: "Its status is now rejected: decided elsewhere. Nothing was stored.",
+          tone: "warn",
+          action: { label: "View request", href: "/approvals/approval-stale" },
+        });
+      });
+    });
+
+    it.each([
+      {
+        decision: "a rejection",
+        mock: apiMocks.reject,
+        decide: async () => {
+          await act(async () => button("Reject").click());
+          await act(async () => button("Reject request").click());
+        },
+        line: "Error while rejecting",
+      },
+      {
+        decision: "a change request",
+        mock: apiMocks.requestRevision,
+        decide: async () => {
+          await act(async () => button("Request changes").click());
+          await typeNote("Quote the delivery date");
+          await act(async () => button("Send request").click());
+        },
+        line: "Error while requesting changes",
+      },
+    ])("reloads the row after $decision refused for a request that is still pending, and raises no toast", async ({ mock, decide, line }) => {
+      mock.mockImplementation(async () => {
+        apiMocks.approvalsList.mockResolvedValue([request({ updatedAt: changedAt })]);
+        throw refusal("pending");
+      });
+      await inInbox(async () => {
+        const loads = apiMocks.approvalsList.mock.calls.length;
+        await decide();
+        await vi.waitFor(() => expect(row()!.querySelectorAll("[role='alert']")).toHaveLength(1));
+        expect(row()!.querySelector("[role='alert']")!.textContent).toBe(
+          `${line}: This request changed after it was shown. It has been reloaded: check it and decide again.`,
+        );
+        // The Inbox does not reload on other errors; on this one it does, so the next decision names the new version.
+        await vi.waitFor(() => expect(apiMocks.approvalsList.mock.calls.length).toBeGreaterThan(loads));
+        expect(toastMock.pushToast).not.toHaveBeenCalled();
+      });
+    });
   });
 
   it.each([true, false])("holds Approve back when a request is revised while its row is open with streamlined UI %s", async (streamlinedUi) => {

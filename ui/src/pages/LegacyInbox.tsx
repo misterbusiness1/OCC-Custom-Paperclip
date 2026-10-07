@@ -106,6 +106,7 @@ import {
   approvalDecisionErrorText,
   useApprovalDecisionFeedback,
   useSettlingApprovals,
+  type ApprovalDecisionKind,
   type ApprovalPendingAction,
 } from "../components/ApprovalDecisionActions";
 import {
@@ -116,7 +117,7 @@ import {
   composeApproveGuards,
   useApprovalRevisionGuard,
 } from "../components/ApprovalRevision";
-import { isApprovalVersionConflict, type ApprovalVersion } from "../lib/approval-version";
+import { approvalVersionConflict, type ApprovalVersion } from "../lib/approval-version";
 import { APPROVE_AFTER_ADVANCE_MS, useRowMovedAt } from "../components/ApprovalHold";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
@@ -251,6 +252,13 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
 function runFailureMessage(run: HeartbeatRun): string {
   return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "Run exited with an error.";
 }
+
+/** The title of the toast for a decision the server refused because someone else had decided the request. */
+const VERSION_CONFLICT_TOAST_LEAD: Record<ApprovalDecisionKind, string> = {
+  approve: "Not approved",
+  reject: "Not rejected",
+  revision: "Changes not requested",
+};
 
 function approvalStatusLabel(status: Approval["status"]): string {
   return status.replaceAll("_", " ");
@@ -1772,9 +1780,29 @@ export function Inbox() {
 
   // The server refused a decision because the request changed after its row was drawn. The row
   // shows the error; the list is reloaded so the row shows the version the server holds, and the
-  // next decision is made for that one.
-  const reloadAfterVersionConflict = (err: unknown) => {
-    if (!isApprovalVersionConflict(err) || !selectedCompanyId) return;
+  // next decision is made for that one. A request someone else has decided since leaves the Mine
+  // and Unread tabs with that reload, and its error with it: a toast then says that nothing was
+  // stored and what the status is now.
+  const reloadAfterVersionConflict = (action: ApprovalDecisionKind, id: string, err: unknown) => {
+    const conflict = approvalVersionConflict(err);
+    if (!conflict || !selectedCompanyId) return;
+    const status = conflict.currentStatus;
+    if (status && status !== "pending" && status !== "revision_requested") {
+      const listed = queryClient
+        .getQueryData<Approval[]>(queryKeys.approvals.list(selectedCompanyId))
+        ?.find((approval) => approval.id === id);
+      const subject = listed
+        ? `: ${approvalLabel(listed.type, listed.payload as Record<string, unknown> | null)}`
+        : "";
+      pushToast({
+        title: `${VERSION_CONFLICT_TOAST_LEAD[action]}${subject}`,
+        body: `Its status is now ${status.replace(/_/g, " ")}: decided elsewhere. Nothing was stored.`,
+        tone: "warn",
+        ttlMs: 15_000,
+        dedupeKey: `approval-version-conflict:${id}`,
+        action: { label: "View request", href: `/approvals/${id}` },
+      });
+    }
     queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId) });
   };
 
@@ -1800,7 +1828,7 @@ export function Inbox() {
     },
     onError: (err, { id }) => {
       settleApprovalDecision(id, approvalDecisionErrorText("approve", err));
-      reloadAfterVersionConflict(err);
+      reloadAfterVersionConflict("approve", id, err);
     },
   });
 
@@ -1815,7 +1843,7 @@ export function Inbox() {
     },
     onError: (err, { id }) => {
       settleApprovalDecision(id, approvalDecisionErrorText("reject", err));
-      reloadAfterVersionConflict(err);
+      reloadAfterVersionConflict("reject", id, err);
     },
   });
 
@@ -1830,7 +1858,7 @@ export function Inbox() {
     },
     onError: (err, { id }) => {
       settleApprovalDecision(id, approvalDecisionErrorText("revision", err));
-      reloadAfterVersionConflict(err);
+      reloadAfterVersionConflict("revision", id, err);
     },
   });
 

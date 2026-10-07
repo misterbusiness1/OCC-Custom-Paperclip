@@ -161,10 +161,8 @@ describeEmbeddedPostgres("approval decisions with an expected version", () => {
     expect(stored.decisionNote).toBe("Fine by me");
   });
 
-  it("holds a stale write back in the UPDATE itself, when the row changes after the service read it", async () => {
-    const shown = await createPending();
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    // The first read still sees the version the caller named; the row changes before the write.
+  /** A db whose first read still sees the row as it was; `afterFirstRead` changes the row before the service writes. */
+  function racingDb(afterFirstRead: () => Promise<unknown>) {
     const racing = Object.create(db) as typeof db;
     let reads = 0;
     racing.select = ((...args: Parameters<typeof db.select>) => {
@@ -175,12 +173,19 @@ describeEmbeddedPostgres("approval decisions with an expected version", () => {
         from: (table: Parameters<typeof builder.from>[0]) => ({
           where: (condition: Parameters<ReturnType<typeof builder.from>["where"]>[0]) =>
             (builder.from(table) as any).where(condition).then(async (rows: unknown[]) => {
-              await sendBackAndResubmit(shown.id, { title: "Second version" });
+              await afterFirstRead();
               return rows;
             }),
         }),
       };
     }) as typeof db.select;
+    return racing;
+  }
+
+  it("holds a stale write back in the UPDATE itself, when the row changes after the service read it", async () => {
+    const shown = await createPending();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const racing = racingDb(() => sendBackAndResubmit(shown.id, { title: "Second version" }));
 
     await expect(
       approvalService(racing).approve(shown.id, "user-1", "late", { expectedUpdatedAt: shown.updatedAt }),
@@ -189,6 +194,49 @@ describeEmbeddedPostgres("approval decisions with an expected version", () => {
     const stored = await read(shown.id);
     expect(stored.status).toBe("pending");
     expect(stored.payload).toEqual({ title: "Second version" });
+  });
+
+  it("holds a stale request-revision back in the UPDATE itself", async () => {
+    const shown = await createPending();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const racing = racingDb(() => sendBackAndResubmit(shown.id, { title: "Second version" }));
+
+    await expect(
+      approvalService(racing).requestRevision(shown.id, "user-1", "late", { expectedUpdatedAt: shown.updatedAt }),
+    ).rejects.toMatchObject({ ...VERSION_CONFLICT, details: { currentStatus: "pending" } });
+
+    const stored = await read(shown.id);
+    expect(stored.status).toBe("pending");
+    expect(stored.payload).toEqual({ title: "Second version" });
+    expect(stored.decisionNote).toBe("Quote the delivery date.");
+  });
+
+  it("does not let request-revision without a version overwrite a request decided after the read", async () => {
+    const shown = await createPending();
+    const racing = racingDb(() => approvalService(db).approve(shown.id, "other-board-user", "Fine by me"));
+
+    await expect(approvalService(racing).requestRevision(shown.id, "user-1", "late")).rejects.toMatchObject({
+      status: 422,
+    });
+
+    const stored = await read(shown.id);
+    expect(stored.status).toBe("approved");
+    expect(stored.decisionNote).toBe("Fine by me");
+  });
+
+  it("does not let resubmit reopen a request approved after the read", async () => {
+    const shown = await createPending();
+    await approvalService(db).requestRevision(shown.id, "other-board-user", "Quote the delivery date.");
+    // A sent-back request can still be approved.
+    const racing = racingDb(() => approvalService(db).approve(shown.id, "other-board-user", "Fine by me"));
+
+    await expect(approvalService(racing).resubmit(shown.id, { title: "Late version" })).rejects.toMatchObject({
+      status: 422,
+    });
+
+    const stored = await read(shown.id);
+    expect(stored.status).toBe("approved");
+    expect(stored.payload).toEqual({ title: "First version" });
   });
 
   it("leaves a decision without a version as it was: a revised request is still approved", async () => {
