@@ -576,21 +576,22 @@ describe("Inbox toolbar", () => {
       expect(text.indexOf("Risks")).toBeLessThan(text.indexOf("ApproveRequest changesReject"));
       const button = (label: string) =>
         [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
-      apiMocks.approve.mockResolvedValue(createApproval({ type: "request_board_approval", status: "approved" }));
-      await act(async () => button("Approve").click());
-      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-1"));
-      // A Board request is decided in place: the Inbox stays on screen.
-      await vi.waitFor(() => expect(button("Reject").disabled).toBe(false));
-      expect(routerMock.navigate).not.toHaveBeenCalled();
       // Rejecting asks for confirmation before anything is sent.
       await act(async () => button("Reject").click());
       expect(apiMocks.reject).not.toHaveBeenCalled();
-      await act(async () => button("Reject request").click());
-      await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("approval-1"));
-      await vi.waitFor(() => expect(button("Cancel").disabled).toBe(false));
       await act(async () => button("Cancel").click());
       // Asking for changes needs a note, and the note travels with the request.
-      await vi.waitFor(() => expect(button("Request changes").disabled).toBe(false));
+      const [pending] = await (apiMocks.approvalsList.mock.results[0].value as Promise<Approval[]>);
+      const revised: Approval = {
+        ...pending,
+        status: "revision_requested",
+        updatedAt: new Date("2026-03-11T00:05:00.000Z"),
+      };
+      const listed = createDeferred<Approval[]>();
+      apiMocks.requestRevision.mockImplementation(async () => {
+        apiMocks.approvalsList.mockReturnValue(listed.promise);
+        return revised;
+      });
       await act(async () => button("Request changes").click());
       expect(button("Send request").disabled).toBe(true);
       const note = row.querySelector("textarea")!;
@@ -601,6 +602,31 @@ describe("Inbox toolbar", () => {
       await act(async () => button("Send request").click());
       await vi.waitFor(() =>
         expect(apiMocks.requestRevision).toHaveBeenCalledWith("approval-1", "Quote the delivery date"));
+      // The decision is stored but the list still shows the old approval: nothing can be sent twice.
+      await vi.waitFor(() => expect(apiMocks.approvalsList.mock.calls.length).toBeGreaterThan(1));
+      // Let the mutation settle, so only the lock (not the in-flight request) can disable the controls.
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(button("Approve").disabled).toBe(true);
+      expect(button("Send request").disabled).toBe(true);
+      await act(async () => listed.resolve([revised]));
+      // Once the list catches up, the request can still be approved or rejected, but not revised again.
+      await vi.waitFor(() => expect(button("Approve").disabled).toBe(false));
+      expect(button("Request changes")).toBeUndefined();
+      if (streamlinedUi) {
+        apiMocks.approve.mockResolvedValue({ ...revised, status: "approved" });
+        await act(async () => button("Approve").click());
+        await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-1"));
+        expect(apiMocks.reject).not.toHaveBeenCalled();
+      } else {
+        apiMocks.reject.mockResolvedValue({ ...revised, status: "rejected" });
+        await act(async () => button("Reject").click());
+        expect(apiMocks.reject).not.toHaveBeenCalled();
+        await act(async () => button("Reject request").click());
+        await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("approval-1"));
+      }
+      // A Board request is decided in place: the Inbox stays on screen.
+      await act(async () => {});
+      expect(routerMock.navigate).not.toHaveBeenCalled();
       expect(row.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
       expect(row.querySelector('button[aria-label="Archive"]')).not.toBeNull();
       expect(row.querySelector('a[to="/approvals/approval-1"]')).not.toBeNull();

@@ -176,6 +176,7 @@ describe("Approvals", () => {
     expect(rows()[0].textContent).toContain("Request oldest");
     expect(rows()[0].textContent).toContain("Your note. Month to month only");
     expect(rows()[0].querySelectorAll("button")).toHaveLength(0);
+    expect(rows()[0].tabIndex).toBe(-1);
     expect(rows()[0].querySelector("a")?.getAttribute("href")).toBe("/approvals/oldest");
     expect(button(rows()[1], "Approve")).toBeDefined();
   });
@@ -216,6 +217,14 @@ describe("Approvals", () => {
     });
     expect(rows().includes(document.activeElement as HTMLElement)).toBe(false);
     expect(container.textContent).not.toContain("Shift+A approve");
+    expect(rows()[0].hasAttribute("tabindex")).toBe(false);
+
+    // The compact row left by a decision follows the same rule.
+    apiMocks.approve.mockImplementation(async (id: string) => (
+      { ...approvals.find((approval) => approval.id === id)!, status: "approved" } as Approval
+    ));
+    await click(button(rows()[0], "Approve"));
+    await vi.waitFor(() => expect(rows()[0].textContent).toContain("approved"));
     expect(rows()[0].hasAttribute("tabindex")).toBe(false);
   });
 });

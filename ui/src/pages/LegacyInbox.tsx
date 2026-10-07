@@ -89,7 +89,7 @@ import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
 import { approvalLabel, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
 import { ApprovalDecisionSummary } from "../components/ApprovalDecisionSummary";
-import { ApprovalDecisionActions } from "../components/ApprovalDecisionActions";
+import { ApprovalDecisionActions, useSettlingApprovals } from "../components/ApprovalDecisionActions";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import {
@@ -1635,11 +1635,14 @@ export function Inbox() {
     saveInboxWorkItemGroupBy(nextGroupBy);
   }, []);
 
+  const { markDecided: markApprovalDecided, isSettling: isApprovalSettling } = useSettlingApprovals();
+
   const approveMutation = useMutation({
     mutationFn: ({ id, note }: { id: string; note?: string }) =>
       note ? approvalsApi.approve(id, note) : approvalsApi.approve(id),
     onSuccess: (approval, { id }) => {
       setActionError(null);
+      markApprovalDecided(approval);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
       // Board requests are decided in place so the rest of the queue stays in view.
       if (approval?.type !== "request_board_approval") navigate(`/approvals/${id}?resolved=approved`);
@@ -1652,8 +1655,9 @@ export function Inbox() {
   const rejectMutation = useMutation({
     mutationFn: ({ id, note }: { id: string; note?: string }) =>
       note ? approvalsApi.reject(id, note) : approvalsApi.reject(id),
-    onSuccess: () => {
+    onSuccess: (approval) => {
       setActionError(null);
+      markApprovalDecided(approval);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
@@ -1663,8 +1667,9 @@ export function Inbox() {
 
   const requestRevisionMutation = useMutation({
     mutationFn: ({ id, note }: { id: string; note: string }) => approvalsApi.requestRevision(id, note),
-    onSuccess: () => {
+    onSuccess: (approval) => {
       setActionError(null);
+      markApprovalDecided(approval);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
@@ -2941,7 +2946,10 @@ export function Inbox() {
                           onReject={(note) => rejectMutation.mutate({ id: item.approval.id, note })}
                           onRequestRevision={(note) => requestRevisionMutation.mutate({ id: item.approval.id, note })}
                           isPending={
-                            approveMutation.isPending || rejectMutation.isPending || requestRevisionMutation.isPending
+                            approveMutation.isPending ||
+                            rejectMutation.isPending ||
+                            requestRevisionMutation.isPending ||
+                            isApprovalSettling(item.approval)
                           }
                           unreadState={nonIssueUnreadState(approvalKey)}
                           onMarkRead={() => handleMarkNonIssueRead(approvalKey)}

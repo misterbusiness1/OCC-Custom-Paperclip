@@ -1,4 +1,12 @@
-import { forwardRef, useEffect, useId, useImperativeHandle, useState, type ReactNode } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useId,
+  useImperativeHandle,
+  useState,
+  type ReactNode,
+} from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -13,6 +21,32 @@ export interface ApprovalDecisionActionsHandle {
 }
 
 type Mode = "note" | "revision" | "reject" | null;
+
+type DecidedApproval = { id: string; updatedAt: Date | string };
+
+/**
+ * A decision is stored before the refetched approval reaches the page. Until
+ * the page shows an approval at least as new as the decision, the old controls
+ * must stay locked: a second click would repeat a decision that already went
+ * through.
+ */
+export function useSettlingApprovals() {
+  const [decidedAt, setDecidedAt] = useState<Record<string, number>>({});
+  const markDecided = useCallback((approval: DecidedApproval | null | undefined) => {
+    if (!approval?.id) return;
+    const at = new Date(approval.updatedAt).getTime();
+    if (Number.isNaN(at)) return;
+    setDecidedAt((current) => ({ ...current, [approval.id]: at }));
+  }, []);
+  const isSettling = useCallback(
+    (approval: DecidedApproval) => {
+      const at = decidedAt[approval.id];
+      return at !== undefined && new Date(approval.updatedAt).getTime() < at;
+    },
+    [decidedAt],
+  );
+  return { markDecided, isSettling };
+}
 
 /**
  * Board decision buttons shared by the approval card, the approval detail page

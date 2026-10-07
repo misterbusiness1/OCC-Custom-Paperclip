@@ -41,14 +41,14 @@ function kindLabel(kind: string): string {
 }
 
 /** What is left of a card once it is decided here, so the queue keeps its place. */
-function DecidedApprovalRow({ approval }: { approval: Approval }) {
+function DecidedApprovalRow({ approval, focusable }: { approval: Approval; focusable: boolean }) {
   const subject =
     approvalExcerpt(approvalSubject(approval.payload), 120) ?? typeLabel[approval.type] ?? approval.type;
   return (
     <div
       className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border/70 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       data-approval-card={approval.id}
-      tabIndex={-1}
+      tabIndex={focusable ? -1 : undefined}
     >
       <StatusBadge status={approval.status} />
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{subject}</span>
@@ -268,7 +268,11 @@ export function Approvals() {
           <div className="grid gap-3" ref={listRef}>
             {visible.map((approval, index) => {
               const decided = decidedHere[approval.id];
-              if (decided) return <DecidedApprovalRow key={approval.id} approval={decided} />;
+              if (decided) {
+                return (
+                  <DecidedApprovalRow key={approval.id} approval={decided} focusable={keyboardShortcutsEnabled} />
+                );
+              }
               const approving = approveMutation.isPending && approveMutation.variables?.id === approval.id;
               const rejecting = rejectMutation.isPending && rejectMutation.variables?.id === approval.id;
               const revising = revisionMutation.isPending && revisionMutation.variables?.id === approval.id;

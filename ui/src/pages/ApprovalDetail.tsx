@@ -16,7 +16,7 @@ import {
   ApprovalPayloadRenderer,
   typeLabel,
 } from "../components/ApprovalPayload";
-import { ApprovalDecisionActions } from "../components/ApprovalDecisionActions";
+import { ApprovalDecisionActions, useSettlingApprovals } from "../components/ApprovalDecisionActions";
 import { ApprovalEmailDraftBlock } from "../components/ApprovalDecisionSummary";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,7 @@ export function ApprovalDetail() {
   const queryClient = useQueryClient();
   const [commentBody, setCommentBody] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const { markDecided, isSettling } = useSettlingApprovals();
 
   const { data: approval, isLoading } = useQuery({
     queryKey: queryKeys.approvals.detail(approvalId!),
@@ -96,8 +97,9 @@ export function ApprovalDetail() {
 
   const approveMutation = useMutation({
     mutationFn: (note?: string) => (note ? approvalsApi.approve(approvalId!, note) : approvalsApi.approve(approvalId!)),
-    onSuccess: () => {
+    onSuccess: (decided) => {
       setError(null);
+      markDecided(decided);
       refresh();
       navigate(`/approvals/${approvalId}?resolved=approved`, { replace: true });
     },
@@ -106,8 +108,9 @@ export function ApprovalDetail() {
 
   const rejectMutation = useMutation({
     mutationFn: (note?: string) => (note ? approvalsApi.reject(approvalId!, note) : approvalsApi.reject(approvalId!)),
-    onSuccess: () => {
+    onSuccess: (decided) => {
       setError(null);
+      markDecided(decided);
       refresh();
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Reject failed"),
@@ -115,8 +118,9 @@ export function ApprovalDetail() {
 
   const revisionMutation = useMutation({
     mutationFn: (note: string) => approvalsApi.requestRevision(approvalId!, note),
-    onSuccess: () => {
+    onSuccess: (decided) => {
       setError(null);
+      markDecided(decided);
       refresh();
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Revision request failed"),
@@ -171,7 +175,8 @@ export function ApprovalDetail() {
     approveMutation.isPending ||
     rejectMutation.isPending ||
     revisionMutation.isPending ||
-    resubmitMutation.isPending;
+    resubmitMutation.isPending ||
+    isSettling(approval);
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
   const hasSupportingDetails =
     Boolean(linkedIssues?.length) ||
