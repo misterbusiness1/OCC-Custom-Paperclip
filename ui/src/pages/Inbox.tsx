@@ -2468,7 +2468,12 @@ function StreamlinedInbox() {
           // Enter on a focused button in a row (Approve, Send request, Show more) presses that
           // button. Only rows are exempt: from a tab or a toolbar button it still opens the row.
           // A held Enter must not press a button and then, on key repeat, open a page.
-          if (e.repeat) return;
+          // On a row button the repeat is also kept from the browser, which would press the
+          // button again (Show more would open and close while the key is down).
+          if (e.repeat) {
+            if (isInboxRowControlTarget(target)) e.preventDefault();
+            return;
+          }
           // A button left in focus by a mouse click in another row than the hovered one is not
           // pressed: the key acts on the hovered row.
           if (isInboxRowControlTarget(target)) {

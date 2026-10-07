@@ -2428,6 +2428,14 @@ describe("Inbox toolbar", () => {
         expect((await press("Enter")).defaultPrevented).toBe(false);
         expect(routerMock.navigate).not.toHaveBeenCalled();
 
+        // A held Enter on a row button presses it once: the repeats are kept from the browser.
+        const repeatedOnButton = new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true });
+        await act(async () => {
+          buttonIn(second, "Approve").dispatchEvent(repeatedOnButton);
+        });
+        expect(repeatedOnButton.defaultPrevented).toBe(true);
+        expect(routerMock.navigate).not.toHaveBeenCalled();
+
         // A held Enter repeats after its button is gone: the repeats open no page.
         buttonIn(second, "Approve").blur();
         const repeated = new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true });
