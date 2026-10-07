@@ -48,6 +48,7 @@ import {
 import {
   ApprovalChangesAskedFor,
   ApprovalSentBackTime,
+  approvalRevisedSinceShown,
   approvalSentBackAt,
   createApprovalRevisionMemory,
 } from "../components/ApprovalRevision";
@@ -171,6 +172,9 @@ function statusWords(status: string): string {
   const words = status.replace(/_/g, " ");
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
+
+/** Shown on a request whose held approval was taken back because the requester revised it first. */
+const HOLD_REVISED_TEXT = "Not approved. The requester revised this request before your approval was sent.";
 
 const DECISION_LANDED_LEAD: Record<ApprovalDecisionKind, string> = {
   approve: "Approved",
@@ -541,6 +545,14 @@ export function Approvals() {
     // row to be opened and read: it starts again from the version that comes back.
     revisionMemory.delete(approval.id);
     announce(`${DECISION_LANDED_LEAD[action]}: ${subject}`);
+    // The list is corrected with the decided record at once, before its reload answers. The rows
+    // decided on this visit are forgotten on a change of tab, and a list that still called this
+    // request pending would then show its card again, Approve ready, for a second approval.
+    queryClient.setQueryData<Approval[]>(queryKeys.approvals.list(companyId), (list) =>
+      list?.map((listed) =>
+        listed.id === approval.id && timeOf(listed.updatedAt) <= timeOf(approval.updatedAt) ? approval : listed,
+      ),
+    );
     queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(approval.id) });
   };
@@ -891,6 +903,53 @@ export function Approvals() {
     const focusedBefore = left.find((approval) => approval.id === lastFocusedId.current);
     if (focusLost && focusedBefore) refocusLeftRow.current = focusedBefore.id;
   });
+
+  // An approval is held for the version the reader pressed Approve on. A hold can outlast a revision:
+  // its five seconds stand still while the pointer rests on its row, and in that time the request
+  // can be sent back somewhere else and resubmitted with another payload. Such a hold is taken
+  // back before anything is sent. Its card returns as a closed row that says it was revised, and
+  // Approve there waits for the confirmation like any revision that arrived under the reader.
+  // The row also carries a line saying why the approval did not go out.
+  // A layout effect, so that it runs in the same step that draws the reloaded list, before any
+  // timer can send the hold; and declared before the reset below, which sends what is still held.
+  useLayoutEffect(() => {
+    if (!data) return;
+    const takenBack: HeldApproval[] = [];
+    for (const held of Object.values(heldApprovals)) {
+      if (held.phase !== "holding") continue;
+      const record = data.find((a) => a.id === held.id);
+      if (!record || !approvalRevisedSinceShown(revisionMemory, record)) continue;
+      // Focus resting on the held row or on its Undo goes to the card that takes the row's place.
+      const hadFocus = Boolean(rowElement(held.id)?.contains(document.activeElement));
+      const cancelled = cancelHeldApproval(held.id);
+      // Null when it was sent in this very moment: then there is nothing left to take back.
+      if (!cancelled) continue;
+      // Said on the request itself, where a failed decision is said: the line stays until the reader
+      // approves again or edits the note, and it keeps the row on the page under any filter.
+      settleDecision(cancelled.id, HOLD_REVISED_TEXT);
+      restoreCard(cancelled);
+      takenBack.push(cancelled);
+      // That row may be out of view, and the live region is not seen: say it where the reader is too.
+      toasts?.pushToast({
+        title: `Not approved: ${cancelled.subject}`,
+        body: "The requester revised it before your approval was sent. Nothing was sent.",
+        tone: "warn",
+        ttlMs: 15_000,
+        dedupeKey: `approval-hold-revised:${cancelled.id}`,
+      });
+      if (hadFocus) {
+        lastFocusedId.current = cancelled.id;
+        requestMove({ targetId: cancelled.id, focus: true });
+      }
+    }
+    if (takenBack.length === 0) return;
+    announce(
+      takenBack
+        .map((held) => `Not approved: ${held.subject}. The requester revised it before it was sent. Nothing was sent.`)
+        .join(" "),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, heldApprovals]);
 
   // Pins the first card as the open one, once the list on screen is the loaded one. From then on it
   // is an open card like any other: a reload that puts another request first does not swap it.

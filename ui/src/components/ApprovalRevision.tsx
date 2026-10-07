@@ -113,6 +113,30 @@ function readVersion(approval: GuardedApproval | null | undefined): ReadVersion 
   return { id: approval.id, updatedAt: new Date(approval.updatedAt).getTime(), payload: approval.payload };
 }
 
+/** Resubmitted since `read`: pending, with a newer `updatedAt` and a payload that is not the same. */
+function isRevisionOf(
+  read: ReadVersion,
+  status: string | undefined,
+  updatedAt: number | undefined,
+  payload: unknown,
+): boolean {
+  if (status !== "pending" || updatedAt === undefined) return false;
+  return updatedAt > read.updatedAt && !jsonEqual(payload, read.payload);
+}
+
+/**
+ * Whether `approval` is a revision the reader has not confirmed, by what the page remembers of it:
+ * the answer {@link useApprovalRevisionGuard} gives a card, for a request that has no card on the
+ * page at the moment. A page that holds an approval back before sending it asks this when the list
+ * reloads, so that an approval pressed for one version is not sent for another. False for a
+ * request the memory does not hold.
+ */
+export function approvalRevisedSinceShown(memory: ApprovalRevisionMemory, approval: GuardedApproval): boolean {
+  const remembered = memory.get(approval.id);
+  if (!remembered) return false;
+  return isRevisionOf(remembered.read, approval.status, new Date(approval.updatedAt).getTime(), approval.payload);
+}
+
 export const APPROVAL_REVISED_NOTICE =
   "The requester revised this request while it was open. Review it before you decide.";
 export const APPROVAL_REVISED_REVIEWED_NOTE =
@@ -168,10 +192,10 @@ export function useApprovalRevisionGuard(
   const status = approval?.status;
   const payload = approval?.payload;
   const updatedAt = current?.updatedAt;
-  const revised = useMemo(() => {
-    if (!sameApproval || read === null || status !== "pending" || updatedAt === undefined) return false;
-    return updatedAt > read.updatedAt && !jsonEqual(payload, read.payload);
-  }, [sameApproval, status, updatedAt, payload, read]);
+  const revised = useMemo(
+    () => sameApproval && read !== null && isRevisionOf(read, status, updatedAt, payload),
+    [sameApproval, status, updatedAt, payload, read],
+  );
 
   /** The reader confirms the version now on the page; it becomes the remembered one. */
   const acknowledge = () => {
@@ -205,6 +229,12 @@ export type ApprovalRevisionGuard = ReturnType<typeof useApprovalRevisionGuard>;
  */
 export function ApprovalRevisedNotice({ guard, className }: { guard: ApprovalRevisionGuard; className?: string }) {
   const textId = useId();
+  // The notice interrupts (an alert) only when the revision arrives while this place is on the
+  // page. A queue draws a card's body again each time the card is opened: a notice that is already
+  // due then is part of what the reader opened, and is not spoken again on every opening. It is
+  // still read with the row's header, and Approve still moves focus to it.
+  const [seen, setSeen] = useState({ revised: guard.revised, arrivedHere: false });
+  if (seen.revised !== guard.revised) setSeen({ revised: guard.revised, arrivedHere: guard.revised });
   if (!guard.revised && guard.reviewCount === 0) return null;
 
   return (
@@ -224,7 +254,11 @@ export function ApprovalRevisedNotice({ guard, className }: { guard: ApprovalRev
     >
       {guard.revised ? (
         <>
-          <p id={textId} role="alert" className="min-w-0 text-sm font-medium leading-5 text-foreground">
+          <p
+            id={textId}
+            role={seen.arrivedHere ? "alert" : undefined}
+            className="min-w-0 text-sm font-medium leading-5 text-foreground"
+          >
             {APPROVAL_REVISED_NOTICE}
           </p>
           <Button variant="outline" size="sm" onClick={guard.acknowledge}>

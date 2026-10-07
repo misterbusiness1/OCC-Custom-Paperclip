@@ -114,8 +114,9 @@ export function useKeyboardShortcuts({
         return;
       }
 
-      // C → New Issue
-      if (e.key === "c" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      // C → New Issue. A lower-case "c" that arrives with Shift is Shift+C typed with Caps Lock on:
+      // it is not this shortcut (on the Approvals page Shift+C asks for changes).
+      if (e.key === "c" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         onNewIssue?.();
       }
