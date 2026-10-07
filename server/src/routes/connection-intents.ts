@@ -10,7 +10,7 @@ import {
   connectionsSearchInputSchema,
   declineConnectionIntentSchema,
 } from "@paperclipai/shared";
-import { forbidden, unauthorized } from "../errors.js";
+import { HttpError, forbidden, unauthorized } from "../errors.js";
 import { verifyRuntimeToolsToken } from "../runtime-tools-token.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { logActivity } from "../services/activity-log.js";
@@ -18,7 +18,7 @@ import { accessService } from "../services/access.js";
 import type { heartbeatService } from "../services/heartbeat.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
-import { typeSafeJudgeInputSchema, typeSafeRuntimeToolService } from "../services/typesafe-runtime-tool.js";
+import { typeSafeJudgeInputSchema, typeSafeRuntimeToolService, typeSafeToolEnabled } from "../services/typesafe-runtime-tool.js";
 
 function bearer(req: Request) {
   const value = req.header("authorization") ?? "";
@@ -41,7 +41,10 @@ function typeSafeInputIssues(error: ZodError) {
   const issues: Array<{ path: string; message: string }> = [];
   const seen = new Set<string>();
   for (const issue of error.issues) {
-    const path = issue.path.join(".");
+    const joined = issue.path.join(".");
+    // The path repeats the caller's own keys. Bound it, so a huge key cannot
+    // come back as a huge result.
+    const path = joined.length > 200 ? `${joined.slice(0, 200)}…` : joined;
     // For a value of the wrong type Zod also reports the checks it could not
     // apply: prose where a Score needs an array comes back as "expected array"
     // and then "string too long", from the level limit. Only the first issue at
@@ -58,6 +61,31 @@ function typeSafeInputIssues(error: ZodError) {
     if (issues.length === 8) break;
   }
   return issues;
+}
+
+/**
+ * An outcome of a tool call that the calling agent should read and act on:
+ * malformed arguments, an unknown service, a request the user declined. Over
+ * MCP these are tool results. An HTTP error status on `tools/call` reads as a
+ * failed transport to a Streamable HTTP client, and the agent never sees why.
+ * Authentication, authority and server faults are not for the agent to work
+ * around, so they stay HTTP errors.
+ */
+function toolCallFailure(err: unknown) {
+  const zodIssues = (err as { name?: unknown; issues?: unknown } | null)?.name === "ZodError"
+    ? (err as { issues: Array<{ path: PropertyKey[]; message: string }> }).issues
+    : null;
+  if (zodIssues) {
+    return {
+      error: "Invalid arguments",
+      status: 400,
+      issues: zodIssues.slice(0, 8).map((issue) => ({ path: issue.path.join(".").slice(0, 200), message: issue.message })),
+    };
+  }
+  if (err instanceof HttpError && err.status >= 400 && err.status < 500 && err.status !== 401 && err.status !== 403) {
+    return { error: err.message, status: err.status };
+  }
+  return null;
 }
 
 function resultContent(value: unknown) {
@@ -104,8 +132,21 @@ export function runtimeConnectionIntentRoutes(db: Db) {
     // run before initialize/list as well as before an actual tool call so an
     // ended heartbeat cannot keep probing the endpoint with a once-valid token.
     await service.validate(claims);
-    const request = req.body as { jsonrpc?: string; id?: unknown; method?: string; params?: unknown };
-    const id = request.id ?? null;
+    // One JSON-RPC message per POST. A missing body, a non-JSON body or a batch
+    // array is the caller's mistake, not a server fault.
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      res.status(400).json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Send one JSON-RPC request object" } });
+      return;
+    }
+    const request = req.body as { jsonrpc?: string; id?: unknown; method?: unknown; params?: unknown };
+    // The id comes back in every response. Echo only what JSON-RPC allows.
+    const id = typeof request.id === "number" || (typeof request.id === "string" && request.id.length <= 128)
+      ? request.id
+      : null;
+    if (typeof request.method !== "string") {
+      res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32600, message: "method must be a string" } });
+      return;
+    }
     if (request.method === "initialize") {
       res.json({
         jsonrpc: "2.0",
@@ -120,7 +161,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
     }
     // A notification carries no id and gets no JSON-RPC response. Answering one
     // with 404 would tell a Streamable HTTP client its session is gone.
-    if (typeof request.method === "string" && request.method.startsWith("notifications/")) {
+    if (request.method.startsWith("notifications/")) {
       res.status(202).end();
       return;
     }
@@ -143,21 +184,30 @@ export function runtimeConnectionIntentRoutes(db: Db) {
         ? request.params as { name?: unknown; arguments?: unknown }
         : {};
       const name = typeof params.name === "string" ? params.name : "";
-      if (name === "connections_search") {
-        const input = connectionsSearchInputSchema.parse(params.arguments ?? {});
-        const result = await service.search(claims, input.query);
-        res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
-        return;
-      }
-      if (name === "connection_request") {
-        const input = connectionRequestInputSchema.parse(params.arguments ?? {});
-        const result = await service.request(claims, input.service);
-        res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
+      if (name === "connections_search" || name === "connection_request") {
+        try {
+          const result = name === "connections_search"
+            ? await service.search(claims, connectionsSearchInputSchema.parse(params.arguments ?? {}).query)
+            : await service.request(claims, connectionRequestInputSchema.parse(params.arguments ?? {}).service);
+          res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
+        } catch (err) {
+          const failure = toolCallFailure(err);
+          if (!failure) throw err;
+          // The service reloads the run and its task. If the task was
+          // reassigned or closed after the check above, its 404 or 409 is lost
+          // authority, not an outcome to hand the agent: validating again
+          // throws it as the HTTP error it is.
+          await service.validate(claims);
+          res.json({ jsonrpc: "2.0", id, result: { ...resultContent(failure), isError: true } });
+        }
         return;
       }
       if (name === "typesafe_judge") {
         const parsed = typeSafeJudgeInputSchema.safeParse(params.arguments ?? {});
-        if (!parsed.success) {
+        // With the tool switched off there is nothing to correct: say so
+        // first, rather than walk the agent through fixing a call that cannot
+        // run. The service returns `disabled` before it reads the input.
+        if (!parsed.success && typeSafeToolEnabled()) {
           // Malformed arguments are the caller's to correct, so they come back
           // as a tool result it can read. An HTTP 400 here reads as a broken
           // transport to an MCP client and hides the reason from the agent.
@@ -173,7 +223,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
           res.json({ jsonrpc: "2.0", id, result: { ...resultContent(rejected), isError: true } });
           return;
         }
-        const result = await typeSafe.judge(claims, parsed.data);
+        const result = await typeSafe.judge(claims, parsed.success ? parsed.data : params.arguments ?? {});
         res.json({ jsonrpc: "2.0", id, result: { ...resultContent(result), ...(result.ok === false ? { isError: true } : {}) } });
         return;
       }
@@ -187,7 +237,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
     res.status(404).json({
       jsonrpc: "2.0",
       id,
-      error: { code: -32601, message: `Unknown method: ${request.method ?? "missing"}` },
+      error: { code: -32601, message: `Unknown method: ${request.method.slice(0, 80)}` },
     });
   });
 

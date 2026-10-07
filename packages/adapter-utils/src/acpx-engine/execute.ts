@@ -2039,6 +2039,38 @@ async function buildRuntime(input: {
   // selected.
   let selectedSkillsBundleDir: string | null = null;
   let paperclipClaudeSettings: PaperclipClaudeSettingsResult | null = null;
+  // `kimi acp` takes no skills directory (a `--skills-dir` given before the
+  // subcommand is ignored), and the Kimi home is shared by every Kimi agent
+  // on the instance, so it cannot hold one agent's selection. Selected skills
+  // are therefore materialized into the run state dir and named in the prompt
+  // — the same bundle contract as Claude, plain `skills` layout.
+  //
+  // Local task runs only. A remote target keeps the tracked-only branch below:
+  // the host bundle path is not valid inside a sandbox. A conversation turn
+  // keeps it too: the bundle identity is part of the session fingerprint, so a
+  // skill edit (or the deploy that introduced this) would otherwise drop the
+  // conversation's ACP session and its memory.
+  //
+  // Before this bundle existed a Kimi run never read its skill sources, so a
+  // source that cannot be read must not stop the run now: it falls back to
+  // tracked-only.
+  let preparedKimiSkills: Awaited<ReturnType<typeof preparePromptSkillRuntime>> | null = null;
+  if (acpxAgent === "kimi" && !executionTargetIsRemote && context.conversationMode !== true) {
+    try {
+      preparedKimiSkills = await preparePromptSkillRuntime({
+        stateDir,
+        config,
+        moduleDir: input.engine.moduleDir,
+        onLog: input.ctx.onLog,
+        agent: "kimi",
+      });
+    } catch (err) {
+      await input.ctx.onLog(
+        "stderr",
+        `[paperclip] Could not prepare the ACPX Kimi skill bundle; this run continues with selected skills tracked only: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
   if (acpxAgent === "claude") {
     const preparedSkills = await preparePromptSkillRuntime({
       stateDir,
@@ -2061,26 +2093,11 @@ async function buildRuntime(input: {
         paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
       }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
     );
-  } else if (acpxAgent === "kimi" && !executionTargetIsRemote) {
-    // `kimi acp` takes no skills directory (a `--skills-dir` given before the
-    // subcommand is ignored), and the Kimi home is shared by every Kimi agent
-    // on the instance, so it cannot hold one agent's selection. Selected
-    // skills are therefore materialized into the run state dir and named in
-    // the prompt — the same bundle contract as Claude, plain `skills` layout.
-    // A remote target keeps the tracked-only branch below: the host bundle
-    // path is not valid inside a sandbox, and no Kimi remote staging hook
-    // advertises it.
-    const preparedSkills = await preparePromptSkillRuntime({
-      stateDir,
-      config,
-      moduleDir: input.engine.moduleDir,
-      onLog: input.ctx.onLog,
-      agent: "kimi",
-    });
-    skillPromptInstructions = preparedSkills.promptInstructions;
-    skillsIdentity = preparedSkills.identity;
-    skillCommandNotes.push(...preparedSkills.commandNotes);
-    selectedSkillsBundleDir = preparedSkills.bundleDir;
+  } else if (preparedKimiSkills) {
+    skillPromptInstructions = preparedKimiSkills.promptInstructions;
+    skillsIdentity = preparedKimiSkills.identity;
+    skillCommandNotes.push(...preparedKimiSkills.commandNotes);
+    selectedSkillsBundleDir = preparedKimiSkills.bundleDir;
   } else if (acpxAgent === "codex") {
     // Step 2 — codex-home.seed: the codex managed-home + skills preparation.
     // The nested skills.reconcile boundary (step 3) is timed inside via the
@@ -2113,8 +2130,8 @@ async function buildRuntime(input: {
     // binding, so a Grok run authenticates from the credential a completed
     // device login wrote. This never touches `prepareCodexSkillRuntime` above
     // — that function stays Codex-only — and every other custom ACPX agent
-    // (a remote `kimi` target, plain `custom`) falls through this branch
-    // unaffected.
+    // (a remote `kimi` target, a `kimi` conversation turn, plain `custom`)
+    // falls through this branch unaffected.
     if (acpxAgent === "grok" && !config.managedAiConnection) {
       env.GROK_HOME = resolveManagedGrokHomeDir(agent.companyId);
     }

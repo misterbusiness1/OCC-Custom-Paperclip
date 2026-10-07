@@ -174,11 +174,14 @@ export function prepareKimiRuntimeMcpContext(ctx: AdapterExecutionContext): Adap
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   if (target?.kind === "remote") return ctx;
-  // A session keeps the MCP registrations it was created with. A task run
-  // starts a fresh session every time (`prepareKimiRunContext`), so its
-  // registration always carries this run's bearer. A conversation resumes its
-  // session across turns, where a per-run bearer would go stale, so
-  // conversation turns keep the environment delivery only.
+  // The bearer is minted per run. A task run never resumes Paperclip's saved
+  // session (`prepareKimiRunContext`), and it never borrows a warm runtime, so
+  // it always builds its runtime from this run's options. The ACP client may
+  // still reload its own record of the task's session (`session/load` instead
+  // of `session/new`); it passes this run's servers, with this run's bearer,
+  // when it does. A conversation turn can reuse a live runtime whose
+  // registrations were made by an earlier turn, where the bearer would be
+  // stale, so conversation turns keep the environment delivery only.
   if (ctx.context.conversationMode === true) return ctx;
   const runtimeTools = ctx.runtimeTools;
   if (!runtimeTools) return ctx;

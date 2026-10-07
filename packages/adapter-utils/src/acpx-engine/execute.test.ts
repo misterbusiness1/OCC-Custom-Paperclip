@@ -470,6 +470,56 @@ it("drops a selected ACPX Kimi skill whose materialized copy has no usable SKILL
   expect(logs.some((entry) => entry.text.includes("has no usable SKILL.md"))).toBe(true);
 });
 
+it("keeps an ACPX Kimi conversation turn on tracked-only skills so a skill edit cannot end its session", async () => {
+  const root = await makeTempRoot();
+  const stateDir = path.join(root, "state");
+  const skill = await createSkill(path.join(root, "sources"), "chat-skill");
+  const config = {
+    agent: "kimi",
+    agentCommand: "node ./fake-acp.js",
+    stateDir,
+    paperclipRuntimeSkills: [skill],
+    paperclipSkillSync: { desiredSkills: [skill.key] },
+  };
+
+  const first = await runExecutor(config, { context: { conversationMode: true } });
+  expect(first.result.sessionParams?.skills).toMatchObject({ mode: "custom_unsupported", desiredSkillNames: [skill.key] });
+  expect(String(first.meta[0]?.prompt ?? "")).not.toContain("Skill root:");
+  expect(await pathExists(path.join(stateDir, "runtime-skills", "kimi"))).toBe(false);
+
+  // The bundle identity is content-addressed and part of the fingerprint. A
+  // conversation that carried it would start a new ACP session, without its
+  // memory, whenever a selected skill changed.
+  await fs.writeFile(path.join(skill.source, "SKILL.md"), "---\nrequired: false\n---\n# chat-skill v2\n", "utf8");
+  const second = await runExecutor(config, { context: { conversationMode: true } });
+  expect(second.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
+});
+
+it("continues an ACPX Kimi run with tracked-only skills when a selected skill source cannot be read", async () => {
+  const root = await makeTempRoot();
+  const gone = {
+    key: "paperclipai/test/gone-skill",
+    runtimeName: "gone-skill",
+    source: path.join(root, "sources", "gone-skill"),
+    required: false,
+  };
+
+  const { logs, meta, result } = await runExecutor({
+    agent: "kimi",
+    agentCommand: "node ./fake-acp.js",
+    stateDir: path.join(root, "state"),
+    paperclipRuntimeSkills: [gone],
+    paperclipSkillSync: { desiredSkills: [gone.key] },
+  });
+
+  // Before the bundle existed a Kimi run never read its skill sources. A
+  // source that fails to read must not stop the run now.
+  expect(result.exitCode).toBe(0);
+  expect(logs.some((entry) => entry.text.includes("Could not prepare the ACPX Kimi skill bundle"))).toBe(true);
+  expect(result.sessionParams?.skills).toMatchObject({ mode: "custom_unsupported" });
+  expect(String(meta[0]?.prompt ?? "")).not.toContain("Skill root:");
+});
+
 it("registers each ACPX Kimi run's own runtime-tools bearer as a native MCP server", async () => {
   const root = await makeTempRoot();
   const config = { agent: "kimi", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
@@ -494,9 +544,10 @@ it("registers each ACPX Kimi run's own runtime-tools bearer as a native MCP serv
     },
   ]);
 
-  // A task run never resumes a session (the Kimi adapter clears it), so the
-  // next run builds its runtime from its own options and registers its own
-  // bearer.
+  // A task run never resumes Paperclip's saved session (the Kimi adapter
+  // clears it), so the next run builds its runtime from its own options and
+  // hands the ACP client its own bearer, whether the client then creates the
+  // session or reloads its record of it.
   const rotated = await runExecutor(config, { runId: "run-2", runtimeMcp: runtimeMcp("run-two-token") });
   expect(mcpServerDescriptors(rotated.runtimeOptions[0])[0]?.headers).toEqual([
     { name: "Authorization", value: "Bearer run-two-token" },
