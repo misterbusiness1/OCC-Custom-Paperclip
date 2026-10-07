@@ -33,7 +33,9 @@ import {
 import {
   APPROVE_AFTER_ADVANCE_MS,
   APPROVE_HOLD_MS,
+  APPROVE_PAUSE_LIMIT_MS,
   ApprovalHoldCountdown,
+  approvalHoldSecondsLeft,
   useApprovalHolds,
   type ApprovalHoldPauseReason,
   type HeldApproval,
@@ -59,7 +61,8 @@ import { Button, buttonVariants } from "@/components/ui/button";
 
 type StatusFilter = "pending" | "all";
 type SortOrder = "oldest" | "newest";
-type Decision = { id: string; note?: string; subject: string };
+/** A decision as it is sent. `companyId` is the request's own company: the reader may have changed company by the time it lands. */
+type Decision = { id: string; note?: string; subject: string; companyId: string };
 type ViewMode = "compact" | "full";
 /**
  * A move of the reader's place in the queue, carried out once the list has drawn:
@@ -76,6 +79,8 @@ type QueueMove = {
   /** The decided card began above the viewport: its row goes to the top first, so the next request is not passed. */
   scrollDecidedToTop?: boolean;
   block?: ScrollLogicalPosition;
+  /** The reader opened this card to read it: when its top ends up above the visible area, the top is shown, not the end. */
+  readFromTop?: boolean;
 };
 /** A text typed for a request and not sent: what it says and the panel it was typed in. */
 type ApprovalDraft = { text: string; mode: ApprovalNoteMode };
@@ -117,6 +122,17 @@ function isAboveScrollArea(row: HTMLElement): boolean {
   return row.getBoundingClientRect().top < scrollAreaTop(row) + margin;
 }
 
+/**
+ * Whether a row is on the page and some part of it is where the reader can see it: not above the
+ * area the list scrolls in (or under the bar a phone keeps there), and not below the window.
+ */
+function isRowInView(row: HTMLElement | null): boolean {
+  if (!row) return false;
+  const margin = Number.parseFloat(window.getComputedStyle(row).scrollMarginTop) || 0;
+  const rect = row.getBoundingClientRect();
+  return rect.bottom >= scrollAreaTop(row) + margin && rect.top <= window.innerHeight;
+}
+
 /** The approval a link such as /approvals/pending#approval-<id> points at. */
 function approvalIdFromHash(hash: string): string | null {
   if (!hash.startsWith(HASH_PREFIX)) return null;
@@ -140,6 +156,11 @@ function isSentBack(approval: Approval) {
 
 function timeOf(value: Date | string) {
   return new Date(value).getTime();
+}
+
+/** When the decision on record was made; 0 for a request that has none. */
+function decidedTime(approval: Approval) {
+  return approval.decidedAt ? timeOf(approval.decidedAt) : 0;
 }
 
 function approvalKind(approval: Approval): string {
@@ -175,6 +196,8 @@ function statusWords(status: string): string {
 
 /** Shown on a request whose held approval was taken back because the requester revised it first. */
 const HOLD_REVISED_TEXT = "Not approved. The requester revised this request before your approval was sent.";
+/** Shown on a request whose held approval was taken back because it was sent back for changes first. */
+const HOLD_SENT_BACK_TEXT = "Not approved. This request was sent back for changes before your approval was sent.";
 
 const DECISION_LANDED_LEAD: Record<ApprovalDecisionKind, string> = {
   approve: "Approved",
@@ -190,8 +213,10 @@ const DECISION_LANDED_LEAD: Record<ApprovalDecisionKind, string> = {
  * The same row then shows the request being sent and, once it lands, the decision, so focus
  * resting on the row stays there throughout.
  *
- * While the pointer rests on a held row, or keyboard focus is on its Undo button, the hold does
- * not run out: the reader who has reached Undo is not raced by the clock.
+ * Once the pointer has moved onto a held row, and while keyboard focus is on its Undo button, the
+ * hold does not run out: the reader who has reached Undo is not raced by the clock. A row that is
+ * only drawn or scrolled under a pointer at rest does not pause, and a hold stands still for
+ * `APPROVE_PAUSE_LIMIT_MS` at most; after that the row says the pause is over and counts down.
  *
  * `elsewhere` marks a row whose decision was not made on this page: it shows the record as the
  * server holds it, and does not call its note the reader's own.
@@ -239,8 +264,10 @@ function DecidedApprovalRow({
       data-approval-decided-row={held ? undefined : ""}
       data-approval-held-row={held ? held.phase : undefined}
       tabIndex={-1}
-      // A finger has no resting place: only a mouse or a pen pauses the hold by being on the row.
-      onPointerEnter={
+      // Only a movement of the pointer over the row pauses the hold. The browser also reports a pointer
+      // "entering" a row that was drawn or scrolled under it while it lay still, and that is not the
+      // reader reaching for Undo. A finger has no resting place: only a mouse or a pen pauses.
+      onPointerMove={
         holding
           ? (event: PointerEvent<HTMLDivElement>) => {
               if (event.pointerType !== "touch") onPause?.("pointer");
@@ -252,7 +279,11 @@ function DecidedApprovalRow({
       {held ? (
         <span className="text-xs font-medium text-foreground" data-approval-hold-status="">
           {held.phase === "holding" ? (
-            <ApprovalHoldCountdown sendAt={held.sendAt} pausedMs={held.pausedMs ?? null} />
+            <ApprovalHoldCountdown
+              sendAt={held.sendAt}
+              pausedMs={held.pausedMs ?? null}
+              pauseUsedUp={held.pauseUsedUp ?? false}
+            />
           ) : (
             "Approving..."
           )}
@@ -282,7 +313,9 @@ function DecidedApprovalRow({
               Undo
             </Button>
             <span id={pauseHintId} className="sr-only">
-              The approval is not sent while focus is on this button.
+              {held.pauseUsedUp
+                ? "The pause is over: the approval is sent when its countdown ends, also while focus is on this button."
+                : `The approval is not sent while focus is on this button, for up to ${APPROVE_PAUSE_LIMIT_MS / 1000} seconds in all.`}
             </span>
           </>
         )
@@ -396,8 +429,12 @@ export function Approvals() {
   const shownCards = useRef<{ pending: Set<string>; openId: string | null }>({ pending: new Set(), openId: null });
   // A row that became compact because its request was decided elsewhere, and should take the focus its card held.
   const refocusLeftRow = useRef<string | null>(null);
-  // The card the page last opened by itself after a decision, and when. See APPROVE_AFTER_ADVANCE_MS.
-  const autoAdvance = useRef<{ id: string; at: number } | null>(null);
+  // When the page last opened a card by itself: after a decision, or because the list that loaded
+  // has another first card than the one shown while it loaded. Null once the reader has picked a
+  // card themselves. See APPROVE_AFTER_ADVANCE_MS.
+  const autoAdvance = useRef<number | null>(null);
+  // The card shown open, not yet pinned, while the list was still loading.
+  const shownUnpinned = useRef<string | null>(null);
   const handledHash = useRef<string | null>(null);
   // What the page shows now, for an approval that settles after the reader has moved on or left.
   const shownRef = useRef<{ mounted: boolean; companyId: string | null }>({ mounted: false, companyId: null });
@@ -434,6 +471,10 @@ export function Approvals() {
   const openByReader = (id: string | null | undefined) => {
     autoAdvance.current = null;
     setOpenId(id);
+    // The card that was open closes, and when it sat above the pressed row the list moves up by its
+    // height: the card just opened is brought back into view. Undo and Show more ask for their own
+    // move right after this one, and that one counts.
+    if (typeof id === "string") requestMove({ targetId: id, focus: false, block: "nearest", readFromTop: true });
   };
 
   // Runs after the list has drawn the change that asked for the move: the opened card has its
@@ -451,9 +492,26 @@ export function Approvals() {
     if (move.scrollDecidedToTop) decidedRow?.scrollIntoView?.({ block: "start" });
     if (move.focus) (target ?? decidedRow)?.focus({ preventScroll: true });
     target?.scrollIntoView?.({ block: move.block ?? "nearest" });
-    // The row a decision left behind carries Undo for a few seconds. A tall next card must not
-    // push it out of sight: it stays at the top, with the next card under it.
-    if (target && decidedRow && isAboveScrollArea(decidedRow)) decidedRow.scrollIntoView?.({ block: "start" });
+    // "nearest" shows the end of a card taller than the screen when the card lies above it.
+    if (move.readFromTop && target && isAboveScrollArea(target)) target.scrollIntoView?.({ block: "start" });
+    // The row a decision left behind carries Undo for a few seconds, and so do the rows of earlier
+    // approvals whose hold is still running. The next card must not push any of them out of sight:
+    // the first of them goes to the top, with the others and the next card under it. A next card
+    // too tall for that loses its end from view, not their Undo. Only holds near the decided row
+    // count (within half a window above its end): one started far up the list stays where it is,
+    // or the card just opened would be the one out of sight.
+    if (target && decidedRow) {
+      let first = decidedRow;
+      const reach = decidedRow.getBoundingClientRect().bottom - window.innerHeight / 2;
+      for (const held of Object.values(heldApprovals)) {
+        if (held.phase !== "holding") continue;
+        const row = rowElement(held.id);
+        if (!row) continue;
+        const top = row.getBoundingClientRect().top;
+        if (top < first.getBoundingClientRect().top && top > reach) first = row;
+      }
+      if (isAboveScrollArea(first)) first.scrollIntoView?.({ block: "start" });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [moveSeq]);
 
@@ -564,11 +622,11 @@ export function Approvals() {
     queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(id) });
   };
   const handleDecided = (action: ApprovalDecisionKind) => (approval: Approval, { id, subject }: Decision) => {
-    recordDecided(action, approval, subject, selectedCompanyId!);
+    recordDecided(action, approval, subject, approval.companyId);
     advanceFrom(id);
   };
-  const handleFailed = (action: ApprovalDecisionKind) => (err: unknown, { id, subject }: Decision) => {
-    recordFailed(action, err, id, subject, selectedCompanyId!);
+  const handleFailed = (action: ApprovalDecisionKind) => (err: unknown, { id, subject, companyId }: Decision) => {
+    recordFailed(action, err, id, subject, companyId);
   };
 
   /** A card returns after its approval was undone or failed: the note that was to go with it is its draft again. */
@@ -599,7 +657,10 @@ export function Approvals() {
         const shown = shownRef.current;
         // Asked of the page itself, before the hold is released: a row that a filter, the sort, the
         // page size or another tab has taken off the screen cannot show the error.
-        const onPage = shown.mounted && shown.companyId === held.companyId && Boolean(rowElement(held.id));
+        const heldRow = rowElement(held.id);
+        const onPage = shown.mounted && shown.companyId === held.companyId && Boolean(heldRow);
+        // Measured now, while the request is still its compact row: the card that returns takes that place.
+        const inView = onPage && isRowInView(heldRow);
         releaseHeldApproval(held.id);
         recordFailed("approve", err, held.id, held.subject, held.companyId);
         // The note is handed back with the card, also when the card is only seen again later.
@@ -627,10 +688,11 @@ export function Approvals() {
           queue.openId !== held.id &&
           queue.rows.some((candidate) => candidate.id === queue.openId && candidate.undecided);
         // The reader is at another request, or typing. Nothing is opened or closed and focus stays
-        // where it is, as after a failed rejection: the failed request's row shows the error, and
-        // because that row may be out of view the failure is also raised where they are.
+        // where it is, as after a failed rejection: the failed request's row shows the error. Only
+        // when that row is out of view is the failure also raised as a toast: the toast comes up in
+        // the corner where the open request's Approve button rests, and would cover it.
         if (inAnotherRow || readingAnother || isKeyboardShortcutTextInputTarget(focused)) {
-          toastFailure();
+          if (!inView) toastFailure();
           return;
         }
         // Focus on a control outside the list stays there; anywhere else it goes to the card that came back.
@@ -654,14 +716,44 @@ export function Approvals() {
     pause: pauseHeldApproval,
     resume: resumeHeldApproval,
     latestRunningId: latestHeldApprovalId,
-  } = useApprovalHolds({ send: sendHeldApproval });
+  } = useApprovalHolds({
+    send: sendHeldApproval,
+    // Said once, when the countdown starts again by itself; the seconds are not read out one by one.
+    // The pointer or focus that paused the hold may still be on its row, so the row says it too.
+    onPauseLimit: (held) => {
+      const seconds = approvalHoldSecondsLeft(held);
+      announce(
+        `The pause is over: approving in ${seconds} second${seconds === 1 ? "" : "s"}. Undo is in its row. ${held.subject}`,
+      );
+    },
+  });
 
-  /** Takes back a held approval: nothing is sent, and its card returns open, in focus, with its note. */
+  /**
+   * Takes back a held approval: nothing is sent, and its card returns open, in focus, with its note.
+   * When the request stopped being pending during the hold, its row stays instead, with its status.
+   */
   const undoHeldApproval = (id: string) => {
     const held = cancelHeldApproval(id);
     // Too late: the request has been sent.
     if (!held) return false;
     settleDecision(id);
+    // Asked of the loaded list itself: a reload may have reached it and not the page yet.
+    const record = queryClient
+      .getQueryData<Approval[]>(queryKeys.approvals.list(held.companyId))
+      ?.find((listed) => listed.id === id);
+    if (record && !needsBoard(record)) {
+      // Sent back or decided somewhere else during the hold: there is no card to return to, and the
+      // card the reader is at stays open. The request keeps its place as a row with its real status.
+      if (held.note) storeDraft(id, held.note, "note");
+      setLeftHere((current) => ({ ...current, [id]: true }));
+      announce(
+        `Not approved: ${held.subject}. Nothing was sent. Its status is now ${statusWords(record.status).toLowerCase()}: decided elsewhere.`,
+      );
+      autoAdvance.current = null;
+      lastFocusedId.current = id;
+      requestMove({ targetId: id, focus: true });
+      return true;
+    }
     restoreCard(held);
     announce(`Not approved: ${held.subject}. Nothing was sent.`);
     openByReader(id);
@@ -712,9 +804,9 @@ export function Approvals() {
       queue.advances && index >= 0
         ? (queue.rows.slice(index + 1).find(isNext) ?? queue.rows.slice(0, index).reverse().find(isNext) ?? null)
         : null;
-    // The page opens this card, not the reader: its Approve button may now sit under a pointer
-    // that is halfway through a double click.
-    autoAdvance.current = next ? { id: next.id, at: Date.now() } : null;
+    // The page opens this card, not the reader, and every card below the decided one moves up: an
+    // Approve button may now sit under a pointer that is halfway through a double click.
+    autoAdvance.current = next ? Date.now() : null;
     setOpenId(next?.id ?? null);
     if (!readerIsHere) return;
     lastFocusedId.current = next?.id ?? id;
@@ -728,21 +820,27 @@ export function Approvals() {
 
   const decide = (approval: Approval, action: ApprovalDecisionKind, note?: string) => {
     if (action === "approve") {
-      // The second press of a double click (or a second Shift+A) that lands on the card the page
-      // has only just opened approves nothing: nobody has read that request yet. Nothing is marked
-      // busy, so the same press works once the moment has passed.
-      const advanced = autoAdvance.current;
-      if (advanced?.id === approval.id && Math.abs(Date.now() - advanced.at) < APPROVE_AFTER_ADVANCE_MS) return;
+      // The second press of a double click (or a second Shift+A) just after the page has moved on by
+      // itself approves nothing, whichever card it lands on: in the Full cards view the cards below
+      // the decided one all move up, and any of their Approve buttons can come to rest under the
+      // pointer. Nothing is marked busy, so the same press works once the moment has passed.
+      const advancedAt = autoAdvance.current;
+      if (advancedAt !== null && Math.abs(Date.now() - advancedAt) < APPROVE_AFTER_ADVANCE_MS) return;
     }
     // A request whose decision is held or still on its way is not sent a second one.
     if (!decisions.start(approval.id, action)) return;
-    const decision: Decision = { id: approval.id, note, subject: approvalDisplaySubject(approval) };
+    const decision: Decision = {
+      id: approval.id,
+      note,
+      subject: approvalDisplaySubject(approval),
+      companyId: approval.companyId,
+    };
     if (action === "reject") rejectMutation.mutate(decision);
     else if (action === "revision") revisionMutation.mutate(decision);
     else {
       // An approval cannot be reversed once the server has it, so it is held here first. The card
       // becomes its compact row and the reader moves on at once, as if the decision had landed.
-      if (!holdApproval({ ...decision, companyId: selectedCompanyId! })) {
+      if (!holdApproval(decision)) {
         settleDecision(approval.id);
         return;
       }
@@ -798,7 +896,13 @@ export function Approvals() {
       // A request sent back here and resubmitted since needs a decision again: its card returns.
       if (needsBoard(approval) && changedSince) return null;
       // Sent back here and then approved or rejected somewhere else: the row shows what the server holds now.
-      if (!needsBoard(approval) && changedSince && approval.status !== decided.status) {
+      // So does one sent back here, resubmitted, and sent back again by someone else: the status is
+      // the same as the reader's own decision, but the decision is a later one, with another note.
+      if (
+        !needsBoard(approval) &&
+        changedSince &&
+        (approval.status !== decided.status || decidedTime(approval) > decidedTime(decided))
+      ) {
         return { record: approval, elsewhere: true };
       }
       return { record: decided, elsewhere: false };
@@ -910,33 +1014,43 @@ export function Approvals() {
   // back before anything is sent. Its card returns as a closed row that says it was revised, and
   // Approve there waits for the confirmation like any revision that arrived under the reader.
   // The row also carries a line saying why the approval did not go out.
+  // A hold is taken back the same way as soon as the list shows its request sent back for changes:
+  // the server would still store the approval, over another board member's change request.
   // A layout effect, so that it runs in the same step that draws the reloaded list, before any
   // timer can send the hold; and declared before the reset below, which sends what is still held.
   useLayoutEffect(() => {
     if (!data) return;
-    const takenBack: HeldApproval[] = [];
+    const takenBack: Array<{ held: HeldApproval; sentBack: boolean }> = [];
     for (const held of Object.values(heldApprovals)) {
       if (held.phase !== "holding") continue;
       const record = data.find((a) => a.id === held.id);
-      if (!record || !approvalRevisedSinceShown(revisionMemory, record)) continue;
+      const sentBackMeanwhile = Boolean(record && isSentBack(record));
+      if (!record || !(sentBackMeanwhile || approvalRevisedSinceShown(revisionMemory, record))) continue;
       // Focus resting on the held row or on its Undo goes to the card that takes the row's place.
-      const hadFocus = Boolean(rowElement(held.id)?.contains(document.activeElement));
+      const heldRow = rowElement(held.id);
+      const hadFocus = Boolean(heldRow?.contains(document.activeElement));
+      const inView = isRowInView(heldRow);
       const cancelled = cancelHeldApproval(held.id);
       // Null when it was sent in this very moment: then there is nothing left to take back.
       if (!cancelled) continue;
       // Said on the request itself, where a failed decision is said: the line stays until the reader
       // approves again or edits the note, and it keeps the row on the page under any filter.
-      settleDecision(cancelled.id, HOLD_REVISED_TEXT);
+      settleDecision(cancelled.id, sentBackMeanwhile ? HOLD_SENT_BACK_TEXT : HOLD_REVISED_TEXT);
       restoreCard(cancelled);
-      takenBack.push(cancelled);
-      // That row may be out of view, and the live region is not seen: say it where the reader is too.
-      toasts?.pushToast({
-        title: `Not approved: ${cancelled.subject}`,
-        body: "The requester revised it before your approval was sent. Nothing was sent.",
-        tone: "warn",
-        ttlMs: 15_000,
-        dedupeKey: `approval-hold-revised:${cancelled.id}`,
-      });
+      takenBack.push({ held: cancelled, sentBack: sentBackMeanwhile });
+      // A row out of view cannot say it, and the live region is not seen: then it is said where the
+      // reader is too. Not otherwise: the toast would lie over the open request's Approve button.
+      if (!inView) {
+        toasts?.pushToast({
+          title: `Not approved: ${cancelled.subject}`,
+          body: sentBackMeanwhile
+            ? "It was sent back for changes before your approval was sent. Nothing was sent."
+            : "The requester revised it before your approval was sent. Nothing was sent.",
+          tone: "warn",
+          ttlMs: 15_000,
+          dedupeKey: `approval-hold-revised:${cancelled.id}`,
+        });
+      }
       if (hadFocus) {
         lastFocusedId.current = cancelled.id;
         requestMove({ targetId: cancelled.id, focus: true });
@@ -945,7 +1059,11 @@ export function Approvals() {
     if (takenBack.length === 0) return;
     announce(
       takenBack
-        .map((held) => `Not approved: ${held.subject}. The requester revised it before it was sent. Nothing was sent.`)
+        .map(({ held, sentBack: wasSentBack }) =>
+          wasSentBack
+            ? `Not approved: ${held.subject}. It was sent back for changes before your approval was sent. Nothing was sent.`
+            : `Not approved: ${held.subject}. The requester revised it before it was sent. Nothing was sent.`,
+        )
         .join(" "),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -955,8 +1073,20 @@ export function Approvals() {
   // is an open card like any other: a reload that puts another request first does not swap it.
   // Declared before the reset below, so that after a change of tab the card pinned is the first of
   // the new tab's list, not of the one just left.
+  // While the list is still loading, the card shown open is remembered instead. The reader pins it
+  // by putting focus in the list (see rememberFocusedRow). If they have not, and the loaded list
+  // has another first card, that card is one the page opened by itself: Approve waits a moment.
   useEffect(() => {
-    if (isFetching || openId !== undefined || statusFilter !== "pending" || !firstCardId) return;
+    if (openId !== undefined || statusFilter !== "pending" || !firstCardId) {
+      shownUnpinned.current = null;
+      return;
+    }
+    if (isFetching) {
+      if (!shownUnpinned.current) shownUnpinned.current = firstCardId;
+      return;
+    }
+    if (shownUnpinned.current && shownUnpinned.current !== firstCardId) autoAdvance.current = Date.now();
+    shownUnpinned.current = null;
     setOpenId((current) => (current === undefined ? firstCardId : current));
   });
 
@@ -1054,6 +1184,11 @@ export function Approvals() {
   const rememberFocusedRow = (event: FocusEvent<HTMLDivElement>) => {
     const row = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>("[data-approval-card]") : null;
     if (row?.dataset.approvalCard) lastFocusedId.current = row.dataset.approvalCard;
+    // The reader is in the list: the card shown open is theirs from now on, also while a reload that
+    // may put another request first is still on its way.
+    if (row && statusFilter === "pending" && firstCardId) {
+      setOpenId((current) => (current === undefined ? firstCardId : current));
+    }
   };
 
   const linkedIssueQueries = useQueries({

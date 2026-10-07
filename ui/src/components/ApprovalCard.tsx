@@ -427,8 +427,11 @@ export function ApprovalCard({
             <p
               id={rowErrorId}
               role={announceError ? "alert" : undefined}
-              // Above the header's click area, so the message can be selected and copied.
-              className="relative z-10 break-words pl-5.5 text-xs font-medium leading-5 text-destructive"
+              // Above the header's click area, so the message can be selected and copied. Two lines
+              // at most: a long message must not make the row push the card being read down the
+              // page. The whole message is on hover here, and above the buttons once the card is open.
+              className="relative z-10 line-clamp-2 break-words pl-5.5 text-xs font-medium leading-5 text-destructive"
+              title={error}
               data-approval-row-error=""
             >
               {error}

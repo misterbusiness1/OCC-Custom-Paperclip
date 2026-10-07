@@ -1792,6 +1792,10 @@ describe("ApprovalCard as a collapsible queue row", () => {
     // So is the error a closed row shows.
     const error = container.querySelector("[data-approval-row-error]")!;
     expect(classes(error)).toEqual(expect.arrayContaining(["relative", "z-10"]));
+    // Two lines at most, so a long message does not push the card being read down the page; the
+    // whole message is on hover, and above the buttons once the card is open.
+    expect(classes(error)).toContain("line-clamp-2");
+    expect(error.getAttribute("title")).toBe(error.textContent);
     // The title and the one line of what is asked stay the place to click.
     expect(classes(header().querySelector("span")!)).not.toContain("z-10");
     expect(classes(container.querySelector("[data-approval-ask]")!)).not.toContain("z-10");
