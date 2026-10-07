@@ -636,6 +636,65 @@ describe("Inbox toolbar", () => {
     }
   });
 
+  it.each([true, false])("shows what a hire or strategy asks for before its inbox decision with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    apiMocks.approvalsList.mockResolvedValue([
+      createApproval({
+        id: "approval-hire",
+        type: "hire_agent",
+        payload: {
+          name: "Pricing Analyst",
+          role: "researcher",
+          capabilities: "Tracks competitor prices weekly.",
+          budgetMonthlyCents: 5000,
+          agentId: "agent-pending",
+        },
+      }),
+      createApproval({
+        id: "approval-strategy",
+        type: "approve_ceo_strategy",
+        payload: { plan: "1. Grow wholesale.\n2. Cut returns." },
+      }),
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Hire Agent: Pricing Analyst"));
+      const rowFor = (text: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(text))!;
+
+      const hire = rowFor("Hire Agent: Pricing Analyst");
+      const summary = hire.querySelector("[data-approval-hire]")!;
+      expect(summary.textContent).toContain("Monthly budget$50.00");
+      expect(summary.textContent).toContain("What it will doTracks competitor prices weekly.");
+      expect(summary.textContent).toContain("If rejectedThe pending agent is terminated.");
+      // A hire is never rejected on a single click: the pending agent would be terminated.
+      const button = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
+      await act(async () => button(hire, "Reject").click());
+      expect(apiMocks.reject).not.toHaveBeenCalled();
+      expect(hire.textContent).toContain("Reject this request?");
+      await act(async () => button(hire, "Cancel").click());
+
+      const strategy = rowFor("CEO Strategy");
+      expect(strategy.querySelector("[data-approval-plan] p.whitespace-pre-line")!.textContent).toBe(
+        "1. Grow wholesale.\n2. Cut returns.",
+      );
+      expect(button(strategy, "Request changes")).toBeDefined();
+      // Approving a hire still opens its confirmation page.
+      apiMocks.approve.mockResolvedValue(createApproval({ id: "approval-hire", type: "hire_agent", status: "approved" }));
+      await act(async () => button(hire, "Approve").click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-hire"));
+      await vi.waitFor(() =>
+        expect(routerMock.navigate).toHaveBeenCalledWith("/approvals/approval-hire?resolved=approved"));
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it.each([true, false])("shows an honest missing-source state in the inbox with streamlined UI %s", async (streamlinedUi) => {
     routerMock.location.pathname = "/inbox/mine";
     apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
@@ -657,10 +716,12 @@ describe("Inbox toolbar", () => {
       const row = [...container.querySelectorAll("[data-inbox-item]")]
         .find((item) => item.textContent?.includes("Historical email approval"))!;
       const text = row.textContent!;
-      expect(text).toContain("Older request: no original source, pros or risks were recorded.");
+      expect(text).toContain("no original request attached");
+      expect(text).toContain("Older request: no pros or risks were recorded.");
       // The outbound draft is shown as a draft, after the decision brief; it never fills the source slot.
       expect(row.querySelector("pre")).toBeNull();
       expect(text).not.toContain("Original request");
+      expect(text).not.toContain("was not retained");
       const draft = row.querySelector("[data-approval-draft]")!;
       expect(draft.textContent).toContain("Draft reply");
       expect(draft.textContent).toContain("A generated outbound draft is not the original email");

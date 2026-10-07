@@ -5,11 +5,12 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Identity } from "./Identity";
 import {
   approvalExcerpt,
+  approvalMissingSourceNote,
   approvalSubject,
   isEmailReplyPayload,
   typeLabel,
 } from "./ApprovalPayload";
-import { ApprovalDecisionSummary } from "./ApprovalDecisionSummary";
+import { ApprovalDecisionSummary, type ApprovalAgentNameResolver } from "./ApprovalDecisionSummary";
 import {
   ApprovalDecisionActions,
   type ApprovalDecisionActionsHandle,
@@ -56,6 +57,7 @@ export function ApprovalCard({
   pendingAction = null,
   linkedIssues,
   enableShortcuts = false,
+  resolveAgentName,
 }: {
   approval: Approval;
   requesterAgent: Agent | null;
@@ -69,6 +71,8 @@ export function ApprovalCard({
   linkedIssues?: ApprovalCardLinkedIssue[];
   /** Shift+A approves, Shift+C asks for changes and Shift+X rejects while the card has focus. */
   enableShortcuts?: boolean;
+  /** Lets a hire request name the manager the new agent reports to. */
+  resolveAgentName?: ApprovalAgentNameResolver;
 }) {
   const actionsRef = useRef<ApprovalDecisionActionsHandle>(null);
   const payload = approval.payload as Record<string, unknown> | null;
@@ -82,6 +86,7 @@ export function ApprovalCard({
   const hasFooter = showResolutionButtons || Boolean(detailLink || onOpen);
   const waiting = isActionable ? waitingLabel(approval.createdAt) : null;
   const isEmailReply = approval.type === "request_board_approval" && isEmailReplyPayload(payload);
+  const missingSourceNote = approvalMissingSourceNote(approval.type, payload);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -162,12 +167,16 @@ export function ApprovalCard({
           ) : (
             <span>Created {timeAgo(approval.createdAt)}</span>
           )}
+          {missingSourceNote && (
+            <span title="The agent did not attach the request that this approval answers.">{missingSourceNote}</span>
+          )}
         </div>
       </div>
 
       <ApprovalDecisionSummary
         type={approval.type}
         payload={payload}
+        resolveAgentName={resolveAgentName}
         className="mt-4 border-t border-border/60 pt-4"
       />
 
