@@ -4740,7 +4740,7 @@ function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
   return deriveTaskKey(run.contextSnapshot as Record<string, unknown> | null, null);
 }
 
-async function retrySourceMatchesWakeScope(args: {
+export async function retrySourceMatchesWakeScope(args: {
   db: Db;
   companyId: string;
   agentId: string;
