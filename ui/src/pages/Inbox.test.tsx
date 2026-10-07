@@ -844,6 +844,73 @@ describe("Inbox toolbar", () => {
     }
   });
 
+  it.each([true, false])("opens a hire's confirmation page again once the row whose decision failed has left the screen, with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    apiMocks.agentsList.mockResolvedValue([{ id: "agent-1", name: "Infra Engineer" }]);
+    const hire = createApproval({
+      id: "approval-hire",
+      type: "hire_agent",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      payload: { name: "Pricing Analyst", role: "researcher", capabilities: "Tracks competitor prices weekly." },
+    });
+    const strategy = createApproval({
+      id: "approval-strategy",
+      type: "approve_ceo_strategy",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      payload: { plan: "1. Grow wholesale.\n2. Cut returns." },
+    });
+    let listed: Approval[] = [hire, strategy];
+    apiMocks.approvalsList.mockImplementation(async () => listed);
+    const sent = new Map<string, ReturnType<typeof createDeferred<Approval>>>();
+    apiMocks.approve.mockImplementation((id: string) => {
+      const deferred = createDeferred<Approval>();
+      sent.set(id, deferred);
+      return deferred.promise;
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Hire Agent: Pricing Analyst"));
+      const rowFor = (text: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(text));
+      const button = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
+
+      // A colleague rejected the strategy a moment ago: the server refuses this approval.
+      await act(async () => button(rowFor("CEO Strategy")!, "Approve").click());
+      await vi.waitFor(() => expect(sent.size).toBe(1));
+      await act(async () => sent.get("approval-strategy")!.reject(new Error("Only pending approvals can be approved")));
+      await vi.waitFor(() =>
+        expect(rowFor("CEO Strategy")!.textContent).toContain("Error while approving: Only pending approvals can be approved"));
+
+      // The list reloads. The server still lists the request, as rejected by that colleague, and
+      // Mine does not show a request someone else decided: the row and its error leave the screen.
+      const decidedAt = new Date("2026-03-12T00:00:00.000Z");
+      listed = [hire, { ...strategy, status: "rejected", decidedByUserId: "user-colleague", decidedAt, updatedAt: decidedAt }];
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["approvals", "company-1"] });
+      });
+      await vi.waitFor(() => expect(rowFor("CEO Strategy")).toBeUndefined());
+      expect(container.textContent).not.toContain("Error while approving");
+
+      // No row shows an error any more: the hire opens its confirmation page.
+      await act(async () => button(rowFor("Hire Agent: Pricing Analyst")!, "Approve").click());
+      await vi.waitFor(() => expect(sent.size).toBe(2));
+      await act(async () => {
+        sent.get("approval-hire")!.resolve({ ...hire, status: "approved" });
+      });
+      await vi.waitFor(() =>
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith("/approvals/approval-hire?resolved=approved"));
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it.each([true, false])("shows an honest missing-source state in the inbox with streamlined UI %s", async (streamlinedUi) => {
     routerMock.location.pathname = "/inbox/mine";
     apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });

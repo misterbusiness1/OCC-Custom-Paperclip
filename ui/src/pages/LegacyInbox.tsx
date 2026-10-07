@@ -1710,6 +1710,15 @@ export function Inbox() {
   // Kept per approval: a decision on one row neither locks the other rows nor reports its error away from its row.
   const approvalDecisions = useApprovalDecisionFeedback();
   const { settle: settleApprovalDecision, hasOthersUnsettled: hasOtherApprovalDecisionUnsettled } = approvalDecisions;
+  // The approval rows on screen now (this tab, this search), for a decision that lands later. A
+  // failed row can leave the screen with its error: a tab that hides a request someone else
+  // decided, an archived row. The error is kept for when the row returns, but holds nobody back.
+  const shownApprovalIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const shown = new Set<string>();
+    for (const item of filteredWorkItems) if (item.kind === "approval") shown.add(item.approval.id);
+    shownApprovalIdsRef.current = shown;
+  }, [filteredWorkItems]);
 
   const approveMutation = useMutation({
     mutationFn: ({ id, note }: { id: string; note?: string }) =>
@@ -1723,8 +1732,11 @@ export function Inbox() {
       // strategy opens its confirmation page, but not while another row's decision is still on its
       // way or has failed and shows its error: leaving would unmount the Inbox, and that row's
       // error (with the note typed for it) would be shown nowhere. It then settles in place like a
-      // Board request.
-      if (approval?.type !== "request_board_approval" && !hasOtherApprovalDecisionUnsettled(id)) {
+      // Board request. A failed row that is no longer on screen shows no error, and does not count.
+      if (
+        approval?.type !== "request_board_approval" &&
+        !hasOtherApprovalDecisionUnsettled(id, (other) => shownApprovalIdsRef.current.has(other))
+      ) {
         navigate(`/approvals/${id}?resolved=approved`);
       }
     },

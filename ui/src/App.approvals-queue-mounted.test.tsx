@@ -144,7 +144,7 @@ vi.mock("./context/BreadcrumbContext", async (importOriginal) => ({
 }));
 
 import { App } from "./App";
-import { APPROVE_HOLD_MS } from "./components/ApprovalHold";
+import { APPROVE_AFTER_ADVANCE_MS, APPROVE_HOLD_MS } from "./components/ApprovalHold";
 import { SIDEBAR_SCROLL_RESET_STATE } from "./lib/navigation-scroll";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -254,6 +254,8 @@ describe("the Approvals queue stays mounted when a link to /approvals is followe
     await typeText(row("newest"), "Quote the delivery date");
     await click(header(row("oldest")));
     expect(unsentNote("newest")).toBe("Change request not sent");
+    // Approve just after a row was opened by its header is taken for the end of a double click.
+    await pass(APPROVE_AFTER_ADVANCE_MS);
     await click(button(row("oldest"), "Approve"));
     expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["oldest"]);
     expect(button(heldRows()[0], "Undo")).toBeDefined();

@@ -87,4 +87,28 @@ describe("useApprovalDecisionFeedback: is another request unsettled?", () => {
     expect(feedback.errors).toEqual({});
     expect(feedback.hasOthersUnsettled("hire")).toBe(false);
   });
+
+  it("does not count a failed request whose row is no longer shown, and keeps its error for when it is", () => {
+    act(() => {
+      feedback.start("other", "approve");
+      feedback.settle("other", "Session expired");
+    });
+    const shown = new Set(["hire", "other"]);
+    const isShown = (id: string) => shown.has(id);
+    expect(feedback.hasOthersUnsettled("hire", isShown)).toBe(true);
+
+    // The row left the screen: its error is shown nowhere, so leaving the page drops nothing.
+    shown.delete("other");
+    expect(feedback.hasOthersUnsettled("hire", isShown)).toBe(false);
+    expect(feedback.errors).toEqual({ other: "Session expired" });
+    // It comes back, with its error.
+    shown.add("other");
+    expect(feedback.hasOthersUnsettled("hire", isShown)).toBe(true);
+
+    // A decision still on its way counts whether or not its row is shown: its outcome is not known yet.
+    act(() => {
+      feedback.start("third", "reject");
+    });
+    expect(feedback.hasOthersUnsettled("hire", () => false)).toBe(true);
+  });
 });
