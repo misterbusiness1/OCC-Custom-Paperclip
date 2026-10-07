@@ -16,6 +16,21 @@ export const APPROVE_HOLD_MS = 5_000;
 export const APPROVE_AFTER_ADVANCE_MS = 800;
 
 /**
+ * For a row of a live list that sends an approval at once, with no undo. `position` is the row's
+ * place in the list as drawn. When the list puts the row somewhere else by itself (a new request
+ * above it, a row gone, a re-sort), this row's Approve may now lie where the pointer was resting
+ * on another row's. Returns when the row was last moved this way, in milliseconds since the epoch,
+ * or 0 for a row that has not moved. The decision buttons take it as `approveMovedAt`.
+ */
+export function useRowMovedAt(position: number): number {
+  const [seen, setSeen] = useState({ position, movedAt: 0 });
+  if (seen.position === position) return seen.movedAt;
+  const moved = { position, movedAt: Date.now() };
+  setSeen(moved);
+  return moved.movedAt;
+}
+
+/**
  * The longest a hold's countdown may stand still, counted over all its pauses and both reasons
  * together. Once it is used up the countdown runs whatever the pointer or focus does, so a pointer
  * left on a row cannot keep an approval unsent for as long as the window stays open.

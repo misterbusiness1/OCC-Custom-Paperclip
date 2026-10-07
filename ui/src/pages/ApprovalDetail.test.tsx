@@ -50,7 +50,7 @@ vi.mock("@/lib/router", () => ({
   useSearchParams: () => [routerMock.searchParams],
 }));
 
-import { ApprovalDetail } from "./ApprovalDetail";
+import { ApprovalDetail, MARK_RESUBMITTED_CONFIRM } from "./ApprovalDetail";
 import { ThemeProvider } from "../context/ThemeContext";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -712,6 +712,64 @@ describe("ApprovalDetail", () => {
       expect(panel().textContent).toContain("Reject this request?");
       expect(panel().querySelector("textarea")!.value).toBe("Still no delivery date");
       expect(panel().textContent).not.toContain("Changes you asked for");
+    });
+  });
+
+  describe("Mark resubmitted", () => {
+    const sentBack = (overrides: Partial<Approval> = {}) =>
+      createApproval({
+        status: "revision_requested",
+        decisionNote: "Quote the delivery date.",
+        decidedAt: new Date("2026-10-06T10:00:00.000Z"),
+        updatedAt: new Date("2026-10-06T10:00:00.000Z"),
+        ...overrides,
+      });
+    let confirm: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      confirm = vi.spyOn(window, "confirm");
+      apiMocks.resubmit.mockResolvedValue(createApproval());
+    });
+    afterEach(() => confirm.mockRestore());
+
+    it("says what it does and sends nothing when the board declines", async () => {
+      confirm.mockReturnValue(false);
+      await render(sentBack());
+
+      await act(async () => button(panel(), "Mark resubmitted").click());
+
+      expect(confirm).toHaveBeenCalledExactlyOnceWith(MARK_RESUBMITTED_CONFIRM);
+      // The three things the press does, in the board's words.
+      expect(MARK_RESUBMITTED_CONFIRM).toContain("returns to the queue unchanged");
+      expect(MARK_RESUBMITTED_CONFIRM).toContain("Your change request is deleted");
+      expect(MARK_RESUBMITTED_CONFIRM).toContain("the requester can no longer resubmit");
+      expect(apiMocks.resubmit).not.toHaveBeenCalled();
+      // The note is still on the page and the button can be pressed again.
+      expect(panel().textContent).toContain("Quote the delivery date.");
+      expect(button(panel(), "Mark resubmitted").disabled).toBe(false);
+    });
+
+    it("resubmits once the board confirms", async () => {
+      confirm.mockReturnValue(true);
+      await render(sentBack());
+
+      await act(async () => button(panel(), "Mark resubmitted").click());
+
+      expect(confirm).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(apiMocks.resubmit).toHaveBeenCalledExactlyOnceWith("approval-1"));
+    });
+
+    it("asks the same question for a budget stop, which has no other buttons", async () => {
+      confirm.mockReturnValue(false);
+      await render(sentBack({ type: "budget_override_required", payload: { scopeName: "Research" } }));
+
+      await act(async () => button(panel(), "Mark resubmitted").click());
+      expect(confirm).toHaveBeenCalledExactlyOnceWith(MARK_RESUBMITTED_CONFIRM);
+      expect(apiMocks.resubmit).not.toHaveBeenCalled();
+
+      confirm.mockReturnValue(true);
+      await act(async () => button(panel(), "Mark resubmitted").click());
+      await vi.waitFor(() => expect(apiMocks.resubmit).toHaveBeenCalledExactlyOnceWith("approval-1"));
     });
   });
 

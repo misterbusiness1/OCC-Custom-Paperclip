@@ -1507,10 +1507,14 @@ export function Approvals() {
               const pendingAction = decisions.inFlight[approval.id] ?? null;
               // Read when the card is drawn: its controls start from this copy each time they are drawn again.
               const draft = drafts.current.get(approval.id);
+              // Sent back on this visit and resubmitted since: the card is back, and the server has
+              // deleted the change request. The copy kept here lasts until a new decision or a tab change.
+              const sentBackHere = decidedHere[approval.id];
               return (
                 <ApprovalCard
                   key={approval.id}
                   approval={approval}
+                  changesAskedFor={sentBackHere?.status === "revision_requested" ? sentBackHere.decisionNote : null}
                   requesterAgent={approval.requestedByAgentId ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null : null}
                   onApprove={(note) => decide(approval, "approve", note)}
                   onReject={(note) => decide(approval, "reject", note)}

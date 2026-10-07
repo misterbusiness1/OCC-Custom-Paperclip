@@ -43,6 +43,13 @@ import { timeAgo } from "../lib/timeAgo";
 const UNKNOWN_AGENT_NAME = "An agent";
 /** About how much of the request's subject the last breadcrumb holds. */
 const BREADCRUMB_SUBJECT_LENGTH = 40;
+/**
+ * Asked before "Mark resubmitted" is sent. The server sets the request back to pending as it is,
+ * deletes the decision note, and from then on refuses the requester's own resubmission.
+ */
+export const MARK_RESUBMITTED_CONFIRM =
+  "Mark this request as resubmitted? It returns to the queue unchanged. Your change request is deleted, " +
+  "and the requester can no longer resubmit a revised version.";
 
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
@@ -178,6 +185,12 @@ export function ApprovalDetail() {
     },
     onError: (err) => failDecision(err instanceof Error ? err.message : "Resubmit failed"),
   });
+
+  // One stray press would put the unchanged request back in the queue and erase the board's change request.
+  const markResubmitted = () => {
+    if (!window.confirm(MARK_RESUBMITTED_CONFIRM)) return;
+    resubmitMutation.mutate();
+  };
 
   const addCommentMutation = useMutation({
     mutationFn: () => approvalsApi.addComment(approvalId!, commentBody.trim()),
@@ -369,7 +382,7 @@ export function ApprovalDetail() {
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => resubmitMutation.mutate()}
+                      onClick={markResubmitted}
                       disabled={decisionPending}
                     >
                       {resubmitMutation.isPending ? "Resubmitting…" : "Mark resubmitted"}
@@ -387,7 +400,7 @@ export function ApprovalDetail() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => resubmitMutation.mutate()}
+                onClick={markResubmitted}
                 disabled={decisionPending}
               >
                 {resubmitMutation.isPending ? "Resubmitting…" : "Mark resubmitted"}

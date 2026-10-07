@@ -25,6 +25,7 @@ import {
   type ApprovalPendingAction,
 } from "./ApprovalDecisionActions";
 import {
+  ApprovalChangesAskedFor,
   ApprovalRevisedNotice,
   ApprovalWaitingOnRequester,
   composeApproveGuards,
@@ -111,6 +112,7 @@ export function ApprovalCard({
   onOpenChange,
   focusable = false,
   announceError = true,
+  changesAskedFor = null,
 }: {
   approval: Approval;
   requesterAgent: Agent | null;
@@ -164,6 +166,12 @@ export function ApprovalCard({
    * card is closed or opened and the line is drawn anew.
    */
   announceError?: boolean;
+  /**
+   * The change request the reader sent for this request earlier on this visit. The server deletes
+   * it when the request is resubmitted, so the page hands its own copy to the card that comes back:
+   * the revision can then be read against what was asked. Shown above the summary, as plain text.
+   */
+  changesAskedFor?: string | null;
 }) {
   const actionsRef = useRef<ApprovalDecisionActionsHandle>(null);
   const bodyId = useId();
@@ -309,6 +317,8 @@ export function ApprovalCard({
   const body = (
     <>
       <ApprovalRevisedNotice guard={revision} className="mt-4" />
+
+      <ApprovalChangesAskedFor note={changesAskedFor} className="mt-4 border-t border-border/60 pt-4" />
 
       <ApprovalDecisionSummary
         type={approval.type}

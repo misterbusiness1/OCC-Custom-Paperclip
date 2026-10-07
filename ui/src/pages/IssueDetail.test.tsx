@@ -77,6 +77,13 @@ const mockIssuesApi = vi.hoisted(() => ({
   upsertDocument: vi.fn(),
   getDocument: vi.fn(),
   rejectInteraction: vi.fn(),
+  listApprovals: vi.fn(),
+}));
+
+const mockApprovalsApi = vi.hoisted(() => ({
+  approve: vi.fn(),
+  reject: vi.fn(),
+  requestRevision: vi.fn(),
 }));
 
 const mockActivityApi = vi.hoisted(() => ({
@@ -180,10 +187,7 @@ vi.mock("../api/heartbeats", () => ({
 }));
 
 vi.mock("../api/approvals", () => ({
-  approvalsApi: {
-    approve: vi.fn(),
-    reject: vi.fn(),
-  },
+  approvalsApi: mockApprovalsApi,
 }));
 
 vi.mock("../api/agents", () => ({
@@ -571,8 +575,30 @@ vi.mock("../components/PriorityIcon", () => ({
     ),
 }));
 
+// Shows which decisions the page wires up, and what it tells the card while one is sent.
 vi.mock("../components/ApprovalCard", () => ({
-  ApprovalCard: () => <div>Approval</div>,
+  ApprovalCard: ({
+    approval,
+    onApprove,
+    onReject,
+    onRequestRevision,
+    pendingAction,
+  }: {
+    approval: { id: string };
+    onApprove?: (note?: string) => void;
+    onReject?: (note?: string) => void;
+    onRequestRevision?: (note: string) => void;
+    pendingAction?: string | null;
+  }) => (
+    <div data-testid={`approval-card-${approval.id}`} data-pending-action={pendingAction ?? ""}>
+      Approval
+      {onApprove ? <button type="button" onClick={() => onApprove()}>card approve</button> : null}
+      {onReject ? <button type="button" onClick={() => onReject()}>card reject</button> : null}
+      {onRequestRevision ? (
+        <button type="button" onClick={() => onRequestRevision("Use the Q3 figures")}>card request changes</button>
+      ) : null}
+    </div>
+  ),
 }));
 
 vi.mock("../components/Identity", () => ({
@@ -695,26 +721,40 @@ vi.mock("@/components/ui/skeleton", () => ({
   Skeleton: () => <div data-testid="skeleton" />,
 }));
 
-vi.mock("@/components/ui/tabs", () => ({
-  Tabs: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  TabsContent: ({
-    children,
-    className,
-    "data-testid": testId,
-  }: {
-    children?: ReactNode;
-    className?: string;
-    "data-testid"?: string;
-  }) => (
-    <div className={className} data-testid={testId}>
-      {children}
-    </div>
-  ),
-  TabsList: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  TabsTrigger: ({ children }: { children?: ReactNode }) => (
-    <button type="button">{children}</button>
-  ),
-}));
+// A trigger reports its value to the tab set it stands in, so a test can open another tab.
+vi.mock("@/components/ui/tabs", async () => {
+  const { createContext, useContext } = await import("react");
+  const TabsChange = createContext<((value: string) => void) | undefined>(undefined);
+  return {
+    Tabs: ({ children, onValueChange }: { children?: ReactNode; onValueChange?: (value: string) => void }) => (
+      <TabsChange.Provider value={onValueChange}>
+        <div>{children}</div>
+      </TabsChange.Provider>
+    ),
+    TabsContent: ({
+      children,
+      className,
+      "data-testid": testId,
+    }: {
+      children?: ReactNode;
+      className?: string;
+      "data-testid"?: string;
+    }) => (
+      <div className={className} data-testid={testId}>
+        {children}
+      </div>
+    ),
+    TabsList: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+    TabsTrigger: ({ children, value }: { children?: ReactNode; value?: string }) => {
+      const change = useContext(TabsChange);
+      return (
+        <button type="button" data-tab-trigger={value} onClick={() => value && change?.(value)}>
+          {children}
+        </button>
+      );
+    },
+  };
+});
 
 vi.mock("@/components/ui/textarea", () => ({
   Textarea: (props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) => (
@@ -5142,6 +5182,125 @@ describe("IssueDetail", () => {
         (comment) => comment.id === "interaction-response:classic-question",
       ),
     ).toBe(false);
+  });
+
+  describe("the approval card on the task page", () => {
+    const linkedApproval = {
+      id: "approval-1",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      requestedByAgentId: "agent-1",
+      payload: { title: "Publish the report" },
+    };
+
+    async function openActivityTab() {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableIssuePlanDecompositions: false,
+        enableExperimentalFileViewer: false,
+        enableExternalObjects: false,
+        enableStreamlinedUi: true,
+        enableClassicTaskInterface: true,
+      });
+      mockIssuesApi.get.mockResolvedValue(createIssue());
+      mockIssuesApi.listApprovals.mockResolvedValue([linkedApproval]);
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-tab-trigger="activity"]')!.click();
+      });
+      await flushReact();
+      await flushReact();
+      const card = container.querySelector<HTMLElement>('[data-testid="approval-card-approval-1"]');
+      expect(card).not.toBeNull();
+      return card!;
+    }
+
+    function cardButton(card: HTMLElement, name: string) {
+      return Array.from(card.querySelectorAll("button")).find((button) => button.textContent === name) ?? null;
+    }
+
+    beforeEach(() => {
+      mockApprovalsApi.approve.mockReset();
+      mockApprovalsApi.reject.mockReset();
+      mockApprovalsApi.requestRevision.mockReset();
+    });
+
+    it("sends a change request with its note, reloads, and says so", async () => {
+      let land!: (value: unknown) => void;
+      mockApprovalsApi.requestRevision.mockReturnValue(new Promise((resolve) => { land = resolve; }));
+      const card = await openActivityTab();
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+      await act(async () => {
+        cardButton(card, "card request changes")!.click();
+      });
+      await flushReact();
+
+      expect(mockApprovalsApi.requestRevision).toHaveBeenCalledTimes(1);
+      expect(mockApprovalsApi.requestRevision).toHaveBeenCalledWith("approval-1", "Use the Q3 figures");
+      expect(mockApprovalsApi.approve).not.toHaveBeenCalled();
+      expect(mockApprovalsApi.reject).not.toHaveBeenCalled();
+      // The card is told which decision is on its way.
+      expect(card.dataset.pendingAction).toBe("revision");
+
+      await act(async () => {
+        land({ ...linkedApproval, status: "revision_requested" });
+      });
+      await flushReact();
+
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.approvals("PAP-1") });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.approvals.detail("approval-1") });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.approvals.list("company-1") });
+      expect(mockPushToast).toHaveBeenCalledWith({ title: "Changes requested", tone: "success" });
+      expect(card.dataset.pendingAction).toBe("");
+    });
+
+    it("reports a change request that failed in its own words", async () => {
+      mockApprovalsApi.requestRevision.mockRejectedValue(new Error("No requester to notify"));
+      const card = await openActivityTab();
+
+      await act(async () => {
+        cardButton(card, "card request changes")!.click();
+      });
+      await flushReact();
+
+      expect(mockPushToast).toHaveBeenCalledWith({
+        title: "Request for changes failed",
+        body: "No requester to notify",
+        tone: "error",
+      });
+      expect(mockApprovalsApi.approve).not.toHaveBeenCalled();
+      expect(mockApprovalsApi.reject).not.toHaveBeenCalled();
+    });
+
+    it("still approves and rejects through their own routes", async () => {
+      mockApprovalsApi.approve.mockResolvedValue({ ...linkedApproval, status: "approved" });
+      mockApprovalsApi.reject.mockResolvedValue({ ...linkedApproval, status: "rejected" });
+      const card = await openActivityTab();
+
+      await act(async () => {
+        cardButton(card, "card approve")!.click();
+      });
+      await flushReact();
+      expect(mockApprovalsApi.approve).toHaveBeenCalledWith("approval-1");
+      expect(mockPushToast).toHaveBeenCalledWith({ title: "Approval approved", tone: "success" });
+
+      await act(async () => {
+        cardButton(card, "card reject")!.click();
+      });
+      await flushReact();
+      expect(mockApprovalsApi.reject).toHaveBeenCalledWith("approval-1");
+      expect(mockPushToast).toHaveBeenCalledWith({ title: "Approval rejected", tone: "success" });
+      expect(mockApprovalsApi.requestRevision).not.toHaveBeenCalled();
+    });
   });
 
   it("restores master's task chat thread when Streamlined UI is off", async () => {

@@ -744,6 +744,78 @@ describe("Approvals", () => {
       expect(order()).toEqual(["oldest", "email", "newest"]);
     });
 
+    it("shows the change request on the card that returns, until the request is decided again", async () => {
+      apiMocks.requestRevision.mockImplementation(async (id: string, note: string) => {
+        const decided = {
+          ...approvals.find((approval) => approval.id === id)!,
+          status: "revision_requested",
+          decisionNote: note,
+          decidedAt: new Date(),
+          updatedAt: new Date(),
+        } as Approval;
+        approvals = approvals.map((approval) => (approval.id === id ? decided : approval));
+        return decided;
+      });
+      apiMocks.reject.mockImplementation(async (id: string) => {
+        const decided = {
+          ...approvals.find((approval) => approval.id === id)!,
+          status: "rejected",
+          decidedAt: new Date(Date.now() + 2000),
+          updatedAt: new Date(Date.now() + 2000),
+        } as Approval;
+        approvals = approvals.map((approval) => (approval.id === id ? decided : approval));
+        return decided;
+      });
+      const asked = (row: HTMLElement) => row.querySelector<HTMLElement>("[data-approval-changes-asked]");
+      await render();
+      // A card nobody sent back shows no such note.
+      expect(asked(rows()[0])).toBeNull();
+
+      await click(button(rows()[0], "Request changes"));
+      await act(async () => {
+        const note = rows()[0].querySelector("textarea")!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+          note,
+          "1. Quote the delivery date.\n2. Name the carrier.",
+        );
+        note.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await click(button(rows()[0], "Send request"));
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("revision requested"));
+
+      // The requester resubmits. The server has deleted the note; the page still holds it.
+      approvals = approvals.map((approval) =>
+        approval.id === "oldest"
+          ? { ...approval, status: "pending", decisionNote: null, decidedAt: null, updatedAt: new Date(Date.now() + 1000) }
+          : approval,
+      );
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["approvals", "company-1"] });
+      });
+      await vi.waitFor(() => expect(header(rows()[0])).not.toBeNull());
+      // Nothing of it on the closed row; the note is read with the request, in the open card.
+      expect(asked(rows()[0])).toBeNull();
+      await click(header(rows()[0])!);
+
+      const note = asked(rows()[0])!;
+      expect(note.textContent).toBe("Changes you asked for1. Quote the delivery date.\n2. Name the carrier.");
+      // Plain text with its line breaks, above the summary and the buttons.
+      expect(note.querySelector("ol, li, strong, a")).toBeNull();
+      const before = (first: Node, second: Node) =>
+        Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
+      expect(before(note, button(rows()[0], "Approve"))).toBe(true);
+      // Only that card carries it.
+      expect(rows().filter((row) => asked(row))).toHaveLength(1);
+
+      // A new decision ends it: the row shows that decision, not the old change request.
+      await pastDoubleClick();
+      await click(button(rows()[0], "Reject"));
+      await click(button(rows()[0], "Reject request"));
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("rejected"));
+      expect(asked(rows()[0])).toBeNull();
+      expect(container.textContent).not.toContain("Quote the delivery date.");
+    });
+
     it("shows them as cards without decision buttons under All decisions", async () => {
       routerMock.location.pathname = "/approvals/all";
       approvals = [...approvals, sentBackApproval()];

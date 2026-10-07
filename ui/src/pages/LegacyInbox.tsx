@@ -114,6 +114,7 @@ import {
   composeApproveGuards,
   useApprovalRevisionGuard,
 } from "../components/ApprovalRevision";
+import { APPROVE_AFTER_ADVANCE_MS, useRowMovedAt } from "../components/ApprovalHold";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import {
@@ -474,6 +475,7 @@ function ApprovalInboxRow({
   onArchive,
   archiveDisabled,
   selected = false,
+  listPosition,
   className,
 }: {
   approval: Approval;
@@ -493,6 +495,8 @@ function ApprovalInboxRow({
   onArchive?: () => void;
   archiveDisabled?: boolean;
   selected?: boolean;
+  /** The row's place in the list as drawn. When it changes, the list has moved the row. */
+  listPosition: number;
   className?: string;
 }) {
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
@@ -509,6 +513,19 @@ function ApprovalInboxRow({
   // Sent back for changes: the requester has it now, so the row offers no one-click decision
   // on the version the board asked to change. The detail page keeps Approve and Reject.
   const isSentBack = approval.status === "revision_requested";
+  // Still open: with the board, or with the requester. A request that is approved, rejected or
+  // cancelled has nothing left to decide, so its row is the title line with its status.
+  const isOpenRequest = approval.status === "pending" || isSentBack;
+  // Unless the request was open in this row on this visit. Its summary then stays, drawn as it
+  // was (under the status it last had while open), and a line as tall as the buttons takes their
+  // place. When the decision lands, nothing below slides up under the pointer.
+  const lastOpenStatus = useRef<Approval["status"] | null>(null);
+  if (isOpenRequest) lastOpenStatus.current = approval.status;
+  const summaryStatus = lastOpenStatus.current;
+  const showSummary = showDecisionSummary && summaryStatus !== null;
+  // A new request above this row, a row gone, a re-sort: this row's Approve may now lie where the
+  // pointer was resting on another row's. A pointer press on it then waits, as on the approval's page.
+  const movedAt = useRowMovedAt(listPosition);
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
     approval.status === "pending";
@@ -527,6 +544,8 @@ function ApprovalInboxRow({
   return (
     <div className={cn(
       "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      // Room under a row that carries a summary, so its buttons do not run into the next row's title.
+      showSummary && "pb-4 sm:pb-4",
       className,
     )}>
       <div className="flex items-start gap-2 sm:items-center">
@@ -607,11 +626,11 @@ function ApprovalInboxRow({
         ) : null}
       </div>
       <ApprovalRevisedNotice guard={revision} className="mt-3" />
-      {showDecisionSummary && (
+      {showSummary && (
         <ApprovalDecisionSummary
           type={approval.type}
           payload={approval.payload}
-          status={approval.status}
+          status={summaryStatus}
           requestedByAgentId={approval.requestedByAgentId}
           resolveAgentName={resolveAgentName}
           draftControl={draftGate.draftControl}
@@ -621,9 +640,19 @@ function ApprovalInboxRow({
       {isSentBack && (
         <ApprovalWaitingOnRequester approval={approval} requesterName={requesterName} className="mt-3" />
       )}
+      {showSummary && !isOpenRequest && (
+        <p
+          className="mt-3 flex min-h-8 items-center text-sm font-medium text-muted-foreground"
+          data-approval-inbox-outcome=""
+        >
+          This request is {approvalStatusLabel(approval.status)}.
+        </p>
+      )}
       {showResolutionButtons && showDecisionSummary ? (
         <ApprovalDecisionActions
           className="mt-3"
+          approveArmDelayMs={APPROVE_AFTER_ADVANCE_MS}
+          approveMovedAt={movedAt}
           subject={label}
           status={approval.status}
           onApprove={onApprove}
@@ -3053,6 +3082,7 @@ export function Inbox() {
                           key={approvalKey}
                           approval={item.approval}
                           selected={isSelected}
+                          listPosition={navIdx}
                           requesterName={agentName(item.approval.requestedByAgentId)}
                           resolveAgentName={(agentId) => (agents ? agentName(agentId) : undefined)}
                           onApprove={(note) => {
