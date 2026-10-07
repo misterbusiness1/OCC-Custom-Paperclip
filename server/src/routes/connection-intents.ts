@@ -61,7 +61,11 @@ export function runtimeConnectionIntentRoutes(db: Db) {
 
   router.get("/mcp/runtime-tools", async (req, res) => {
     await service.validate(runtimeClaims(req));
-    res.json({ name: "paperclip-runtime-tools", protocolVersion: "2025-03-26" });
+    // A Streamable HTTP client issues GET to open the server-to-client SSE
+    // stream. This endpoint is POST only, and the protocol's answer for that is
+    // 405. A 200 body reads as a stream that ended at once, and a client that
+    // reconnects (Kimi's does, about once a second) then polls for the whole run.
+    res.set("Allow", "POST").status(405).end();
   });
 
   router.post("/mcp/runtime-tools", async (req, res) => {

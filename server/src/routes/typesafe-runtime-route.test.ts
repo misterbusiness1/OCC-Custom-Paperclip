@@ -27,6 +27,16 @@ describe("TypeSafe runtime REST/MCP routes", () => {
     return `Bearer ${minted.token}`;
   }
 
+  it("answers the SSE stream probe with 405 so a Streamable HTTP client stops reconnecting", async () => {
+    const app = express().use(express.json()).use(runtimeConnectionIntentRoutes(null as never));
+    const probed = await request(app).get("/mcp/runtime-tools").set("authorization", bearer());
+    expect(probed.status).toBe(405);
+    expect(probed.headers.allow).toBe("POST");
+    expect(probed.text).toBe("");
+    // The probe is still a token use: the bound run is validated first.
+    expect(mocks.validate).toHaveBeenCalledTimes(1);
+  });
+
   it("discovers and executes the tool through the authenticated MCP route", async () => {
     const app = express().use(express.json()).use(runtimeConnectionIntentRoutes(null as never));
     const listed = await request(app).post("/mcp/runtime-tools").set("authorization", bearer()).send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
