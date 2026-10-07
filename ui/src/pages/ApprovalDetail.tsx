@@ -21,6 +21,11 @@ import {
   useSettlingApprovals,
 } from "../components/ApprovalDecisionActions";
 import { ApprovalDecisionSummary } from "../components/ApprovalDecisionSummary";
+import {
+  APPROVAL_CHANGES_ASKED_LABEL,
+  ApprovalRevisedNotice,
+  useApprovalRevisionGuard,
+} from "../components/ApprovalRevision";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -50,6 +55,8 @@ export function ApprovalDetail() {
     enabled: !!approvalId,
   });
   const resolvedCompanyId = approval?.companyId ?? selectedCompanyId;
+  // A request resubmitted while this page is open is not approved until the board confirms it read the revision.
+  const revision = useApprovalRevisionGuard(approval);
 
   const { data: comments } = useQuery({
     queryKey: queryKeys.approvals.comments(approvalId!),
@@ -258,6 +265,7 @@ export function ApprovalDetail() {
         </header>
 
         <div className="space-y-5 border-t border-border/60 pt-4">
+          <ApprovalRevisedNotice guard={revision} />
           {/* This page has the room: everything the board decides on is shown in full, above the buttons. */}
           {isBudgetApproval ? (
             <div className="-mt-3">
@@ -276,7 +284,7 @@ export function ApprovalDetail() {
           {approval.decisionNote && (
             <div className="border-t border-border/60 pt-4">
               <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                Decision note
+                {approval.status === "revision_requested" ? APPROVAL_CHANGES_ASKED_LABEL : "Decision note"}
               </p>
               <p className="mt-1 text-sm leading-6 text-foreground">{approval.decisionNote}</p>
             </div>
@@ -313,6 +321,8 @@ export function ApprovalDetail() {
                 }
                 error={decisionError}
                 onDismissError={() => setDecisionError(null)}
+                approveGuard={revision.approveGuard}
+                approveHoldKey={revision.reviewCount}
                 trailing={
                   approval.status === "revision_requested" ? (
                     <Button

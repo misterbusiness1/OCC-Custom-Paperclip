@@ -12,7 +12,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
-import { ShieldCheck } from "lucide-react";
+import { ChevronDown, ChevronRight, ShieldCheck } from "lucide-react";
 import { ApprovalCard } from "../components/ApprovalCard";
 import {
   approvalDecisionErrorText,
@@ -20,6 +20,7 @@ import {
   type ApprovalDecisionKind,
 } from "../components/ApprovalDecisionActions";
 import { approvalExcerpt, approvalSubject, isEmailReplyPayload, typeLabel } from "../components/ApprovalPayload";
+import { ApprovalChangesAskedFor, ApprovalSentBackTime, approvalSentBackAt } from "../components/ApprovalRevision";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { StatusBadge } from "../components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
@@ -31,8 +32,18 @@ type Decision = { id: string; note?: string; subject: string };
 const PAGE_SIZE = 20;
 const EMAIL_REPLY_KIND = "email_reply";
 
-function isActionable(approval: Approval) {
-  return approval.status === "pending" || approval.status === "revision_requested";
+/** Only a pending request is the board's to decide. */
+function needsBoard(approval: Approval) {
+  return approval.status === "pending";
+}
+
+/** Sent back for changes: the requester has it until it is resubmitted. */
+function isSentBack(approval: Approval) {
+  return approval.status === "revision_requested";
+}
+
+function timeOf(value: Date | string) {
+  return new Date(value).getTime();
 }
 
 function approvalKind(approval: Approval): string {
@@ -84,6 +95,33 @@ function DecidedApprovalRow({ approval, focusable }: { approval: Approval; focus
   );
 }
 
+/**
+ * A request the board sent back for changes. It carries no decision buttons:
+ * the version on record is the one the board asked to change, and the detail
+ * page still offers Approve and Reject for it.
+ */
+function SentBackApprovalRow({ approval }: { approval: Approval }) {
+  return (
+    <li
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border/70 px-4 py-3"
+      data-approval-sent-back-row={approval.id}
+    >
+      <StatusBadge status={approval.status} />
+      <span className="min-w-0 flex-1 break-words text-sm font-medium text-foreground">
+        {approvalDisplaySubject(approval)}
+      </span>
+      <ApprovalSentBackTime approval={approval} className="text-xs text-muted-foreground" />
+      <Link
+        to={`/approvals/${approval.id}`}
+        className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
+      >
+        View details
+      </Link>
+      <ApprovalChangesAskedFor note={approval.decisionNote} className="basis-full" />
+    </li>
+  );
+}
+
 export function Approvals() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -104,6 +142,8 @@ export function Approvals() {
   // Approvals decided on this visit stay listed as a compact row, so deciding
   // one request does not move the rest of the queue or leave the page.
   const [decidedHere, setDecidedHere] = useState<Record<string, Approval>>({});
+  // Requests sent back for changes sit below the queue, folded away until asked for.
+  const [showSentBack, setShowSentBack] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   // The oldest request has waited longest, so it leads the queue; history reads newest first.
   const sortOrder: SortOrder = sortOverride ?? (statusFilter === "pending" ? "oldest" : "newest");
@@ -116,6 +156,7 @@ export function Approvals() {
     setVisibleCount(PAGE_SIZE);
     setKindFilter("all");
     setDecidedHere({});
+    setShowSentBack(false);
     clearDecisionErrors();
     setAnnouncement(null);
   }, [statusFilter, selectedCompanyId, clearDecisionErrors]);
@@ -204,18 +245,23 @@ export function Approvals() {
   // A request whose decision came back as an error stays listed with that error, whatever status the reload shows.
   const inTab = (data ?? []).filter(
     (a) =>
-      statusFilter === "all" || isActionable(a) || Boolean(decidedHere[a.id]) || Boolean(decisions.errors[a.id]),
+      statusFilter === "all" || needsBoard(a) || Boolean(decidedHere[a.id]) || Boolean(decisions.errors[a.id]),
   );
+  // Everything else that was sent back waits on its requester. The kind filter and the sort do not apply to it.
+  const listedIds = new Set(inTab.map((a) => a.id));
+  const sentBack = (data ?? [])
+    .filter((a) => statusFilter === "pending" && isSentBack(a) && !listedIds.has(a.id))
+    .sort((a, b) => timeOf(approvalSentBackAt(a)) - timeOf(approvalSentBackAt(b)));
   const kinds = Array.from(new Set(inTab.map(approvalKind)));
   const activeKind = kinds.includes(kindFilter) ? kindFilter : "all";
   const filtered = inTab
     .filter((a) => activeKind === "all" || approvalKind(a) === activeKind)
     .sort((a, b) => {
-      const delta = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      const delta = timeOf(a.createdAt) - timeOf(b.createdAt);
       return sortOrder === "oldest" ? delta : -delta;
     });
 
-  const pendingCount = (data ?? []).filter(isActionable).length;
+  const pendingCount = (data ?? []).filter(needsBoard).length;
   const visible = filtered.slice(0, visibleCount);
   const remaining = filtered.length - visible.length;
 
@@ -310,7 +356,10 @@ export function Approvals() {
           <div className="grid gap-3" ref={listRef}>
             {visible.map((approval, index) => {
               const decided = decidedHere[approval.id];
-              if (decided) {
+              // A request sent back here and resubmitted since needs a decision again: its card returns.
+              const reopened =
+                Boolean(decided) && needsBoard(approval) && timeOf(approval.updatedAt) > timeOf(decided.updatedAt);
+              if (decided && !reopened) {
                 return (
                   <DecidedApprovalRow key={approval.id} approval={decided} focusable={keyboardShortcutsEnabled} />
                 );
@@ -346,6 +395,40 @@ export function Approvals() {
             </div>
           )}
         </>
+      )}
+
+      {sentBack.length > 0 && (
+        <section className="space-y-3 border-t border-border/60 pt-4" data-approval-sent-back-section="">
+          <h2>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1.5 px-2 text-sm font-medium text-foreground"
+              aria-expanded={showSentBack}
+              onClick={() => setShowSentBack((current) => !current)}
+            >
+              {showSentBack ? (
+                <ChevronDown aria-hidden className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <ChevronRight aria-hidden className="h-4 w-4 text-muted-foreground" />
+              )}
+              Waiting on the requester ({sentBack.length})
+            </Button>
+          </h2>
+          {showSentBack && (
+            <div className="space-y-3">
+              <p className="px-2 text-xs leading-5 text-muted-foreground">
+                Sent back for changes. A request returns to the queue when its requester resubmits it. Open one to
+                approve or reject it as it stands.
+              </p>
+              <ul className="grid gap-3">
+                {sentBack.map((approval) => (
+                  <SentBackApprovalRow key={approval.id} approval={approval} />
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
       )}
     </div>
   );

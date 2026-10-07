@@ -100,6 +100,12 @@ import {
   useSettlingApprovals,
   type ApprovalPendingAction,
 } from "../components/ApprovalDecisionActions";
+import {
+  ApprovalRevisedNotice,
+  ApprovalWaitingOnRequester,
+  composeApproveGuards,
+  useApprovalRevisionGuard,
+} from "../components/ApprovalRevision";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import {
@@ -139,7 +145,6 @@ import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
-  ACTIONABLE_APPROVAL_STATUSES,
   DEFAULT_INBOX_ISSUE_COLUMNS,
   buildGroupedInboxSections,
   buildInboxIssueGroupCreateDefaults,
@@ -493,11 +498,21 @@ function ApprovalInboxRow({
     approval.type,
     approval.payload as Record<string, unknown> | null,
   );
+  // Sent back for changes: the requester has it now, so the row offers no one-click decision
+  // on the version the board asked to change. The detail page keeps Approve and Reject.
+  const isSentBack = approval.status === "revision_requested";
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
-    ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
+    approval.status === "pending";
   // A long outgoing draft is cut in the row: the first Approve opens it instead of sending.
   const draftGate = useApprovalDraftGate(approval.type, approval.payload);
+  // A request resubmitted while this row is open is not approved until the board confirms it read the revision.
+  const revision = useApprovalRevisionGuard(approval);
+  const approveGuard = composeApproveGuards(revision.approveGuard, draftGate.approveGuard);
+  // The plain buttons send without a note; they are held back by the same guard.
+  const approvePlain = () => {
+    if (approveGuard() === null) onApprove();
+  };
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
 
@@ -564,7 +579,7 @@ function ApprovalInboxRow({
                 <Button
                   size="sm"
                   className="h-8 bg-(--status-task-icon-done) px-3 text-white hover:bg-(--status-task-done)"
-                  onClick={() => onApprove()}
+                  onClick={approvePlain}
                   disabled={isPending}
                 >
                   {pendingAction === "approve" ? "Approving..." : "Approve"}
@@ -583,6 +598,7 @@ function ApprovalInboxRow({
           </div>
         ) : null}
       </div>
+      <ApprovalRevisedNotice guard={revision} className="mt-3" />
       {showDecisionSummary && (
         <ApprovalDecisionSummary
           type={approval.type}
@@ -592,6 +608,9 @@ function ApprovalInboxRow({
           draftControl={draftGate.draftControl}
           className="mt-3"
         />
+      )}
+      {isSentBack && (
+        <ApprovalWaitingOnRequester approval={approval} requesterName={requesterName} className="mt-3" />
       )}
       {showResolutionButtons && showDecisionSummary ? (
         <ApprovalDecisionActions
@@ -605,7 +624,8 @@ function ApprovalInboxRow({
           pendingAction={pendingAction}
           error={error}
           onDismissError={onDismissError}
-          approveGuard={draftGate.approveGuard}
+          approveGuard={approveGuard}
+          approveHoldKey={revision.reviewCount}
           buttonClassName="h-8 px-3"
           approveClassName="bg-(--status-task-icon-done) text-white hover:bg-(--status-task-done)"
         />
@@ -614,7 +634,7 @@ function ApprovalInboxRow({
           <Button
             size="sm"
             className="h-8 bg-(--status-task-icon-done) px-3 text-white hover:bg-(--status-task-done)"
-            onClick={() => onApprove()}
+            onClick={approvePlain}
             disabled={isPending}
           >
             {pendingAction === "approve" ? "Approving..." : "Approve"}

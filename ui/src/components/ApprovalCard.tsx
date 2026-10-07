@@ -20,6 +20,12 @@ import {
   type ApprovalDecisionActionsHandle,
   type ApprovalPendingAction,
 } from "./ApprovalDecisionActions";
+import {
+  ApprovalRevisedNotice,
+  ApprovalWaitingOnRequester,
+  composeApproveGuards,
+  useApprovalRevisionGuard,
+} from "./ApprovalRevision";
 import { timeAgo } from "../lib/timeAgo";
 import { isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
 import type { Approval, Agent } from "@paperclipai/shared";
@@ -31,6 +37,12 @@ const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 /** A request the board has left this long is called out in the header. */
 const LONG_WAIT_DAYS = 7;
+/** A closed request says when it was closed, in place of when it was created. */
+const DECIDED_LEAD: Record<string, string> = {
+  approved: "Approved",
+  rejected: "Rejected",
+  cancelled: "Cancelled",
+};
 
 export type ApprovalCardLinkedIssue = {
   id: string;
@@ -88,17 +100,24 @@ export function ApprovalCard({
   const payload = approval.payload as Record<string, unknown> | null;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
   const subject = approvalExcerpt(approvalSubject(payload, approval.type), 120);
-  const isActionable = approval.status === "pending" || approval.status === "revision_requested";
+  // Sent back for changes: the requester has it now. The card offers no one-click decision on the
+  // version the board asked to change; the detail page keeps Approve and Reject.
+  const isSentBack = approval.status === "revision_requested";
   const showResolutionButtons =
     Boolean(onApprove && onReject) &&
     approval.type !== "budget_override_required" &&
-    isActionable;
-  const hasFooter = showResolutionButtons || Boolean(detailLink || onOpen || error);
-  const waiting = isActionable ? waitingLabel(approval.createdAt) : null;
+    approval.status === "pending";
+  const hasFooter = showResolutionButtons || isSentBack || Boolean(detailLink || onOpen || error);
+  // Only a pending request is waiting on the board.
+  const waiting = approval.status === "pending" ? waitingLabel(approval.createdAt) : null;
+  const decidedLead = approval.decidedAt ? DECIDED_LEAD[approval.status] : undefined;
   const isEmailReply = approval.type === "request_board_approval" && isEmailReplyPayload(payload);
   const missingSourceNote = approvalMissingSourceNote(approval.type, payload);
   // A long outgoing draft is cut on the card: the first Approve opens it instead of sending.
   const draftGate = useApprovalDraftGate(approval.type, payload);
+  // A request resubmitted while this card is open is not approved until the board confirms it read the revision.
+  const revision = useApprovalRevisionGuard(approval);
+  const approveGuard = composeApproveGuards(revision.approveGuard, draftGate.approveGuard);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -176,12 +195,18 @@ export function ApprovalCard({
             >
               {waiting.label}
             </span>
+          ) : decidedLead && approval.decidedAt ? (
+            <span title={new Date(approval.decidedAt).toLocaleString()}>
+              {decidedLead} {timeAgo(approval.decidedAt)}
+            </span>
           ) : (
             <span>Created {timeAgo(approval.createdAt)}</span>
           )}
           {missingSourceNote && <span>{missingSourceNote}</span>}
         </div>
       </div>
+
+      <ApprovalRevisedNotice guard={revision} className="mt-4" />
 
       <ApprovalDecisionSummary
         type={approval.type}
@@ -192,7 +217,7 @@ export function ApprovalCard({
         className="mt-4 border-t border-border/60 pt-4"
       />
 
-      {approval.decisionNote && (
+      {approval.decisionNote && !isSentBack && (
         <div className="mt-4 rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground">
           <span className="font-medium text-foreground">Decision note.</span> {approval.decisionNote}
         </div>
@@ -212,19 +237,27 @@ export function ApprovalCard({
               isPending={isPending}
               pendingAction={pendingAction}
               trailing={detailsControl}
-              approveGuard={draftGate.approveGuard}
+              approveGuard={approveGuard}
+              approveHoldKey={revision.reviewCount}
               error={error}
               onDismissError={onDismissError}
             />
           ) : (
-            // A request that can no longer be decided here keeps the error its last decision came back with.
-            <div className={cn("flex flex-wrap items-center gap-3", error ? "justify-between" : "justify-end")}>
-              {error ? (
-                <p role="alert" className="min-w-0 break-words text-sm font-medium leading-5 text-destructive">
-                  {error}
-                </p>
-              ) : null}
-              {detailsControl}
+            <div className="space-y-3">
+              {isSentBack && (
+                <ApprovalWaitingOnRequester approval={approval} requesterName={requesterAgent?.name ?? null} />
+              )}
+              {/* A request that can no longer be decided here keeps the error its last decision came back with. */}
+              {(error || detailsControl) && (
+                <div className={cn("flex flex-wrap items-center gap-3", error ? "justify-between" : "justify-end")}>
+                  {error ? (
+                    <p role="alert" className="min-w-0 break-words text-sm font-medium leading-5 text-destructive">
+                      {error}
+                    </p>
+                  ) : null}
+                  {detailsControl}
+                </div>
+              )}
             </div>
           )}
         </div>

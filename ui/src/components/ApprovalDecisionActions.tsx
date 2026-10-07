@@ -138,6 +138,8 @@ export const ApprovalDecisionActions = forwardRef<
      * lets it send. Reject and Request changes are never held back.
      */
     approveGuard?: () => string | null;
+    /** When this value changes, the reason Approve was last held back is dealt with and its message is removed. */
+    approveHoldKey?: string | number;
     /** What went wrong with the last decision sent from here; shown directly above the buttons. */
     error?: string | null;
     /** Called when the board edits the note, so a parent can drop an error that no longer describes the draft. */
@@ -157,6 +159,7 @@ export const ApprovalDecisionActions = forwardRef<
     className,
     trailing,
     approveGuard,
+    approveHoldKey,
     error = null,
     onDismissError,
   },
@@ -181,11 +184,20 @@ export const ApprovalDecisionActions = forwardRef<
   const confirming = mode === "revision" || mode === "reject";
 
   // A decision that lands changes the status; start the next one from a clean slate.
+  const previousStatus = useRef(status);
   useEffect(() => {
+    const from = previousStatus.current;
+    previousStatus.current = status;
+    // A request that comes back as pending was resubmitted by its requester: what the board was typing stays.
+    if (from === "revision_requested" && status === "pending") return;
     setMode(null);
     setNote("");
     setHeldBackMessage(null);
   }, [status]);
+
+  useEffect(() => {
+    setHeldBackMessage(null);
+  }, [approveHoldKey]);
 
   const approve = () => {
     if (isPending || confirming) return;

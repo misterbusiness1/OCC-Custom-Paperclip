@@ -79,3 +79,28 @@ Feedback for a decision stays with the request it belongs to:
 - Approval cards on a task page still report a failed decision as a toast.
 
 Board approvals decided on the Approvals page or in the inbox are decided in place. The Approvals page lists the longest-waiting request first, marks requests that have waited seven days or more, shows linked tasks on each card, and filters by kind. With keyboard shortcuts enabled, `J`/`K` move between cards, and `Shift+A`, `Shift+C`, and `Shift+X` approve, request changes, and reject for the focused card.
+
+### Requests sent back for changes
+
+**Request changes** sets the approval to `revision_requested` and stores the board's note as its `decisionNote`. The requester has the request from then on: it returns to `pending` only when it is resubmitted, and a resubmission may replace the payload and clears the note. The server still accepts **Approve** and **Reject** for a `revision_requested` approval, so the interface decides where those are offered:
+
+- **To decide** on the Approvals page lists only `pending` approvals, and its badge counts only those. A request decided or sent back during the visit keeps its place as a compact row, as before. When a request sent back during the visit is resubmitted, its card returns in the same place.
+- Below the queue, **Waiting on the requester (N)** lists the other `revision_requested` approvals. The section is folded away until its button is pressed, and it is not shown when there are none. Each row shows the status, the subject, **Sent back _time ago_** (from `decidedAt`, or from `updatedAt` when no decision time is recorded), the note under **Changes you asked for**, and **View details**. The rows carry no decision buttons, are not part of `J`/`K`, and are not affected by the kind filter or the sort. They are listed longest-waiting first.
+- The approval card (Approvals page, task page, **All decisions**) and the inbox row, in both inbox presentations, offer no decision for a `revision_requested` approval: no buttons, no note field, and no `Shift+A`, `Shift+C`, or `Shift+X`. In their place stands **Waiting on _requester name_ to revise** (**Waiting on the requester to revise** when the name is not known), **Sent back _time ago_**, and the note under **Changes you asked for**. The card does not show a **Waiting N days** clock for it. **View details** stays.
+- The approval detail page keeps **Approve** and **Reject** for a `revision_requested` approval, and labels the note **Changes you asked for**. It is the one place where the version the board asked to change can still be decided, with the whole request on the page.
+- The inbox still lists `revision_requested` approvals and counts them in its badge.
+
+A closed approval says when it was closed: the card shows **Approved _time ago_**, **Rejected _time ago_**, or **Cancelled _time ago_** from `decidedAt`, in place of **Created _time ago_**. Without a `decidedAt` it shows the creation time. Who decided is not shown; the record holds only a user id.
+
+### Requests that change while open
+
+The server does not check which version of a request the board read. The interface therefore watches for a revision arriving under the reader:
+
+- The card, the inbox row in both presentations, and the detail page remember the `updatedAt` and payload first shown for an approval. If the same approval arrives later while it is `pending`, with a newer `updatedAt` and a payload that is not the same (compared by value; key order does not count), it was revised while open. A newer `updatedAt` with the same payload raises nothing, and neither does a decision, which changes the status.
+- A notice then appears above the summary: **The requester revised this request while it was open. Review it before you decide.** with the button **I have reviewed it**. The new content is already on the page. Sections the reader had expanded stay as they are, and a note being typed is kept.
+- Until that button is pressed, **Approve** (a click or `Shift+A`) sends nothing. It moves focus to the notice and shows **Confirm that you have reviewed the revised request, then approve.** beside the buttons. **Reject** and **Request changes** are not held back. An inbox row with the plain **Approve** / **Reject** buttons is held back the same way.
+- Pressing **I have reviewed it** makes the version on the page the remembered one and leaves a quiet line saying the request was revised and marked as reviewed. A later revision raises the notice again.
+- This check comes before the check on a cut draft: the first **Approve** after a revision is held back for the revision only, and once it is confirmed a cut draft is still opened before anything is sent.
+- The check is made in the browser, per open card, row, or page. A request that leaves the screen and comes back, for example one sent back and resubmitted while its card was replaced by the compact row, is shown as a new card without the notice.
+
+The detail page follows live updates: an approval event reloads that approval, its discussion, and its linked tasks as well as the list, so a resubmission, another member's decision, or a new comment appears without a reload of the page.
