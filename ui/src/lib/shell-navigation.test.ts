@@ -2,6 +2,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  approvalQueueReturnTarget,
   approvalsNavTarget,
   classifyShellRoute,
   getCompanyPathSegments,
@@ -30,8 +31,8 @@ describe("shell navigation", () => {
   });
 
   it("points the sidebar's Approvals item at To decide itself on To decide, and at the short address elsewhere", () => {
-    expect(approvalsNavTarget("/PAP/approvals/pending")).toBe("/approvals/pending");
-    expect(approvalsNavTarget("/approvals/pending")).toBe("/approvals/pending");
+    expect(approvalsNavTarget({ pathname: "/PAP/approvals/pending" })).toBe("/approvals/pending");
+    expect(approvalsNavTarget({ pathname: "/approvals/pending", search: "", hash: "" })).toBe("/approvals/pending");
     for (const pathname of [
       "/PAP/approvals/all",
       "/PAP/approvals",
@@ -41,7 +42,52 @@ describe("shell navigation", () => {
       "/PAP/issues/pending",
       "/",
     ]) {
-      expect(approvalsNavTarget(pathname)).toBe("/approvals");
+      expect(approvalsNavTarget({ pathname })).toBe("/approvals");
+      // The filter of another page is not carried to the queue.
+      expect(approvalsNavTarget({ pathname, search: "?kind=hire_agent", hash: "#approval-a1" })).toBe("/approvals");
+    }
+  });
+
+  it("points the sidebar's Approvals item at the very address the reader is on while on To decide", () => {
+    // With the kind filter, the sort and the linked card: a press there then changes nothing.
+    expect(
+      approvalsNavTarget({ pathname: "/PAP/approvals/pending", search: "?kind=email_reply&sort=newest", hash: "" }),
+    ).toBe("/approvals/pending?kind=email_reply&sort=newest");
+    expect(
+      approvalsNavTarget({ pathname: "/PAP/approvals/pending", search: "?kind=hire_agent", hash: "#approval-a1" }),
+    ).toBe("/approvals/pending?kind=hire_agent#approval-a1");
+    expect(approvalsNavTarget({ pathname: "/approvals/pending", search: "", hash: "#approval-a1" })).toBe(
+      "/approvals/pending#approval-a1",
+    );
+  });
+
+  it("leads back from an approval's page to the queue view it was opened from, at that approval", () => {
+    expect(approvalQueueReturnTarget({ queue: "/PAP/approvals/pending?kind=email_reply&sort=newest" }, "a1")).toBe(
+      "/PAP/approvals/pending?kind=email_reply&sort=newest#approval-a1",
+    );
+    expect(approvalQueueReturnTarget({ queue: "/PAP/approvals/all?sort=oldest" }, "a1")).toBe(
+      "/PAP/approvals/all?sort=oldest#approval-a1",
+    );
+    expect(approvalQueueReturnTarget({ queue: "/approvals/all" }, "a1")).toBe("/approvals/all#approval-a1");
+    expect(approvalQueueReturnTarget({ queue: "/PAP/approvals" }, "a 1")).toBe("/PAP/approvals#approval-a%201");
+  });
+
+  it("leads back to To decide when the page was not opened from the queue", () => {
+    for (const state of [
+      null,
+      undefined,
+      "/PAP/approvals/all",
+      { paperclipSidebarScrollReset: true },
+      { queue: 7 },
+      // Not a queue address: another page, another site, an approval's own page, a target of its own.
+      { queue: "/PAP/inbox" },
+      { queue: "https://example.test/approvals/pending" },
+      { queue: "//example.test/approvals/pending" },
+      { queue: "/PAP/approvals/9b2d7c1e" },
+      { queue: "/PAP/approvals/pending#approval-other" },
+      { queue: "/PAP/extra/approvals/pending" },
+    ]) {
+      expect(approvalQueueReturnTarget(state, "a1")).toBe("/approvals/pending#approval-a1");
     }
   });
 

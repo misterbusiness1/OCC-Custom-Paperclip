@@ -23,7 +23,7 @@ const mockSidebar = vi.hoisted(() => ({
 }));
 
 /** The page the sidebar is drawn on, and the company prefix `@/lib/router` puts before every target. */
-const mockLocation = vi.hoisted(() => ({ pathname: "/", companyPrefix: "" }));
+const mockLocation = vi.hoisted(() => ({ pathname: "/", search: "", hash: "", companyPrefix: "" }));
 
 // The router's own NavLink, so that which item is current (class and aria-current) is decided by
 // the router's matching and not by the test. The company prefix is added as `@/lib/router` adds it.
@@ -31,11 +31,11 @@ vi.mock("@/lib/router", async () => {
   const router = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
   return {
     NavLink: ({ to, ...props }: { to: string } & Omit<ComponentProps<typeof router.NavLink>, "to">) => (
-      <router.MemoryRouter initialEntries={[mockLocation.pathname]}>
+      <router.MemoryRouter initialEntries={[`${mockLocation.pathname}${mockLocation.search}${mockLocation.hash}`]}>
         <router.NavLink to={`${mockLocation.companyPrefix}${to}`} {...props} />
       </router.MemoryRouter>
     ),
-    useLocation: () => ({ pathname: mockLocation.pathname }),
+    useLocation: () => ({ pathname: mockLocation.pathname, search: mockLocation.search, hash: mockLocation.hash }),
   };
 });
 
@@ -113,6 +113,8 @@ describe("Sidebar (classic layout)", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockLocation.pathname = "/";
+    mockLocation.search = "";
+    mockLocation.hash = "";
     mockLocation.companyPrefix = "";
   });
 
@@ -177,6 +179,52 @@ describe("Sidebar (classic layout)", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  /** Draws the sidebar on the page `mockLocation` describes and returns the item that is current. */
+  const currentItemHref = async () => {
+    mockApprovalsApi.list.mockResolvedValue([]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    flushSync(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <Sidebar />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    const current = [...container.querySelectorAll('nav a[aria-current="page"]')];
+    expect(current.map((anchor) => anchor.textContent)).toEqual(["Approvals"]);
+    const href = current[0].getAttribute("href");
+    flushSync(() => {
+      root.unmount();
+    });
+    queryClient.clear();
+    return href;
+  };
+
+  // The kind filter and the sort of the queue are in its address. The item points at that very
+  // address, so a press on To decide still changes nothing: no cleared filter, no history entry.
+  it.each([
+    ["?kind=email_reply&sort=newest", ""],
+    ["?kind=hire_agent", "#approval-9b2d7c1e"],
+    ["", "#approval-9b2d7c1e"],
+  ])("links Approvals to the very address the reader is on while on To decide (%s%s)", async (search, hash) => {
+    mockLocation.pathname = "/PAP/approvals/pending";
+    mockLocation.search = search;
+    mockLocation.hash = hash;
+    mockLocation.companyPrefix = "/PAP";
+    expect(await currentItemHref()).toBe(`/PAP/approvals/pending${search}${hash}`);
+  });
+
+  it("links Approvals to the short address from All decisions, whatever filter that tab has", async () => {
+    mockLocation.pathname = "/PAP/approvals/all";
+    mockLocation.search = "?kind=email_reply";
+    mockLocation.companyPrefix = "/PAP";
+    expect(await currentItemHref()).toBe("/PAP/approvals");
   });
 
   it("links to the approval queue next to Inbox, with the number of requests to decide", async () => {

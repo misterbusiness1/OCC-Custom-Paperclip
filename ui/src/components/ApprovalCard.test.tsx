@@ -146,6 +146,44 @@ describe("ApprovalCard", () => {
     expect(text.indexOf("Draft reply")).toBeLessThan(text.indexOf("ApproveReject"));
   });
 
+  it("gives View details a 44px touch area that no decision button lies under", () => {
+    render({
+      approval: createApproval(),
+      onApprove: vi.fn(),
+      onReject: vi.fn(),
+      onRequestRevision: vi.fn(),
+      detailLink: "/approvals/approval-1",
+    });
+
+    const details = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "View details")!;
+    // 16px of text and 14px above and below it, no wider than the link. jsdom cannot evaluate
+    // the media query, so the classes are checked.
+    for (const name of [
+      "relative",
+      "pointer-coarse:after:absolute",
+      "pointer-coarse:after:inset-x-0",
+      "pointer-coarse:after:-inset-y-3.5",
+    ]) {
+      expect(details.classList.contains(name), name).toBe(true);
+    }
+    // The link itself is no taller, so the card keeps its height.
+    expect(details.classList.contains("h-auto")).toBe(true);
+    expect(details.className).not.toMatch(/min-h-|(^|[\s:])py-/);
+
+    // Alone on a line under the buttons, the area reaches 2px into their group. The group is
+    // drawn above it, so a tap on Approve or Reject never lands on the link.
+    const decisions = container.querySelector<HTMLElement>("[data-approval-decision-buttons]")!;
+    expect(decisions.classList.contains("pointer-coarse:relative")).toBe(true);
+    expect(decisions.classList.contains("pointer-coarse:z-10")).toBe(true);
+    expect([...decisions.querySelectorAll("button")].map((candidate) => candidate.textContent)).toEqual([
+      "Approve",
+      "Request changes",
+      "Reject",
+    ]);
+    expect(decisions.contains(details)).toBe(false);
+    expect(decisions.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("approves at once and sends an optional note with the decision", () => {
     const onApprove = vi.fn();
     render({ approval: createApproval(), onApprove, onReject: vi.fn() });
@@ -392,6 +430,7 @@ describe("ApprovalCard", () => {
       expect(container.textContent).not.toContain("agent-requester");
       const details = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "View details");
       expect(details?.getAttribute("href")).toBe("/approvals/approval-1");
+      expect(details?.classList.contains("pointer-coarse:after:-inset-y-3.5")).toBe(true);
 
       // The keyboard shortcuts decide nothing either.
       for (const key of ["A", "X", "C"]) {

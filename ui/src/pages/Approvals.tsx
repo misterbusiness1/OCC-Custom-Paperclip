@@ -1,14 +1,16 @@
 import {
+  startTransition,
   useCallback,
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type FocusEvent,
   type PointerEvent,
 } from "react";
-import { Link, useNavigate, useLocation } from "@/lib/router";
+import { Link, useNavigate, useLocation, useSearchParams } from "@/lib/router";
 import { useQueries, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Approval } from "@paperclipai/shared";
 import { approvalsApi } from "../api/approvals";
@@ -17,14 +19,19 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { useOptionalToastActions } from "../context/ToastContext";
-import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
+import {
+  hasBlockingShortcutDialog,
+  isKeyboardShortcutTextInputTarget,
+  shouldBlurPageSearchOnEnter,
+  shouldBlurPageSearchOnEscape,
+} from "../lib/keyboardShortcuts";
 import { queryKeys } from "../lib/queryKeys";
 import { isBareApprovalsPath } from "../lib/shell-navigation";
 import { cn } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
-import { ChevronDown, ChevronRight, ShieldCheck } from "lucide-react";
-import { ApprovalCard } from "../components/ApprovalCard";
+import { ChevronDown, ChevronRight, Search, ShieldCheck } from "lucide-react";
+import { APPROVAL_DETAILS_LINK_CLASS, ApprovalCard } from "../components/ApprovalCard";
 import {
   approvalDecisionErrorText,
   useApprovalDecisionFeedback,
@@ -43,6 +50,7 @@ import {
 } from "../components/ApprovalHold";
 import {
   APPROVAL_TITLE_LENGTH,
+  approvalDecisionBrief,
   approvalExcerpt,
   approvalSubject,
   isEmailReplyPayload,
@@ -58,7 +66,8 @@ import {
 import { PageSkeleton } from "../components/PageSkeleton";
 import { StatusBadge } from "../components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 type StatusFilter = "pending" | "all";
 type SortOrder = "oldest" | "newest";
@@ -85,6 +94,8 @@ type QueueMove = {
 };
 /** A text typed for a request and not sent: what it says and the panel it was typed in. */
 type ApprovalDraft = { text: string; mode: ApprovalNoteMode };
+/** What "View details" carries to a request's own page: the queue address to come back to, with its filter and sort. */
+type ApprovalQueueLinkState = { queue: string };
 /** How a request is shown once it is one compact row: the record to show, and whether someone else decided it. */
 type CompactRow = { record: Approval; elsewhere: boolean };
 const PAGE_SIZE = 20;
@@ -226,6 +237,7 @@ function DecidedApprovalRow({
   approval,
   held = null,
   elsewhere = false,
+  detailsState,
   onUndo,
   onPause,
   onResume,
@@ -233,6 +245,8 @@ function DecidedApprovalRow({
   approval: Approval;
   held?: HeldApproval | null;
   elsewhere?: boolean;
+  /** Carried by "View details": the queue address the request's own page links back to. */
+  detailsState?: ApprovalQueueLinkState;
   onUndo?: () => void;
   onPause?: (reason: ApprovalHoldPauseReason) => void;
   onResume?: (reason: ApprovalHoldPauseReason) => void;
@@ -323,7 +337,8 @@ function DecidedApprovalRow({
       ) : (
         <Link
           to={`/approvals/${approval.id}`}
-          className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
+          state={detailsState}
+          className={APPROVAL_DETAILS_LINK_CLASS}
         >
           View details
         </Link>
@@ -342,7 +357,7 @@ function DecidedApprovalRow({
  * the version on record is the one the board asked to change, and the detail
  * page still offers Approve and Reject for it.
  */
-function SentBackApprovalRow({ approval }: { approval: Approval }) {
+function SentBackApprovalRow({ approval, detailsState }: { approval: Approval; detailsState?: ApprovalQueueLinkState }) {
   return (
     <li
       className={cn(
@@ -361,7 +376,8 @@ function SentBackApprovalRow({ approval }: { approval: Approval }) {
       <ApprovalSentBackTime approval={approval} className="text-xs text-muted-foreground" />
       <Link
         to={`/approvals/${approval.id}`}
-        className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
+        state={detailsState}
+        className={APPROVAL_DETAILS_LINK_CLASS}
       >
         View details
       </Link>
@@ -404,8 +420,18 @@ export function Approvals() {
   // card is then pinned as the open one, once, and "All decisions" opens none. After that the open
   // card changes only by the reader's action or a decision, never because the list reloaded.
   const [openId, setOpenId] = useState<string | null | undefined>(undefined);
-  const [sortOverride, setSortOverride] = useState<SortOrder | null>(null);
-  const [kindFilter, setKindFilter] = useState<string>("all");
+  // The kind filter and the sort live in the address (?kind=<kind>&sort=<order>), so a reload and
+  // the way back from "View details" show the same view. A tab link carries no query, so a change
+  // of tab returns both to their defaults.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const kindFilter = searchParams.get("kind") ?? "all";
+  // The oldest request has waited longest, so it leads the queue; history reads newest first.
+  const defaultSort: SortOrder = statusFilter === "pending" ? "oldest" : "newest";
+  const sortParam = searchParams.get("sort");
+  const sortOrder: SortOrder = sortParam === "oldest" || sortParam === "newest" ? sortParam : defaultSort;
+  // The search term is not part of the address: it is typed to find one request, not to keep a view.
+  const [searchText, setSearchText] = useState("");
+  const searchTerm = searchText.trim().toLowerCase();
   // Approvals decided on this visit stay listed as a compact row, so deciding
   // one request does not move the rest of the queue or leave the page.
   const [decidedHere, setDecidedHere] = useState<Record<string, Approval>>({});
@@ -447,14 +473,16 @@ export function Approvals() {
   // while it loaded), or by the reader pressing a row's header. Null once the reader has moved with
   // J/K or undone a hold. See APPROVE_AFTER_ADVANCE_MS.
   const autoAdvance = useRef<number | null>(null);
+  // Requests whose own approval went out on this visit and came back as an error. The server may
+  // hold that approval all the same: a reload that then shows the request approved shows the
+  // reader's own decision, not someone else's.
+  const ownApproveFailed = useRef(new Set<string>());
   // The card shown open, not yet pinned, while the list was still loading.
   const shownUnpinned = useRef<string | null>(null);
   const handledHash = useRef<string | null>(null);
   // What the page shows now, for an approval that settles after the reader has moved on or left.
   const shownRef = useRef<{ mounted: boolean; companyId: string | null }>({ mounted: false, companyId: null });
   const undoLatestRef = useRef<() => boolean>(() => false);
-  // The oldest request has waited longest, so it leads the queue; history reads newest first.
-  const sortOrder: SortOrder = sortOverride ?? (statusFilter === "pending" ? "oldest" : "newest");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Approvals" }]);
@@ -679,6 +707,7 @@ export function Approvals() {
         // Measured now, while the request is still its compact row: the card that returns takes that place.
         const inView = onPage && isRowInView(heldRow);
         releaseHeldApproval(held.id);
+        ownApproveFailed.current.add(held.id);
         recordFailed("approve", err, held.id, held.subject, held.companyId);
         // The note is handed back with the card, also when the card is only seen again later.
         restoreCard(held);
@@ -906,17 +935,51 @@ export function Approvals() {
     .sort((a, b) => timeOf(approvalSentBackAt(a)) - timeOf(approvalSentBackAt(b)));
   const kinds = Array.from(new Set(inTab.map(approvalKind)));
   const activeKind = kinds.includes(kindFilter) ? kindFilter : "all";
+  // The requests the search term is found in, whatever the case: in the subject, the requester's
+  // name, the summary or the recommendation. Null while no term is set.
+  const searchMatches = useMemo(() => {
+    if (!searchTerm) return null;
+    const agentNames = new Map((agents ?? []).map((agent) => [agent.id, agent.name]));
+    const found = new Set<string>();
+    for (const approval of data ?? []) {
+      const texts = [
+        approvalDisplaySubject(approval),
+        approval.requestedByAgentId ? agentNames.get(approval.requestedByAgentId) : null,
+        approval.payload?.summary,
+        approvalDecisionBrief(approval.payload).recommendation,
+      ];
+      if (texts.some((text) => typeof text === "string" && text.toLowerCase().includes(searchTerm))) {
+        found.add(approval.id);
+      }
+    }
+    return found;
+  }, [data, agents, searchTerm]);
+  const matchesSearch = (a: Approval) => !searchMatches || searchMatches.has(a.id);
   /**
    * Stays on the page whatever the kind filter and the page size say: an approval that is held
    * (its Undo must stay within reach), a request whose decision failed (its error must be seen),
-   * and the open card (an undone approval returns as the open card).
+   * the open card (an undone approval returns as the open card), and a "Decided elsewhere" row
+   * (a held approval taken back must not vanish as if it had been sent).
    */
   const staysListed = (a: Approval) =>
-    Boolean(heldApprovals[a.id]) || Boolean(decisions.errors[a.id]) || a.id === openId;
+    Boolean(heldApprovals[a.id]) || Boolean(decisions.errors[a.id]) || Boolean(leftHere[a.id]) || a.id === openId;
+  const inActiveKind = (a: Approval) => activeKind === "all" || approvalKind(a) === activeKind;
+  // "To decide" is ordered by the time a request was created. "All decisions" is ordered by the
+  // time of the last decision; a request that has none (it is pending) keeps its creation time.
+  // A request the reader decided in this tab keeps the place its creation time gave it until the
+  // tab is changed, and so does one whose decision is on its way (an approval is, from the press
+  // of Approve and through its hold) or failed, and one whose held approval was not sent because
+  // it was decided elsewhere: the reader stays on the decided row, and no row moves under their hands.
+  const keepsPlace = (a: Approval) =>
+    Boolean(decidedHere[a.id] || leftHere[a.id] || decisions.inFlight[a.id] || decisions.errors[a.id]);
+  const sortTime = (a: Approval) =>
+    statusFilter === "all" && !needsBoard(a) && a.decidedAt && !keepsPlace(a)
+      ? timeOf(a.decidedAt)
+      : timeOf(a.createdAt);
   const filtered = inTab
-    .filter((a) => activeKind === "all" || approvalKind(a) === activeKind || staysListed(a))
+    .filter((a) => (inActiveKind(a) && matchesSearch(a)) || staysListed(a))
     .sort((a, b) => {
-      const delta = timeOf(a.createdAt) - timeOf(b.createdAt);
+      const delta = sortTime(a) - sortTime(b);
       return sortOrder === "oldest" ? delta : -delta;
     });
 
@@ -975,8 +1038,21 @@ export function Approvals() {
   }
   const remaining = filtered.filter((a) => !isCompactRow(a)).length - cardsOnPage;
 
+  // The number on a kind chip: the requests a press on it would list as cards. Under "To decide"
+  // these are the undecided requests of that kind (still pending, and not decided or held on this
+  // visit); under "All decisions" every request of that kind. A search term narrows the number as
+  // it narrows the list. Rows that only stay listed (held, failed, the open card) are not added.
+  const countsOnChip = (a: Approval) =>
+    matchesSearch(a) && (statusFilter === "all" || (needsBoard(a) && !isCompactRow(a)));
+  const kindCount = (kind: string) =>
+    inTab.filter((a) => (kind === "all" || approvalKind(a) === kind) && countsOnChip(a)).length;
+  // Said beside the search field: the requests of this tab and kind the term is found in.
+  const foundCount = searchTerm ? inTab.filter((a) => inActiveKind(a) && matchesSearch(a)).length : 0;
+
   // "To decide" in the compact view opens one card at a time; "All decisions" always starts closed.
-  const collapsibleList = statusFilter === "all" || view === "compact";
+  // So does a list narrowed by a search term, in both views: its results are closed rows, and
+  // nothing is decided from a closed row.
+  const collapsibleList = statusFilter === "all" || view === "compact" || Boolean(searchTerm);
   const firstCardId = visible.find((a) => !isCompactRow(a))?.id ?? null;
   // Until the first card is pinned (a moment after the list has loaded) it is shown open already.
   const effectiveOpenId = openId === undefined ? (statusFilter === "pending" ? firstCardId : null) : openId;
@@ -1049,16 +1125,24 @@ export function Approvals() {
   // The row also carries a line saying why the approval did not go out.
   // A hold is taken back the same way as soon as the list shows its request sent back for changes:
   // the server would still store the approval, over another board member's change request.
+  // And as soon as the list shows it approved, rejected or cancelled somewhere else: sent all the
+  // same, the approval would be answered as this reader's own decision, or come back as an error.
+  // Such a request has no card to return to; it keeps its place as a "decided elsewhere" row.
   // A layout effect, so that it runs in the same step that draws the reloaded list, before any
   // timer can send the hold; and declared before the reset below, which sends what is still held.
   useLayoutEffect(() => {
     if (!data) return;
-    const takenBack: Array<{ held: HeldApproval; sentBack: boolean }> = [];
+    const takenBack: Array<{ held: HeldApproval; sentBack: boolean; status: string | null }> = [];
     for (const held of Object.values(heldApprovals)) {
       if (held.phase !== "holding") continue;
       const record = data.find((a) => a.id === held.id);
       const sentBackMeanwhile = Boolean(record && isSentBack(record));
-      if (!record || !(sentBackMeanwhile || approvalRevisedSinceShown(revisionMemory, record))) continue;
+      // The status another session's decision gave it, in the words its row shows; null while it is undecided.
+      const decidedStatus =
+        record && !needsBoard(record) && !sentBackMeanwhile ? statusWords(record.status).toLowerCase() : null;
+      if (!record || !(sentBackMeanwhile || decidedStatus || approvalRevisedSinceShown(revisionMemory, record))) {
+        continue;
+      }
       // Focus resting on the held row or on its Undo goes to the card that takes the row's place.
       const heldRow = rowElement(held.id);
       const hadFocus = Boolean(heldRow?.contains(document.activeElement));
@@ -1068,9 +1152,25 @@ export function Approvals() {
       if (!cancelled) continue;
       // Said on the request itself, where a failed decision is said: the line stays until the reader
       // approves again or edits the note, and it keeps the row on the page under any filter.
-      settleDecision(cancelled.id, sentBackMeanwhile ? HOLD_SENT_BACK_TEXT : HOLD_REVISED_TEXT);
-      restoreCard(cancelled);
-      takenBack.push({ held: cancelled, sentBack: sentBackMeanwhile });
+      if (record.status === "approved" && ownApproveFailed.current.has(cancelled.id)) {
+        // The reader's first approval was stored though it was answered with an error: the row and
+        // the count show it as their own decision, and nothing is said about another session.
+        settleDecision(cancelled.id);
+        setDecidedHere((current) => ({ ...current, [cancelled.id]: record }));
+        announce(`${DECISION_LANDED_LEAD.approve}: ${cancelled.subject}`);
+        continue;
+      }
+      if (decidedStatus) {
+        // As after an Undo that came too late: the row shows the status and the note the server
+        // holds, and the note typed with the approval is kept as a draft.
+        settleDecision(cancelled.id);
+        if (cancelled.note) storeDraft(cancelled.id, cancelled.note, "note");
+        setLeftHere((current) => ({ ...current, [cancelled.id]: true }));
+      } else {
+        settleDecision(cancelled.id, sentBackMeanwhile ? HOLD_SENT_BACK_TEXT : HOLD_REVISED_TEXT);
+        restoreCard(cancelled);
+      }
+      takenBack.push({ held: cancelled, sentBack: sentBackMeanwhile, status: decidedStatus });
       // A row out of view cannot say it, and the live region is not seen: then it is said where the
       // reader is too. Not otherwise: the toast would lie over the open request's Approve button.
       // It is also said there when the reader sent this request back earlier on this visit: it is
@@ -1078,7 +1178,9 @@ export function Approvals() {
       if (!inView || (sentBackMeanwhile && Boolean(decidedHere[cancelled.id]))) {
         toasts?.pushToast({
           title: `Not approved: ${cancelled.subject}`,
-          body: sentBackMeanwhile
+          body: decidedStatus
+            ? `Its status is now ${decidedStatus}: decided elsewhere. Nothing was sent.`
+            : sentBackMeanwhile
             ? "It was sent back for changes before your approval was sent. Nothing was sent."
             : "The requester revised it before your approval was sent. Nothing was sent.",
           tone: "warn",
@@ -1094,8 +1196,10 @@ export function Approvals() {
     if (takenBack.length === 0) return;
     announce(
       takenBack
-        .map(({ held, sentBack: wasSentBack }) =>
-          wasSentBack
+        .map(({ held, sentBack: wasSentBack, status }) =>
+          status
+            ? `Not approved: ${held.subject}. Nothing was sent. Its status is now ${status}: decided elsewhere.`
+            : wasSentBack
             ? `Not approved: ${held.subject}. It was sent back for changes before your approval was sent. Nothing was sent.`
             : `Not approved: ${held.subject}. The requester revised it before it was sent. Nothing was sent.`,
         )
@@ -1128,8 +1232,9 @@ export function Approvals() {
   // A change of tab or company starts the page afresh.
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-    setKindFilter("all");
-    setSortOverride(null);
+    // The kind filter and the sort are in the address, and a tab link carries neither. The search
+    // term is emptied here.
+    setSearchText("");
     setDecidedHere({});
     setLeftHere({});
     setShowSentBack(false);
@@ -1137,6 +1242,7 @@ export function Approvals() {
     lastFocusedId.current = null;
     pendingMove.current = null;
     autoAdvance.current = null;
+    ownApproveFailed.current.clear();
     refocusLeftRow.current = null;
     clearDecisionErrors();
     setAnnouncement(null);
@@ -1187,6 +1293,23 @@ export function Approvals() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hashTarget, data, isFetching]);
 
+  // A kind in the address that this tab does not list is dropped from the address once the list
+  // has loaded, in place and with the #target and the state kept. Left there it would be applied by
+  // a later reload that brings a request of that kind, and the queue would narrow by itself.
+  const unknownKind =
+    Boolean(data) && !isFetching && !onBareRoute && kindFilter !== "all" && !kinds.includes(kindFilter);
+  useEffect(() => {
+    if (!unknownKind) return;
+    const query = new URLSearchParams(locationSearch);
+    query.delete("kind");
+    const search = query.toString();
+    navigate(
+      { pathname: location.pathname, search: search ? `?${search}` : "", hash: locationHash },
+      { replace: true, state: locationState },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unknownKind]);
+
   // The open card's request is no longer shown as a card (it left the list, or it is a compact row
   // now): no card is open. A request that left and comes back, for example sent back elsewhere and
   // resubmitted, returns as a closed row that has to be opened and read, not open under the pointer.
@@ -1204,6 +1327,52 @@ export function Approvals() {
       // The choice still holds for this visit.
     }
   };
+
+  /**
+   * The list starts like a fresh one after the reader refiltered, reordered or searched it: its
+   * first card open. While a search term is set no card is opened: the results are closed rows.
+   */
+  const restartList = (term = searchTerm) => openByReader(term ? null : undefined);
+
+  /**
+   * The reader chose another kind or another order. It is written into the address in place: the
+   * page stays the same page and no history entry is added, so nothing held is sent and nothing
+   * typed is lost. A default value is left out of the address.
+   *
+   * The router applies an address change as a transition. The fresh start of the list is made one
+   * too, so it is never drawn before the change: the card pinned open would otherwise be the first
+   * card of the list the reader just left.
+   */
+  const changeView = (name: "kind" | "sort", value: string | null) => {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        if (value) next.set(name, value);
+        else next.delete(name);
+        return next;
+      },
+      { replace: true },
+    );
+    startTransition(() => {
+      if (name === "kind") setVisibleCount(PAGE_SIZE);
+      restartList();
+    });
+  };
+
+  const changeSearch = (text: string) => {
+    setSearchText(text);
+    const term = text.trim().toLowerCase();
+    // Only spaces around the term changed: the list is the same.
+    if (term === searchTerm) return;
+    setVisibleCount(PAGE_SIZE);
+    restartList(term);
+    // An emptied field draws the first card open again, by the page and maybe under a resting
+    // pointer: Approve waits as after any card the page opens. Set after the restart, which clears it.
+    if (!term) autoAdvance.current = Date.now();
+  };
+
+  // Carried by every "View details" link, so the request's own page can link back to this view.
+  const detailsState: ApprovalQueueLinkState = { queue: `${location.pathname}${location.search}` };
 
   const showMore = () => {
     // The first card the page does not show yet is the first one the press brings in.
@@ -1248,10 +1417,8 @@ export function Approvals() {
         <Tabs value={statusFilter} onValueChange={(v) => navigate(`/approvals/${v}`)}>
           <PageTabBar items={[
             { value: "pending", label: <>To decide{pendingCount > 0 && (
-              <Badge variant="ghost" className={cn(
-                "ml-1.5 px-1.5 text-(length:--text-nano)",
-                "bg-yellow-500/20 text-yellow-500"
-              )}>
+              // The pill the sidebar uses for the same number: it reads in both themes.
+              <Badge variant="ghost" className="ml-1.5 bg-primary px-1.5 text-(length:--text-micro) text-primary-foreground">
                 {pendingCount}
               </Badge>
             )}</> },
@@ -1260,9 +1427,39 @@ export function Approvals() {
         </Tabs>
       </div>
 
-      {inTab.length > 0 && (
+      {(inTab.length > 0 || searchText !== "") && (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-1.5">
+            <div className="relative w-full sm:w-64">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={searchText}
+                onChange={(event) => changeSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  // As in the app's other search fields: Enter, or Escape in an empty field, leaves it.
+                  const isComposing = event.nativeEvent.isComposing;
+                  if (
+                    shouldBlurPageSearchOnEnter({ key: event.key, isComposing }) ||
+                    shouldBlurPageSearchOnEscape({ key: event.key, isComposing, currentValue: event.currentTarget.value })
+                  ) {
+                    event.currentTarget.blur();
+                  }
+                }}
+                placeholder="Search requests..."
+                className="h-7 pl-7 text-xs"
+                aria-label="Search requests by subject, requester, summary or recommendation"
+                // The app's "/" key puts focus here.
+                data-page-search-target="true"
+              />
+            </div>
+            {/* On the page before it has any text, so the number is spoken when a term is typed. */}
+            <span
+              role="status"
+              className={cn("text-xs text-muted-foreground", !searchTerm && "sr-only")}
+              data-approval-search-count=""
+            >
+              {searchTerm ? (foundCount === 0 ? "None found" : `${foundCount} found`) : ""}
+            </span>
             {kinds.length > 1 &&
               ["all", ...kinds].map((kind) => (
                 <Button
@@ -1271,14 +1468,14 @@ export function Approvals() {
                   size="sm"
                   className="h-7 rounded-full px-3 text-xs"
                   aria-pressed={activeKind === kind}
-                  onClick={() => {
-                    setKindFilter(kind);
-                    setVisibleCount(PAGE_SIZE);
-                    // The filtered list starts like a fresh one: its first card open.
-                    openByReader(undefined);
-                  }}
+                  data-approval-kind={kind}
+                  onClick={() => changeView("kind", kind === "all" ? null : kind)}
                 >
                   {kind === "all" ? "All" : kindLabel(kind)}
+                  <span className="ml-1.5 tabular-nums" data-approval-kind-count="">
+                    {kindCount(kind)}
+                    <span className="sr-only">{statusFilter === "pending" ? " to decide" : " listed"}</span>
+                  </span>
                 </Button>
               ))}
           </div>
@@ -1314,9 +1511,8 @@ export function Approvals() {
               size="sm"
               className="h-7 px-2 text-xs text-muted-foreground"
               onClick={() => {
-                setSortOverride(sortOrder === "oldest" ? "newest" : "oldest");
-                // The reordered list starts like a fresh one too: its first card open.
-                openByReader(undefined);
+                const next: SortOrder = sortOrder === "oldest" ? "newest" : "oldest";
+                changeView("sort", next === defaultSort ? null : next);
               }}
             >
               Sort: {sortOrder === "oldest" ? "Oldest first" : "Newest first"}
@@ -1334,7 +1530,11 @@ export function Approvals() {
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <ShieldCheck className="h-8 w-8 text-muted-foreground/30 mb-3" />
           <p className="text-sm text-muted-foreground">
-            {statusFilter === "pending" ? "Nothing needs a decision." : "No decisions yet."}
+            {searchTerm
+              ? "No request matches the search."
+              : statusFilter === "pending"
+                ? "Nothing needs a decision."
+                : "No decisions yet."}
           </p>
         </div>
       )}
@@ -1352,6 +1552,7 @@ export function Approvals() {
                     approval={compact?.record ?? approval}
                     held={held}
                     elsewhere={compact?.elsewhere ?? false}
+                    detailsState={detailsState}
                     onUndo={() => undoHeldApproval(approval.id)}
                     onPause={(reason) => pauseHeldApproval(approval.id, reason)}
                     onResume={(reason) => resumeHeldApproval(approval.id, reason)}
@@ -1361,15 +1562,20 @@ export function Approvals() {
               const pendingAction = decisions.inFlight[approval.id] ?? null;
               // Read when the card is drawn: its controls start from this copy each time they are drawn again.
               const draft = drafts.current.get(approval.id);
+              // Sent back on this visit and resubmitted since: the card is back, and the server has
+              // deleted the change request. The copy kept here lasts until a new decision or a tab change.
+              const sentBackHere = decidedHere[approval.id];
               return (
                 <ApprovalCard
                   key={approval.id}
                   approval={approval}
+                  changesAskedFor={sentBackHere?.status === "revision_requested" ? sentBackHere.decisionNote : null}
                   requesterAgent={approval.requestedByAgentId ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null : null}
                   onApprove={(note) => decide(approval, "approve", note)}
                   onReject={(note) => decide(approval, "reject", note)}
                   onRequestRevision={(note) => decide(approval, "revision", note)}
                   detailLink={`/approvals/${approval.id}`}
+                  detailLinkState={detailsState}
                   isPending={pendingAction !== null}
                   pendingAction={pendingAction}
                   error={decisions.errors[approval.id] ?? null}
@@ -1436,7 +1642,7 @@ export function Approvals() {
               </p>
               <ul className="grid grid-cols-1 gap-3" ref={sentBackListRef}>
                 {sentBack.map((approval) => (
-                  <SentBackApprovalRow key={approval.id} approval={approval} />
+                  <SentBackApprovalRow key={approval.id} approval={approval} detailsState={detailsState} />
                 ))}
               </ul>
             </div>

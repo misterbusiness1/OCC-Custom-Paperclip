@@ -56,7 +56,8 @@ export function Sidebar() {
   const [companyOpen, setCompanyOpen] = useState(true);
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { collapsed, peeking } = useSidebar();
-  const { pathname } = useLocation();
+  const location = useLocation();
+  const { pathname } = location;
   const rail = collapsed && !peeking;
   const inboxBadge = useInboxBadge(selectedCompanyId);
   // The queue the board decides from; the badge counts what the Approvals page lists under "To decide".
@@ -171,9 +172,10 @@ export function Sidebar() {
           />
           {/* Links to /approvals, which shows the queue: the shorter target makes this the current
               item (highlight and aria-current) on To decide, on All decisions and on an approval's
-              own page. On To decide it links to that page itself, so a press there does nothing. */}
+              own page. On To decide it links to the address the reader is on, with its filter and
+              sort, so a press there does nothing. */}
           <SidebarNavItem
-            to={approvalsNavTarget(pathname)}
+            to={approvalsNavTarget(location)}
             label="Approvals"
             icon={ShieldCheck}
             badge={pendingApprovalCount}

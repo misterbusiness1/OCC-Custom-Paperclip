@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { approvalQueueReturnTarget } from "../lib/shell-navigation";
+import { cn } from "../lib/utils";
+import { APPROVAL_DETAILS_LINK_CLASS } from "../components/ApprovalCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
 import {
@@ -40,6 +43,13 @@ import { timeAgo } from "../lib/timeAgo";
 const UNKNOWN_AGENT_NAME = "An agent";
 /** About how much of the request's subject the last breadcrumb holds. */
 const BREADCRUMB_SUBJECT_LENGTH = 40;
+/**
+ * Asked before "Mark resubmitted" is sent. The server sets the request back to pending as it is,
+ * deletes the decision note, and from then on refuses the requester's own resubmission.
+ */
+export const MARK_RESUBMITTED_CONFIRM =
+  "Mark this request as resubmitted? It returns to the queue unchanged. Your change request is deleted, " +
+  "and the requester can no longer resubmit a revised version.";
 
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
@@ -47,6 +57,8 @@ export function ApprovalDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  // Back to the queue view the reader came from, with its filter and sort, at this request's card.
+  const queueHref = approvalQueueReturnTarget(useLocation().state, approvalId ?? "");
   const queryClient = useQueryClient();
   const [commentBody, setCommentBody] = useState("");
   // Each failure is reported beside the control that caused it.
@@ -111,8 +123,8 @@ export function ApprovalDetail() {
   const breadcrumbLabel = names.breadcrumb;
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Approvals", href: "/approvals" }, { label: breadcrumbLabel }]);
-  }, [setBreadcrumbs, breadcrumbLabel]);
+    setBreadcrumbs([{ label: "Approvals", href: queueHref }, { label: breadcrumbLabel }]);
+  }, [setBreadcrumbs, breadcrumbLabel, queueHref]);
 
   const refresh = () => {
     if (!approvalId) return;
@@ -173,6 +185,12 @@ export function ApprovalDetail() {
     },
     onError: (err) => failDecision(err instanceof Error ? err.message : "Resubmit failed"),
   });
+
+  // One stray press would put the unchanged request back in the queue and erase the board's change request.
+  const markResubmitted = () => {
+    if (!window.confirm(MARK_RESUBMITTED_CONFIRM)) return;
+    resubmitMutation.mutate();
+  };
 
   const addCommentMutation = useMutation({
     mutationFn: () => approvalsApi.addComment(approvalId!, commentBody.trim()),
@@ -244,6 +262,11 @@ export function ApprovalDetail() {
 
   return (
     <div className="max-w-3xl space-y-4">
+      <div>
+        <Link to={queueHref} className={cn(APPROVAL_DETAILS_LINK_CLASS, "-ml-2")} data-approval-back-to-queue="">
+          Back to the queue
+        </Link>
+      </div>
       {showApprovedBanner && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-4 py-3">
           <div className="flex items-start gap-2">
@@ -359,7 +382,7 @@ export function ApprovalDetail() {
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => resubmitMutation.mutate()}
+                      onClick={markResubmitted}
                       disabled={decisionPending}
                     >
                       {resubmitMutation.isPending ? "Resubmitting…" : "Mark resubmitted"}
@@ -377,7 +400,7 @@ export function ApprovalDetail() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => resubmitMutation.mutate()}
+                onClick={markResubmitted}
                 disabled={decisionPending}
               >
                 {resubmitMutation.isPending ? "Resubmitting…" : "Mark resubmitted"}

@@ -9,6 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const routerMock = vi.hoisted(() => ({
   location: { pathname: "/approvals/pending", search: "", hash: "" },
   navigate: vi.fn(),
+  /** Pages that read the query string; told when it changes, as the router tells them. */
+  searchListeners: new Set<() => void>(),
+  /** The options the page passed with each change of the query string. */
+  searchChanges: [] as unknown[],
 }));
 
 const apiMocks = vi.hoisted(() => ({
@@ -48,13 +52,35 @@ vi.mock("../components/PageTabBar", () => ({
     </div>
   ),
 }));
-vi.mock("@/lib/router", () => ({
-  Link: ({ children, to, ...props }: ComponentProps<"a"> & { to: string }) => (
-    <a href={to} {...props}>{children}</a>
-  ),
-  useLocation: () => routerMock.location,
-  useNavigate: () => routerMock.navigate,
-}));
+vi.mock("@/lib/router", async () => {
+  const { useSyncExternalStore } = await import("react");
+  const subscribe = (listener: () => void) => {
+    routerMock.searchListeners.add(listener);
+    return () => {
+      routerMock.searchListeners.delete(listener);
+    };
+  };
+  return {
+    // What a link carries to the page it opens is kept readable.
+    Link: ({ children, to, state, ...props }: ComponentProps<"a"> & { to: string; state?: unknown }) => (
+      <a href={to} data-link-state={state === undefined ? undefined : JSON.stringify(state)} {...props}>{children}</a>
+    ),
+    useLocation: () => routerMock.location,
+    useNavigate: () => routerMock.navigate,
+    // As the router's own: the query is replaced, the #target is dropped, and the page is drawn again.
+    useSearchParams: () => {
+      const search = useSyncExternalStore(subscribe, () => routerMock.location.search);
+      const setSearchParams = (next: (current: URLSearchParams) => URLSearchParams, options?: unknown) => {
+        const query = next(new URLSearchParams(routerMock.location.search)).toString();
+        routerMock.searchChanges.push(options);
+        routerMock.location.search = query ? `?${query}` : "";
+        routerMock.location.hash = "";
+        for (const listener of [...routerMock.searchListeners]) listener();
+      };
+      return [new URLSearchParams(search), setSearchParams] as const;
+    },
+  };
+});
 
 import {
   APPROVE_AFTER_ADVANCE_MS,
@@ -92,6 +118,24 @@ function createApproval(id: string, createdAt: string, overrides: Partial<Approv
   };
 }
 
+/**
+ * "View details" is 16px tall. On a touch screen its tap area is 44px tall (16 + 2 x 14) and no
+ * wider than the link. jsdom cannot evaluate the media query, so the classes are checked.
+ */
+function expectTouchArea(link: HTMLElement) {
+  for (const name of [
+    "relative",
+    "pointer-coarse:after:absolute",
+    "pointer-coarse:after:inset-x-0",
+    "pointer-coarse:after:-inset-y-3.5",
+  ]) {
+    expect(link.classList.contains(name), name).toBe(true);
+  }
+  // The link itself is no taller, so no row grows.
+  expect(link.classList.contains("h-auto")).toBe(true);
+  expect(link.className).not.toMatch(/min-h-|(^|[\s:])py-/);
+}
+
 describe("Approvals", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -105,7 +149,9 @@ describe("Approvals", () => {
     toastMock.pushToast.mockReset();
     routerMock.navigate.mockReset();
     routerMock.location.pathname = "/approvals/pending";
+    routerMock.location.search = "";
     routerMock.location.hash = "";
+    routerMock.searchChanges.length = 0;
     window.localStorage.clear();
     generalSettingsMock.keyboardShortcutsEnabled = true;
     companyMock.selectedCompanyId = "company-1";
@@ -157,8 +203,11 @@ describe("Approvals", () => {
     rows().filter((row) => header(row)?.getAttribute("aria-expanded") === "true").map((row) => row.dataset.approvalCard);
   const rows = () => [...container.querySelectorAll<HTMLElement>("[data-approval-card]")];
   const order = () => rows().map((row) => row.dataset.approvalCard);
+  /** A button's label. A kind chip also shows a count, which is not part of its label. */
+  const buttonLabel = (candidate: HTMLButtonElement) =>
+    candidate.hasAttribute("data-approval-kind") ? candidate.firstChild?.textContent : candidate.textContent;
   const button = (scope: ParentNode, label: string) =>
-    [...scope.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
+    [...scope.querySelectorAll("button")].find((candidate) => buttonLabel(candidate) === label)!;
   const click = (element: HTMLElement) => act(async () => element.click());
   /** Lets the undo window that follows Approve run out, so the held approval is sent. */
   const endHold = () =>
@@ -203,7 +252,7 @@ describe("Approvals", () => {
           { replace: true, state: carried },
         );
         // Drawing the page again does not ask for it a second time.
-        await click(button(container, "Sort: Oldest first"));
+        await click(button(container, "Full cards"));
         expect(routerMock.navigate).toHaveBeenCalledTimes(1);
       } finally {
         routerMock.location.search = "";
@@ -297,6 +346,12 @@ describe("Approvals", () => {
     await vi.waitFor(() => expect(rows()[0].hasAttribute("data-approval-decided-row")).toBe(true));
     expect(rowNote().textContent).toBe(`Your note. ${typed}`);
     expect(rowNote().classList.contains("whitespace-pre-wrap")).toBe(true);
+    // The decided row's link to the request is as easy to tap as the open card's.
+    const rowLink = rows()[0].querySelector<HTMLAnchorElement>("a")!;
+    expect(rowLink.textContent).toBe("View details");
+    expectTouchArea(rowLink);
+    const openCardLink = [...rows()[1].querySelectorAll("a")].find((anchor) => anchor.textContent === "View details")!;
+    expectTouchArea(openCardLink);
   });
 
   it("sends a rejection only after it is confirmed", async () => {
@@ -517,6 +572,13 @@ describe("Approvals", () => {
 
       expect(order()).toEqual(["oldest", "email", "newest"]);
       expect(toDecideTab()).toBe("To decide3");
+      // The count is the sidebar's pill, which reads in both themes. It was pale yellow on pale yellow.
+      const count = container.querySelector<HTMLElement>("[data-tab='pending'] [data-slot='badge']")!;
+      expect(count.textContent).toBe("3");
+      expect(count.classList.contains("bg-primary")).toBe(true);
+      expect(count.classList.contains("text-primary-foreground")).toBe(true);
+      expect(count.classList.contains("text-(length:--text-micro)")).toBe(true);
+      expect(count.className).not.toMatch(/yellow|text-\(length:--text-nano\)/);
       for (const card of rows()) expect(card.textContent).not.toContain("Request sent-back");
     });
 
@@ -549,6 +611,7 @@ describe("Approvals", () => {
       expect([...row.querySelectorAll("a")].map((anchor) => [anchor.textContent, anchor.getAttribute("href")])).toEqual([
         ["View details", "/approvals/sent-back"],
       ]);
+      expectTouchArea(row.querySelector("a")!);
       expect(row.textContent).not.toContain("user-board-1");
       expect(row.textContent).not.toContain("agent-requester");
       // The queue itself is unchanged.
@@ -679,6 +742,78 @@ describe("Approvals", () => {
       expect(button(rows()[0], "Approve")).toBeDefined();
       expect(toDecideTab()).toBe("To decide3");
       expect(order()).toEqual(["oldest", "email", "newest"]);
+    });
+
+    it("shows the change request on the card that returns, until the request is decided again", async () => {
+      apiMocks.requestRevision.mockImplementation(async (id: string, note: string) => {
+        const decided = {
+          ...approvals.find((approval) => approval.id === id)!,
+          status: "revision_requested",
+          decisionNote: note,
+          decidedAt: new Date(),
+          updatedAt: new Date(),
+        } as Approval;
+        approvals = approvals.map((approval) => (approval.id === id ? decided : approval));
+        return decided;
+      });
+      apiMocks.reject.mockImplementation(async (id: string) => {
+        const decided = {
+          ...approvals.find((approval) => approval.id === id)!,
+          status: "rejected",
+          decidedAt: new Date(Date.now() + 2000),
+          updatedAt: new Date(Date.now() + 2000),
+        } as Approval;
+        approvals = approvals.map((approval) => (approval.id === id ? decided : approval));
+        return decided;
+      });
+      const asked = (row: HTMLElement) => row.querySelector<HTMLElement>("[data-approval-changes-asked]");
+      await render();
+      // A card nobody sent back shows no such note.
+      expect(asked(rows()[0])).toBeNull();
+
+      await click(button(rows()[0], "Request changes"));
+      await act(async () => {
+        const note = rows()[0].querySelector("textarea")!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+          note,
+          "1. Quote the delivery date.\n2. Name the carrier.",
+        );
+        note.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await click(button(rows()[0], "Send request"));
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("revision requested"));
+
+      // The requester resubmits. The server has deleted the note; the page still holds it.
+      approvals = approvals.map((approval) =>
+        approval.id === "oldest"
+          ? { ...approval, status: "pending", decisionNote: null, decidedAt: null, updatedAt: new Date(Date.now() + 1000) }
+          : approval,
+      );
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["approvals", "company-1"] });
+      });
+      await vi.waitFor(() => expect(header(rows()[0])).not.toBeNull());
+      // Nothing of it on the closed row; the note is read with the request, in the open card.
+      expect(asked(rows()[0])).toBeNull();
+      await click(header(rows()[0])!);
+
+      const note = asked(rows()[0])!;
+      expect(note.textContent).toBe("Changes you asked for1. Quote the delivery date.\n2. Name the carrier.");
+      // Plain text with its line breaks, above the summary and the buttons.
+      expect(note.querySelector("ol, li, strong, a")).toBeNull();
+      const before = (first: Node, second: Node) =>
+        Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
+      expect(before(note, button(rows()[0], "Approve"))).toBe(true);
+      // Only that card carries it.
+      expect(rows().filter((row) => asked(row))).toHaveLength(1);
+
+      // A new decision ends it: the row shows that decision, not the old change request.
+      await pastDoubleClick();
+      await click(button(rows()[0], "Reject"));
+      await click(button(rows()[0], "Reject request"));
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("rejected"));
+      expect(asked(rows()[0])).toBeNull();
+      expect(container.textContent).not.toContain("Quote the delivery date.");
     });
 
     it("shows them as cards without decision buttons under All decisions", async () => {
@@ -1231,12 +1366,13 @@ describe("Approvals", () => {
       );
       await render();
 
-      expect(order()).toEqual(["newest", "email", "oldest", "done"]);
+      // The latest decision leads; the pending requests follow by the time they were created.
+      expect(order()).toEqual(["done", "newest", "email", "oldest"]);
       expect(openIds()).toEqual([]);
       expect([...container.querySelectorAll("button")].filter((b) => b.textContent === "Approve")).toHaveLength(0);
       // The view choice belongs to the queue; it is not offered here.
       expect(button(container, "Full cards")).toBeUndefined();
-      const done = rows()[3];
+      const done = rows()[0];
       expect(done.textContent).toContain("approved");
       expect(done.textContent).toContain("Approved 3h ago");
 
@@ -1247,16 +1383,16 @@ describe("Approvals", () => {
       expect(button(done, "Approve")).toBeUndefined();
 
       // A pending one is decided only once it is open, and the reader is not sent down the history afterwards.
-      await press("A", rows()[2], { shiftKey: true });
+      await press("A", rows()[3], { shiftKey: true });
       expect(heldRows()).toHaveLength(0);
       expect(apiMocks.approve).not.toHaveBeenCalled();
-      await click(header(rows()[2])!);
+      await click(header(rows()[3])!);
       await pastDoubleClick();
-      await click(button(rows()[2], "Approve"));
+      await click(button(rows()[3], "Approve"));
       await endHold();
-      await vi.waitFor(() => expect(rows()[2].hasAttribute("data-approval-decided-row")).toBe(true));
+      await vi.waitFor(() => expect(rows()[3].hasAttribute("data-approval-decided-row")).toBe(true));
       expect(openIds()).toEqual([]);
-      expect(document.activeElement).toBe(rows()[2]);
+      expect(document.activeElement).toBe(rows()[3]);
     });
 
     it("opens and focuses the request a link points at, and puts it on the page", async () => {
@@ -3366,6 +3502,237 @@ describe("Approvals", () => {
         expect(approveButtons().filter((approve) => row("oldest").contains(approve))).toHaveLength(0);
       });
 
+      describe("a held approval whose request is decided somewhere else before it is sent", () => {
+        const UNTOUCHED = "Not approved: Request oldest. Nothing was sent. Its status is now";
+        /** Approves the first request with a note; the reader is moved on to the next one. */
+        const holdOldest = async () => {
+          approveAtOnce();
+          await render();
+          await click(button(row("oldest"), "Add a note"));
+          await typeText(row("oldest"), "Month to month only");
+          await click(button(row("oldest"), "Approve"));
+          expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["oldest"]);
+          expect(openIds()).toEqual(["email"]);
+        };
+        /** The hold is gone, nothing went out, and the row is the other session's decision, not the reader's. */
+        const expectDecidedElsewhere = async (status: string, note: string | null) => {
+          expect(heldRows()).toHaveLength(0);
+          expect(order()).toEqual(["oldest", "email", "newest"]);
+          expect(row("oldest").hasAttribute("data-approval-decided-row")).toBe(true);
+          expect(row("oldest").textContent).toContain(status);
+          expect(row("oldest").textContent).toContain("Decided elsewhere");
+          if (note) expect(row("oldest").textContent).toContain(`Decision note. ${note}`);
+          expect(row("oldest").textContent).not.toContain("Your note.");
+          expect(row("oldest").textContent).not.toContain("Month to month only");
+          expect(alerts()).toHaveLength(0);
+          expect(announced()).toBe(`${UNTOUCHED} ${status}: decided elsewhere.`);
+          // In view, the row says it: no toast is laid over the request being read, which stays open.
+          expect(toastMock.pushToast).not.toHaveBeenCalled();
+          expect(openIds()).toEqual(["email"]);
+          // Not the reader's decision.
+          expect(progress()).toBeNull();
+          // However long the page stays open, and whatever Shift+Z is pressed for, nothing goes out.
+          await advance(APPROVE_HOLD_MS * 4);
+          await press("Z", document, { shiftKey: true });
+          expect(apiMocks.approve).not.toHaveBeenCalled();
+          expect(announced()).toBe(`${UNTOUCHED} ${status}: decided elsewhere.`);
+        };
+
+        it("is not sent when the request was approved: the row shows the other decision and its note", async () => {
+          await holdOldest();
+          await advance(APPROVE_HOLD_MS - 1000);
+          changeElsewhere("oldest", { status: "approved", decisionNote: "Fine by me", decidedAt: LATER, updatedAt: LATER });
+          await reload();
+          await advance(1);
+          await expectDecidedElsewhere("approved", "Fine by me");
+        });
+
+        it("is not sent when the request was rejected", async () => {
+          await holdOldest();
+          changeElsewhere("oldest", { status: "rejected", decisionNote: "No longer needed", decidedAt: LATER, updatedAt: LATER });
+          await reload();
+          await advance(1);
+          await expectDecidedElsewhere("rejected", "No longer needed");
+        });
+
+        it("is not sent when the request was cancelled", async () => {
+          await holdOldest();
+          changeElsewhere("oldest", { status: "cancelled", updatedAt: LATER });
+          await reload();
+          await advance(1);
+          await expectDecidedElsewhere("cancelled", null);
+        });
+
+        it("is not sent when the hold was paused, and focus on its Undo goes to the row", async () => {
+          await holdOldest();
+          await act(async () => undoButton(row("oldest"))!.focus());
+          await advance(APPROVE_HOLD_MS * 2);
+          expect(holdStatus(row("oldest"))).toBe("Paused, 5s left");
+          changeElsewhere("oldest", { status: "approved", decisionNote: "Fine by me", decidedAt: LATER, updatedAt: LATER });
+          await reload();
+          await advance(1);
+          expect(document.activeElement).toBe(row("oldest"));
+          await act(async () => (document.activeElement as HTMLElement).blur());
+          await expectDecidedElsewhere("approved", "Fine by me");
+        });
+
+        it("is sent as before when a reload shows the request still pending", async () => {
+          await holdOldest();
+          await advance(APPROVE_HOLD_MS - 1000);
+          // Another request is decided elsewhere, and this one only carries a newer time.
+          changeElsewhere("newest", { status: "approved", decidedAt: LATER, updatedAt: LATER });
+          changeElsewhere("oldest", { updatedAt: LATER });
+          await reload();
+          await advance(1);
+          expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["oldest"]);
+          expect(apiMocks.approve).not.toHaveBeenCalled();
+          await advance(1000);
+          expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+          expect(apiMocks.approve).toHaveBeenCalledWith("oldest", "Month to month only", KEEPALIVE);
+          await vi.waitFor(() => expect(row("oldest").textContent).toContain("Your note. Month to month only"));
+          expect(row("oldest").textContent).not.toContain("Decided elsewhere");
+        });
+
+        it("leaves another hold alone when this page's own approval lands and corrects the list", async () => {
+          await holdOldest();
+          await advance(APPROVE_HOLD_MS - 1000);
+          await pastDoubleClick();
+          await click(button(row("email"), "Approve"));
+          expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["oldest", "email"]);
+          // The first approval goes out and lands; the list is corrected and reloaded.
+          await advance(1000);
+          await vi.waitFor(() => expect(row("oldest").hasAttribute("data-approval-decided-row")).toBe(true));
+          expect(row("oldest").textContent).not.toContain("Decided elsewhere");
+          expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["email"]);
+          await advance(APPROVE_HOLD_MS);
+          expect(apiMocks.approve).toHaveBeenCalledTimes(2);
+          await vi.waitFor(() => expect(row("email").hasAttribute("data-approval-decided-row")).toBe(true));
+          expect(row("email").textContent).not.toContain("Decided elsewhere");
+          expect(toastMock.pushToast).not.toHaveBeenCalled();
+        });
+
+        it("says so in a toast too when its row is out of view, and keeps the typed note for a resubmission", async () => {
+          const rect = placeRows((element) =>
+            element.dataset.approvalCard === "oldest" ? { top: -400, bottom: -338 } : null,
+          );
+          try {
+            await holdOldest();
+            changeElsewhere("oldest", { status: "rejected", decidedAt: LATER, updatedAt: LATER });
+            await reload();
+            await advance(1);
+            expect(heldRows()).toHaveLength(0);
+            expect(toastMock.pushToast).toHaveBeenCalledTimes(1);
+            expect(toastMock.pushToast.mock.calls[0][0]).toMatchObject({
+              title: "Not approved: Request oldest",
+              body: "Its status is now rejected: decided elsewhere. Nothing was sent.",
+              tone: "warn",
+            });
+          } finally {
+            rect.mockRestore();
+          }
+          // Pending again later: its card returns with the note that was typed with the approval.
+          changeElsewhere("oldest", { status: "pending", decidedAt: null, updatedAt: LATER_STILL });
+          await reload();
+          await advance(1);
+          await click(header(row("oldest"))!);
+          expect(field("oldest")!.value).toBe("Month to month only");
+          expect(apiMocks.approve).not.toHaveBeenCalled();
+        });
+      });
+
+      it("counts an approval the server stored but answered with an error as the reader's own after a retry", async () => {
+        // The first send is stored and its answer is lost.
+        apiMocks.approve.mockImplementation(async (id: string) => {
+          changeElsewhere(id, { status: "approved", decidedAt: LATER, updatedAt: LATER });
+          throw new Error("Network down");
+        });
+        await render();
+        await click(button(row("oldest"), "Approve"));
+        // The reload that follows the error is slow to answer.
+        const answers: Array<() => void> = [];
+        apiMocks.list.mockImplementation(() => new Promise((resolve) => answers.push(() => resolve(approvals))));
+        await advance(APPROVE_HOLD_MS);
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+        await vi.waitFor(() => expect(header(row("oldest"))).not.toBeNull());
+
+        // The reader approves again before it does.
+        if (!openIds().includes("oldest")) await click(header(row("oldest"))!);
+        await pastDoubleClick();
+        await click(button(row("oldest"), "Approve"));
+        expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["oldest"]);
+        expect(answers.length).toBeGreaterThan(0);
+        await act(async () => answers.forEach((answer) => answer()));
+        await advance(1);
+
+        // The second approval is not sent, and the row is the reader's own decision.
+        expect(heldRows()).toHaveLength(0);
+        expect(row("oldest").hasAttribute("data-approval-decided-row")).toBe(true);
+        expect(row("oldest").textContent).toContain("approved");
+        expect(row("oldest").textContent).not.toContain("Decided elsewhere");
+        expect(announced()).toBe("Approved: Request oldest");
+        expect(progress()).toContain("1 decided this visit");
+        await advance(APPROVE_HOLD_MS * 4);
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+      });
+
+      it("shows the other decision, and takes a later Approve, when the reader had sent the request back before", async () => {
+        approveAtOnce();
+        apiMocks.requestRevision.mockImplementation(async (id: string, note: string) => {
+          const decided = {
+            ...approvals.find((approval) => approval.id === id)!,
+            status: "revision_requested",
+            decisionNote: note,
+            decidedAt: LATER,
+            updatedAt: LATER,
+          } as Approval;
+          approvals = approvals.map((approval) => (approval.id === id ? decided : approval));
+          return decided;
+        });
+        await render();
+        // Sent back here, resubmitted, and approved here: the approval is held.
+        await click(button(row("oldest"), "Request changes"));
+        await typeText(row("oldest"), "Shorter please");
+        await click(button(row("oldest"), "Send request"));
+        await vi.waitFor(() => expect(row("oldest").textContent).toContain("Your note. Shorter please"));
+        const resubmitted = { title: "Request oldest", recommendedAction: "A shorter version." };
+        changeElsewhere("oldest", {
+          status: "pending",
+          decidedAt: null,
+          decisionNote: null,
+          updatedAt: LATER_STILL,
+          payload: resubmitted,
+        });
+        await reload();
+        await vi.waitFor(() => expect(header(row("oldest"))).not.toBeNull());
+        await click(header(row("oldest"))!);
+        await pastDoubleClick();
+        await click(button(row("oldest"), "Approve"));
+        expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["oldest"]);
+
+        // A colleague rejects it before the approval goes out.
+        const AGAIN = new Date("2026-10-06T11:00:00.000Z");
+        changeElsewhere("oldest", { status: "rejected", decisionNote: "Wrong price", decidedAt: AGAIN, updatedAt: AGAIN });
+        await reload();
+        await advance(1);
+        expect(heldRows()).toHaveLength(0);
+        expect(row("oldest").textContent).toContain("rejected");
+        expect(row("oldest").textContent).toContain("Decided elsewhere");
+        expect(row("oldest").textContent).toContain("Decision note. Wrong price");
+        expect(row("oldest").textContent).not.toContain("Your note.");
+
+        // Pending once more: nothing of the cancelled hold is left on it, and Approve is taken.
+        const ONCE_MORE = new Date("2026-10-06T12:00:00.000Z");
+        changeElsewhere("oldest", { status: "pending", decidedAt: null, decisionNote: null, updatedAt: ONCE_MORE });
+        await reload();
+        await vi.waitFor(() => expect(header(row("oldest"))).not.toBeNull());
+        if (!openIds().includes("oldest")) await click(header(row("oldest"))!);
+        await pastDoubleClick();
+        await click(button(row("oldest"), "Approve"));
+        expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["oldest"]);
+        await advance(APPROVE_HOLD_MS);
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+      });
+
       it("says in a toast that a hold was taken back only when its row is out of view", async () => {
         approveAtOnce();
         let place: { top: number; bottom: number } | null = { top: -400, bottom: -338 };
@@ -3832,13 +4199,14 @@ describe("Approvals", () => {
         await typeText(row("email"), "Too expensive");
         const typing = field("email")!;
 
-        // Someone else rejects the held request. Its approval is still held: the row stays as it is.
+        // Someone else rejects the held request. The reload has reached the loaded list, and the
+        // reader presses Undo before the page has drawn it.
         changeElsewhere("oldest", { status: "rejected", decisionNote: "No longer needed", decidedAt: LATER, updatedAt: LATER });
         await reload();
-        await advance(1);
         expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["oldest"]);
 
         await click(undoButton(row("oldest"))!);
+        await advance(1);
         expect(heldRows()).toHaveLength(0);
         // There is no card to return to: the request keeps its place, with the status the server holds.
         expect(order()).toEqual(["oldest", "email", "newest"]);
@@ -3869,8 +4237,9 @@ describe("Approvals", () => {
 
         changeElsewhere("oldest", { status: "rejected", decidedAt: LATER, updatedAt: LATER });
         await reload();
-        await advance(1);
         await click(undoButton(row("oldest"))!);
+        await advance(1);
+        expect(toastMock.pushToast).not.toHaveBeenCalled();
         expect(row("oldest").hasAttribute("data-approval-decided-row")).toBe(true);
         expect(openIds()).toEqual(["email"]);
 
@@ -4129,6 +4498,720 @@ describe("Approvals", () => {
       expect(openIds()).toEqual(["newest"]);
       await press("Z", document, { shiftKey: true });
       expect(heldRows()).toHaveLength(0);
+    });
+
+    describe("finding a request and coming back to it", () => {
+      const searchField = () => container.querySelector<HTMLInputElement>("input[data-page-search-target='true']")!;
+      /** Types a term into the search field above the list. */
+      const search = (value: string) =>
+        act(async () => {
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(searchField(), value);
+          searchField().dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      /** What the status beside the search field says; null while it says nothing. */
+      const found = () => container.querySelector("[data-approval-search-count][role='status']")!.textContent || null;
+      /** The number each kind chip shows, by kind. */
+      const chipCounts = () =>
+        Object.fromEntries(
+          [...container.querySelectorAll<HTMLElement>("button[data-approval-kind]")].map((chip) => [
+            chip.dataset.approvalKind,
+            chip.querySelector("[data-approval-kind-count]")!.firstChild!.textContent,
+          ]),
+        );
+      /** The page is opened anew, as after a reload of the browser or a way back from another page. */
+      const openAgain = async (firstTitle = "Request oldest") => {
+        act(() => root.unmount());
+        root = createRoot(container);
+        await render(firstTitle);
+      };
+      /** What a "View details" link carries to the page it opens. */
+      const carried = (link: Element | null | undefined) => JSON.parse(link?.getAttribute("data-link-state") ?? "null");
+      const detailsLink = (scope: ParentNode) =>
+        [...scope.querySelectorAll("a")].find((anchor) => anchor.textContent === "View details");
+
+      describe("the search field", () => {
+        beforeEach(() => {
+          apiMocks.agentsList.mockResolvedValue([
+            { id: "agent-requester", name: "Operations Lead" },
+            { id: "agent-pricing", name: "Pricing Analyst" },
+          ]);
+          approvals = [
+            ...approvals,
+            createApproval("hosting", "2026-09-25T00:00:00.000Z", {
+              requestedByAgentId: "agent-pricing",
+              payload: {
+                title: "Staging hosting",
+                summary: "Costs 40 dollars a month.",
+                recommendedAction: "Sign with Provider X.",
+                reasoning: "It is the cheapest offer.",
+              },
+            }),
+          ];
+        });
+
+        it("narrows the queue by subject, requester, summary and recommendation, whatever the case", async () => {
+          await render();
+          expect(order()).toEqual(["oldest", "hosting", "email", "newest"]);
+          expect(searchField().getAttribute("aria-label")).toBe(
+            "Search requests by subject, requester, summary or recommendation",
+          );
+          expect(found()).toBeNull();
+
+          // The subject.
+          await search("  REQUEST EMAIL ");
+          expect(order()).toEqual(["email"]);
+          expect(found()).toBe("1 found");
+          // The requester's name, from the company's agents.
+          await search("pricing analyst");
+          expect(order()).toEqual(["hosting"]);
+          await search("operations");
+          expect(order()).toEqual(["oldest", "email", "newest"]);
+          expect(found()).toBe("3 found");
+          // The summary.
+          await search("40 DOLLARS");
+          expect(order()).toEqual(["hosting"]);
+          // The recommendation.
+          await search("provider x");
+          expect(order()).toEqual(["hosting"]);
+          await search("send the reply");
+          expect(order()).toEqual(["email"]);
+          // The rationale is not searched.
+          await search("cheapest offer");
+          expect(order()).toEqual([]);
+          expect(found()).toBe("None found");
+          expect(container.textContent).toContain("No request matches the search.");
+          expect(container.textContent).not.toContain("Nothing needs a decision.");
+          // The field is still there to change the term.
+          await search("");
+          expect(order()).toEqual(["oldest", "hosting", "email", "newest"]);
+          expect(found()).toBeNull();
+          // The term is not written into the address.
+          expect(routerMock.location.search).toBe("");
+          expect(routerMock.searchChanges).toEqual([]);
+        });
+
+        it("lists what it finds as closed rows, and opens the first card again once the term is cleared", async () => {
+          approveAtOnce();
+          await render();
+          expect(openIds()).toEqual(["oldest"]);
+
+          await search("request");
+          expect(order()).toEqual(["oldest", "email", "newest"]);
+          // Nothing is open, so nothing can be decided until the reader opens a row.
+          expect(openIds()).toEqual([]);
+          expect(approveButtons()).toHaveLength(0);
+          expect(container.querySelector("textarea")).toBeNull();
+          await act(async () => row("oldest").focus());
+          await press("A", row("oldest"), { shiftKey: true });
+          expect(heldRows()).toHaveLength(0);
+          // Focus in the list does not open one either.
+          expect(openIds()).toEqual([]);
+
+          // A row the reader opens is decided as usual, and the next result opens after it.
+          await click(header(row("email"))!);
+          expect(openIds()).toEqual(["email"]);
+          await advance(APPROVE_AFTER_ADVANCE_MS);
+          await click(button(row("email"), "Approve"));
+          expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["email"]);
+          expect(openIds()).toEqual(["newest"]);
+
+          await click(undoButton(row("email"))!);
+          await search("");
+          expect(order()).toEqual(["oldest", "hosting", "email", "newest"]);
+          expect(openIds()).toEqual(["oldest"]);
+          await advance(APPROVE_HOLD_MS * 2);
+          expect(apiMocks.approve).not.toHaveBeenCalled();
+        });
+
+        it("lists closed rows in the Full cards view too, for as long as a term is set", async () => {
+          chooseFullCards();
+          await render();
+          expect(approveButtons()).toHaveLength(4);
+
+          await search("request");
+          expect(order()).toEqual(["oldest", "email", "newest"]);
+          expect(openIds()).toEqual([]);
+          expect(approveButtons()).toHaveLength(0);
+
+          await search("");
+          expect(approveButtons()).toHaveLength(4);
+        });
+
+        it("opens no card when the kind or the order is changed while a term is set", async () => {
+          await render();
+          await search("request");
+
+          await click(button(container, "Email replies"));
+          expect(order()).toEqual(["email"]);
+          expect(openIds()).toEqual([]);
+          await click(button(container, "All"));
+          await click(button(container, "Sort: Oldest first"));
+          expect(order()).toEqual(["newest", "email", "oldest"]);
+          expect(openIds()).toEqual([]);
+          expect(approveButtons()).toHaveLength(0);
+        });
+
+        it("keeps a held approval with its Undo, and the card an undo brings back, whatever the term", async () => {
+          approveAtOnce();
+          await render();
+          await click(button(row("oldest"), "Add a note"));
+          await typeText(row("oldest"), "Month to month only");
+          await click(button(row("oldest"), "Approve"));
+          expect(holdStatus(row("oldest"))).toBe("Approving in 5s");
+
+          await search("hosting");
+          // The held request does not hold the term, but its Undo must stay within reach.
+          expect(order()).toEqual(["oldest", "hosting"]);
+          expect(undoButton(row("oldest"))).not.toBeNull();
+          expect(openIds()).toEqual([]);
+          // Searching sends nothing early.
+          expect(apiMocks.approve).not.toHaveBeenCalled();
+
+          await click(undoButton(row("oldest"))!);
+          // The undone card returns open, with its note, and stays listed as the open card.
+          expect(order()).toEqual(["oldest", "hosting"]);
+          expect(openIds()).toEqual(["oldest"]);
+          expect(field("oldest")!.value).toBe("Month to month only");
+          await advance(APPROVE_HOLD_MS * 3);
+          expect(apiMocks.approve).not.toHaveBeenCalled();
+        });
+
+        it("sends a held approval once when its time is up, also while a term hides its kind of request", async () => {
+          approveAtOnce();
+          await render();
+          await click(button(row("oldest"), "Approve"));
+          await search("hosting");
+          await search("hosting co");
+          await search("");
+
+          expect(apiMocks.approve).not.toHaveBeenCalled();
+          await advance(APPROVE_HOLD_MS);
+          expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("oldest", undefined, KEEPALIVE);
+        });
+
+        it("keeps a request whose approval failed on the page, with its error, whatever the term", async () => {
+          apiMocks.approve.mockRejectedValue(new Error("Session expired"));
+          await render();
+          await click(button(row("oldest"), "Approve"));
+          await search("hosting");
+
+          await advance(APPROVE_HOLD_MS);
+          expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+          expect(order()).toEqual(["oldest", "hosting"]);
+          expect(alerts(row("oldest"))[0].textContent).toBe("Error while approving: Session expired");
+          // The reader was typing a term: the failed card is not opened under them.
+          expect(openIds()).toEqual([]);
+        });
+
+        it("keeps what was typed in a card through a search", async () => {
+          await render();
+          await click(button(row("oldest"), "Request changes"));
+          await typeText(row("oldest"), "Quote the delivery date");
+
+          await search("hosting");
+          expect(order()).toEqual(["hosting"]);
+          await search("request o");
+          // Found again as a closed row, which says a text is waiting in it.
+          expect(order()).toEqual(["oldest"]);
+          expect(unsentNote("oldest")).toBe("Change request not sent");
+
+          await search("");
+          expect(openIds()).toEqual(["oldest"]);
+          expect(field("oldest")!.value).toBe("Quote the delivery date");
+          expect(row("oldest").textContent).toContain("What should change?");
+        });
+
+        it("starts the page size again, so a term does not list every request it finds at once", async () => {
+          approvals = pendingRequests(45);
+          const showMore = () =>
+            [...container.querySelectorAll("button")].find((candidate) => /^Show \d+ more$/.test(candidate.textContent ?? ""));
+          await render("Request r01");
+          await click(showMore()!);
+          expect(rows()).toHaveLength(40);
+
+          await search("request r");
+          expect(found()).toBe("45 found");
+          expect(rows()).toHaveLength(20);
+          expect(openIds()).toEqual([]);
+          expect(showMore()!.textContent).toBe("Show 20 more");
+        });
+
+        it("is where the app's / key puts focus, and J, K and Shift+Z leave it alone", async () => {
+          approveAtOnce();
+          await render();
+          expect(searchField().getAttribute("data-page-search-target")).toBe("true");
+          await click(button(row("oldest"), "Approve"));
+          expect(heldRows()).toHaveLength(1);
+          const openBefore = openIds();
+
+          await act(async () => searchField().focus());
+          await press("j", searchField());
+          await press("k", searchField());
+          await press("Z", searchField(), { shiftKey: true });
+          expect(document.activeElement).toBe(searchField());
+          expect(openIds()).toEqual(openBefore);
+          expect(heldRows()).toHaveLength(1);
+
+          // Escape leaves the field once it is empty; a term is not thrown away by it.
+          await search("hosting");
+          await press("Escape", searchField());
+          expect(document.activeElement).toBe(searchField());
+          expect(searchField().value).toBe("hosting");
+          await search("");
+          await press("Escape", searchField());
+          expect(document.activeElement).not.toBe(searchField());
+          // Enter leaves the field, and the keys work again from there.
+          await act(async () => searchField().focus());
+          await press("Enter", searchField());
+          expect(document.activeElement).not.toBe(searchField());
+          await press("Z", document, { shiftKey: true });
+          expect(heldRows()).toHaveLength(0);
+          expect(apiMocks.approve).not.toHaveBeenCalled();
+        });
+
+        it("counts only the chosen kind in what it found", async () => {
+          await render();
+          await search("request");
+          expect(found()).toBe("3 found");
+          await click(button(container, "Email replies"));
+          expect(order()).toEqual(["email"]);
+          expect(found()).toBe("1 found");
+        });
+
+        it("leaves the open result open when only a space is typed after the term", async () => {
+          await render();
+          await search("request");
+          await click(header(row("email"))!);
+          expect(openIds()).toEqual(["email"]);
+          await search("request ");
+          expect(searchField().value).toBe("request ");
+          expect(openIds()).toEqual(["email"]);
+        });
+
+        it("makes Approve wait on the card the page opens when the term is cleared", async () => {
+          approveAtOnce();
+          await render();
+          await search("request");
+          expect(approveButtons()).toHaveLength(0);
+
+          // The first card is drawn open again, maybe under a pointer that rested on a result.
+          await search("");
+          expect(openIds()).toEqual(["oldest"]);
+          await click(button(row("oldest"), "Approve"));
+          expect(heldRows()).toHaveLength(0);
+          await pastDoubleClick();
+          await click(button(row("oldest"), "Approve"));
+          expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["oldest"]);
+        });
+
+        it("keeps a held approval that is decided elsewhere listed as that row under any term or kind", async () => {
+          approveAtOnce();
+          await render();
+          await click(button(row("oldest"), "Approve"));
+          // During the hold the reader searches for another request.
+          await search("hosting");
+          expect(order()).toEqual(["oldest", "hosting"]);
+          changeElsewhere("oldest", { status: "rejected", decisionNote: "No longer needed", decidedAt: LATER, updatedAt: LATER });
+          await reload();
+          await advance(1);
+
+          expect(heldRows()).toHaveLength(0);
+          expect(order()).toEqual(["oldest", "hosting"]);
+          expect(row("oldest").textContent).toContain("rejected");
+          expect(row("oldest").textContent).toContain("Decided elsewhere");
+          // Under another kind too.
+          await search("");
+          await click(button(container, "Email replies"));
+          expect(order()).toEqual(["oldest", "email"]);
+          expect(row("oldest").textContent).toContain("Decided elsewhere");
+          await advance(APPROVE_HOLD_MS * 4);
+          expect(apiMocks.approve).not.toHaveBeenCalled();
+        });
+
+        it("stays on the page while a term is set, also when the tab lists nothing any more", async () => {
+          approvals = approvals.filter((approval) => approval.id === "oldest" || approval.id === "done");
+          await render();
+          await search("oldest");
+          expect(order()).toEqual(["oldest"]);
+          changeElsewhere("oldest", { status: "cancelled", updatedAt: LATER });
+          await reload();
+          await vi.waitFor(() => expect(order()).toEqual([]));
+
+          // The term can still be read and cleared.
+          expect(searchField()).not.toBeNull();
+          expect(searchField().value).toBe("oldest");
+          await search("");
+          expect(container.textContent).toContain("Nothing needs a decision.");
+        });
+
+        it("is emptied by a change of tab", async () => {
+          await render();
+          await search("hosting");
+          expect(order()).toEqual(["hosting"]);
+
+          routerMock.location.pathname = "/approvals/all";
+          await rerender();
+          expect(searchField().value).toBe("");
+          expect(order()).toEqual(["newest", "email", "hosting", "oldest", "done"]);
+        });
+
+        it("counts on each kind chip the undecided requests of that kind, and follows decisions and the term", async () => {
+          approveAtOnce();
+          await render();
+          expect(chipCounts()).toEqual({ all: "4", request_board_approval: "3", email_reply: "1" });
+          // The chip is still found and named by its label.
+          expect(button(container, "Email replies").textContent).toBe("Email replies1 to decide");
+
+          // A held approval counts as decided; undoing it brings the request back into the count.
+          await click(button(row("oldest"), "Approve"));
+          expect(chipCounts()).toEqual({ all: "3", request_board_approval: "2", email_reply: "1" });
+          await click(undoButton(row("oldest"))!);
+          expect(chipCounts()).toEqual({ all: "4", request_board_approval: "3", email_reply: "1" });
+
+          await advance(APPROVE_AFTER_ADVANCE_MS);
+          await click(button(row("oldest"), "Approve"));
+          await advance(APPROVE_HOLD_MS);
+          expect(row("oldest").hasAttribute("data-approval-decided-row")).toBe(true);
+          expect(chipCounts()).toEqual({ all: "3", request_board_approval: "2", email_reply: "1" });
+
+          // A term narrows the numbers as it narrows the list. The decided row is not counted.
+          await search("request");
+          expect(chipCounts()).toEqual({ all: "2", request_board_approval: "1", email_reply: "1" });
+          await search("hosting");
+          expect(chipCounts()).toEqual({ all: "1", request_board_approval: "1", email_reply: "0" });
+        });
+
+        it("counts every listed request of a kind under All decisions", async () => {
+          routerMock.location.pathname = "/approvals/all";
+          await render();
+          // The approved request is counted here: the tab lists it.
+          expect(chipCounts()).toEqual({ all: "5", request_board_approval: "4", email_reply: "1" });
+          expect(button(container, "All").textContent).toBe("All5 listed");
+        });
+      });
+
+      describe("the order of All decisions", () => {
+        const WEEK_AGO = new Date("2026-09-28T09:00:00.000Z");
+        const YESTERDAY = new Date("2026-10-04T09:00:00.000Z");
+        beforeEach(() => {
+          routerMock.location.pathname = "/approvals/all";
+          approvals = [
+            // Filed long ago and decided yesterday.
+            createApproval("old-late", "2026-08-01T00:00:00.000Z", { status: "approved", decidedAt: YESTERDAY }),
+            // Filed later and decided a week ago.
+            createApproval("new-early", "2026-09-27T00:00:00.000Z", { status: "rejected", decidedAt: WEEK_AGO }),
+            // Still waiting: it has no decision, so it is placed by the time it was filed.
+            createApproval("waiting", "2026-10-01T00:00:00.000Z"),
+            createApproval("waiting-long", "2026-09-10T00:00:00.000Z"),
+          ];
+        });
+
+        it("reads by the time of the last decision, latest first", async () => {
+          await render("Request old-late");
+          expect(order()).toEqual(["old-late", "waiting", "new-early", "waiting-long"]);
+          expect(button(container, "Sort: Newest first")).toBeDefined();
+        });
+
+        it("is reversed by the Sort button", async () => {
+          await render("Request old-late");
+          await click(button(container, "Sort: Newest first"));
+          expect(order()).toEqual(["waiting-long", "new-early", "waiting", "old-late"]);
+        });
+
+        it("still orders To decide by the time a request was filed", async () => {
+          routerMock.location.pathname = "/approvals/pending";
+          await render("Request waiting-long");
+          expect(order()).toEqual(["waiting-long", "waiting"]);
+        });
+
+        it("keeps a request decided in this tab in its place, until the tab is changed", async () => {
+          apiMocks.reject.mockImplementation(async (id: string) => {
+            const decided = {
+              ...approvals.find((approval) => approval.id === id)!,
+              status: "rejected",
+              decidedAt: new Date(),
+              updatedAt: new Date(),
+            } as Approval;
+            approvals = approvals.map((approval) => (approval.id === id ? decided : approval));
+            return decided;
+          });
+          await render("Request old-late");
+          await click(header(row("waiting-long"))!);
+          await click(button(row("waiting-long"), "Reject"));
+          await click(button(row("waiting-long"), "Reject request"));
+          await vi.waitFor(() => expect(row("waiting-long").hasAttribute("data-approval-decided-row")).toBe(true));
+
+          // Its decision is now the latest of all, and the reloaded list says so. The row does not move.
+          await reload();
+          expect(order()).toEqual(["old-late", "waiting", "new-early", "waiting-long"]);
+          expect(document.activeElement).toBe(row("waiting-long"));
+
+          // On the next visit to the tab it leads the history.
+          routerMock.location.pathname = "/approvals/pending";
+          await rerender();
+          routerMock.location.pathname = "/approvals/all";
+          await rerender();
+          expect(order()).toEqual(["waiting-long", "old-late", "waiting", "new-early"]);
+        });
+
+        it("keeps a request whose approval is held, on its way or failed in its place", async () => {
+          let fail: (error: Error) => void = () => {};
+          apiMocks.approve.mockImplementation(
+            () => new Promise<Approval>((_resolve, reject) => { fail = reject; }),
+          );
+          await render("Request old-late");
+          await click(header(row("waiting-long"))!);
+          await advance(APPROVE_AFTER_ADVANCE_MS);
+          await click(button(row("waiting-long"), "Approve"));
+          expect(heldRows()).toHaveLength(1);
+          await advance(APPROVE_HOLD_MS);
+          expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+
+          // The server has stored it before the request answers: the list now carries a decision time for it.
+          changeElsewhere("waiting-long", { status: "approved", decidedAt: new Date(), updatedAt: new Date() });
+          await reload();
+          await advance(1);
+          expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+          expect(order()).toEqual(["old-late", "waiting", "new-early", "waiting-long"]);
+
+          await act(async () => fail(new Error("Session expired")));
+          await vi.waitFor(() => expect(alerts(row("waiting-long"))).toHaveLength(1));
+          expect(order()).toEqual(["old-late", "waiting", "new-early", "waiting-long"]);
+        });
+
+        it("keeps a request in its place when its held approval is taken back because it was decided elsewhere", async () => {
+          approveAtOnce();
+          await render("Request old-late");
+          await click(header(row("waiting-long"))!);
+          await advance(APPROVE_AFTER_ADVANCE_MS);
+          await click(button(row("waiting-long"), "Approve"));
+          expect(heldRows()).toHaveLength(1);
+
+          // Someone else approves it during the hold: its decision is now the latest of all.
+          changeElsewhere("waiting-long", { status: "approved", decidedAt: new Date(), updatedAt: new Date() });
+          await reload();
+          await advance(1);
+          expect(heldRows()).toHaveLength(0);
+          expect(row("waiting-long").textContent).toContain("Decided elsewhere");
+          expect(order()).toEqual(["old-late", "waiting", "new-early", "waiting-long"]);
+          await advance(APPROVE_HOLD_MS * 4);
+          expect(apiMocks.approve).not.toHaveBeenCalled();
+        });
+      });
+
+      describe("the kind filter and the sort in the address", () => {
+        it("reads both from the address when the page opens", async () => {
+          routerMock.location.search = "?kind=email_reply&sort=newest";
+          await render("Request email");
+          expect(order()).toEqual(["email"]);
+          expect(openIds()).toEqual(["email"]);
+          expect(button(container, "Email replies").getAttribute("aria-pressed")).toBe("true");
+          expect(button(container, "Sort: Newest first")).toBeDefined();
+
+          routerMock.location.search = "?sort=newest";
+          await openAgain();
+          expect(order()).toEqual(["newest", "email", "oldest"]);
+          expect(openIds()).toEqual(["newest"]);
+          expect(button(container, "All").getAttribute("aria-pressed")).toBe("true");
+        });
+
+        it("shows every kind, in the default order, for values it does not know", async () => {
+          routerMock.location.search = "?kind=no_such_kind&sort=sideways";
+          await render();
+          expect(order()).toEqual(["oldest", "email", "newest"]);
+          expect(button(container, "All").getAttribute("aria-pressed")).toBe("true");
+          expect(button(container, "Sort: Oldest first")).toBeDefined();
+        });
+
+        it("drops a kind the tab does not list from the address, so a later reload cannot narrow the queue", async () => {
+          // The way back from the page of the last email reply, approved there.
+          changeElsewhere("email", { status: "approved", decidedAt: LATER, updatedAt: LATER });
+          const carried = { queue: "/approvals/pending?from=mail&kind=email_reply" };
+          routerMock.location.search = "?from=mail&kind=email_reply";
+          routerMock.location.hash = "#approval-newest";
+          (routerMock.location as { state?: unknown }).state = carried;
+          // The address is changed as the router changes it.
+          routerMock.navigate.mockImplementation((to: { search: string }) => {
+            routerMock.location.search = to.search;
+            for (const listener of [...routerMock.searchListeners]) listener();
+          });
+          try {
+            await render();
+            await vi.waitFor(() => expect(routerMock.navigate).toHaveBeenCalled());
+            // In place, with the rest of the query, the #target and the state kept.
+            expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith(
+              { pathname: "/approvals/pending", search: "?from=mail", hash: "#approval-newest" },
+              { replace: true, state: carried },
+            );
+            expect(order()).toEqual(["oldest", "newest"]);
+            expect(openIds()).toEqual(["newest"]);
+
+            // An agent files a new email reply: the list does not narrow to it.
+            approvals = [
+              ...approvals,
+              createApproval("email2", "2026-10-02T00:00:00.000Z", {
+                payload: { title: "Request email2", recipient: "buyer@example.test", body: "Draft body" },
+              }),
+            ];
+            await reload();
+            await vi.waitFor(() => expect(order()).toEqual(["oldest", "email2", "newest"]));
+            expect(button(container, "All").getAttribute("aria-pressed")).toBe("true");
+            expect(button(container, "Email replies").getAttribute("aria-pressed")).toBe("false");
+            expect(openIds()).toEqual(["newest"]);
+            expect(routerMock.navigate).toHaveBeenCalledTimes(1);
+          } finally {
+            delete (routerMock.location as { state?: unknown }).state;
+          }
+        });
+
+        it("keeps a kind in the address that the tab lists", async () => {
+          routerMock.location.search = "?kind=email_reply";
+          await render("Request email");
+          await reload();
+          expect(order()).toEqual(["email"]);
+          expect(routerMock.navigate).not.toHaveBeenCalled();
+        });
+
+        it("writes each choice into the address in place, and leaves a default out", async () => {
+          routerMock.location.search = "?from=mail";
+          await render();
+
+          await click(button(container, "Email replies"));
+          expect(routerMock.location.search).toBe("?from=mail&kind=email_reply");
+          await click(button(container, "Sort: Oldest first"));
+          expect(routerMock.location.search).toBe("?from=mail&kind=email_reply&sort=newest");
+          expect(order()).toEqual(["email"]);
+          await click(button(container, "All"));
+          expect(routerMock.location.search).toBe("?from=mail&sort=newest");
+          expect(order()).toEqual(["newest", "email", "oldest"]);
+          await click(button(container, "Sort: Newest first"));
+          expect(routerMock.location.search).toBe("?from=mail");
+          expect(order()).toEqual(["oldest", "email", "newest"]);
+
+          // Every change replaces the address: no history entry, and the page is not left.
+          expect(routerMock.searchChanges).toEqual(Array(4).fill({ replace: true }));
+          expect(routerMock.navigate).not.toHaveBeenCalled();
+        });
+
+        it("leaves the default order of All decisions out of the address too", async () => {
+          routerMock.location.pathname = "/approvals/all";
+          await render();
+          await click(button(container, "Sort: Newest first"));
+          expect(routerMock.location.search).toBe("?sort=oldest");
+          await click(button(container, "Sort: Oldest first"));
+          expect(routerMock.location.search).toBe("");
+        });
+
+        it("shows the same view after a reload", async () => {
+          await render();
+          await click(button(container, "Sort: Oldest first"));
+          await click(button(container, "Email replies"));
+          expect(order()).toEqual(["email"]);
+
+          await openAgain("Request email");
+          expect(order()).toEqual(["email"]);
+          expect(button(container, "Email replies").getAttribute("aria-pressed")).toBe("true");
+          expect(button(container, "Sort: Newest first")).toBeDefined();
+          await click(button(container, "All"));
+          expect(order()).toEqual(["newest", "email", "oldest"]);
+        });
+
+        it("returns to every kind and the default order on a change of tab, whose link carries no query", async () => {
+          await render();
+          await click(button(container, "Email replies"));
+          await click(button(container, "Sort: Oldest first"));
+
+          // What the tab link does: the bare address of the other tab.
+          routerMock.location.pathname = "/approvals/all";
+          routerMock.location.search = "";
+          await rerender();
+          expect(order()).toEqual(["newest", "email", "oldest", "done"]);
+          expect(button(container, "All").getAttribute("aria-pressed")).toBe("true");
+          expect(button(container, "Sort: Newest first")).toBeDefined();
+        });
+
+        it("does not send a held approval, or take its Undo away, when the filter or the order changes", async () => {
+          approveAtOnce();
+          await render();
+          await click(button(row("oldest"), "Approve"));
+          const held = row("oldest");
+
+          await click(button(container, "Email replies"));
+          await click(button(container, "Sort: Oldest first"));
+          await click(button(container, "All"));
+          expect(routerMock.location.search).toBe("?sort=newest");
+          // The same row, still counting: the page was not started afresh.
+          expect(row("oldest")).toBe(held);
+          expect(undoButton(held)).not.toBeNull();
+          expect(apiMocks.approve).not.toHaveBeenCalled();
+          expect(progress()).toBe("1 decided this visit · 2 left to decide");
+
+          await advance(APPROVE_HOLD_MS);
+          expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("oldest", undefined, KEEPALIVE);
+        });
+
+        it("starts the page size again when the kind is changed", async () => {
+          approvals = [
+            ...pendingRequests(45),
+            createApproval("mail", "2026-10-01T00:00:00.000Z", {
+              payload: { title: "Request mail", recommendedAction: "Send it.", recipient: "buyer@example.test", body: "Draft" },
+            }),
+          ];
+          await render("Request r01");
+          await click([...container.querySelectorAll("button")].find((b) => /^Show \d+ more$/.test(b.textContent ?? ""))!);
+          expect(rows()).toHaveLength(40);
+
+          await click(button(container, "Email replies"));
+          await click(button(container, "All"));
+          expect(rows()).toHaveLength(20);
+          expect(openIds()).toEqual(["r01"]);
+        });
+
+        it("drops a link's #approval target when the reader chooses another view", async () => {
+          routerMock.location.hash = "#approval-newest";
+          await render();
+          await vi.waitFor(() => expect(openIds()).toEqual(["newest"]));
+
+          await click(button(container, "Email replies"));
+          expect(routerMock.location.hash).toBe("");
+          // The list starts like a fresh one: its first card is open, not the linked one.
+          expect(order()).toEqual(["email"]);
+          expect(openIds()).toEqual(["email"]);
+        });
+
+        it("hands the address of the view to every View details link", async () => {
+          approveAtOnce();
+          approvals = [
+            ...approvals,
+            createApproval("sent-back", "2026-09-15T00:00:00.000Z", {
+              status: "revision_requested",
+              decidedAt: LATER,
+              decisionNote: "Quote the delivery date",
+            }),
+          ];
+          routerMock.location.pathname = "/PAP/approvals/pending";
+          routerMock.location.search = "?sort=newest";
+          await render();
+          const state = { queue: "/PAP/approvals/pending?sort=newest" };
+
+          // The open card.
+          expect(openIds()).toEqual(["newest"]);
+          expect(detailsLink(row("newest"))!.getAttribute("href")).toBe("/approvals/newest");
+          expect(carried(detailsLink(row("newest")))).toEqual(state);
+          // A row under "Waiting on the requester".
+          await click([...container.querySelectorAll("button")].find((b) => b.textContent?.startsWith("Waiting on the requester"))!);
+          const sentBackRow = container.querySelector("[data-approval-sent-back-row='sent-back']")!;
+          expect(carried(detailsLink(sentBackRow))).toEqual(state);
+          // A decided row. The link follows the view as it changes.
+          await click(button(row("newest"), "Approve"));
+          await advance(APPROVE_HOLD_MS);
+          expect(row("newest").hasAttribute("data-approval-decided-row")).toBe(true);
+          await click(button(container, "Email replies"));
+          await click(button(container, "All"));
+          await click(button(container, "Sort: Newest first"));
+          expect(carried(detailsLink(row("newest")))).toEqual({ queue: "/PAP/approvals/pending" });
+        });
+      });
     });
   });
 

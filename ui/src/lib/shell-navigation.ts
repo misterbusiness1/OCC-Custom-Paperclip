@@ -42,13 +42,31 @@ export function isBareApprovalsPath(pathname: string): boolean {
  * Where the sidebar's Approvals item points. The short address makes it the
  * current item (highlight and `aria-current`) on To decide, on All decisions
  * and on an approval's own page, because the router marks a link current on
- * every page under its target. On To decide itself the item points at that
- * page's own address, where it is still current: pressing it there then changes
- * nothing, adds no history entry and does not scroll the queue under a reader
- * who has an approval held or a note half typed.
+ * every page under its target. On To decide itself the item points at the
+ * address the reader is on, with its query (the kind filter and the sort) and
+ * its `#approval-<id>` target. It is still current there, and pressing it
+ * changes nothing: no history entry, no cleared filter, and no scroll of the
+ * queue under a reader who has an approval held or a note half typed.
  */
-export function approvalsNavTarget(pathname: string): string {
-  return pathname.endsWith("/approvals/pending") ? "/approvals/pending" : "/approvals";
+export function approvalsNavTarget(location: { pathname: string; search?: string; hash?: string }): string {
+  if (!location.pathname.endsWith("/approvals/pending")) return "/approvals";
+  return `/approvals/pending${location.search ?? ""}${location.hash ?? ""}`;
+}
+
+/**
+ * The way back from an approval's own page to the queue, at that approval's card.
+ * "View details" in the queue carries the queue's address (To decide or All
+ * decisions, with its kind filter and sort) as `state.queue`. Anything else,
+ * such as a page opened from the inbox, goes back to To decide. The
+ * `#approval-<id>` target makes the queue open that card and move focus to it.
+ */
+export function approvalQueueReturnTarget(state: unknown, approvalId: string): string {
+  const carried = state && typeof state === "object" ? (state as { queue?: unknown }).queue : null;
+  const queue =
+    typeof carried === "string" && /^(\/[^/?#]+)?\/approvals(\/(pending|all))?(\?[^#]*)?$/.test(carried)
+      ? carried
+      : "/approvals/pending";
+  return `${queue}#approval-${encodeURIComponent(approvalId)}`;
 }
 
 export function classifyShellRoute(

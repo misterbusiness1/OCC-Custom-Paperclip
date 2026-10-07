@@ -1134,6 +1134,62 @@ describe("Inbox toolbar", () => {
     }
   });
 
+  it.each([true, false])("finds an approval by its requester's name and by its recommendation with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    apiMocks.agentsList.mockResolvedValue([
+      { id: "agent-1", name: "Infra Engineer" },
+      { id: "agent-2", name: "Pricing Analyst" },
+    ]);
+    apiMocks.approvalsList.mockResolvedValue([
+      createApproval({
+        id: "approval-hosting",
+        requestedByAgentId: "agent-1",
+        payload: { title: "Staging hosting", recommendedAction: "Sign with Provider X.", reasoning: "Lowest quote." },
+      }),
+      createApproval({
+        id: "approval-prices",
+        requestedByAgentId: "agent-2",
+        payload: { title: "Autumn price list", recommendedAction: "Raise wholesale by two percent.", reasoning: "Costs rose." },
+      }),
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Staging hosting"));
+      await vi.waitFor(() => expect(container.textContent).toContain("Autumn price list"));
+      const field = container.querySelector<HTMLInputElement>("input[data-page-search-target='true']")!;
+      const search = (value: string) =>
+        act(async () => {
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+          field.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      const listed = () =>
+        ["Staging hosting", "Autumn price list"].filter((title) =>
+          [...container.querySelectorAll("[data-inbox-item]")].some((item) => item.textContent?.includes(title)));
+
+      // The requester's name, whatever the case.
+      await search("pricing ANALYST");
+      await vi.waitFor(() => expect(listed()).toEqual(["Autumn price list"]));
+      await search("infra");
+      await vi.waitFor(() => expect(listed()).toEqual(["Staging hosting"]));
+      // The recommendation.
+      await search("provider x");
+      await vi.waitFor(() => expect(listed()).toEqual(["Staging hosting"]));
+      await search("two percent");
+      await vi.waitFor(() => expect(listed()).toEqual(["Autumn price list"]));
+      // The rationale is not searched.
+      await search("lowest quote");
+      await vi.waitFor(() => expect(listed()).toEqual([]));
+      await search("");
+      await vi.waitFor(() => expect(listed()).toEqual(["Staging hosting", "Autumn price list"]));
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it.each([true, false])("offers no decision on a request sent back for changes with streamlined UI %s", async (streamlinedUi) => {
     routerMock.location.pathname = "/inbox/mine";
     apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
@@ -1394,6 +1450,294 @@ describe("Inbox toolbar", () => {
       expect(alerts(rowA)).toHaveLength(0);
       expect(alerts(plain)).toHaveLength(1);
     } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("shows a decided request as its title line, and keeps the summary of one decided on this visit, with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:group-by", "none");
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    const hour = 60 * 60 * 1000;
+    const boardApproval = (id: string, title: string, hoursAgo: number, overrides: Partial<Approval> = {}) =>
+      createApproval({
+        id,
+        type: "request_board_approval",
+        requestedByAgentId: "agent-1",
+        updatedAt: new Date(Date.now() - hoursAgo * hour),
+        payload: {
+          title,
+          recommendedAction: `Recommendation for ${title}`,
+          reasoning: "It fits the request",
+          // An outgoing reply: while the request is pending the summary says what approval sets in motion.
+          body: "Thank you for your order.",
+          recipient: "sam@example.test",
+        },
+        ...overrides,
+      });
+    let listed = [
+      boardApproval("approval-here", "Decided here", 1),
+      boardApproval("approval-elsewhere", "Decided elsewhere", 2),
+      boardApproval("approval-open", "Still open", 3),
+      boardApproval("approval-old", "Approved last week", 4, { status: "approved", decidedByUserId: "local-board" }),
+      boardApproval("approval-rejected", "Rejected last week", 5, { status: "rejected", decidedByUserId: "local-board" }),
+      boardApproval("approval-cancelled", "Cancelled last week", 6, { status: "cancelled" }),
+    ];
+    apiMocks.approvalsList.mockImplementation(async () => listed);
+    const decide = (id: string, status: Approval["status"]) => {
+      const decided = { ...listed.find((approval) => approval.id === id)!, status, decidedByUserId: "local-board" };
+      listed = listed.map((approval) => (approval.id === id ? decided : approval));
+      return decided;
+    };
+    apiMocks.approve.mockImplementation(async (id: string) => decide(id, "approved"));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Cancelled last week"));
+      const rowFor = (title: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(title))!;
+      const buttons = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].filter((candidate) => candidate.textContent === label);
+      const outcome = (row: Element) => row.querySelector<HTMLElement>("[data-approval-inbox-outcome]");
+      const REPLY_EFFECT = "If approved, the requester is told to send this reply to sam@example.test.";
+      /** The row's own block: the one that carries its padding. */
+      const block = (row: Element) => row.querySelector<HTMLElement>(".group")!;
+
+      // Already decided when the inbox opened: the title line with its status, and a link to the request's page.
+      for (const [title, id, status] of [
+        ["Approved last week", "approval-old", "approved"],
+        ["Rejected last week", "approval-rejected", "rejected"],
+        ["Cancelled last week", "approval-cancelled", "cancelled"],
+      ]) {
+        const row = rowFor(title);
+        expect(row.textContent).toContain(title);
+        expect(row.textContent).toContain(status);
+        expect(row.querySelector(`a[to="/approvals/${id}"]`)).not.toBeNull();
+        expect(row.textContent).not.toContain(`Recommendation for ${title}`);
+        expect(row.textContent).not.toContain("Thank you for your order.");
+        expect(outcome(row)).toBeNull();
+        expect(buttons(row, "Approve")).toHaveLength(0);
+        expect(block(row).className).not.toContain("pb-4");
+        expect(block(row).className).not.toContain("border-border/60");
+      }
+
+      // An open request shows its summary and its buttons, with room under them.
+      for (const title of ["Decided here", "Decided elsewhere", "Still open"]) {
+        const row = rowFor(title);
+        expect(row.textContent).toContain(`Recommendation for ${title}`);
+        expect(row.textContent).toContain(REPLY_EFFECT);
+        expect(buttons(row, "Approve")).toHaveLength(1);
+        expect(outcome(row)).toBeNull();
+        expect(block(row).className).toContain("pb-4");
+        expect(block(row).className).toContain("sm:pb-4");
+        // The streamlined rows have no line between them; the other presentation draws one under every row.
+        expect(block(row).className).toContain(streamlinedUi ? "border-b border-border/60" : "border-b border-border ");
+      }
+      // The missing-source note is still in the header line.
+      expect(rowFor("Still open").textContent).toContain("no original request attached");
+
+      // Decided from this row: the summary stays as it was drawn, and a line stands where the buttons were.
+      await act(async () => buttons(rowFor("Decided here"), "Approve")[0].click());
+      await vi.waitFor(() => expect(outcome(rowFor("Decided here"))).not.toBeNull());
+      const here = rowFor("Decided here");
+      expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-here");
+      expect(outcome(here)!.textContent).toBe("This request is approved.");
+      // As tall as the buttons it replaces (h-8), with the same gap above it.
+      expect(outcome(here)!.className).toContain("min-h-8");
+      expect(outcome(here)!.className).toContain("mt-3");
+      expect(here.textContent).toContain("Recommendation for Decided here");
+      expect(here.textContent).toContain("Thank you for your order.");
+      expect(here.textContent).toContain(REPLY_EFFECT);
+      expect(block(here).className).toContain("pb-4");
+      for (const label of ["Approve", "Reject", "Request changes", "Add a note"]) {
+        expect(buttons(here, label)).toHaveLength(0);
+      }
+
+      // Decided by someone else while the row is on screen: it keeps its height the same way.
+      listed = listed.map((approval) =>
+        approval.id === "approval-elsewhere" ? { ...approval, status: "rejected", decidedByUserId: "user-2" } : approval,
+      );
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["approvals", "company-1"] });
+      });
+      await vi.waitFor(() => expect(outcome(rowFor("Decided elsewhere"))).not.toBeNull());
+      const elsewhere = rowFor("Decided elsewhere");
+      expect(outcome(elsewhere)!.textContent).toBe("This request is rejected.");
+      expect(elsewhere.textContent).toContain("Recommendation for Decided elsewhere");
+      expect(elsewhere.textContent).toContain(REPLY_EFFECT);
+      expect(buttons(elsewhere, "Approve")).toHaveLength(0);
+
+      // The request nobody decided is untouched, and the old ones are still title lines.
+      expect(buttons(rowFor("Still open"), "Approve")).toHaveLength(1);
+      expect(outcome(rowFor("Still open"))).toBeNull();
+      expect(rowFor("Approved last week").textContent).not.toContain("Recommendation for Approved last week");
+      expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("ignores a pointer press on Approve just after the list moved its row, with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:group-by", "none");
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    let now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const minute = 60 * 1000;
+    const start = now;
+    const boardApproval = (id: string, title: string, minutesAgo: number) =>
+      createApproval({
+        id,
+        type: "request_board_approval",
+        requestedByAgentId: "agent-1",
+        updatedAt: new Date(start - minutesAgo * minute),
+        payload: { title, recommendedAction: "Approve it", reasoning: "It fits the request" },
+      });
+    // Newest first: "Request top" stands above "Request low".
+    let listed = [boardApproval("approval-top", "Request top", 10), boardApproval("approval-low", "Request low", 30)];
+    apiMocks.approvalsList.mockImplementation(async () => listed);
+    apiMocks.approve.mockImplementation(async (id: string) => {
+      const decided = { ...listed.find((approval) => approval.id === id)!, status: "approved" as const };
+      listed = listed.map((approval) => (approval.id === id ? decided : approval));
+      return decided;
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Request low"));
+      const titles = () =>
+        [...container.querySelectorAll("[data-inbox-item]")]
+          .map((item) => ["Request top", "Request new", "Request low"].find((title) => item.textContent?.includes(title)))
+          .filter(Boolean);
+      const approveButton = (title: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")]
+          .find((item) => item.textContent?.includes(title))!
+          .querySelector<HTMLButtonElement>("button[aria-label^='Approve:']")!;
+      /** A press with the mouse or a finger: the browser reports it as the first click. */
+      const pointerPress = (title: string) =>
+        act(async () => {
+          approveButton(title).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+        });
+      /** A press with Enter or Space: the browser reports no click count. */
+      const keyboardPress = (title: string) =>
+        act(async () => {
+          approveButton(title).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+        });
+      expect(titles()).toEqual(["Request top", "Request low"]);
+
+      // The rows have been on screen for a while when a new request arrives between them.
+      now += 60_000;
+      listed = [listed[0], boardApproval("approval-new", "Request new", 20), listed[1]];
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["approvals", "company-1"] });
+      });
+      await vi.waitFor(() => expect(titles()).toEqual(["Request top", "Request new", "Request low"]));
+
+      // 300 ms later. The row that was pushed down takes no pointer press, and neither does the new row.
+      now += 300;
+      await pointerPress("Request low");
+      await pointerPress("Request new");
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+      // The buttons were not locked or relabelled: the press was ignored, not started.
+      expect(approveButton("Request low").disabled).toBe(false);
+
+      // The row above the new one did not move: its press is taken at once.
+      await pointerPress("Request top");
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-top"));
+
+      // A press by the keyboard is never held up.
+      await keyboardPress("Request new");
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(2));
+      expect(apiMocks.approve).toHaveBeenLastCalledWith("approval-new");
+
+      // 900 ms after the move the same pointer press on the row that was pushed down is taken.
+      now += 600;
+      await pointerPress("Request low");
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(3));
+      expect(apiMocks.approve).toHaveBeenLastCalledWith("approval-low");
+    } finally {
+      clock.mockRestore();
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("holds a pointer press back after a row above it has left the list, with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:group-by", "none");
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    let now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const minute = 60 * 1000;
+    const start = now;
+    const boardApproval = (id: string, title: string, minutesAgo: number) =>
+      createApproval({
+        id,
+        type: "request_board_approval",
+        requestedByAgentId: "agent-1",
+        updatedAt: new Date(start - minutesAgo * minute),
+        payload: { title, recommendedAction: "Approve it", reasoning: "It fits the request" },
+      });
+    let listed = [
+      boardApproval("approval-1", "Request one", 10),
+      boardApproval("approval-2", "Request two", 20),
+      boardApproval("approval-3", "Request three", 30),
+    ];
+    apiMocks.approvalsList.mockImplementation(async () => listed);
+    apiMocks.approve.mockImplementation(async (id: string) => ({
+      ...listed.find((approval) => approval.id === id)!,
+      status: "approved" as const,
+    }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Request three"));
+      const titles = () =>
+        [...container.querySelectorAll("[data-inbox-item]")]
+          .map((item) => ["Request one", "Request two", "Request three"].find((title) => item.textContent?.includes(title)))
+          .filter(Boolean);
+      const pointerPress = (title: string) =>
+        act(async () => {
+          [...container.querySelectorAll("[data-inbox-item]")]
+            .find((item) => item.textContent?.includes(title))!
+            .querySelector<HTMLButtonElement>("button[aria-label^='Approve:']")!
+            .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+        });
+      expect(titles()).toEqual(["Request one", "Request two", "Request three"]);
+
+      // The first request leaves the list (cancelled by its requester and no longer the reader's): the rows below move up.
+      now += 60_000;
+      listed = listed.slice(1);
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["approvals", "company-1"] });
+      });
+      await vi.waitFor(() => expect(titles()).toEqual(["Request two", "Request three"]));
+      now += 300;
+      await pointerPress("Request two");
+      await pointerPress("Request three");
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+
+      // A press by the keyboard on a row that has just moved is taken all the same.
+      await act(async () => {
+        [...container.querySelectorAll("[data-inbox-item]")]
+          .find((item) => item.textContent?.includes("Request two"))!
+          .querySelector<HTMLButtonElement>("button[aria-label^='Approve:']")!
+          .click();
+      });
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-2"));
+
+      // Long after the move, a pointer press is taken as usual.
+      now += 60_000;
+      await pointerPress("Request three");
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(2));
+      expect(apiMocks.approve).toHaveBeenLastCalledWith("approval-3");
+    } finally {
+      clock.mockRestore();
       act(() => root.unmount());
       queryClient.clear();
     }
@@ -1965,6 +2309,154 @@ describe("Inbox toolbar", () => {
       });
     }
   });
+
+  it.each([true, false])(
+    "presses a focused button in an approval row on Enter and still opens the selected row otherwise, streamlined UI %s",
+    async (streamlinedUi) => {
+      routerMock.location.pathname = "/inbox/mine";
+      generalSettingsMock.keyboardShortcutsEnabled = true;
+      localStorage.setItem("paperclip:inbox:group-by", "none");
+      apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+      const boardApproval = (id: string, title: string, createdAt: string) =>
+        createApproval({
+          id,
+          type: "request_board_approval",
+          requestedByAgentId: "agent-1",
+          payload: { title, recommendedAction: "Approve it.", reasoning: "It fits the request." },
+          createdAt: new Date(createdAt),
+          updatedAt: new Date(createdAt),
+        });
+      apiMocks.approvalsList.mockResolvedValue([
+        boardApproval("approval-a", "First request", "2026-03-11T00:00:00.000Z"),
+        boardApproval("approval-b", "Second request", "2026-03-12T00:00:00.000Z"),
+      ]);
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      const root = createRoot(container);
+
+      const rows = () => [...container.querySelectorAll<HTMLElement>("[data-inbox-item]")];
+      const approvalIdOf = (row: HTMLElement) => (row.textContent?.includes("First request") ? "approval-a" : "approval-b");
+      const buttonIn = (row: HTMLElement, label: string) =>
+        [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
+      // A key press goes to the element that holds focus, as in a browser.
+      const press = async (key: string) => {
+        const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+        await act(async () => {
+          (document.activeElement ?? document.body).dispatchEvent(event);
+        });
+        return event;
+      };
+      // Stands for a tab or a toolbar button: a button that is in no inbox row.
+      const outside = document.createElement("button");
+
+      try {
+        await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+        await vi.waitFor(() => {
+          expect(rows()).toHaveLength(2);
+          expect(container.textContent).toContain("Second request");
+        });
+        const [first, second] = rows();
+
+        // j selects the first row; focus stays on the page.
+        await press("j");
+
+        // Enter on a focused button of the row is left to the browser, which presses the button.
+        // (Archive is left out: it takes Enter in a handler of its own.)
+        for (const label of ["Approve", "Request changes", "Reject", "Add a note"]) {
+          const control = buttonIn(first, label);
+          control.focus();
+          expect(document.activeElement).toBe(control);
+          expect((await press("Enter")).defaultPrevented, label).toBe(false);
+        }
+        expect(routerMock.navigate).not.toHaveBeenCalled();
+
+        // The same holds in the middle of a change request, and the typed note stays.
+        await act(async () => buttonIn(first, "Request changes").click());
+        const note = first.querySelector("textarea")!;
+        await act(async () => {
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(note, "Quote the delivery date");
+          note.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        buttonIn(first, "Send request").focus();
+        expect((await press("Enter")).defaultPrevented).toBe(false);
+        expect(routerMock.navigate).not.toHaveBeenCalled();
+        expect(first.querySelector("textarea")!.value).toBe("Quote the delivery date");
+        expect(apiMocks.requestRevision).not.toHaveBeenCalled();
+
+        // j moves the selection on and takes focus off the button, so Enter opens the new row.
+        await press("j");
+        expect(document.activeElement).toBe(document.body);
+        expect((await press("Enter")).defaultPrevented).toBe(true);
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith(`/approvals/${approvalIdOf(second)}`);
+
+        // k does the same on the way back.
+        routerMock.navigate.mockReset();
+        buttonIn(second, "Approve").focus();
+        await press("k");
+        expect(document.activeElement).toBe(document.body);
+        await press("Enter");
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith(`/approvals/${approvalIdOf(first)}`);
+
+        // From a button outside the rows, Enter still opens the selected row.
+        routerMock.navigate.mockReset();
+        document.body.appendChild(outside);
+        outside.focus();
+        expect((await press("Enter")).defaultPrevented).toBe(true);
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith(`/approvals/${approvalIdOf(first)}`);
+        // j from there keeps its focus: only a button inside a row is let go.
+        await press("j");
+        expect(document.activeElement).toBe(outside);
+
+        // A mouse click leaves focus on the second row's Approve and the pointer then moves to
+        // the first row: Enter opens the hovered row and does not press that button.
+        const hover = async (row: HTMLElement) => {
+          await act(async () => {
+            window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+            row.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+            row.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
+          });
+        };
+        routerMock.navigate.mockReset();
+        buttonIn(second, "Approve").focus();
+        await hover(first);
+        expect((await press("Enter")).defaultPrevented).toBe(true);
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith(`/approvals/${approvalIdOf(first)}`);
+
+        // With the pointer on the row that holds the focused button, Enter still presses it.
+        routerMock.navigate.mockReset();
+        await hover(second);
+        expect(document.activeElement).toBe(buttonIn(second, "Approve"));
+        expect((await press("Enter")).defaultPrevented).toBe(false);
+        expect(routerMock.navigate).not.toHaveBeenCalled();
+
+        // A held Enter on a row button presses it once: the repeats are kept from the browser.
+        const repeatedOnButton = new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true });
+        await act(async () => {
+          buttonIn(second, "Approve").dispatchEvent(repeatedOnButton);
+        });
+        expect(repeatedOnButton.defaultPrevented).toBe(true);
+        expect(routerMock.navigate).not.toHaveBeenCalled();
+
+        // A held Enter repeats after its button is gone: the repeats open no page.
+        buttonIn(second, "Approve").blur();
+        const repeated = new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true });
+        await act(async () => {
+          document.body.dispatchEvent(repeated);
+        });
+        expect(repeated.defaultPrevented).toBe(false);
+        expect(routerMock.navigate).not.toHaveBeenCalled();
+        expect((await press("Enter")).defaultPrevented).toBe(true);
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith(`/approvals/${approvalIdOf(second)}`);
+
+        expect(apiMocks.approve).not.toHaveBeenCalled();
+        expect(apiMocks.reject).not.toHaveBeenCalled();
+      } finally {
+        outside.remove();
+        generalSettingsMock.keyboardShortcutsEnabled = false;
+        act(() => root.unmount());
+        queryClient.clear();
+      }
+    },
+  );
 
   it("holds the inbox order across a reordering poll, then re-sorts at an attention boundary (PAP-16015)", async () => {
     routerMock.location.pathname = "/inbox/mine";

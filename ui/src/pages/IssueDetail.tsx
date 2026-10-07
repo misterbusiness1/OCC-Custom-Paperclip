@@ -169,6 +169,7 @@ import {
 } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
+import type { ApprovalDecisionKind } from "../components/ApprovalDecisionActions";
 import { ProjectTile } from "../components/ProjectTile";
 import { InlineEditor } from "../components/InlineEditor";
 import {
@@ -2497,9 +2498,9 @@ type IssueDetailActivityTabProps = {
   >;
   pendingApprovalAction: {
     approvalId: string;
-    action: "approve" | "reject";
+    action: ApprovalDecisionKind;
   } | null;
-  onApprovalAction: (approvalId: string, action: "approve" | "reject", note?: string) => void;
+  onApprovalAction: (approvalId: string, action: ApprovalDecisionKind, note?: string) => void;
   handoffFocusSignal?: number;
   externalReferences?: MarkdownExternalReferenceMap;
 };
@@ -2828,6 +2829,8 @@ function IssueDetailActivityTab({
               }
               onApprove={(note) => onApprovalAction(approval.id, "approve", note)}
               onReject={(note) => onApprovalAction(approval.id, "reject", note)}
+              // The card hides the button when the request has no requesting agent or is not pending.
+              onRequestRevision={(note) => onApprovalAction(approval.id, "revision", note)}
               detailLink={`/approvals/${approval.id}`}
               isPending={pendingApprovalAction?.approvalId === approval.id}
               pendingAction={
@@ -2916,7 +2919,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const [handoffFocusSignal, setHandoffFocusSignal] = useState(0);
   const [pendingApprovalAction, setPendingApprovalAction] = useState<{
     approvalId: string;
-    action: "approve" | "reject";
+    action: ApprovalDecisionKind;
   } | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
@@ -4395,12 +4398,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       note,
     }: {
       approvalId: string;
-      action: "approve" | "reject";
+      action: ApprovalDecisionKind;
       note?: string;
     }) => {
       if (action === "approve") {
         return note ? approvalsApi.approve(approvalId, note) : approvalsApi.approve(approvalId);
       }
+      // The card sends a change request only with a note.
+      if (action === "revision") return approvalsApi.requestRevision(approvalId, note);
       return note ? approvalsApi.reject(approvalId, note) : approvalsApi.reject(approvalId);
     },
     onMutate: ({ approvalId, action }) => {
@@ -4424,7 +4429,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         title:
           variables.action === "approve"
             ? "Approval approved"
-            : "Approval rejected",
+            : variables.action === "revision"
+              ? "Changes requested"
+              : "Approval rejected",
         tone: "success",
       });
     },
@@ -4433,7 +4440,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         title:
           variables.action === "approve"
             ? "Approval failed"
-            : "Rejection failed",
+            : variables.action === "revision"
+              ? "Request for changes failed"
+              : "Rejection failed",
         body: err instanceof Error ? err.message : "Unable to update approval",
         tone: "error",
       });

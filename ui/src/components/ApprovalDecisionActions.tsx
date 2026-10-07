@@ -181,6 +181,12 @@ export const ApprovalDecisionActions = forwardRef<
      * slower press at the same point, and this button may now be there. Keyboard presses are taken.
      */
     approveArmDelayMs?: number;
+    /**
+     * A later moment that delay runs from as well, in milliseconds since the epoch. A live list
+     * sets it when it moves these controls by itself (a new request above them, a re-sort): they
+     * may then lie where the pointer was resting on another request's Approve.
+     */
+    approveMovedAt?: number;
     /** What went wrong with the last decision sent from here; shown directly above the buttons. */
     error?: string | null;
     /**
@@ -225,6 +231,7 @@ export const ApprovalDecisionActions = forwardRef<
     approveHoldKey,
     approveLabel,
     approveArmDelayMs = 0,
+    approveMovedAt = 0,
     error = null,
     announceError = true,
     onDismissError,
@@ -466,7 +473,12 @@ export const ApprovalDecisionActions = forwardRef<
       ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
+        {/*
+          On a touch screen the "View details" link after these buttons has a tap area taller than
+          itself. On a line of its own it would reach 2px into this group. The group is drawn above
+          it, so a tap on a decision button is never a tap on that link.
+        */}
+        <div className="flex flex-wrap items-center gap-2 pointer-coarse:relative pointer-coarse:z-10" data-approval-decision-buttons="">
           <Button
             size="sm"
             className={cn(buttonClassName, approveClassName)}
@@ -475,7 +487,8 @@ export const ApprovalDecisionActions = forwardRef<
             // by the keyboard and Shift+A report no click count, and are taken as before.
             onClick={(event) => {
               if (event.detail > 1) return;
-              if (event.detail === 1 && Math.abs(Date.now() - drawnAt.current) < approveArmDelayMs) return;
+              const justAfter = (moment: number) => Math.abs(Date.now() - moment) < approveArmDelayMs;
+              if (event.detail === 1 && (justAfter(drawnAt.current) || justAfter(approveMovedAt))) return;
               approve();
             }}
             disabled={isPending || confirming}

@@ -28,6 +28,18 @@ export function isKeyboardShortcutTextInputTarget(target: EventTarget | null): b
   return !!target.closest(KEYBOARD_SHORTCUT_TEXT_INPUT_SELECTOR);
 }
 
+/** A button-like control inside an inbox row. Enter on it presses it; it does not open the row. */
+export function isInboxRowControlTarget(target: EventTarget | null): target is HTMLElement {
+  if (!(target instanceof HTMLElement)) return false;
+  return !!target.closest("[data-inbox-item]") && !!target.closest("button, summary, [role='button']");
+}
+
+/** After j/k the next Enter opens the newly selected row. It must not press a button left in focus. */
+export function blurFocusedInboxRowControl(root: Document = document): void {
+  const focused = root.activeElement;
+  if (isInboxRowControlTarget(focused)) focused.blur();
+}
+
 export function hasBlockingShortcutDialog(root: ParentNode = document): boolean {
   return !!root.querySelector("[role='dialog'][aria-modal='true']");
 }
