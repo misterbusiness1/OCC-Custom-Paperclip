@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { type ReactNode } from "react";
+import { type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -20,21 +20,26 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 
-vi.mock("@/lib/router", () => ({
-  NavLink: ({ to, children, className, ...props }: {
-    to: string;
-    children: ReactNode;
-    className?: string | ((state: { isActive: boolean }) => string);
-  }) => (
-    <a
-      href={to}
-      className={typeof className === "function" ? className({ isActive: false }) : className}
-      {...props}
-    >
-      {children}
-    </a>
-  ),
+const mockApprovalsApi = vi.hoisted(() => ({
+  list: vi.fn(),
 }));
+
+/** The page the sidebar is drawn on, and the company prefix `@/lib/router` puts before every target. */
+const mockLocation = vi.hoisted(() => ({ pathname: "/", companyPrefix: "" }));
+
+// The router's own NavLink, so that which item is current (class and aria-current) is decided by
+// the router's matching and not by the test. The company prefix is added as `@/lib/router` adds it.
+vi.mock("@/lib/router", async () => {
+  const router = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
+  return {
+    NavLink: ({ to, ...props }: { to: string } & Omit<ComponentProps<typeof router.NavLink>, "to">) => (
+      <router.MemoryRouter initialEntries={[mockLocation.pathname]}>
+        <router.NavLink to={`${mockLocation.companyPrefix}${to}`} {...props} />
+      </router.MemoryRouter>
+    ),
+    useLocation: () => ({ pathname: mockLocation.pathname }),
+  };
+});
 
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => ({
@@ -76,6 +81,10 @@ vi.mock("../api/attention", () => ({
 
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/approvals", () => ({
+  approvalsApi: mockApprovalsApi,
 }));
 
 vi.mock("../hooks/useInboxBadge", () => ({
@@ -154,10 +163,13 @@ describe("Sidebar", () => {
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockAttentionApi.list.mockResolvedValue({ items: [] });
+    mockApprovalsApi.list.mockResolvedValue([]);
     mockSidebar.isMobile = false;
     mockSidebar.collapsed = false;
     mockSidebar.collapseLocked = false;
     mockSidebar.peeking = false;
+    mockLocation.pathname = "/";
+    mockLocation.companyPrefix = "";
   });
 
   afterEach(() => {
@@ -191,6 +203,100 @@ describe("Sidebar", () => {
     const navSearchLink = [...container.querySelectorAll("nav a")]
       .find((anchor) => anchor.textContent?.trim() === "Search");
     expect(navSearchLink?.getAttribute("href")).toBe("/search");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("links to the approval queue next to Inbox, with the number of requests to decide", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableDecisions: true });
+    mockApprovalsApi.list.mockResolvedValue([
+      { id: "approval-1", status: "pending" },
+      { id: "approval-2", status: "pending" },
+      { id: "approval-3", status: "revision_requested" },
+      { id: "approval-4", status: "approved" },
+      { id: "approval-5", status: "rejected" },
+    ]);
+    const root = await renderSidebar();
+
+    const primaryNavLinks = [...container.querySelectorAll("nav > div:first-child a")];
+    const approvalsLink = primaryNavLinks.find((anchor) => anchor.getAttribute("href") === "/approvals");
+    const inboxLink = primaryNavLinks.find((anchor) => anchor.getAttribute("href") === "/inbox");
+    const decisionsLink = primaryNavLinks.find((anchor) => anchor.getAttribute("href") === "/decisions");
+    // Only requests still waiting on the board are counted: the ones the page lists under "To decide".
+    expect(approvalsLink?.textContent).toBe("Approvals2");
+    expect(approvalsLink?.querySelector("svg")?.classList.contains("lucide-shield-check")).toBe(true);
+    expect(primaryNavLinks.indexOf(approvalsLink!)).toBe(primaryNavLinks.indexOf(inboxLink!) + 1);
+    expect(primaryNavLinks.indexOf(decisionsLink!)).toBe(primaryNavLinks.indexOf(approvalsLink!) + 1);
+    // The company's approvals list is read once, without a status filter, so its cache is the one the pages use.
+    expect(mockApprovalsApi.list).toHaveBeenCalledExactlyOnceWith("company-1");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  // On To decide the item links to that page itself, so that pressing it there changes nothing: it
+  // does not leave the queue, where an approval may be held and a note half typed. Everywhere else
+  // it links to the short address, under which every Approvals page is the current one.
+  it.each([
+    ["/approvals/pending", "", "/approvals/pending"],
+    ["/approvals/all", "", "/approvals"],
+    ["/approvals/9b2d7c1e-approval", "", "/approvals"],
+    ["/PAP/approvals/pending", "/PAP", "/PAP/approvals/pending"],
+    ["/PAP/approvals/all", "/PAP", "/PAP/approvals"],
+    ["/PAP/approvals/9b2d7c1e-approval", "/PAP", "/PAP/approvals"],
+  ])("marks Approvals as the current item on %s", async (pathname, companyPrefix, href) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableDecisions: true });
+    mockLocation.pathname = pathname;
+    mockLocation.companyPrefix = companyPrefix;
+    const root = await renderSidebar();
+
+    const current = [...container.querySelectorAll('nav a[aria-current="page"]')];
+    expect(current.map((anchor) => anchor.textContent)).toEqual(["Approvals"]);
+    expect(current[0].getAttribute("href")).toBe(href);
+    expect(current[0].className).toContain("bg-sidebar-accent text-sidebar-accent-foreground");
+    const inbox = container.querySelector(`nav a[href="${companyPrefix}/inbox"]`)!;
+    expect(inbox.getAttribute("aria-current")).toBeNull();
+    expect(inbox.className).not.toContain("bg-sidebar-accent text-sidebar-accent-foreground");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not mark Approvals as current on another page", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableDecisions: true });
+    for (const pathname of ["/inbox", "/decisions", "/approvals-archive"]) {
+      mockLocation.pathname = pathname;
+      const root = await renderSidebar();
+      expect(container.querySelector('nav a[href="/approvals"]')!.getAttribute("aria-current")).toBeNull();
+      flushSync(() => {
+        root.unmount();
+      });
+    }
+  });
+
+  it("shows the Approvals item without a badge when nothing waits, and names the count on the collapsed rail", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
+    mockApprovalsApi.list.mockResolvedValue([{ id: "approval-1", status: "approved" }]);
+    let root = await renderSidebar();
+    const link = () => container.querySelector('nav a[href="/approvals"]');
+    expect(link()?.textContent).toBe("Approvals");
+    expect(link()?.getAttribute("aria-label")).toBeNull();
+    flushSync(() => {
+      root.unmount();
+    });
+
+    mockSidebar.collapsed = true;
+    mockApprovalsApi.list.mockResolvedValue([
+      { id: "approval-1", status: "pending" },
+      { id: "approval-2", status: "pending" },
+      { id: "approval-3", status: "pending" },
+    ]);
+    root = await renderSidebar();
+    expect(link()?.getAttribute("aria-label")).toBe("Approvals, 3 to decide");
 
     flushSync(() => {
       root.unmount();

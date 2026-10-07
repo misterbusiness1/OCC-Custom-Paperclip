@@ -1,4 +1,5 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { APPROVE_HOLD_MS } from "./ApprovalHold";
 
 interface ShortcutEntry {
   keys: string[];
@@ -47,6 +48,27 @@ const sections: ShortcutSection[] = [
       { keys: ["↑"], label: "Move up" },
       { keys: ["Enter"], label: "Open or close selected decision" },
       { keys: ["x"], label: "Dismiss selected decision" },
+    ],
+  },
+  {
+    title: "Approvals",
+    shortcuts: [
+      // J and K open a request and put focus in it. The three decision keys are handled by the open
+      // request itself, so they act only while focus is inside it; the labels say so.
+      { keys: ["j"], label: "Next request (opens it and moves focus into it)" },
+      { keys: ["k"], label: "Previous request (opens it and moves focus into it)" },
+      { keys: ["Shift", "A"], label: "Approve the open request, with focus inside it", combo: true },
+      { keys: ["Shift", "C"], label: "Request changes to the open request, with focus inside it", combo: true },
+      {
+        keys: ["Shift", "X"],
+        label: "Reject the open request, with focus inside it (asks to confirm)",
+        combo: true,
+      },
+      {
+        keys: ["Shift", "Z"],
+        label: `Undo the last approval (within ${APPROVE_HOLD_MS / 1000} seconds)`,
+        combo: true,
+      },
     ],
   },
   {

@@ -569,7 +569,7 @@ describe("Inbox toolbar", () => {
       expect(source.classList.contains("line-clamp-4")).toBe(false);
       expect(source.textContent).toBe(original);
       expect(row.querySelector("script")).toBeNull();
-      expect(row.textContent).toContain("Requester-provided external source snapshot");
+      expect(row.textContent).toContain("Customer · Quoted by the requesting agent, not verified");
       const text = row.textContent!;
       expect(text.indexOf("Recommendation")).toBeLessThan(text.indexOf("Original request"));
       expect(text.indexOf("Original request")).toBeLessThan(text.indexOf("Why"));
@@ -586,6 +586,8 @@ describe("Inbox toolbar", () => {
       const revised: Approval = {
         ...pending,
         status: "revision_requested",
+        decisionNote: "Quote the delivery date",
+        decidedAt: new Date("2026-03-11T00:05:00.000Z"),
         updatedAt: new Date("2026-03-11T00:05:00.000Z"),
       };
       const listed = createDeferred<Approval[]>();
@@ -610,23 +612,22 @@ describe("Inbox toolbar", () => {
       expect(button("Approve").disabled).toBe(true);
       expect(button("Send request").disabled).toBe(true);
       await act(async () => listed.resolve([revised]));
-      // Once the list catches up, the request can still be approved or rejected, but not revised again.
-      await vi.waitFor(() => expect(button("Approve").disabled).toBe(false));
-      expect(button("Request changes")).toBeUndefined();
-      if (streamlinedUi) {
-        apiMocks.approve.mockResolvedValue({ ...revised, status: "approved" });
-        await act(async () => button("Approve").click());
-        await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-1"));
-        expect(apiMocks.reject).not.toHaveBeenCalled();
-      } else {
-        apiMocks.reject.mockResolvedValue({ ...revised, status: "rejected" });
-        await act(async () => button("Reject").click());
-        expect(apiMocks.reject).not.toHaveBeenCalled();
-        await act(async () => button("Reject request").click());
-        await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("approval-1"));
+      // Once the list catches up, the row waits on the requester: the version sent back has no one-click decision.
+      await vi.waitFor(() => expect(row.querySelector("[data-approval-sent-back]")).not.toBeNull());
+      const sentBack = row.querySelector("[data-approval-sent-back]")!;
+      expect(sentBack.textContent).toContain("Waiting on the requester to revise");
+      expect(sentBack.textContent).toContain("Sent back ");
+      expect(sentBack.textContent).toContain("Changes you asked forQuote the delivery date");
+      for (const label of ["Approve", "Reject", "Request changes", "Send request", "Add a note"]) {
+        expect(button(label)).toBeUndefined();
       }
+      expect(row.querySelector("textarea")).toBeNull();
+      // The request itself stays readable in the row.
+      expect(row.querySelector("pre")!.textContent).toBe(original);
       // A Board request is decided in place: the Inbox stays on screen.
       await act(async () => {});
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+      expect(apiMocks.reject).not.toHaveBeenCalled();
       expect(routerMock.navigate).not.toHaveBeenCalled();
       expect(row.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
       expect(row.querySelector('button[aria-label="Archive"]')).not.toBeNull();
@@ -705,6 +706,211 @@ describe("Inbox toolbar", () => {
     }
   });
 
+  it.each([true, false])("stays on the inbox when a hire is approved while another decision is on its way, with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    apiMocks.agentsList.mockResolvedValue([{ id: "agent-1", name: "Infra Engineer" }]);
+    apiMocks.approvalsList.mockResolvedValue([
+      createApproval({
+        id: "approval-hire",
+        type: "hire_agent",
+        requestedByAgentId: "agent-1",
+        payload: { name: "Pricing Analyst", role: "researcher", capabilities: "Tracks competitor prices weekly." },
+      }),
+      createApproval({
+        id: "approval-strategy",
+        type: "approve_ceo_strategy",
+        requestedByAgentId: "agent-1",
+        payload: { plan: "1. Grow wholesale.\n2. Cut returns." },
+      }),
+    ]);
+    const sent = new Map<string, ReturnType<typeof createDeferred<Approval>>>();
+    apiMocks.approve.mockImplementation((id: string) => {
+      const deferred = createDeferred<Approval>();
+      sent.set(id, deferred);
+      return deferred.promise;
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Hire Agent: Pricing Analyst"));
+      const rowFor = (text: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(text))!;
+      const button = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
+      const hire = rowFor("Hire Agent: Pricing Analyst");
+      const strategy = rowFor("CEO Strategy");
+
+      // Both decisions are on their way at once.
+      await act(async () => button(hire, "Approve").click());
+      await act(async () => button(strategy, "Approve").click());
+      await vi.waitFor(() => expect(sent.size).toBe(2));
+
+      // The hire lands first. Leaving now would drop whatever the strategy comes back with.
+      await act(async () => {
+        sent.get("approval-hire")!.resolve(createApproval({ id: "approval-hire", type: "hire_agent", status: "approved" }));
+      });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(routerMock.navigate).not.toHaveBeenCalled();
+
+      // The strategy fails, and its error is shown on its own row.
+      await act(async () => sent.get("approval-strategy")!.reject(new Error("Session expired")));
+      await vi.waitFor(() =>
+        expect(rowFor("CEO Strategy").textContent).toContain("Error while approving: Session expired"));
+      expect(routerMock.navigate).not.toHaveBeenCalled();
+      expect(apiMocks.approve).toHaveBeenCalledTimes(2);
+
+      // With nothing else on its way, the retried strategy opens its confirmation page as before.
+      await act(async () => button(rowFor("CEO Strategy"), "Approve").click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(3));
+      await act(async () => {
+        sent.get("approval-strategy")!.resolve(
+          createApproval({ id: "approval-strategy", type: "approve_ceo_strategy", status: "approved" }),
+        );
+      });
+      await vi.waitFor(() =>
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith("/approvals/approval-strategy?resolved=approved"));
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("stays on the inbox when a hire is approved after another decision has failed, with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    apiMocks.agentsList.mockResolvedValue([{ id: "agent-1", name: "Infra Engineer" }]);
+    apiMocks.approvalsList.mockResolvedValue([
+      createApproval({
+        id: "approval-hire",
+        type: "hire_agent",
+        requestedByAgentId: "agent-1",
+        payload: { name: "Pricing Analyst", role: "researcher", capabilities: "Tracks competitor prices weekly." },
+      }),
+      createApproval({
+        id: "approval-strategy",
+        type: "approve_ceo_strategy",
+        requestedByAgentId: "agent-1",
+        payload: { plan: "1. Grow wholesale.\n2. Cut returns." },
+      }),
+    ]);
+    const sent = new Map<string, ReturnType<typeof createDeferred<Approval>>>();
+    apiMocks.approve.mockImplementation((id: string) => {
+      const deferred = createDeferred<Approval>();
+      sent.set(id, deferred);
+      return deferred.promise;
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Hire Agent: Pricing Analyst"));
+      const rowFor = (text: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(text))!;
+      const button = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
+
+      await act(async () => button(rowFor("Hire Agent: Pricing Analyst"), "Approve").click());
+      await act(async () => button(rowFor("CEO Strategy"), "Approve").click());
+      await vi.waitFor(() => expect(sent.size).toBe(2));
+
+      // The strategy fails first. It is no longer on its way, but its error is on its row.
+      await act(async () => sent.get("approval-strategy")!.reject(new Error("Session expired")));
+      await vi.waitFor(() =>
+        expect(rowFor("CEO Strategy").textContent).toContain("Error while approving: Session expired"));
+
+      // The hire lands afterwards. Leaving now would drop that error with the inbox.
+      await act(async () => {
+        sent.get("approval-hire")!.resolve(createApproval({ id: "approval-hire", type: "hire_agent", status: "approved" }));
+      });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(routerMock.navigate).not.toHaveBeenCalled();
+      expect(rowFor("CEO Strategy").textContent).toContain("Error while approving: Session expired");
+
+      // A row's own error does not hold back its own retry: the strategy opens its confirmation page.
+      await act(async () => button(rowFor("CEO Strategy"), "Approve").click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(3));
+      await act(async () => {
+        sent.get("approval-strategy")!.resolve(
+          createApproval({ id: "approval-strategy", type: "approve_ceo_strategy", status: "approved" }),
+        );
+      });
+      await vi.waitFor(() =>
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith("/approvals/approval-strategy?resolved=approved"));
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("opens a hire's confirmation page again once the row whose decision failed has left the screen, with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    apiMocks.agentsList.mockResolvedValue([{ id: "agent-1", name: "Infra Engineer" }]);
+    const hire = createApproval({
+      id: "approval-hire",
+      type: "hire_agent",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      payload: { name: "Pricing Analyst", role: "researcher", capabilities: "Tracks competitor prices weekly." },
+    });
+    const strategy = createApproval({
+      id: "approval-strategy",
+      type: "approve_ceo_strategy",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      payload: { plan: "1. Grow wholesale.\n2. Cut returns." },
+    });
+    let listed: Approval[] = [hire, strategy];
+    apiMocks.approvalsList.mockImplementation(async () => listed);
+    const sent = new Map<string, ReturnType<typeof createDeferred<Approval>>>();
+    apiMocks.approve.mockImplementation((id: string) => {
+      const deferred = createDeferred<Approval>();
+      sent.set(id, deferred);
+      return deferred.promise;
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Hire Agent: Pricing Analyst"));
+      const rowFor = (text: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(text));
+      const button = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
+
+      // A colleague rejected the strategy a moment ago: the server refuses this approval.
+      await act(async () => button(rowFor("CEO Strategy")!, "Approve").click());
+      await vi.waitFor(() => expect(sent.size).toBe(1));
+      await act(async () => sent.get("approval-strategy")!.reject(new Error("Only pending approvals can be approved")));
+      await vi.waitFor(() =>
+        expect(rowFor("CEO Strategy")!.textContent).toContain("Error while approving: Only pending approvals can be approved"));
+
+      // The list reloads. The server still lists the request, as rejected by that colleague, and
+      // Mine does not show a request someone else decided: the row and its error leave the screen.
+      const decidedAt = new Date("2026-03-12T00:00:00.000Z");
+      listed = [hire, { ...strategy, status: "rejected", decidedByUserId: "user-colleague", decidedAt, updatedAt: decidedAt }];
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["approvals", "company-1"] });
+      });
+      await vi.waitFor(() => expect(rowFor("CEO Strategy")).toBeUndefined());
+      expect(container.textContent).not.toContain("Error while approving");
+
+      // No row shows an error any more: the hire opens its confirmation page.
+      await act(async () => button(rowFor("Hire Agent: Pricing Analyst")!, "Approve").click());
+      await vi.waitFor(() => expect(sent.size).toBe(2));
+      await act(async () => {
+        sent.get("approval-hire")!.resolve({ ...hire, status: "approved" });
+      });
+      await vi.waitFor(() =>
+        expect(routerMock.navigate).toHaveBeenCalledExactlyOnceWith("/approvals/approval-hire?resolved=approved"));
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it.each([true, false])("shows an honest missing-source state in the inbox with streamlined UI %s", async (streamlinedUi) => {
     routerMock.location.pathname = "/inbox/mine";
     apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
@@ -728,7 +934,9 @@ describe("Inbox toolbar", () => {
         .find((item) => item.textContent?.includes("Historical email approval"))!;
       const text = row.textContent!;
       expect(text).toContain("no original request attached");
-      expect(text).toContain("Older request: no pros or risks were recorded.");
+      // What is missing is stated; the row does not guess that the request is old.
+      expect(text).toContain("No pros or risks were recorded.");
+      expect(text).not.toContain("Older request");
       // The outbound draft is shown as a draft, after the decision brief; it never fills the source slot.
       expect(row.querySelector("pre")).toBeNull();
       expect(text).not.toContain("Original request");
@@ -739,6 +947,452 @@ describe("Inbox toolbar", () => {
       expect(text.indexOf("Recommendation")).toBeLessThan(text.indexOf("Why"));
       expect(text.indexOf("Why")).toBeLessThan(text.indexOf("Draft reply"));
       expect(text.indexOf("Draft reply")).toBeLessThan(text.indexOf("ApproveRequest changesReject"));
+      // A short draft is shown whole: there is nothing to expand.
+      expect(draft.querySelector("button")).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("opens a cut email draft instead of approving it unread with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    const ending = "We will ship the same day and split the order at no extra charge.";
+    const draftBody = (length: number) => {
+      const filler = "Our wholesale terms are in the attached price list. ";
+      const room = length - ending.length - 2;
+      return `${filler.repeat(Math.ceil(room / filler.length)).slice(0, room)}\n\n${ending}`;
+    };
+    const longBody = draftBody(2000);
+    const shortBody = draftBody(900);
+    expect(longBody).toHaveLength(2000);
+    expect(shortBody).toHaveLength(900);
+    const emailApproval = (id: string, title: string, body: string) => createApproval({
+      id,
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      payload: {
+        title,
+        recommendedAction: "Send the drafted reply",
+        reasoning: "Nothing in the reply commits to a delivery date",
+        recipient: "buyer@example.test",
+        subject: "Re: wholesale order",
+        body,
+      },
+    });
+    apiMocks.approvalsList.mockResolvedValue([
+      emailApproval("approval-long", "Long wholesale reply", longBody),
+      emailApproval("approval-short", "Short wholesale reply", shortBody),
+    ]);
+    apiMocks.approve.mockImplementation(async (id: string) =>
+      createApproval({ id, type: "request_board_approval", status: "approved" }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Long wholesale reply"));
+      const rowFor = (title: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(title))!;
+      const button = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
+      const shownBody = (row: Element) => row.querySelector("[data-approval-draft-body]")!.textContent ?? "";
+      const heldBack = (row: Element) =>
+        [...row.querySelectorAll("[role='status']")]
+          .some((status) => status.textContent === "Read the full reply, then approve.");
+
+      // The long draft is cut near 1,500 characters behind a button that states its size; the short one is whole.
+      const long = rowFor("Long wholesale reply");
+      const short = rowFor("Short wholesale reply");
+      const draft = long.querySelector<HTMLElement>("[data-approval-draft]")!;
+      expect(shownBody(long)).not.toContain(ending);
+      expect(shownBody(long).length).toBeGreaterThan(1400);
+      // The body box holds only the email's own words; that it continues is said under it, above the button.
+      expect(longBody.startsWith(shownBody(long))).toBe(true);
+      expect(shownBody(long)).not.toContain("…");
+      expect(draft.querySelector("[class*='line-clamp']")).toBeNull();
+      const expander = button(long, `Show full reply (${longBody.length.toLocaleString()} characters)`);
+      expect(expander.getAttribute("aria-expanded")).toBe("false");
+      const continues = draft.querySelector("[data-approval-draft-continues]")!;
+      expect(continues.textContent).toBe(
+        `The reply continues: ${(longBody.length - shownBody(long).length).toLocaleString()} more characters.`,
+      );
+      expect(continues.nextElementSibling).toBe(expander);
+      expect(shownBody(short)).toBe(shortBody);
+      expect(short.querySelector("[data-approval-draft] button")).toBeNull();
+      expect(short.querySelector("[data-approval-draft-continues]")).toBeNull();
+      // The button says before the press that it opens the reply; a draft shown whole keeps "Approve".
+      expect(button(long, "Approve")).toBeUndefined();
+      expect(button(long, "Read full reply to approve").getAttribute("aria-label")).toBe(
+        "Read full reply to approve: Board Approval: Long wholesale reply",
+      );
+      expect(button(short, "Read full reply to approve")).toBeUndefined();
+      // Under each draft the row says what approval sets in motion: the requesting agent is told; nothing is sent here.
+      for (const row of [long, short]) {
+        expect(row.querySelector("[data-approval-reply-effect]")!.textContent).toBe(
+          "If approved, the requester is told to send this reply to buyer@example.test.",
+        );
+      }
+
+      // The first press opens the draft and puts focus on it; nothing is sent.
+      await act(async () => button(long, "Read full reply to approve").click());
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+      expect(shownBody(long)).toBe(longBody);
+      expect(draft.querySelector("[data-approval-draft-continues]")).toBeNull();
+      expect(button(long, "Read full reply to approve")).toBeUndefined();
+      expect(button(long, "Approve").getAttribute("aria-label")).toBe("Approve: Board Approval: Long wholesale reply");
+      expect(button(long, "Show less").getAttribute("aria-expanded")).toBe("true");
+      expect(heldBack(long)).toBe(true);
+      expect(heldBack(short)).toBe(false);
+      await vi.waitFor(() => expect(document.activeElement).toBe(draft));
+
+      // A draft that is shown whole is approved at once.
+      await act(async () => button(short, "Approve").click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-short"));
+
+      // With the whole draft on the page, the next Approve sends.
+      await vi.waitFor(() => expect(button(long, "Approve").disabled).toBe(false));
+      await act(async () => button(long, "Approve").click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-long"));
+      expect(apiMocks.approve).toHaveBeenCalledTimes(2);
+      expect(heldBack(long)).toBe(false);
+      expect(apiMocks.reject).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("names who sent the original request and shows the summary with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    const authorId = "44444444-4444-4444-8444-444444444444";
+    apiMocks.agentsList.mockResolvedValue([{ id: authorId, name: "Infra Engineer" }]);
+    const sentAt = "2026-10-07T01:23:48.000Z";
+    const commentApproval = (id: string, title: string, sender: string) => createApproval({
+      id,
+      type: "request_board_approval",
+      requestedByAgentId: authorId,
+      payload: {
+        title,
+        summary: "Estimated cost is $42/month for provider X.",
+        recommendedAction: "Approve provider X",
+        reasoning: "It meets every condition in the request",
+        pros: ["Fixed monthly commitment"],
+        risks: ["The bill rises if traffic doubles"],
+        channel: "email from info@",
+        subject: "Re: hosting",
+        body: "We will go with provider X.",
+        originalRequest: {
+          text: "Use provider X if it stays under $50.",
+          source: {
+            kind: "paperclip_comment",
+            commentId: "22222222-2222-4222-8222-222222222222",
+            issueId: "33333333-3333-4333-8333-333333333333",
+            sender,
+            sentAt,
+            snapshotOrigin: "server",
+          },
+        },
+      },
+    });
+    apiMocks.approvalsList.mockResolvedValue([
+      commentApproval("approval-agent", "Asked by an agent", authorId),
+      commentApproval("approval-board", "Asked by the board", "local-board"),
+      commentApproval("approval-unknown", "Asked by someone unknown", "55555555-5555-4555-8555-555555555555"),
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Asked by an agent"));
+      const rowFor = (title: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(title))!;
+      const time = new Date(sentAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+      const note = `${time} · Saved from the original comment · View comment`;
+
+      await vi.waitFor(() => expect(rowFor("Asked by an agent").textContent).toContain(`Infra Engineer · ${note}`));
+      expect(rowFor("Asked by the board").textContent).toContain(`Board · ${note}`);
+      expect(rowFor("Asked by someone unknown").textContent).toContain(`Original request${note}`);
+      // No id of a sender and no storage jargon reaches the row.
+      for (const leaked of ["local-board", authorId, "55555555-5555-4555-8555-555555555555", "snapshot"]) {
+        expect(container.textContent).not.toContain(leaked);
+      }
+      expect(time).not.toMatch(/\d:\d\d:\d\d/);
+
+      const text = rowFor("Asked by an agent").textContent!;
+      expect(text).toContain("SummaryEstimated cost is $42/month for provider X.");
+      expect(text.indexOf("SummaryEstimated cost")).toBeLessThan(text.indexOf("RecommendationApprove provider X"));
+      // The channel is not a sender address. With no recipient, the row names nobody the reply goes to.
+      const draft = rowFor("Asked by an agent").querySelector("[data-approval-draft]")!;
+      expect(draft.textContent).toContain("Viaemail from info@");
+      expect(draft.textContent).not.toContain("From");
+      expect(container.querySelector("[data-approval-reply-effect]")).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("offers no decision on a request sent back for changes with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    apiMocks.agentsList.mockResolvedValue([{ id: "agent-1", name: "Pricing Agent" }]);
+    const sentBackAt = new Date(Date.now() - 2 * 60 * 60 * 1000 - 60_000);
+    const sentBack = (overrides: Partial<Approval>) => createApproval({
+      status: "revision_requested",
+      requestedByAgentId: "agent-1",
+      decisionNote: "Quote the delivery date.",
+      decidedByUserId: "user-board-1",
+      decidedAt: sentBackAt,
+      updatedAt: sentBackAt,
+      ...overrides,
+    });
+    apiMocks.approvalsList.mockResolvedValue([
+      sentBack({
+        id: "approval-board",
+        type: "request_board_approval",
+        payload: { title: "Sent back request", recommendedAction: "Approve it", reasoning: "It fits the request" },
+      }),
+      // A type with no decision summary would otherwise get the plain Approve / Reject buttons.
+      sentBack({
+        id: "approval-plain",
+        type: "custom_gate" as Approval["type"],
+        requestedByAgentId: null,
+        decidedAt: null,
+        decisionNote: null,
+        payload: { title: "Plain sent back request" },
+      }),
+      createApproval({
+        id: "approval-open",
+        type: "request_board_approval",
+        requestedByAgentId: "agent-1",
+        payload: { title: "Open request", recommendedAction: "Approve it", reasoning: "It fits the request" },
+      }),
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Waiting on Pricing Agent to revise"));
+      const rowFor = (title: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(title))!;
+      const buttons = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].filter((candidate) => candidate.textContent === label);
+
+      const board = rowFor("Sent back request");
+      const waiting = board.querySelector("[data-approval-sent-back]")!;
+      expect(waiting.textContent).toContain("Waiting on Pricing Agent to revise");
+      expect(waiting.textContent).toContain("Sent back 2h ago");
+      expect(waiting.textContent).toContain("Changes you asked forQuote the delivery date.");
+      // The summary of what was sent back is still there to read.
+      expect(board.textContent).toContain("Approve it");
+      for (const label of ["Approve", "Reject", "Request changes", "Add a note"]) {
+        expect(buttons(board, label)).toHaveLength(0);
+      }
+      expect(board.textContent).not.toContain("user-board-1");
+      expect(board.querySelector('a[to="/approvals/approval-board"]')).not.toBeNull();
+
+      const plain = rowFor("Plain sent back request");
+      expect(plain.querySelector("[data-approval-sent-back]")!.textContent).toContain(
+        "Waiting on the requester to revise",
+      );
+      expect(plain.textContent).not.toContain("Changes you asked for");
+      expect(buttons(plain, "Approve")).toHaveLength(0);
+      expect(buttons(plain, "Reject")).toHaveLength(0);
+
+      // A pending request beside them keeps its buttons.
+      const open = rowFor("Open request");
+      expect(open.querySelector("[data-approval-sent-back]")).toBeNull();
+      expect(buttons(open, "Approve")).toHaveLength(1);
+      expect(buttons(open, "Request changes")).toHaveLength(1);
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("holds Approve back when a request is revised while its row is open with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    const NOTICE = "The requester revised this request while it was open. Review it before you decide.";
+    const boardApproval = (overrides: Partial<Approval> = {}) => createApproval({
+      id: "approval-board",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      payload: { title: "Hosting request", recommendedAction: "Approve provider X", reasoning: "It fits the request" },
+      ...overrides,
+    });
+    const plainApproval = (overrides: Partial<Approval> = {}) => createApproval({
+      id: "approval-plain",
+      type: "custom_gate" as Approval["type"],
+      payload: { title: "Plain request", limit: 100 },
+      ...overrides,
+    });
+    const untouched = (overrides: Partial<Approval> = {}) => createApproval({
+      id: "approval-same",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      payload: { title: "Unchanged request", recommendedAction: "Approve it", reasoning: "It fits the request" },
+      ...overrides,
+    });
+    apiMocks.approvalsList.mockResolvedValue([boardApproval(), plainApproval(), untouched()]);
+    apiMocks.approve.mockImplementation(async (id: string) => createApproval({ id, status: "approved" }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Hosting request"));
+      const rowFor = (title: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(title))!;
+      const buttons = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].filter((candidate) => candidate.textContent === label);
+      const notice = (row: Element) => row.querySelector<HTMLElement>("[data-approval-revised]");
+      const board = rowFor("Hosting request");
+      const plain = rowFor("Plain request");
+      const same = rowFor("Unchanged request");
+      expect(container.textContent).not.toContain(NOTICE);
+
+      // The board starts a note, then the requester resubmits two of the three requests with new content.
+      await act(async () => buttons(board, "Add a note")[0].click());
+      await act(async () => {
+        const note = board.querySelector("textarea")!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(note, "Month to month only");
+        note.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      const later = new Date("2026-03-11T00:10:00.000Z");
+      apiMocks.approvalsList.mockResolvedValue([
+        boardApproval({
+          updatedAt: later,
+          payload: { title: "Hosting request", recommendedAction: "Approve provider Y at twice the price", reasoning: "It fits the request" },
+        }),
+        plainApproval({ updatedAt: later, payload: { title: "Plain request", limit: 900 } }),
+        // Only the time changed here.
+        untouched({ updatedAt: later }),
+      ]);
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["approvals", "company-1"] });
+      });
+      await vi.waitFor(() => expect(board.textContent).toContain("Approve provider Y at twice the price"));
+
+      expect(notice(board)!.textContent).toContain(NOTICE);
+      expect(notice(plain)!.textContent).toContain(NOTICE);
+      expect(notice(same)).toBeNull();
+      // The notice comes before the revised summary, and the note is still there.
+      const recommendation = [...board.querySelectorAll("p")].find((p) => p.textContent === "Recommendation")!;
+      expect(notice(board)!.compareDocumentPosition(recommendation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(board.querySelector("textarea")!.value).toBe("Month to month only");
+
+      // Approve sends nothing until the revision is confirmed, on the shared controls and on the plain buttons.
+      await act(async () => buttons(board, "Approve")[0].click());
+      for (const approve of buttons(plain, "Approve")) await act(async () => approve.click());
+      expect(buttons(plain, "Approve").length).toBeGreaterThan(0);
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+      expect(
+        [...board.querySelectorAll("[role='status']")].map((status) => status.textContent),
+      ).toContain("Confirm that you have reviewed the revised request, then approve.");
+
+      // A request whose content did not change is approved at once.
+      await act(async () => buttons(same, "Approve")[0].click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-same"));
+
+      await act(async () => buttons(board, "I have reviewed it")[0].click());
+      expect(board.textContent).not.toContain(NOTICE);
+      expect(board.contains(document.activeElement)).toBe(true);
+      expect(board.querySelector("textarea")!.value).toBe("Month to month only");
+      await act(async () => buttons(board, "Approve")[0].click());
+      await vi.waitFor(() =>
+        expect(apiMocks.approve).toHaveBeenCalledWith("approval-board", "Month to month only"));
+
+      await act(async () => buttons(plain, "I have reviewed it")[0].click());
+      await act(async () => buttons(plain, "Approve")[0].click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-plain"));
+      expect(apiMocks.approve).toHaveBeenCalledTimes(3);
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("keeps a pending decision and its error on the row it belongs to with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    const boardApproval = (id: string, title: string) => createApproval({
+      id,
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      payload: { title, recommendedAction: "Approve it", reasoning: "It fits the request" },
+    });
+    apiMocks.approvalsList.mockResolvedValue([
+      boardApproval("approval-a", "First request"),
+      boardApproval("approval-b", "Second request"),
+      // A type with no decision summary gets the plain Approve / Reject buttons.
+      createApproval({ id: "approval-plain", type: "custom_gate" as Approval["type"], payload: { title: "Plain request" } }),
+    ]);
+    const sent = new Map<string, ReturnType<typeof createDeferred<Approval>>>();
+    apiMocks.approve.mockImplementation((id: string) => {
+      const deferred = createDeferred<Approval>();
+      sent.set(id, deferred);
+      return deferred.promise;
+    });
+    apiMocks.reject.mockRejectedValue(new Error("Not allowed"));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Second request"));
+      const rowFor = (title: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(title))!;
+      const buttons = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].filter((candidate) => candidate.textContent === label);
+      const alerts = (scope: ParentNode) => [...scope.querySelectorAll("[role='alert']")];
+      const rowA = rowFor("First request");
+      const rowB = rowFor("Second request");
+      const plain = rowFor("Plain request");
+
+      // A decision on its way locks and labels its own row only.
+      await act(async () => buttons(rowA, "Approve")[0].click());
+      await vi.waitFor(() => expect(sent.has("approval-a")).toBe(true));
+      expect(buttons(rowA, "Approving...")[0].disabled).toBe(true);
+      expect(buttons(rowA, "Reject")[0].disabled).toBe(true);
+      expect(buttons(rowA, "Approving...")[0].closest("[aria-busy]")!.getAttribute("aria-busy")).toBe("true");
+      expect(buttons(rowB, "Approve")[0].disabled).toBe(false);
+      expect(buttons(rowB, "Reject")[0].disabled).toBe(false);
+      expect(buttons(rowB, "Approving...")).toHaveLength(0);
+      expect(buttons(plain, "Approve").every((candidate) => !candidate.disabled)).toBe(true);
+      expect(buttons(plain, "Approve").length).toBeGreaterThan(0);
+
+      // The second row can be decided while the first is still sending, and neither unlocks the other.
+      await act(async () => buttons(rowB, "Approve")[0].click());
+      await vi.waitFor(() => expect(sent.has("approval-b")).toBe(true));
+      expect(buttons(rowA, "Approving...")[0].disabled).toBe(true);
+      expect(buttons(rowB, "Approving...")[0].disabled).toBe(true);
+
+      // A failure is reported on its own row, as an alert above that row's buttons.
+      await act(async () => sent.get("approval-a")!.reject(new Error("Session expired")));
+      await vi.waitFor(() => expect(alerts(rowA)).toHaveLength(1));
+      expect(alerts(rowA)[0].textContent).toBe("Error while approving: Session expired");
+      expect(alerts(rowA)[0].nextElementSibling!.contains(buttons(rowA, "Approve")[0])).toBe(true);
+      expect(alerts(container)).toHaveLength(1);
+      expect(buttons(rowA, "Approve")[0].disabled).toBe(false);
+      expect(buttons(rowB, "Approving...")[0].disabled).toBe(true);
+
+      // A row with the plain buttons shows its error under them, once.
+      await act(async () => buttons(plain, "Reject")[0].click());
+      await vi.waitFor(() => expect(alerts(plain)).toHaveLength(1));
+      expect(apiMocks.reject).toHaveBeenCalledExactlyOnceWith("approval-plain");
+      expect(alerts(plain)[0].textContent).toBe("Error while rejecting: Not allowed");
+      expect(alerts(plain)[0]).toBe(plain.querySelector("[role='alert']:last-child"));
+      expect(alerts(container)).toHaveLength(2);
+      expect(alerts(rowB)).toHaveLength(0);
+      expect(buttons(plain, "Reject").every((candidate) => !candidate.disabled)).toBe(true);
+
+      // Sending the first row's decision again takes its error away.
+      await act(async () => buttons(rowA, "Approve")[0].click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(3));
+      expect(alerts(rowA)).toHaveLength(0);
+      expect(alerts(plain)).toHaveLength(1);
     } finally {
       act(() => root.unmount());
       queryClient.clear();

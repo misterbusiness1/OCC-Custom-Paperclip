@@ -139,6 +139,25 @@ describe("in-tab GET coalescing", () => {
     expect(__inflightGetCount()).toBe(0);
   });
 
+  it("marks a POST to outlive the page only when asked to", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ok: true }));
+
+    await api.post("/approvals/a1/approve", { decisionNote: "ok" }, { keepalive: true });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/approvals/a1/approve",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ decisionNote: "ok" }),
+        credentials: "include",
+        keepalive: true,
+      }),
+    );
+    expect((fetchMock.mock.calls[0][1].headers as Headers).get("Content-Type")).toBe("application/json");
+
+    await api.post("/approvals/a1/reject", {});
+    expect("keepalive" in fetchMock.mock.calls[1][1]).toBe(false);
+  });
+
   it("never coalesces mutations", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ ok: true }));
     await Promise.all([api.post("/mutate", { a: 1 }), api.post("/mutate", { a: 1 })]);

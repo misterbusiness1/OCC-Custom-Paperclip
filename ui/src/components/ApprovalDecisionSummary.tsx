@@ -1,18 +1,21 @@
-import { useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type Ref } from "react";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 import { cn, formatCents } from "@/lib/utils";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import {
   approvalDecisionBrief,
+  approvalDraftPreview,
   approvalEmailDraft,
-  approvalExcerpt,
+  type ApprovalEmailDraft,
   approvalHireFacts,
   approvalOriginalRequest,
-  approvalPlainText,
+  approvalReadableText,
   approvalStrategyBrief,
   approvalStrategyPlan,
+  approvalSummaryText,
   approvalTextPreview,
   OriginalRequestBlock,
+  stripLeadingListMarker,
 } from "./ApprovalPayload";
 
 /**
@@ -25,58 +28,57 @@ const labelClass =
   "text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground";
 const moreClass =
   "mt-1 inline-flex min-h-6 items-center text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground";
+const emptyClass = "mt-1 text-sm leading-5 text-muted-foreground";
 const LIST_PREVIEW_COUNT = 2;
-const DRAFT_PREVIEW_LENGTH = 320;
 const SKILL_PREVIEW_COUNT = 6;
+// What a compact surface shows of each field before "Show more".
+const RECOMMENDATION_PREVIEW = { maxLines: 3, maxLength: 180 };
+const WHY_PREVIEW = { maxLines: 3, maxLength: 220 };
+const NEXT_ACTION_PREVIEW = { maxLines: 3, maxLength: 220 };
+const SUMMARY_PREVIEW = { maxLines: 3, maxLength: 220 };
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
-/** Shows the clipped excerpt first; the full text stays one click away on the card. */
-function ExpandableText({ value, limit }: { value: string; limit: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const excerpt = approvalExcerpt(value, limit);
-  const full = approvalPlainText(value);
-  if (!excerpt || !full) return null;
-  const canExpand = full.replace(/\s+/g, " ").length > limit;
-
-  return (
-    <>
-      <p className="mt-1 whitespace-pre-line break-words text-sm leading-5 text-foreground">
-        {expanded ? full : excerpt}
-      </p>
-      {canExpand && (
-        <button
-          type="button"
-          className={moreClass}
-          aria-expanded={expanded}
-          onClick={() => setExpanded((current) => !current)}
-        >
-          {expanded ? "Show less" : "Show more"}
-        </button>
-      )}
-    </>
-  );
+/**
+ * One pro or risk as readable plain text. The item sits beside a bullet, so a
+ * leading list marker of its own is dropped. An item that is itself a list
+ * (a later line carries a marker at the same level) keeps every marker:
+ * dropping only the first would leave a list that starts at "2.".
+ */
+function decisionPointText(item: string): string | null {
+  const text = approvalReadableText(item);
+  if (!text) return null;
+  const isList = text
+    .split("\n")
+    .slice(1)
+    .some((line) => stripLeadingListMarker(line) !== line);
+  return isList ? text : stripLeadingListMarker(text).trim() || null;
 }
 
-function DecisionPoints({ label, items }: { label: string; items: string[] }) {
+/** Pros or risks. `full` lists every item; otherwise the first two, with the rest one click away. */
+function DecisionPoints({ label, items, full }: { label: string; items: string[]; full: boolean }) {
   const [expanded, setExpanded] = useState(false);
-  const points = items.flatMap((item) => {
-    const text = approvalPlainText(item);
-    return text ? [text] : [];
-  });
-  const hidden = points.length - LIST_PREVIEW_COUNT;
-  const visible = expanded ? points : points.slice(0, LIST_PREVIEW_COUNT);
+  const points = useMemo(
+    () =>
+      items.flatMap((item) => {
+        const text = decisionPointText(item);
+        return text ? [text] : [];
+      }),
+    [items],
+  );
+  const hidden = full ? 0 : points.length - LIST_PREVIEW_COUNT;
+  const visible = full || expanded ? points : points.slice(0, LIST_PREVIEW_COUNT);
 
   return (
     <div className="min-w-0">
       <p className={labelClass}>{label}</p>
       {points.length === 0 ? (
-        <p className="mt-1 text-sm leading-5 text-muted-foreground">Not supplied.</p>
+        <p className={emptyClass}>Not supplied.</p>
       ) : (
         <ul className="mt-1 space-y-1 text-sm leading-5 text-foreground">
           {visible.map((point, index) => (
             <li key={`${index}-${point}`} className="flex items-start gap-2">
               <span aria-hidden className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
-              <span className="min-w-0 break-words">{point}</span>
+              <span className="min-w-0 whitespace-pre-wrap break-words">{point}</span>
             </li>
           ))}
         </ul>
@@ -95,20 +97,105 @@ function DecisionPoints({ label, items }: { label: string; items: string[] }) {
   );
 }
 
-export function ApprovalEmailDraftBlock({ payload }: { payload?: Record<string, unknown> | null }) {
+/**
+ * Lets the parent that also renders the decision buttons own whether a long
+ * draft is shown whole: Approve must not send a draft that is still cut.
+ */
+export type ApprovalDraftControl = {
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+  /** Receives the draft block, so the parent can move focus to it. */
+  ref?: Ref<HTMLDivElement>;
+};
+
+/** The outgoing draft a summary of this approval shows, if it shows one. */
+function summaryEmailDraft(type: string, payload?: Record<string, unknown> | null) {
+  return type === "request_board_approval" ? approvalEmailDraft(payload) : null;
+}
+
+/** Shown beside the decision buttons when Approve opened a cut draft instead of sending. */
+export const APPROVAL_DRAFT_UNREAD_MESSAGE = "Read the full reply, then approve.";
+/** What the Approve button says while a draft is cut: its first press opens the draft and sends nothing. */
+export const APPROVAL_DRAFT_UNREAD_APPROVE_LABEL = "Read full reply to approve";
+
+/**
+ * Keeps an outgoing email from being approved unread. A compact summary cuts a
+ * long draft; while it is cut, the first Approve opens it and moves focus to
+ * it instead of sending. Pass `draftControl` to the summary, and `approveGuard`
+ * and `approveLabel` to the decision buttons rendered beside it: the label tells
+ * the reader before the press that it will open the reply, not approve.
+ */
+export function useApprovalDraftGate(type: string, payload?: Record<string, unknown> | null) {
   const [expanded, setExpanded] = useState(false);
-  const draft = approvalEmailDraft(payload);
-  if (!draft) return null;
-  const canExpand = draft.body.length > DRAFT_PREVIEW_LENGTH;
+  const ref = useRef<HTMLDivElement>(null);
+  const revealRequested = useRef(false);
+  const draft = summaryEmailDraft(type, payload);
+  const isCut = draft !== null && approvalDraftPreview(draft.body) !== null;
+
+  // Runs once the whole draft is on the page, so the scroll sees its real height.
+  useEffect(() => {
+    if (!revealRequested.current) return;
+    revealRequested.current = false;
+    const block = ref.current;
+    if (!block) return;
+    block.focus({ preventScroll: true });
+    block.scrollIntoView?.({ block: "nearest" });
+  });
+
+  /** The message to show when Approve is held back, or null when it may send. */
+  const approveGuard = (): string | null => {
+    if (!isCut || expanded) return null;
+    revealRequested.current = true;
+    setExpanded(true);
+    return APPROVAL_DRAFT_UNREAD_MESSAGE;
+  };
+
+  const draftControl: ApprovalDraftControl = { expanded, onExpandedChange: setExpanded, ref };
+  // Undefined once the whole draft is on the page: the button then reads "Approve" again.
+  const approveLabel = isCut && !expanded ? APPROVAL_DRAFT_UNREAD_APPROVE_LABEL : undefined;
+  return { draftControl, approveGuard, approveLabel };
+}
+
+function ApprovalEmailDraftBlock({
+  draft,
+  full,
+  control,
+}: {
+  draft: ApprovalEmailDraft;
+  /** Show the whole draft, with nothing to expand. */
+  full: boolean;
+  /** Without it the block keeps its own expanded state. */
+  control?: ApprovalDraftControl;
+}) {
+  const [ownExpanded, setOwnExpanded] = useState(false);
+  const labelId = useId();
+  const expanded = control ? control.expanded : ownExpanded;
+  const setExpanded = control ? control.onExpandedChange : setOwnExpanded;
+  // A long draft is cut on compact surfaces only, and always behind a button that states its size.
+  const preview = full ? null : approvalDraftPreview(draft.body);
+  const canExpand = preview !== null;
+  const hiddenLength = preview === null ? 0 : draft.body.length - preview.length;
+  // "Via" is the payload's free-text channel; "From" appears only when the request names a sender.
   const envelope = [
+    ["Via", draft.via],
     ["From", draft.from],
     ["To", draft.to],
     ["Subject", draft.subject],
   ].filter((row): row is [string, string] => Boolean(row[1]));
 
   return (
-    <div className="min-w-0" data-approval-draft>
-      <p className={labelClass}>Draft reply</p>
+    <div
+      ref={control?.ref}
+      className="min-w-0 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      data-approval-draft
+      role="group"
+      aria-labelledby={labelId}
+      // Focusable so a held-back Approve can put the reader on the draft it opened.
+      tabIndex={canExpand ? -1 : undefined}
+    >
+      <p id={labelId} className={labelClass}>
+        Draft reply
+      </p>
       <div className="mt-2 overflow-hidden rounded-lg border border-border/60">
         {envelope.length > 0 && (
           <dl className="space-y-1 border-b border-border/60 bg-muted/30 px-3.5 py-2.5 text-sm">
@@ -120,51 +207,58 @@ export function ApprovalEmailDraftBlock({ payload }: { payload?: Record<string, 
             ))}
           </dl>
         )}
-        {/* The clamp sits inside the padding so a cut-off line cannot show through it. */}
         <div className="px-3.5 py-3">
-          <div
-            className={cn(
-              "whitespace-pre-wrap break-words text-sm leading-6 text-foreground",
-              canExpand && !expanded && "line-clamp-5",
-            )}
-          >
-            {draft.body}
+          <div className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground" data-approval-draft-body>
+            {canExpand && !expanded ? preview : draft.body}
           </div>
         </div>
       </div>
+      {/* Outside the body box: nothing the interface writes may pass for a part of the email. */}
+      {canExpand && !expanded && (
+        <p className="mt-2 text-xs leading-5 text-muted-foreground" data-approval-draft-continues>
+          The reply continues: {hiddenLength.toLocaleString()} more {hiddenLength === 1 ? "character" : "characters"}.
+        </p>
+      )}
       {canExpand && (
         <button
           type="button"
           className={moreClass}
           aria-expanded={expanded}
-          onClick={() => setExpanded((current) => !current)}
+          onClick={() => setExpanded(!expanded)}
         >
-          {expanded ? "Show less" : "Show full reply"}
+          {expanded ? "Show less" : `Show full reply (${draft.body.length.toLocaleString()} characters)`}
         </button>
       )}
     </div>
   );
 }
 
-/** Agent-written text with its line breaks, shown by its first lines until expanded. */
+/**
+ * Agent-written text with its line breaks, shown by its first lines until
+ * expanded. Text that is already readable plain text goes in; `full` shows all
+ * of it with nothing to expand.
+ */
 function ReadableText({
   text,
   maxLines,
   maxLength,
   full = false,
-  moreLabel,
+  moreLabel = "Show more",
 }: {
   text: string;
   maxLines: number;
   maxLength: number;
   full?: boolean;
-  moreLabel: string;
+  moreLabel?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { preview, truncated } = useMemo(
-    () => approvalTextPreview(text, maxLines, maxLength),
-    [text, maxLines, maxLength],
-  );
+  const { preview, truncated } = useMemo(() => {
+    // A control that reveals a single extra line takes the room of that line: show the line.
+    const cut = approvalTextPreview(text, maxLines, maxLength);
+    return cut.truncated && approvalTextPreview(text, maxLines + 1, maxLength).truncated
+      ? cut
+      : { preview: text, truncated: false };
+  }, [text, maxLines, maxLength]);
   const collapsible = truncated && !full;
 
   return (
@@ -183,6 +277,41 @@ function ReadableText({
         </button>
       )}
     </>
+  );
+}
+
+/**
+ * One labelled field of the decision brief (recommendation, why, if approved),
+ * as readable plain text. `emptyText` is shown where the request must state the
+ * field and does not; without it an empty field is left out.
+ */
+function DecisionField({
+  label,
+  value,
+  maxLines,
+  maxLength,
+  full,
+  emptyText,
+}: {
+  label: string;
+  value: string | null;
+  maxLines: number;
+  maxLength: number;
+  full: boolean;
+  emptyText?: string;
+}) {
+  const text = useMemo(() => approvalReadableText(value), [value]);
+  if (!text && !emptyText) return null;
+
+  return (
+    <div className="min-w-0">
+      <p className={labelClass}>{label}</p>
+      {text ? (
+        <ReadableText text={text} maxLines={maxLines} maxLength={maxLength} full={full} />
+      ) : (
+        <p className={emptyClass}>{emptyText}</p>
+      )}
+    </div>
   );
 }
 
@@ -208,7 +337,7 @@ function HireAgentSummary({
   className?: string;
 }) {
   const [showAllSkills, setShowAllSkills] = useState(false);
-  const hire = approvalHireFacts(payload);
+  const hire = useMemo(() => approvalHireFacts(payload), [payload]);
   const managerName = hire.reportsToAgentId ? resolveAgentName?.(hire.reportsToAgentId) : undefined;
   // A manager the loaded agent list does not hold is said so; a raw id is never shown.
   const manager = hire.reportsToAgentId
@@ -233,8 +362,8 @@ function HireAgentSummary({
     ["Runs on", runsOn],
     ["Monthly budget", budget],
   ].filter((fact): fact is [string, string] => Boolean(fact[1]));
-  const hiddenSkills = hire.skills.length - SKILL_PREVIEW_COUNT;
-  const skills = showAllSkills ? hire.skills : hire.skills.slice(0, SKILL_PREVIEW_COUNT);
+  const hiddenSkills = full ? 0 : hire.skills.length - SKILL_PREVIEW_COUNT;
+  const skills = full || showAllSkills ? hire.skills : hire.skills.slice(0, SKILL_PREVIEW_COUNT);
   const agentName = hire.name ?? "The agent";
   // The server acts on whatever agent the request names. If that is not the agent
   // being hired, the board must see it before it decides.
@@ -254,9 +383,9 @@ function HireAgentSummary({
       <div className="min-w-0">
         <p className={labelClass}>What it will do</p>
         {hire.capabilities ? (
-          <ReadableText text={hire.capabilities} maxLines={4} maxLength={220} full={full} moreLabel="Show more" />
+          <ReadableText text={hire.capabilities} maxLines={4} maxLength={220} full={full} />
         ) : (
-          <p className="mt-1 text-sm leading-5 text-muted-foreground">The request does not describe the agent's work.</p>
+          <p className={emptyClass}>The request does not describe the agent's work.</p>
         )}
       </div>
       {hire.skills.length > 0 && (
@@ -326,49 +455,37 @@ function StrategySummary({
   className?: string;
 }) {
   const plan = useMemo(() => approvalStrategyPlan(payload), [payload]);
-  const brief = approvalStrategyBrief(payload);
+  const brief = useMemo(() => approvalStrategyBrief(payload), [payload]);
   // With no plan field, the request's own rationale is the closest thing to one.
-  const planText = plan.kind === "text" ? plan.text : approvalPlainText(brief.reasoning);
+  const planText = useMemo(
+    () => (plan.kind === "text" ? plan.text : approvalReadableText(brief.reasoning)),
+    [plan, brief.reasoning],
+  );
   const why = plan.kind === "text" ? brief.reasoning : null;
 
   return (
     <div className={cn("space-y-3", className)}>
-      {brief.recommendation && (
-        <div className="min-w-0">
-          <p className={labelClass}>Recommendation</p>
-          <ExpandableText value={brief.recommendation} limit={180} />
-        </div>
-      )}
+      <DecisionField label="Recommendation" value={brief.recommendation} {...RECOMMENDATION_PREVIEW} full={full} />
       <div className="min-w-0" data-approval-plan>
         <p className={labelClass}>Plan</p>
         {planText ? (
           <ReadableText text={planText} maxLines={6} maxLength={480} full={full} moreLabel="Show full plan" />
         ) : (
-          <p className="mt-1 text-sm leading-5 text-muted-foreground">
+          <p className={emptyClass}>
             {plan.kind === "unreadable"
               ? "The plan is not plain text. Open the full request to read it."
               : "The request contains no plan text."}
           </p>
         )}
       </div>
-      {why && (
-        <div className="min-w-0">
-          <p className={labelClass}>Why</p>
-          <ExpandableText value={why} limit={220} />
-        </div>
-      )}
+      <DecisionField label="Why" value={why} {...WHY_PREVIEW} full={full} />
       {(brief.pros.length > 0 || brief.cons.length > 0) && (
         <div className="grid gap-3 sm:grid-cols-2">
-          {brief.pros.length > 0 && <DecisionPoints label="Pros" items={brief.pros} />}
-          {brief.cons.length > 0 && <DecisionPoints label="Risks" items={brief.cons} />}
+          {brief.pros.length > 0 && <DecisionPoints label="Pros" items={brief.pros} full={full} />}
+          {brief.cons.length > 0 && <DecisionPoints label="Risks" items={brief.cons} full={full} />}
         </div>
       )}
-      {brief.nextAction && (
-        <div className="min-w-0">
-          <p className={labelClass}>If approved</p>
-          <ExpandableText value={brief.nextAction} limit={220} />
-        </div>
-      )}
+      <DecisionField label="If approved" value={brief.nextAction} {...NEXT_ACTION_PREVIEW} full={full} />
     </div>
   );
 }
@@ -380,17 +497,37 @@ export function ApprovalDecisionSummary({
   resolveAgentName,
   full = false,
   status,
+  draftControl,
+  requestedByAgentId,
 }: {
   type: string;
   payload?: Record<string, unknown> | null;
   className?: string;
   /** The approval status. What a decision will do is stated only while a decision is still open. */
   status?: string;
-  /** Lets a hire request name the manager the agent reports to. */
+  /** Lets a hire request name the manager the agent reports to, and a Board approval the agent that wrote its original request. */
   resolveAgentName?: ApprovalAgentNameResolver;
   /** Show long text in full: for pages with room for it, such as the approval detail page. */
   full?: boolean;
+  /** Hands the draft's expanded state to the parent (see {@link useApprovalDraftGate}); without it the summary keeps its own. */
+  draftControl?: ApprovalDraftControl;
+  /**
+   * The agent that asked for the approval, if one did. A decision wakes that agent and nobody
+   * else, so what approval sets in motion is stated only when there is one.
+   */
+  requestedByAgentId?: string | null;
 }) {
+  // The text of a request is converted once per payload, not on every render: these rows are
+  // drawn again on each hover and key press of the lists that hold them. The hooks stand above
+  // the branches below so that every kind of request runs the same ones.
+  const brief = useMemo(() => approvalDecisionBrief(payload), [payload]);
+  // Agents are told to send a summary and may put the cost in it. It leads, unless it is already on the surface.
+  const summary = useMemo(
+    () => (type === "request_board_approval" ? approvalSummaryText(payload, type) : null),
+    [payload, type],
+  );
+  const hasOwnNextAction = useMemo(() => Boolean(approvalReadableText(brief.nextAction)), [brief.nextAction]);
+
   if (type === "hire_agent") {
     return (
       <HireAgentSummary
@@ -406,57 +543,82 @@ export function ApprovalDecisionSummary({
     return <StrategySummary payload={payload} full={full} className={className} />;
   }
 
-  const brief = approvalDecisionBrief(payload);
   const isBoardApproval = type === "request_board_approval";
-  const hasDraft = isBoardApproval && approvalEmailDraft(payload) !== null;
+  const draft = summaryEmailDraft(type, payload);
   const hasBrief =
     isBoardApproval ||
-    Boolean(brief.recommendation || brief.reasoning || brief.pros.length > 0 || brief.cons.length > 0);
-  if (!hasBrief) return null;
+    Boolean(
+      brief.recommendation || brief.reasoning || brief.pros.length > 0 || brief.cons.length > 0 || brief.nextAction,
+    );
+  if (!hasBrief) {
+    // A page that shows the summary in full says so when there is nothing to show.
+    return full ? (
+      <p className={cn("text-sm leading-5 text-muted-foreground", className)}>
+        This request carries no recommendation, rationale, pros or risks.
+      </p>
+    ) : null;
+  }
 
-  // Requests filed before decision fields were required carry no source, pros or risks.
-  // One line says so (the header line already notes the missing source); empty
-  // fields would only bury the recommendation.
-  const isBareLegacyRequest =
+  // A request with no source, no pros and no risks gets one line that says so (the header
+  // line already notes the missing source); empty fields would only bury the recommendation.
+  // The line states what is missing and nothing about why: the interface cannot know the
+  // request's age.
+  const hasNoSourceOrPoints =
     isBoardApproval &&
     !approvalOriginalRequest(payload) &&
     brief.pros.length === 0 &&
     brief.cons.length === 0;
-  const showPoints = !isBareLegacyRequest && (isBoardApproval || brief.pros.length > 0 || brief.cons.length > 0);
+  const showPoints = !hasNoSourceOrPoints && (isBoardApproval || brief.pros.length > 0 || brief.cons.length > 0);
+  // In full, a Board approval states the fields its request leaves empty instead of dropping them.
+  const emptyText = full && isBoardApproval ? "Not supplied." : undefined;
+  // The agent's own "If approved" line comes first; without one, the summary says what the server does.
+  const replyRecipient = draft?.to?.replace(/\s+/g, " ") ?? null;
+  const showReplyEffect =
+    Boolean(replyRecipient) &&
+    status === "pending" &&
+    Boolean(requestedByAgentId) &&
+    !hasOwnNextAction;
 
   return (
     <div className={cn("space-y-3", className)}>
-      {brief.recommendation && (
-        <div className="min-w-0">
-          <p className={labelClass}>Recommendation</p>
-          <ExpandableText value={brief.recommendation} limit={180} />
-        </div>
+      <DecisionField label="Summary" value={summary} {...SUMMARY_PREVIEW} full={full} />
+      <DecisionField
+        label="Recommendation"
+        value={brief.recommendation}
+        {...RECOMMENDATION_PREVIEW}
+        full={full}
+        emptyText={emptyText}
+      />
+      {/* Compact: an announced preview, and a missing source is noted once in the header line. In full: all of it. */}
+      {isBoardApproval && (
+        <OriginalRequestBlock payload={payload} compact={!full} resolveAgentName={resolveAgentName} />
       )}
-      {isBoardApproval && <OriginalRequestBlock payload={payload} compact />}
-      {brief.reasoning && (
-        <div className="min-w-0">
-          <p className={labelClass}>Why</p>
-          <ExpandableText value={brief.reasoning} limit={220} />
-        </div>
-      )}
+      <DecisionField label="Why" value={brief.reasoning} {...WHY_PREVIEW} full={full} emptyText={emptyText} />
       {showPoints && (
         <div className="grid gap-3 sm:grid-cols-2">
-          {(brief.pros.length > 0 || isBoardApproval) && <DecisionPoints label="Pros" items={brief.pros} />}
-          {(brief.cons.length > 0 || isBoardApproval) && <DecisionPoints label="Risks" items={brief.cons} />}
+          {(brief.pros.length > 0 || isBoardApproval) && (
+            <DecisionPoints label="Pros" items={brief.pros} full={full} />
+          )}
+          {(brief.cons.length > 0 || isBoardApproval) && (
+            <DecisionPoints label="Risks" items={brief.cons} full={full} />
+          )}
         </div>
       )}
-      {isBareLegacyRequest && (
-        <p className="text-sm leading-5 text-muted-foreground">
-          Older request: no pros or risks were recorded.
+      {hasNoSourceOrPoints && (
+        <p className="text-sm leading-5 text-muted-foreground">No pros or risks were recorded.</p>
+      )}
+      {draft && <ApprovalEmailDraftBlock draft={draft} full={full} control={draftControl} />}
+      {/*
+        Written by the interface, from what the server does: a decision wakes the requesting agent.
+        Paperclip sends no email itself, so the line says who is told, not that the reply is sent.
+      */}
+      {showReplyEffect && (
+        <p className="break-words text-sm leading-5 text-foreground" data-approval-reply-effect>
+          If approved, the requester is told to send this reply to{" "}
+          <span className="font-medium">{replyRecipient}</span>.
         </p>
       )}
-      {hasDraft && <ApprovalEmailDraftBlock payload={payload} />}
-      {brief.nextAction && (
-        <div className="min-w-0">
-          <p className={labelClass}>If approved</p>
-          <ExpandableText value={brief.nextAction} limit={220} />
-        </div>
-      )}
+      <DecisionField label="If approved" value={brief.nextAction} {...NEXT_ACTION_PREVIEW} full={full} />
     </div>
   );
 }

@@ -22,6 +22,35 @@ export function getCompanyPathSegments(pathname: string, companyPrefix: string |
   return segments.slice(1);
 }
 
+/**
+ * True on the Approvals pages: the queue (To decide), All decisions, and one
+ * approval's own page. Read from the first path segment after the company
+ * prefix, or the first segment of a path that carries no prefix.
+ */
+export function isApprovalsRoute(pathname: string, companyPrefix: string | undefined): boolean {
+  const companySegments = getCompanyPathSegments(pathname, companyPrefix);
+  const root = companySegments.length > 0 ? companySegments[0] : pathname.split("/").filter(Boolean)[0];
+  return root?.toLowerCase() === "approvals";
+}
+
+/** True on the bare Approvals address, `/approvals` with or without a company prefix, which shows the queue. */
+export function isBareApprovalsPath(pathname: string): boolean {
+  return /\/approvals\/?$/i.test(pathname);
+}
+
+/**
+ * Where the sidebar's Approvals item points. The short address makes it the
+ * current item (highlight and `aria-current`) on To decide, on All decisions
+ * and on an approval's own page, because the router marks a link current on
+ * every page under its target. On To decide itself the item points at that
+ * page's own address, where it is still current: pressing it there then changes
+ * nothing, adds no history entry and does not scroll the queue under a reader
+ * who has an approval held or a note half typed.
+ */
+export function approvalsNavTarget(pathname: string): string {
+  return pathname.endsWith("/approvals/pending") ? "/approvals/pending" : "/approvals";
+}
+
 export function classifyShellRoute(
   pathname: string,
   companyPrefix: string | undefined,

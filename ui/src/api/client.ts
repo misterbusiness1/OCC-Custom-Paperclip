@@ -23,6 +23,9 @@ export interface RequestOptions {
   /** The `fetch` cache mode. Use `"no-store"` for a response that must never
    *  come from the browser's HTTP cache. */
   cache?: RequestCache;
+  /** Lets a POST outlive the page (tab closed, navigation), for a mutation that
+   *  must not be lost. The browser caps such bodies at 64 KiB. */
+  keepalive?: boolean;
 }
 
 function abortError(): DOMException {
@@ -176,6 +179,7 @@ export const api = {
       body: JSON.stringify(body),
       signal: options?.signal,
       ...(options?.headers ? { headers: options.headers } : {}),
+      ...(options?.keepalive ? { keepalive: true } : {}),
     }),
   postForm: <T>(path: string, body: FormData, options?: RequestOptions) =>
     request<T>(path, {

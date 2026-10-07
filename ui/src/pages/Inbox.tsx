@@ -94,8 +94,24 @@ import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
 import { approvalLabel, approvalMissingSourceNote, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
-import { ApprovalDecisionSummary, type ApprovalAgentNameResolver } from "../components/ApprovalDecisionSummary";
-import { ApprovalDecisionActions, useSettlingApprovals } from "../components/ApprovalDecisionActions";
+import {
+  ApprovalDecisionSummary,
+  useApprovalDraftGate,
+  type ApprovalAgentNameResolver,
+} from "../components/ApprovalDecisionSummary";
+import {
+  ApprovalDecisionActions,
+  approvalDecisionErrorText,
+  useApprovalDecisionFeedback,
+  useSettlingApprovals,
+  type ApprovalPendingAction,
+} from "../components/ApprovalDecisionActions";
+import {
+  ApprovalRevisedNotice,
+  ApprovalWaitingOnRequester,
+  composeApproveGuards,
+  useApprovalRevisionGuard,
+} from "../components/ApprovalRevision";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import {
@@ -128,7 +144,6 @@ import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
-  ACTIONABLE_APPROVAL_STATUSES,
   DEFAULT_INBOX_ISSUE_COLUMNS,
   buildGroupedInboxSections,
   buildInboxIssueGroupCreateDefaults,
@@ -508,6 +523,9 @@ function ApprovalInboxRow({
   onRequestRevision,
   resolveAgentName,
   isPending,
+  pendingAction = null,
+  error = null,
+  onDismissError,
   unreadState = null,
   onMarkRead,
   onArchive,
@@ -521,7 +539,12 @@ function ApprovalInboxRow({
   onReject: (note?: string) => void;
   onRequestRevision?: (note: string) => void;
   resolveAgentName?: ApprovalAgentNameResolver;
+  /** True only while this row's own decision is on its way or settling. */
   isPending: boolean;
+  pendingAction?: ApprovalPendingAction;
+  /** What went wrong with the last decision sent from this row. */
+  error?: string | null;
+  onDismissError?: () => void;
   unreadState?: NonIssueUnreadState;
   onMarkRead?: () => void;
   onArchive?: () => void;
@@ -540,9 +563,21 @@ function ApprovalInboxRow({
     approval.type,
     approval.payload as Record<string, unknown> | null,
   );
+  // Sent back for changes: the requester has it now, so the row offers no one-click decision
+  // on the version the board asked to change. The detail page keeps Approve and Reject.
+  const isSentBack = approval.status === "revision_requested";
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
-    ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
+    approval.status === "pending";
+  // A long outgoing draft is cut in the row: the first Approve opens it instead of sending.
+  const draftGate = useApprovalDraftGate(approval.type, approval.payload);
+  // A request resubmitted while this row is open is not approved until the board confirms it read the revision.
+  const revision = useApprovalRevisionGuard(approval);
+  const approveGuard = composeApproveGuards(revision.approveGuard, draftGate.approveGuard);
+  // The plain buttons send without a note; they are held back by the same guard.
+  const approvePlain = () => {
+    if (approveGuard() === null) onApprove();
+  };
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
 
@@ -609,10 +644,10 @@ function ApprovalInboxRow({
                 <Button
                   size="sm"
                   className="h-8 min-w-(--sz-64px) justify-center bg-green-700 px-3 text-white hover:bg-green-600"
-                  onClick={() => onApprove()}
+                  onClick={approvePlain}
                   disabled={isPending}
                 >
-                  Approve
+                  {pendingAction === "approve" ? "Approving..." : "Approve"}
                 </Button>
                 <Button
                   variant="destructive"
@@ -621,21 +656,27 @@ function ApprovalInboxRow({
                   onClick={() => onReject()}
                   disabled={isPending}
                 >
-                  Reject
+                  {pendingAction === "reject" ? "Rejecting..." : "Reject"}
                 </Button>
               </>
             ) : null}
           </div>
         ) : null}
       </div>
+      <ApprovalRevisedNotice guard={revision} className="mt-3" />
       {showDecisionSummary && (
         <ApprovalDecisionSummary
           type={approval.type}
           payload={approval.payload}
           status={approval.status}
+          requestedByAgentId={approval.requestedByAgentId}
           resolveAgentName={resolveAgentName}
+          draftControl={draftGate.draftControl}
           className="mt-3"
         />
+      )}
+      {isSentBack && (
+        <ApprovalWaitingOnRequester approval={approval} requesterName={requesterName} className="mt-3" />
       )}
       {showResolutionButtons && showDecisionSummary ? (
         <ApprovalDecisionActions
@@ -646,6 +687,13 @@ function ApprovalInboxRow({
           onReject={onReject}
           onRequestRevision={approval.requestedByAgentId ? onRequestRevision : undefined}
           isPending={isPending}
+          pendingAction={pendingAction}
+          error={error}
+          onDismissError={onDismissError}
+          approveGuard={approveGuard}
+          approveHoldKey={revision.reviewCount}
+          // A revision to confirm comes first: the button says "Read full reply" only when the press will open it.
+          approveLabel={revision.revised ? undefined : draftGate.approveLabel}
           buttonClassName="h-8 min-w-(--sz-64px) justify-center px-3"
           approveClassName="bg-green-700 text-white hover:bg-green-600"
         />
@@ -654,10 +702,10 @@ function ApprovalInboxRow({
           <Button
             size="sm"
             className="h-8 min-w-(--sz-64px) justify-center bg-green-700 px-3 text-white hover:bg-green-600"
-            onClick={() => onApprove()}
+            onClick={approvePlain}
             disabled={isPending}
           >
-            Approve
+            {pendingAction === "approve" ? "Approving..." : "Approve"}
           </Button>
           <Button
             variant="destructive"
@@ -666,9 +714,15 @@ function ApprovalInboxRow({
             onClick={() => onReject()}
             disabled={isPending}
           >
-            Reject
+            {pendingAction === "reject" ? "Rejecting..." : "Reject"}
           </Button>
         </div>
+      ) : null}
+      {/* The shared controls above show their own error; every other row shows it here, under its buttons. */}
+      {error && !(showResolutionButtons && showDecisionSummary) ? (
+        <p role="alert" className="mt-2 break-words text-sm font-medium leading-5 text-destructive">
+          {error}
+        </p>
       ) : null}
     </div>
   );
@@ -1774,6 +1828,18 @@ function StreamlinedInbox() {
   }, []);
 
   const { markDecided: markApprovalDecided, isSettling: isApprovalSettling } = useSettlingApprovals();
+  // Kept per approval: a decision on one row neither locks the other rows nor reports its error away from its row.
+  const approvalDecisions = useApprovalDecisionFeedback();
+  const { settle: settleApprovalDecision, hasOthersUnsettled: hasOtherApprovalDecisionUnsettled } = approvalDecisions;
+  // The approval rows on screen now (this tab, this search), for a decision that lands later. A
+  // failed row can leave the screen with its error: a tab that hides a request someone else
+  // decided, an archived row. The error is kept for when the row returns, but holds nobody back.
+  const shownApprovalIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const shown = new Set<string>();
+    for (const item of filteredWorkItems) if (item.kind === "approval") shown.add(item.approval.id);
+    shownApprovalIdsRef.current = shown;
+  }, [filteredWorkItems]);
 
   const approveMutation = useMutation({
     mutationFn: ({ id, note }: { id: string; note?: string }) =>
@@ -1781,37 +1847,49 @@ function StreamlinedInbox() {
     onSuccess: (approval, { id }) => {
       setActionError(null);
       markApprovalDecided(approval);
+      settleApprovalDecision(id);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
-      // Board requests are decided in place so the rest of the queue stays in view.
-      if (approval?.type !== "request_board_approval") navigate(`/approvals/${id}?resolved=approved`);
+      // Board requests are decided in place so the rest of the queue stays in view. A hire or a
+      // strategy opens its confirmation page, but not while another row's decision is still on its
+      // way or has failed and shows its error: leaving would unmount the Inbox, and that row's
+      // error (with the note typed for it) would be shown nowhere. It then settles in place like a
+      // Board request. A failed row that is no longer on screen shows no error, and does not count.
+      if (
+        approval?.type !== "request_board_approval" &&
+        !hasOtherApprovalDecisionUnsettled(id, (other) => shownApprovalIdsRef.current.has(other))
+      ) {
+        navigate(`/approvals/${id}?resolved=approved`);
+      }
     },
-    onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
+    onError: (err, { id }) => {
+      settleApprovalDecision(id, approvalDecisionErrorText("approve", err));
     },
   });
 
   const rejectMutation = useMutation({
     mutationFn: ({ id, note }: { id: string; note?: string }) =>
       note ? approvalsApi.reject(id, note) : approvalsApi.reject(id),
-    onSuccess: (approval) => {
+    onSuccess: (approval, { id }) => {
       setActionError(null);
       markApprovalDecided(approval);
+      settleApprovalDecision(id);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
-    onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
+    onError: (err, { id }) => {
+      settleApprovalDecision(id, approvalDecisionErrorText("reject", err));
     },
   });
 
   const requestRevisionMutation = useMutation({
     mutationFn: ({ id, note }: { id: string; note: string }) => approvalsApi.requestRevision(id, note),
-    onSuccess: (approval) => {
+    onSuccess: (approval, { id }) => {
       setActionError(null);
       markApprovalDecided(approval);
+      settleApprovalDecision(id);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
-    onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to request changes");
+    onError: (err, { id }) => {
+      settleApprovalDecision(id, approvalDecisionErrorText("revision", err));
     },
   });
 
@@ -2741,8 +2819,8 @@ function StreamlinedInbox() {
         ) : null}
       />
 
-      {approvalsError && <p className="text-sm text-destructive">{approvalsError.message}</p>}
-      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+      {approvalsError && <p role="alert" className="text-sm text-destructive">{approvalsError.message}</p>}
+      {actionError && <p role="alert" className="text-sm text-destructive">{actionError}</p>}
 
       {tab === "blocked" ? (
         <div className="-mx-2 sm:mx-0">
@@ -3125,15 +3203,27 @@ function StreamlinedInbox() {
                           selected={isSelected}
                           requesterName={agentName(item.approval.requestedByAgentId)}
                           resolveAgentName={(agentId) => (agents ? agentName(agentId) : undefined)}
-                          onApprove={(note) => approveMutation.mutate({ id: item.approval.id, note })}
-                          onReject={(note) => rejectMutation.mutate({ id: item.approval.id, note })}
-                          onRequestRevision={(note) => requestRevisionMutation.mutate({ id: item.approval.id, note })}
+                          onApprove={(note) => {
+                            if (approvalDecisions.start(item.approval.id, "approve")) {
+                              approveMutation.mutate({ id: item.approval.id, note });
+                            }
+                          }}
+                          onReject={(note) => {
+                            if (approvalDecisions.start(item.approval.id, "reject")) {
+                              rejectMutation.mutate({ id: item.approval.id, note });
+                            }
+                          }}
+                          onRequestRevision={(note) => {
+                            if (approvalDecisions.start(item.approval.id, "revision")) {
+                              requestRevisionMutation.mutate({ id: item.approval.id, note });
+                            }
+                          }}
                           isPending={
-                            approveMutation.isPending ||
-                            rejectMutation.isPending ||
-                            requestRevisionMutation.isPending ||
-                            isApprovalSettling(item.approval)
+                            Boolean(approvalDecisions.inFlight[item.approval.id]) || isApprovalSettling(item.approval)
                           }
+                          pendingAction={approvalDecisions.inFlight[item.approval.id] ?? null}
+                          error={approvalDecisions.errors[item.approval.id] ?? null}
+                          onDismissError={() => approvalDecisions.clearError(item.approval.id)}
                           unreadState={nonIssueUnreadState(approvalKey)}
                           onMarkRead={() => handleMarkNonIssueRead(approvalKey)}
                           onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(approvalKey) : undefined}

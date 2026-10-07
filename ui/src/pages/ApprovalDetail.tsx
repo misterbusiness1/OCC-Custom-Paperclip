@@ -9,15 +9,24 @@ import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
 import {
-  approvalDecisionBrief,
   approvalExcerpt,
   approvalSubject,
-  OriginalRequestBlock,
   ApprovalPayloadRenderer,
+  BudgetOverridePayload,
   typeLabel,
 } from "../components/ApprovalPayload";
-import { ApprovalDecisionActions, useSettlingApprovals } from "../components/ApprovalDecisionActions";
-import { ApprovalDecisionSummary, ApprovalEmailDraftBlock } from "../components/ApprovalDecisionSummary";
+import {
+  ApprovalDecisionActions,
+  approvalDecisionErrorText,
+  useSettlingApprovals,
+} from "../components/ApprovalDecisionActions";
+import { ApprovalDecisionSummary, type ApprovalAgentNameResolver } from "../components/ApprovalDecisionSummary";
+import { APPROVE_AFTER_ADVANCE_MS } from "../components/ApprovalHold";
+import {
+  APPROVAL_CHANGES_ASKED_LABEL,
+  ApprovalRevisedNotice,
+  useApprovalRevisionGuard,
+} from "../components/ApprovalRevision";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -27,6 +36,11 @@ import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { timeAgo } from "../lib/timeAgo";
 
+/** Shown where an agent's name is not known. An id, or a piece of one, is never shown as a name. */
+const UNKNOWN_AGENT_NAME = "An agent";
+/** About how much of the request's subject the last breadcrumb holds. */
+const BREADCRUMB_SUBJECT_LENGTH = 40;
+
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
@@ -35,7 +49,10 @@ export function ApprovalDetail() {
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [commentBody, setCommentBody] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  // Each failure is reported beside the control that caused it.
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [commentError, setCommentError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const { markDecided, isSettling } = useSettlingApprovals();
 
   const { data: approval, isLoading } = useQuery({
@@ -44,6 +61,8 @@ export function ApprovalDetail() {
     enabled: !!approvalId,
   });
   const resolvedCompanyId = approval?.companyId ?? selectedCompanyId;
+  // A request resubmitted while this page is open is not approved until the board confirms it read the revision.
+  const revision = useApprovalRevisionGuard(approval);
 
   const { data: comments } = useQuery({
     queryKey: queryKeys.approvals.comments(approvalId!),
@@ -74,12 +93,26 @@ export function ApprovalDetail() {
     return map;
   }, [agents]);
 
+  // The request's names, converted once per payload. The last crumb names the request by its
+  // subject, or by its kind when it has none; never by its id. The heading carries the whole
+  // title; the decision buttons name the request by a shorter form of it.
+  const approvalPayload = approval?.payload as Record<string, unknown> | undefined;
+  const approvalType = approval?.type;
+  const names = useMemo(() => {
+    if (!approvalType) return { breadcrumb: "Approval", title: "Approval", subject: "Approval" };
+    const kind = typeLabel[approvalType] ?? approvalType;
+    const subjectText = approvalSubject(approvalPayload, approvalType);
+    return {
+      breadcrumb: approvalExcerpt(subjectText, BREADCRUMB_SUBJECT_LENGTH) ?? kind,
+      title: approvalExcerpt(subjectText, Number.POSITIVE_INFINITY) ?? kind,
+      subject: approvalExcerpt(subjectText, 160) ?? kind,
+    };
+  }, [approvalPayload, approvalType]);
+  const breadcrumbLabel = names.breadcrumb;
+
   useEffect(() => {
-    setBreadcrumbs([
-      { label: "Approvals", href: "/approvals" },
-      { label: approval?.id?.slice(0, 8) ?? approvalId ?? "Approval" },
-    ]);
-  }, [setBreadcrumbs, approval, approvalId]);
+    setBreadcrumbs([{ label: "Approvals", href: "/approvals" }, { label: breadcrumbLabel }]);
+  }, [setBreadcrumbs, breadcrumbLabel]);
 
   const refresh = () => {
     if (!approvalId) return;
@@ -95,84 +128,90 @@ export function ApprovalDetail() {
     }
   };
 
+  const failDecision = (message: string) => {
+    setDecisionError(message);
+    // An error does not prove the decision was not stored: reload, so the page shows the status the server holds.
+    refresh();
+  };
+
   const approveMutation = useMutation({
     mutationFn: (note?: string) => (note ? approvalsApi.approve(approvalId!, note) : approvalsApi.approve(approvalId!)),
+    onMutate: () => setDecisionError(null),
     onSuccess: (decided) => {
-      setError(null);
       markDecided(decided);
       refresh();
       navigate(`/approvals/${approvalId}?resolved=approved`, { replace: true });
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Approve failed"),
+    onError: (err) => failDecision(approvalDecisionErrorText("approve", err)),
   });
 
   const rejectMutation = useMutation({
     mutationFn: (note?: string) => (note ? approvalsApi.reject(approvalId!, note) : approvalsApi.reject(approvalId!)),
+    onMutate: () => setDecisionError(null),
     onSuccess: (decided) => {
-      setError(null);
       markDecided(decided);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Reject failed"),
+    onError: (err) => failDecision(approvalDecisionErrorText("reject", err)),
   });
 
   const revisionMutation = useMutation({
     mutationFn: (note: string) => approvalsApi.requestRevision(approvalId!, note),
+    onMutate: () => setDecisionError(null),
     onSuccess: (decided) => {
-      setError(null);
       markDecided(decided);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Revision request failed"),
+    onError: (err) => failDecision(approvalDecisionErrorText("revision", err)),
   });
 
   const resubmitMutation = useMutation({
     mutationFn: () => approvalsApi.resubmit(approvalId!),
+    onMutate: () => setDecisionError(null),
     onSuccess: () => {
-      setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Resubmit failed"),
+    onError: (err) => failDecision(err instanceof Error ? err.message : "Resubmit failed"),
   });
 
   const addCommentMutation = useMutation({
     mutationFn: () => approvalsApi.addComment(approvalId!, commentBody.trim()),
+    onMutate: () => setCommentError(null),
     onSuccess: () => {
       setCommentBody("");
-      setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Comment failed"),
+    onError: (err) => setCommentError(err instanceof Error ? err.message : "Comment failed"),
   });
 
   const deleteAgentMutation = useMutation({
     mutationFn: (agentId: string) => agentsApi.remove(agentId),
+    onMutate: () => setDeleteError(null),
     onSuccess: () => {
-      setError(null);
       refresh();
       navigate("/approvals");
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Delete failed"),
+    onError: (err) => setDeleteError(err instanceof Error ? err.message : "Delete failed"),
   });
 
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (!approval) return <p className="text-sm text-muted-foreground">Approval not found.</p>;
 
   const payload = approval.payload as Record<string, unknown>;
+  // Null when the loaded agent list holds no such agent; undefined while the list is not known.
+  const resolveAgentName: ApprovalAgentNameResolver = (agentId) =>
+    agents ? (agentNameById.get(agentId) ?? null) : undefined;
+  /** An agent as the page names it: by its name, or as "An agent" (with a neutral avatar) when the name is not known. */
+  const agentIdentity = (agentId: string) => {
+    const name = agentNameById.get(agentId);
+    return name ? <Identity name={name} size="sm" /> : <Identity name={UNKNOWN_AGENT_NAME} initials="?" size="sm" />;
+  };
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
-  // Hire and strategy requests carry no recommendation, pros or risks: they get their own summary.
-  const hasTypeSummary = approval.type === "hire_agent" || approval.type === "approve_ceo_strategy";
+  const showDecisionActions = isActionable && !isBudgetApproval;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
-  const subject = approvalExcerpt(approvalSubject(payload, approval.type), 160) ?? kindLabel;
-  const brief = approvalDecisionBrief(payload);
-  // ponytail: Keep the board scan bounded; the complete request remains available below.
-  const recommendation = approvalExcerpt(brief.recommendation, 320);
-  const reasoning = approvalExcerpt(brief.reasoning, 420);
-  const pros = brief.pros.slice(0, 3).map((item) => approvalExcerpt(item, 220)).filter(Boolean);
-  const cons = brief.cons.slice(0, 3).map((item) => approvalExcerpt(item, 220)).filter(Boolean);
-  const nextAction = approvalExcerpt(brief.nextAction, 280);
+  const { title, subject } = names;
   const decisionPending =
     approveMutation.isPending ||
     rejectMutation.isPending ||
@@ -231,17 +270,14 @@ export function ApprovalDetail() {
             >
               {kindLabel}
             </Badge>
-            <h1 id="approval-title" className="text-xl font-semibold leading-7 text-foreground">
-              {subject}
+            <h1 id="approval-title" className="break-words text-xl font-semibold leading-7 text-foreground">
+              {title}
             </h1>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               {approval.requestedByAgentId && (
                 <span className="inline-flex items-center gap-1.5">
                   Requested by
-                  <Identity
-                    name={agentNameById.get(approval.requestedByAgentId) ?? approval.requestedByAgentId.slice(0, 8)}
-                    size="sm"
-                  />
+                  {agentIdentity(approval.requestedByAgentId)}
                 </span>
               )}
               <span>Created {timeAgo(approval.createdAt)}</span>
@@ -251,102 +287,52 @@ export function ApprovalDetail() {
         </header>
 
         <div className="space-y-5 border-t border-border/60 pt-4">
-          {hasTypeSummary ? (
+          <ApprovalRevisedNotice guard={revision} />
+          {/* This page has the room: everything the board decides on is shown in full, above the buttons. */}
+          {isBudgetApproval ? (
+            <div className="-mt-3">
+              <BudgetOverridePayload payload={payload} />
+            </div>
+          ) : (
             <ApprovalDecisionSummary
               type={approval.type}
               payload={payload}
               status={approval.status}
-              resolveAgentName={(agentId) => (agents ? (agentNameById.get(agentId) ?? null) : undefined)}
+              requestedByAgentId={approval.requestedByAgentId}
+              resolveAgentName={resolveAgentName}
               full
             />
-          ) : (
-            <>
-              <div className="rounded-lg bg-muted/40 px-3.5 py-3">
-                <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                  Recommendation
-                </p>
-                <p className="mt-1 text-sm leading-6 text-foreground">
-                  {recommendation ?? "No recommendation was supplied."}
-                </p>
-              </div>
-
-              {approval.type === "request_board_approval" && <OriginalRequestBlock payload={payload} />}
-
-              <div>
-                <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                  Why
-                </p>
-                <p className="mt-1 text-sm leading-6 text-foreground">
-                  {reasoning ?? "No rationale was supplied."}
-                </p>
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                    Pros
-                  </p>
-                  {pros.length > 0 ? (
-                    <ul className="mt-1.5 space-y-1.5 text-sm text-foreground">
-                      {pros.map((item) => (
-                        <li key={item} className="flex items-start gap-2 leading-5">
-                          <span aria-hidden className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
-                          <span>{item}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-1 text-sm leading-5 text-muted-foreground">No explicit benefit was supplied.</p>
-                  )}
-                </div>
-                <div>
-                  <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                    Risks
-                  </p>
-                  {cons.length > 0 ? (
-                    <ul className="mt-1.5 space-y-1.5 text-sm text-foreground">
-                      {cons.map((item) => (
-                        <li key={item} className="flex items-start gap-2 leading-5">
-                          <span aria-hidden className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
-                          <span>{item}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-1 text-sm leading-5 text-muted-foreground">No explicit tradeoff was supplied.</p>
-                  )}
-                </div>
-              </div>
-
-              {approval.type === "request_board_approval" && <ApprovalEmailDraftBlock payload={payload} />}
-
-              {nextAction && (
-                <div>
-                  <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                    If approved
-                  </p>
-                  <p className="mt-1 text-sm leading-6 text-foreground">{nextAction}</p>
-                </div>
-              )}
-            </>
           )}
 
           {approval.decisionNote && (
             <div className="border-t border-border/60 pt-4">
               <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                Decision note
+                {approval.status === "revision_requested" ? APPROVAL_CHANGES_ASKED_LABEL : "Decision note"}
               </p>
-              <p className="mt-1 text-sm leading-6 text-foreground">{approval.decisionNote}</p>
+              {/* The board's own words, as typed: a numbered list of changes keeps its lines. */}
+              <p
+                className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-foreground"
+                data-approval-decision-note
+              >
+                {approval.decisionNote}
+              </p>
             </div>
           )}
         </div>
 
-        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        {/* The decision buttons carry their own error; this line is for a request that no longer shows them. */}
+        {decisionError && !showDecisionActions && (
+          <p role="alert" className="break-words text-sm font-medium leading-5 text-destructive">
+            {decisionError}
+          </p>
+        )}
 
         {isActionable && (
           <div className="space-y-3 border-t border-border/60 pt-4">
-            {!isBudgetApproval && (
+            {showDecisionActions && (
               <ApprovalDecisionActions
+                key={approval.id}
+                approveArmDelayMs={APPROVE_AFTER_ADVANCE_MS}
                 subject={subject}
                 status={approval.status}
                 onApprove={(note) => approveMutation.mutate(note)}
@@ -364,6 +350,10 @@ export function ApprovalDetail() {
                         ? "revision"
                         : null
                 }
+                error={decisionError}
+                onDismissError={() => setDecisionError(null)}
+                approveGuard={revision.approveGuard}
+                approveHoldKey={revision.reviewCount}
                 trailing={
                   approval.status === "revision_requested" ? (
                     <Button
@@ -400,7 +390,12 @@ export function ApprovalDetail() {
       <details className="rounded-lg border border-border">
         <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-foreground">Full request</summary>
         <div className="border-t border-border/60 px-4 pb-4">
-          <ApprovalPayloadRenderer type={approval.type} payload={payload} hidePrimaryTitle />
+          <ApprovalPayloadRenderer
+            type={approval.type}
+            payload={payload}
+            hidePrimaryTitle
+            resolveAgentName={resolveAgentName}
+          />
           <div className="mt-4 space-y-1 text-xs text-muted-foreground">
             <p>Request ID: <span className="font-mono break-all">{approval.id}</span></p>
             <p>Created: {new Date(approval.createdAt).toLocaleString()}</p>
@@ -428,9 +423,10 @@ export function ApprovalDetail() {
                     to={`/issues/${issue.identifier ?? issue.id}`}
                     className="block rounded border border-border/70 px-2 py-1.5 text-xs hover:bg-accent/20"
                   >
-                    <span className="mr-2 font-mono text-muted-foreground">
-                      {issue.identifier ?? issue.id.slice(0, 8)}
-                    </span>
+                    {/* A task is named by its identifier and title; one without an identifier shows its title only. */}
+                    {issue.identifier && (
+                      <span className="mr-2 font-mono text-muted-foreground">{issue.identifier}</span>
+                    )}
                     <span>{issue.title}</span>
                   </Link>
                 ))}
@@ -452,6 +448,9 @@ export function ApprovalDetail() {
                 >
                   {deleteAgentMutation.isPending ? "Deleting…" : "Delete disapproved agent"}
                 </Button>
+                {deleteError && (
+                  <p role="alert" className="mt-2 break-words text-sm text-destructive">{deleteError}</p>
+                )}
               </div>
             )}
           </div>
@@ -469,10 +468,7 @@ export function ApprovalDetail() {
                 <div className="mb-1 flex items-center justify-between gap-3">
                   {comment.authorAgentId ? (
                     <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
-                      <Identity
-                        name={agentNameById.get(comment.authorAgentId) ?? comment.authorAgentId.slice(0, 8)}
-                        size="sm"
-                      />
+                      {agentIdentity(comment.authorAgentId)}
                     </Link>
                   ) : (
                     <Identity name="Board" size="sm" />
@@ -497,6 +493,9 @@ export function ApprovalDetail() {
               rows={3}
             />
           </div>
+          {commentError && (
+            <p role="alert" className="break-words text-sm text-destructive">{commentError}</p>
+          )}
           <div className="flex justify-end">
             <Button
               size="sm"

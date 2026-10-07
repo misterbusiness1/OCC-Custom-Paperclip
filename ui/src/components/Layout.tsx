@@ -56,6 +56,7 @@ import { pinDocumentScrollToZero } from "../lib/pin-document-scroll";
 import {
   classifyShellRoute,
   getCompanyPathSegments,
+  isApprovalsRoute,
   rememberContextualSidebarOrigin,
   type ContextualSidebarSurface,
 } from "../lib/shell-navigation";
@@ -794,7 +795,11 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       <NewAgentDialog />
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <ToastViewport />
-      <AnnouncementWell health={health} />
+      {/* The announcement card is fixed to the bottom-left corner, wider than the sidebar. On the
+          Approvals pages that is where the open request's Approve button comes to rest, and a click
+          meant for it landed on the card's link and left the page. The card is not drawn there; it
+          appears on the next page the board opens. */}
+      {!isApprovalsRoute(location.pathname, companyPrefix) && <AnnouncementWell health={health} />}
       </div>
     </GeneralSettingsProvider>
   );

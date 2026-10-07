@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { MarkdownBody } from "./MarkdownBody";
 import { formatCents } from "../lib/utils";
+import { approvalReadableText } from "../lib/approval-readable-text";
+
+export { approvalReadableText };
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
@@ -125,12 +128,63 @@ export function approvalOriginalRequest(
   };
 }
 
+/** Resolves an agent id to a display name; null or undefined when it is not known. */
+type OriginalRequestSenderResolver = (agentId: string) => string | null | undefined;
+
+/** The shape of an agent id. A user id is free text and, in practice, never this shape. */
+const SENDER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A local user id as the server writes them (`local-board`, `local-implicit-board`): one bare token, no address, no words. */
+const LOCAL_USER_ID_PATTERN = /^local-[a-z0-9_-]+$/i;
+
+/**
+ * Who sent the original request, as a name the board can read. An id is
+ * resolved to a name or left out, never printed.
+ *
+ * For a Paperclip comment the server stores the author's id: an agent id (a
+ * UUID) or a board user's id (any other text). An agent is named from the
+ * company's agents. A sender that is not a UUID is a board user and is shown as
+ * "Board", the name the discussion list gives every non-agent author. A UUID
+ * the agent list does not hold is left out: it may be an agent that has since
+ * been removed, and calling its comment the Board's own instruction on the page
+ * where the board decides whether to act on it would be wrong.
+ *
+ * A sender the requesting agent supplied for an external source is kept as
+ * written (`local-pickup@shop.example` is an address, not an id) unless it is
+ * a UUID or a bare local user id.
+ */
+export function approvalOriginalRequestSender(
+  source: ApprovalOriginalRequest["source"],
+  resolveAgentName?: OriginalRequestSenderResolver,
+): string | null {
+  const sender = source.sender?.trim();
+  if (!sender) return null;
+  const isAgentIdShaped = SENDER_ID_PATTERN.test(sender);
+  const isComment = source.kind === "paperclip_comment";
+  const isId = isComment || isAgentIdShaped || LOCAL_USER_ID_PATTERN.test(sender);
+  if (!isId) return sender;
+  const name = resolveAgentName?.(sender)?.trim();
+  if (name) return name;
+  if (sender === "local-board") return "Board";
+  return isComment && !isAgentIdShaped ? "Board" : null;
+}
+
+/** The time a request was sent, to the minute. Null when the value is not a date. */
+function originalRequestSentAt(sentAt: string | undefined): string | null {
+  if (!sentAt) return null;
+  const date = new Date(sentAt);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
 export function OriginalRequestBlock({
   payload,
   compact = false,
+  resolveAgentName,
 }: {
   payload?: Record<string, unknown> | null;
   compact?: boolean;
+  /** Names the agent that wrote a Paperclip comment. Without it, or for an unknown agent id, no sender is shown; a board user is shown as Board. */
+  resolveAgentName?: OriginalRequestSenderResolver;
 }) {
   const original = approvalOriginalRequest(payload);
   if (!original) {
@@ -152,43 +206,63 @@ export function OriginalRequestBlock({
     original.source.kind === "paperclip_comment" && original.source.issueId && original.source.commentId
       ? `/issues/${original.source.issueId}#comment-${original.source.commentId}`
       : null;
-  const provenance = [
-    original.source.kind === "external" ? original.source.channel : null,
-    original.source.sender,
-    original.source.sentAt ? new Date(original.source.sentAt).toLocaleString() : null,
-    // The comment link below replaces the raw comment reference.
-    commentHref ? null : original.source.reference,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const sentAt = originalRequestSentAt(original.source.sentAt);
+  // What the board needs to know about the text below, not how it is stored.
   const sourceNote =
     original.source.kind === "external" && original.source.snapshotOrigin === "requester"
-      ? "Requester-provided external source snapshot"
+      ? "Quoted by the requesting agent, not verified"
       : original.source.kind === "paperclip_comment" && original.source.snapshotOrigin === "server"
-        ? "Paperclip source snapshot"
+        ? "Saved from the original comment"
         : null;
+  const provenance: Array<{ key: string; node: ReactNode }> = [
+    { key: "channel", node: original.source.kind === "external" ? original.source.channel : null },
+    { key: "sender", node: approvalOriginalRequestSender(original.source, resolveAgentName) },
+    { key: "sentAt", node: sentAt ? <time dateTime={original.source.sentAt}>{sentAt}</time> : null },
+    // The comment link below replaces the raw comment reference.
+    { key: "reference", node: commentHref ? null : original.source.reference },
+    { key: "note", node: sourceNote },
+    {
+      key: "comment",
+      node: commentHref ? (
+        <Link to={commentHref} className="underline underline-offset-2 hover:text-foreground">
+          View comment
+        </Link>
+      ) : null,
+    },
+  ].filter((part) => Boolean(part.node));
 
   return (
     <div>
       <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
         Original request
       </p>
-      {(provenance || sourceNote || commentHref) && (
+      {provenance.length > 0 && (
         <p className="mt-1 break-words text-xs text-muted-foreground">
-          {[provenance, sourceNote].filter(Boolean).join(" · ")}
-          {commentHref && (
-            <>
-              {provenance || sourceNote ? " · " : ""}
-              <Link to={commentHref} className="underline underline-offset-2 hover:text-foreground">
-                View comment
-              </Link>
-            </>
-          )}
+          {provenance.map((part, index) => (
+            <Fragment key={part.key}>
+              {index > 0 ? " · " : ""}
+              {part.node}
+            </Fragment>
+          ))}
         </p>
       )}
-      <OriginalRequestText text={original.text} collapsible={compact && original.text.length > 480} />
+      <OriginalRequestText text={original.text} collapsible={compact && isLongOriginalRequest(original.text)} />
     </div>
   );
+}
+
+const ORIGINAL_REQUEST_PREVIEW_LENGTH = 480;
+const ORIGINAL_REQUEST_PREVIEW_LINES = 16;
+
+/** A request this long is previewed on compact surfaces, behind a button that states its size. */
+function isLongOriginalRequest(text: string) {
+  if (text.length > ORIGINAL_REQUEST_PREVIEW_LENGTH) return true;
+  let lines = 1;
+  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
+    lines += 1;
+    if (lines > ORIGINAL_REQUEST_PREVIEW_LINES) return true;
+  }
+  return false;
 }
 
 function OriginalRequestText({ text, collapsible }: { text: string; collapsible: boolean }) {
@@ -198,10 +272,11 @@ function OriginalRequestText({ text, collapsible }: { text: string; collapsible:
   return (
     <>
       <div className="mt-2 rounded-md bg-muted/40 p-3">
+        {/* Shown whole or behind the announced preview: never in a box that scrolls its end out of sight. */}
         <pre
           className={cn(
             "whitespace-pre-wrap wrap-anywhere text-sm leading-6 text-foreground",
-            clamped ? "line-clamp-4" : "max-h-96 overflow-y-auto",
+            clamped && "line-clamp-4",
           )}
         >
           {text}
@@ -271,40 +346,6 @@ export function approvalHireFacts(payload?: Record<string, unknown> | null): App
   };
 }
 
-/**
- * Agent-written text as readable plain text. Line breaks, numbering, bullets
- * and indentation are structure, so they stay; only the markup around the
- * words goes. Identifiers keep their underscores and tildes: the board must
- * read what the agent wrote. Every pattern is bounded, so a hostile payload
- * cannot stall the page.
- */
-export function approvalReadableText(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const plain = value
-    .replace(/\r\n?/g, "\n")
-    .replace(/\t/g, "  ")
-    .replace(/!\[([^\]\n]{0,300})\]\([^)\n]{0,2000}\)/g, "$1")
-    // A link keeps its target: where it points can be what the board is approving.
-    .replace(/\[([^\]\n]{1,300})\]\(([^)\n]{0,2000})\)/g, (_match, text: string, url: string) =>
-      url && url !== text ? `${text} (${url})` : text,
-    )
-    .split("\n")
-    .map((line) => line.trimEnd())
-    // A line that is only a rule (---, ***, ___) carries no words.
-    .filter((line) => !/^ {0,3}([-*_])(?: {0,2}\1){2,}$/.test(line))
-    .map((line) =>
-      line
-        .replace(/^ {0,3}#{1,6} +/, "")
-        .replace(/^( {0,12})[-*+] +/, "$1• ")
-        .replace(/\*\*(?=\S)([^\n*]{0,200}?\S)\*\*/g, "$1")
-        .replace(/`([^`\n]{1,200})`/g, "$1"),
-    )
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return plain || null;
-}
-
 export type ApprovalStrategyPlan =
   | { kind: "text"; text: string }
   /** The request carries a plan, but not as text the summary can show. */
@@ -334,58 +375,170 @@ export function approvalStrategyBrief(payload?: Record<string, unknown> | null) 
   return approvalDecisionBrief(rest);
 }
 
-/** The first lines of a long text, cut at a line or word boundary. */
-export function approvalTextPreview(
-  text: string,
-  maxLines = 6,
-  maxLength = 480,
-): { preview: string; truncated: boolean } {
+/** How far a cut moves back to stay out of a character cluster; a longer cluster is cut as any long run is. */
+const CLUSTER_REACH = 64;
+
+/** Undefined until first asked for; null where the browser has no `Intl.Segmenter`. */
+let graphemeSegmenter: Intl.Segmenter | null | undefined;
+
+/**
+ * The cut position at or before `end` that does not fall inside one character
+ * as the reader sees it: a letter with its accent or tone mark, a flag, an
+ * emoji joined from several, a keycap. A cut inside one changes the last thing
+ * read before the ellipsis (a Thai syllable without its tone mark is another
+ * syllable). Where the browser cannot tell, and for a cluster longer than
+ * {@link CLUSTER_REACH}, only the two halves of a surrogate pair are kept
+ * together.
+ */
+function clusterSafeEnd(text: string, end: number): number {
+  if (end <= 0 || end >= text.length) return end;
+  if (graphemeSegmenter === undefined) {
+    try {
+      graphemeSegmenter =
+        typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
+          ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+          : null;
+    } catch {
+      graphemeSegmenter = null;
+    }
+  }
+  if (graphemeSegmenter) {
+    // Read from the start of the text: whether two flag letters pair up depends on how many precede them.
+    const cluster = graphemeSegmenter.segment(text.slice(0, end + CLUSTER_REACH)).containing(end);
+    if (cluster && cluster.index > 0 && end - cluster.index <= CLUSTER_REACH) return cluster.index;
+  }
+  const last = text.charCodeAt(end - 1);
+  return last >= 0xd800 && last <= 0xdbff ? end - 1 : end;
+}
+
+/** The first lines of a long text, cut at a line or word boundary, with nothing added to mark the cut. */
+function cutTextPreview(text: string, maxLines: number, maxLength: number): { preview: string; truncated: boolean } {
   const lines = text.split("\n");
   let preview = lines.slice(0, maxLines).join("\n");
   let truncated = lines.length > maxLines;
   if (preview.length > maxLength) {
     const clipped = preview.slice(0, maxLength + 1);
     const boundary = Math.max(clipped.lastIndexOf(" "), clipped.lastIndexOf("\n"));
-    let end = boundary > maxLength / 2 ? boundary : maxLength;
-    // Never cut between the two halves of one character (an emoji, for example).
-    const last = preview.charCodeAt(end - 1);
-    if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+    // Never cut inside one character (an emoji, or a letter and its accent, for example).
+    const end = clusterSafeEnd(preview, boundary > maxLength / 2 ? boundary : maxLength);
     preview = preview.slice(0, end);
     truncated = true;
   }
-  return { preview: truncated ? `${preview.trimEnd()}…` : preview, truncated };
+  return { preview: truncated ? preview.trimEnd() : preview, truncated };
 }
 
+/** The first lines of a long text, cut at a line or word boundary; a cut preview ends in an ellipsis. */
+export function approvalTextPreview(
+  text: string,
+  maxLines = 6,
+  maxLength = 480,
+): { preview: string; truncated: boolean } {
+  const { preview, truncated } = cutTextPreview(text, maxLines, maxLength);
+  return { preview: truncated ? `${preview}…` : preview, truncated };
+}
+
+/** Characters of raw text an excerpt converts beyond four times its length: one label, one target, and their brackets. */
+const EXCERPT_RAW_MARGIN = 2400;
+/** How far back from that limit the cut looks for a space or a line break. */
+const EXCERPT_RAW_BOUNDARY_REACH = 200;
+
+/**
+ * One line for a title or a subject: the readable text with its line breaks
+ * folded into spaces, cut at a word boundary. Built on
+ * {@link approvalReadableText}, so it drops markup and nothing else.
+ */
 export function approvalExcerpt(value: string | null, maxLength = 240): string | null {
-  if (!value) return null;
-  const plain = value
-    .replace(/!\[([^\]\n]{0,300})\]\([^)\n]{0,2000}\)/g, "$1")
-    .replace(/\[([^\]\n]{1,300})\]\([^)\n]{0,2000}\)/g, "$1")
-    .replace(/^\s{0,3}(?:#{1,6}|>|[-+])\s+/gm, "")
-    .replace(/[`*_~]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (plain.length <= maxLength) return plain;
+  // A one-line excerpt reads only the start of the text, so only the start is converted. The
+  // margin lets markup shrink the text fourfold and leaves room for one link of the longest
+  // kind; a text of any length then costs the same.
+  const rawLimit = Number.isFinite(maxLength) ? maxLength * 4 + EXCERPT_RAW_MARGIN : Number.POSITIVE_INFINITY;
+  let raw = value;
+  let rawWasCut = false;
+  if (raw && raw.length > rawLimit) {
+    let end = rawLimit;
+    // Cut between words where one is near, so that no half of a token or of a rule line is left.
+    const boundary = Math.max(raw.lastIndexOf(" ", end), raw.lastIndexOf("\n", end));
+    if (boundary > end - EXCERPT_RAW_BOUNDARY_REACH) end = boundary;
+    raw = raw.slice(0, clusterSafeEnd(raw, end));
+    rawWasCut = true;
+  }
+  const plain = approvalReadableText(raw)?.replace(/\s+/g, " ");
+  if (!plain) return null;
+  // Text that was cut before conversion is never presented as the whole text.
+  if (plain.length <= maxLength) return rawWasCut ? `${plain.trimEnd()}…` : plain;
 
   const clipped = plain.slice(0, maxLength + 1);
   const wordBoundary = clipped.lastIndexOf(" ");
-  const end = wordBoundary > maxLength / 2 ? wordBoundary : maxLength;
+  // Never cut inside one character (an emoji, or a letter and its accent, for example).
+  const end = clusterSafeEnd(plain, wordBoundary > maxLength / 2 ? wordBoundary : maxLength);
   return `${plain.slice(0, end).trimEnd()}…`;
 }
 
-/** Like {@link approvalExcerpt} without the cut: plain text that keeps its line breaks. */
-export function approvalPlainText(value: string | null): string | null {
-  if (!value) return null;
-  const plain = value
-    .replace(/!\[([^\]\n]{0,300})\]\([^)\n]{0,2000}\)/g, "$1")
-    .replace(/\[([^\]\n]{1,300})\]\([^)\n]{0,2000}\)/g, "$1")
-    .replace(/^\s{0,3}(?:#{1,6}|>|[-+])\s+/gm, "")
-    .replace(/[`*_~]/g, "")
-    .replace(/[^\S\n]+/g, " ")
-    .replace(/ ?\n ?/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return plain || null;
+/**
+ * What a request asks for, as one line for a collapsed queue row: the
+ * recommendation of a Board approval, what a hire will do, or the first line
+ * of a strategy's plan. Null when the request carries none of it. The line is
+ * the readable text itself; the row cuts it to its width with CSS.
+ */
+export function approvalAskLine(
+  type: string,
+  payload?: Record<string, unknown> | null,
+): { label: string; text: string } | null {
+  if (type === "hire_agent") {
+    const text = approvalExcerpt(firstNonEmptyString(payload?.capabilities));
+    return text ? { label: "What it will do", text } : null;
+  }
+  if (type === "approve_ceo_strategy") {
+    const plan = approvalStrategyPlan(payload);
+    // With no plan field the summary shows the rationale as the plan; the row follows it.
+    const planText =
+      plan.kind === "text" ? plan.text : approvalReadableText(approvalStrategyBrief(payload).reasoning);
+    const firstLine = planText?.split("\n").find((line) => line.trim()) ?? null;
+    const text = approvalExcerpt(firstLine);
+    return text ? { label: "Plan", text } : null;
+  }
+  const text = approvalExcerpt(approvalDecisionBrief(payload).recommendation);
+  return text ? { label: "Recommendation", text } : null;
+}
+
+/** How much of a request's subject a card or queue row shows as its title. */
+export const APPROVAL_TITLE_LENGTH = 120;
+
+/** Longest summary that is checked against the recommendation, rationale and title for being a repeat. */
+const SUMMARY_COMPARE_LIMIT = 20_000;
+
+function comparableText(value: string | null | undefined): string | null {
+  return approvalReadableText(value)?.replace(/\s+/g, " ").trim().toLocaleLowerCase() ?? null;
+}
+
+/**
+ * The request's `summary`, when the surface does not already show the same
+ * text: as the recommendation, as the rationale (which falls back to the
+ * summary when the request gives no other), or as the title. Agents are told to
+ * send a summary and may put the cost in it, so it must not go unshown. A
+ * summary that is the title is still returned when the title is too long to be
+ * shown whole.
+ */
+export function approvalSummaryText(payload?: Record<string, unknown> | null, type?: string): string | null {
+  const summary = firstNonEmptyString(payload?.summary);
+  if (!summary) return null;
+  const brief = approvalDecisionBrief(payload);
+  // A summary this long is not converted and compared with the other fields: it is shown, unless
+  // it is the very text shown as the recommendation or the rationale (which falls back to the
+  // summary), and would be on the page twice. That check takes the two texts whole, as they are.
+  // Comparing a prefix instead would treat a summary that only starts like the recommendation as
+  // already shown.
+  if (summary.length > SUMMARY_COMPARE_LIMIT) {
+    return summary === brief.recommendation || summary === brief.reasoning ? null : summary;
+  }
+  const comparable = comparableText(summary);
+  if (!comparable) return null;
+  if (comparable === comparableText(brief.recommendation) || comparable === comparableText(brief.reasoning)) {
+    return null;
+  }
+  const isShownAsTitle =
+    comparable === comparableText(approvalSubject(payload, type)) && comparable.length <= APPROVAL_TITLE_LENGTH;
+  return isShownAsTitle ? null : summary;
 }
 
 export function approvalSubject(payload?: Record<string, unknown> | null, type?: string): string | null {
@@ -410,6 +563,9 @@ export function isEmailReplyPayload(payload?: Record<string, unknown> | null): b
 }
 
 export type ApprovalEmailDraft = {
+  /** The payload's `channel`: a free-text description of how the reply goes out, not an address. */
+  via: string | null;
+  /** The sender, only when the payload names one in `from`. */
   from: string | null;
   to: string | null;
   subject: string | null;
@@ -420,11 +576,36 @@ export type ApprovalEmailDraft = {
 export function approvalEmailDraft(payload?: Record<string, unknown> | null): ApprovalEmailDraft | null {
   if (!payload || !isEmailReplyPayload(payload)) return null;
   return {
-    from: firstNonEmptyString(payload.channel),
+    via: firstNonEmptyString(payload.channel),
+    from: firstNonEmptyString(payload.from),
     to: firstNonEmptyString(payload.recipient),
     subject: firstNonEmptyString(payload.subject),
     body: String(payload.body),
   };
+}
+
+/** A compact surface shows an outgoing draft whole up to this many characters. */
+export const APPROVAL_DRAFT_PREVIEW_LENGTH = 1500;
+
+/**
+ * What a compact surface shows of an outgoing draft before it is expanded: the
+ * first characters, cut at a line or word boundary. Null when the whole body is
+ * shown, so a caller can tell a cut draft from a whole one. Trailing blank
+ * space hides no words and does not count towards the limit.
+ *
+ * The preview holds the draft's own characters and nothing else. An ellipsis
+ * here would sit inside the email body, where it could be read as part of the
+ * email; the caller states that the reply continues, outside the body.
+ */
+export function approvalDraftPreview(body: string): string | null {
+  if (body.trimEnd().length <= APPROVAL_DRAFT_PREVIEW_LENGTH) return null;
+  // The cut depends only on the first characters; a very long body is not scanned whole. The
+  // characters past the limit are there so that the cut can see the character it would split.
+  return cutTextPreview(
+    body.slice(0, APPROVAL_DRAFT_PREVIEW_LENGTH + CLUSTER_REACH),
+    Number.MAX_SAFE_INTEGER,
+    APPROVAL_DRAFT_PREVIEW_LENGTH,
+  ).preview;
 }
 
 /** Build a contextual label for an approval, e.g. "Hire Agent: Designer" */
@@ -511,17 +692,17 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
 }
 
 export function CeoStrategyPayload({ payload }: { payload: Record<string, unknown> }) {
-  const plan = payload.plan ?? payload.description ?? payload.strategy ?? payload.text;
+  // The same field order the summary reads. A plan that is not text is shown as the request's data.
+  const plan = firstNonEmptyString(...STRATEGY_PLAN_FIELDS.map((field) => payload[field]));
   return (
     <div className="mt-3 space-y-1.5 text-sm">
       <PayloadField label="Title" value={payload.title} />
-      {!!plan && (
-        <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap font-mono text-xs max-h-48 overflow-y-auto">
-          {String(plan)}
+      {plan ? (
+        <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap wrap-anywhere font-mono text-xs">
+          {plan}
         </div>
-      )}
-      {!plan && (
-        <pre className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground overflow-x-auto max-h-48">
+      ) : (
+        <pre className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground whitespace-pre-wrap wrap-anywhere">
           {JSON.stringify(payload, null, 2)}
         </pre>
       )}
@@ -552,26 +733,34 @@ export function BudgetOverridePayload({ payload }: { payload: Record<string, unk
 export function BoardApprovalPayload({
   payload,
   hideTitle = false,
+  resolveAgentName,
 }: {
   payload: Record<string, unknown>;
   hideTitle?: boolean;
+  resolveAgentName?: OriginalRequestSenderResolver;
 }) {
   const nextPayload = hideTitle ? { ...payload, title: undefined } : payload;
   return (
-    <BoardApprovalPayloadContent payload={nextPayload} />
+    <BoardApprovalPayloadContent payload={nextPayload} resolveAgentName={resolveAgentName} />
   );
 }
 
 /**
  * Decision-list items (pros, cons & risks) render inside a custom bullet row,
- * so a leading markdown list marker would nest a second bullet inside the
- * first. Strip one leading marker.
+ * so a leading list marker ("- ", "* ", "• ", "1. ", "1) ") would show a
+ * second marker beside the first. Strip exactly one leading marker.
  */
-function stripLeadingListMarker(value: string): string {
-  return value.replace(/^(?:[-*•]|\d+[.)])\s+/, "");
+export function stripLeadingListMarker(value: string): string {
+  return value.replace(/^(?:[-*•]|\d{1,3}[.)])[^\S\n]+/, "");
 }
 
-function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unknown> }) {
+function BoardApprovalPayloadContent({
+  payload,
+  resolveAgentName,
+}: {
+  payload: Record<string, unknown>;
+  resolveAgentName?: OriginalRequestSenderResolver;
+}) {
   const brief = approvalDecisionBrief(payload);
   const title = firstNonEmptyString(payload.title);
   const summary = firstNonEmptyString(payload.summary);
@@ -595,12 +784,12 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
       {brief.recommendation && (
         <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3.5 py-3">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-amber-700 dark:text-amber-300">
-            Recommended action
+            Recommendation
           </p>
           <MarkdownBody className="mt-1 leading-6 text-foreground">{brief.recommendation}</MarkdownBody>
         </div>
       )}
-      <OriginalRequestBlock payload={payload} />
+      <OriginalRequestBlock payload={payload} resolveAgentName={resolveAgentName} />
       {reasoning && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Why</p>
@@ -615,7 +804,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
       )}
       {brief.nextAction && (
         <div className="rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
-          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">On approval</p>
+          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">If approved</p>
           <MarkdownBody className="mt-1 leading-6 text-foreground">{brief.nextAction}</MarkdownBody>
         </div>
       )}
@@ -624,7 +813,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
             Proposed comment
           </p>
-          <pre className="max-h-48 overflow-auto rounded-lg border border-border/60 bg-muted/50 px-3.5 py-3 font-mono text-xs leading-5 text-muted-foreground whitespace-pre-wrap">
+          <pre className="rounded-lg border border-border/60 bg-muted/50 px-3.5 py-3 font-mono text-xs leading-5 text-muted-foreground whitespace-pre-wrap wrap-anywhere">
             {proposedComment}
           </pre>
         </div>
@@ -666,9 +855,17 @@ function DecisionList({ label, items }: { label: string; items: string[] }) {
   );
 }
 
-export function EmailReplyPayload({ payload }: { payload: Record<string, unknown> }) {
+export function EmailReplyPayload({
+  payload,
+  resolveAgentName,
+}: {
+  payload: Record<string, unknown>;
+  resolveAgentName?: OriginalRequestSenderResolver;
+}) {
   const brief = approvalDecisionBrief(payload);
+  // `channel` describes how the reply goes out ("email from info@"); only `from` names a sender.
   const channel = firstNonEmptyString(payload.channel);
+  const sender = firstNonEmptyString(payload.from);
   const recipient = firstNonEmptyString(payload.recipient);
   const subject = firstNonEmptyString(payload.subject);
   const orderRef = firstNonEmptyString(payload.threadOrOrderRef);
@@ -681,7 +878,8 @@ export function EmailReplyPayload({ payload }: { payload: Record<string, unknown
     <div className="mt-4 space-y-3.5 text-sm">
       <div className="overflow-hidden rounded-lg border border-border/60 bg-background/60">
         <div className="space-y-1 border-b border-border/60 bg-muted/30 px-3.5 py-2.5">
-          {channel && <EmailHeaderRow label="From" value={channel} />}
+          {channel && <EmailHeaderRow label="Via" value={channel} />}
+          {sender && <EmailHeaderRow label="From" value={sender} />}
           {recipient && <EmailHeaderRow label="To" value={recipient} />}
           {subject && <EmailHeaderRow label="Subject" value={subject} />}
           {orderRef && <EmailHeaderRow label="Ref" value={orderRef} />}
@@ -707,12 +905,12 @@ export function EmailReplyPayload({ payload }: { payload: Record<string, unknown
       {brief.recommendation && (
         <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3.5 py-3">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-amber-700 dark:text-amber-300">
-            Recommended action
+            Recommendation
           </p>
           <p className="mt-1 leading-6 text-foreground">{brief.recommendation}</p>
         </div>
       )}
-      <OriginalRequestBlock payload={payload} />
+      <OriginalRequestBlock payload={payload} resolveAgentName={resolveAgentName} />
       {reasoning && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Why</p>
@@ -727,9 +925,9 @@ export function EmailReplyPayload({ payload }: { payload: Record<string, unknown
       )}
       <div className="space-y-1">
         <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-          Proposed reply
+          Draft reply
         </p>
-        <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap wrap-anywhere rounded-md bg-muted/40 p-3 text-sm leading-6 text-foreground">
+        <pre className="whitespace-pre-wrap wrap-anywhere rounded-md bg-muted/40 p-3 text-sm leading-6 text-foreground">
           {body}
         </pre>
       </div>
@@ -741,16 +939,21 @@ export function ApprovalPayloadRenderer({
   type,
   payload,
   hidePrimaryTitle = false,
+  resolveAgentName,
 }: {
   type: string;
   payload: Record<string, unknown>;
   hidePrimaryTitle?: boolean;
+  /** Names the agent that wrote the original request's comment. */
+  resolveAgentName?: OriginalRequestSenderResolver;
 }) {
   if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
   if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
   if (type === "request_board_approval") {
-    if (isEmailReplyPayload(payload)) return <EmailReplyPayload payload={payload} />;
-    return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
+    if (isEmailReplyPayload(payload)) return <EmailReplyPayload payload={payload} resolveAgentName={resolveAgentName} />;
+    return (
+      <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} resolveAgentName={resolveAgentName} />
+    );
   }
   return <CeoStrategyPayload payload={payload} />;
 }

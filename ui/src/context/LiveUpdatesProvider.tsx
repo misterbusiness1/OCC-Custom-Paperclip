@@ -1245,6 +1245,9 @@ function invalidateHeartbeatProgressQueries(
   }
 }
 
+/** Prefix of every `queryKeys.issues.approvals(issueId)` key: the approvals linked to a task. */
+const ISSUE_APPROVALS_QUERY_KEY_FAMILY = ["issues", "approvals"] as const;
+
 function invalidateActivityQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
@@ -1464,6 +1467,25 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({
       queryKey: queryKeys.approvals.list(companyId),
     });
+    // The approval cards on a task page are read per task (["issues", "approvals", issueId]), and
+    // the event names the approval, not the task. Without this a card there keeps showing the
+    // version the board read while the requester has resubmitted another one, and the revision
+    // guard never sees the change. Only mounted task pages refetch.
+    queryClient.invalidateQueries({
+      queryKey: ISSUE_APPROVALS_QUERY_KEY_FAMILY,
+    });
+    // An open approval page follows a resubmission, another member's decision and new comments too.
+    if (entityId) {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.approvals.detail(entityId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.approvals.comments(entityId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.approvals.issues(entityId),
+      });
+    }
     return;
   }
 

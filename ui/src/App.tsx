@@ -376,7 +376,11 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="artifacts" element={<Artifacts />} />
-      <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
+      {/* The bare address shows the queue itself, and the page corrects the address to
+          /approvals/pending. Not a redirect route: that is another element, so following a link to
+          /approvals from the queue (the sidebar's Approvals item on All decisions) would unmount
+          the page, send every held approval at once and drop the texts typed there. */}
+      <Route path="approvals" element={<Approvals />} />
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />

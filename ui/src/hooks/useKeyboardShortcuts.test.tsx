@@ -62,6 +62,26 @@ describe("useKeyboardShortcuts", () => {
     });
   });
 
+  it("opens a new task on a plain c, and not on Shift+C typed with Caps Lock on", () => {
+    const root = createRoot(container);
+    const onNewIssue = vi.fn();
+
+    act(() => {
+      root.render(<TestHarness onNewIssue={onNewIssue} />);
+    });
+
+    // With Caps Lock on, the browser reports Shift+C as a lower-case "c" with the Shift key down.
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "c", shiftKey: true, bubbles: true, cancelable: true }));
+    expect(onNewIssue).not.toHaveBeenCalled();
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true, cancelable: true }));
+    expect(onNewIssue).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("focuses the current page search target on slash", () => {
     const root = createRoot(container);
     const onSearch = vi.fn();
