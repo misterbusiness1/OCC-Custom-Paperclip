@@ -832,6 +832,90 @@ describe("Inbox toolbar", () => {
     }
   });
 
+  it.each([true, false])("keeps a pending decision and its error on the row it belongs to with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    const boardApproval = (id: string, title: string) => createApproval({
+      id,
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      payload: { title, recommendedAction: "Approve it", reasoning: "It fits the request" },
+    });
+    apiMocks.approvalsList.mockResolvedValue([
+      boardApproval("approval-a", "First request"),
+      boardApproval("approval-b", "Second request"),
+      // A type with no decision summary gets the plain Approve / Reject buttons.
+      createApproval({ id: "approval-plain", type: "custom_gate" as Approval["type"], payload: { title: "Plain request" } }),
+    ]);
+    const sent = new Map<string, ReturnType<typeof createDeferred<Approval>>>();
+    apiMocks.approve.mockImplementation((id: string) => {
+      const deferred = createDeferred<Approval>();
+      sent.set(id, deferred);
+      return deferred.promise;
+    });
+    apiMocks.reject.mockRejectedValue(new Error("Not allowed"));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Second request"));
+      const rowFor = (title: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(title))!;
+      const buttons = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].filter((candidate) => candidate.textContent === label);
+      const alerts = (scope: ParentNode) => [...scope.querySelectorAll("[role='alert']")];
+      const rowA = rowFor("First request");
+      const rowB = rowFor("Second request");
+      const plain = rowFor("Plain request");
+
+      // A decision on its way locks and labels its own row only.
+      await act(async () => buttons(rowA, "Approve")[0].click());
+      await vi.waitFor(() => expect(sent.has("approval-a")).toBe(true));
+      expect(buttons(rowA, "Approving...")[0].disabled).toBe(true);
+      expect(buttons(rowA, "Reject")[0].disabled).toBe(true);
+      expect(buttons(rowA, "Approving...")[0].closest("[aria-busy]")!.getAttribute("aria-busy")).toBe("true");
+      expect(buttons(rowB, "Approve")[0].disabled).toBe(false);
+      expect(buttons(rowB, "Reject")[0].disabled).toBe(false);
+      expect(buttons(rowB, "Approving...")).toHaveLength(0);
+      expect(buttons(plain, "Approve").every((candidate) => !candidate.disabled)).toBe(true);
+      expect(buttons(plain, "Approve").length).toBeGreaterThan(0);
+
+      // The second row can be decided while the first is still sending, and neither unlocks the other.
+      await act(async () => buttons(rowB, "Approve")[0].click());
+      await vi.waitFor(() => expect(sent.has("approval-b")).toBe(true));
+      expect(buttons(rowA, "Approving...")[0].disabled).toBe(true);
+      expect(buttons(rowB, "Approving...")[0].disabled).toBe(true);
+
+      // A failure is reported on its own row, as an alert above that row's buttons.
+      await act(async () => sent.get("approval-a")!.reject(new Error("Session expired")));
+      await vi.waitFor(() => expect(alerts(rowA)).toHaveLength(1));
+      expect(alerts(rowA)[0].textContent).toBe("Error while approving: Session expired");
+      expect(alerts(rowA)[0].nextElementSibling!.contains(buttons(rowA, "Approve")[0])).toBe(true);
+      expect(alerts(container)).toHaveLength(1);
+      expect(buttons(rowA, "Approve")[0].disabled).toBe(false);
+      expect(buttons(rowB, "Approving...")[0].disabled).toBe(true);
+
+      // A row with the plain buttons shows its error under them, once.
+      await act(async () => buttons(plain, "Reject")[0].click());
+      await vi.waitFor(() => expect(alerts(plain)).toHaveLength(1));
+      expect(apiMocks.reject).toHaveBeenCalledExactlyOnceWith("approval-plain");
+      expect(alerts(plain)[0].textContent).toBe("Error while rejecting: Not allowed");
+      expect(alerts(plain)[0]).toBe(plain.querySelector("[role='alert']:last-child"));
+      expect(alerts(container)).toHaveLength(2);
+      expect(alerts(rowB)).toHaveLength(0);
+      expect(buttons(plain, "Reject").every((candidate) => !candidate.disabled)).toBe(true);
+
+      // Sending the first row's decision again takes its error away.
+      await act(async () => buttons(rowA, "Approve")[0].click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(3));
+      expect(alerts(rowA)).toHaveLength(0);
+      expect(alerts(plain)).toHaveLength(1);
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it("restores folded and unfolded sub-tasks across remounts", async () => {
     routerMock.location.pathname = "/inbox/mine";
     const storageKey = "paperclip:inbox:collapsed-parents:company-1";

@@ -59,6 +59,8 @@ export function ApprovalCard({
   detailLink,
   isPending = false,
   pendingAction = null,
+  error = null,
+  onDismissError,
   linkedIssues,
   enableShortcuts = false,
   resolveAgentName,
@@ -72,6 +74,10 @@ export function ApprovalCard({
   detailLink?: string;
   isPending?: boolean;
   pendingAction?: ApprovalPendingAction;
+  /** What went wrong with the last decision sent from this card; shown beside its buttons. */
+  error?: string | null;
+  /** Called when the board edits the note after an error. */
+  onDismissError?: () => void;
   linkedIssues?: ApprovalCardLinkedIssue[];
   /** Shift+A approves, Shift+C asks for changes and Shift+X rejects while the card has focus. */
   enableShortcuts?: boolean;
@@ -87,7 +93,7 @@ export function ApprovalCard({
     Boolean(onApprove && onReject) &&
     approval.type !== "budget_override_required" &&
     isActionable;
-  const hasFooter = showResolutionButtons || Boolean(detailLink || onOpen);
+  const hasFooter = showResolutionButtons || Boolean(detailLink || onOpen || error);
   const waiting = isActionable ? waitingLabel(approval.createdAt) : null;
   const isEmailReply = approval.type === "request_board_approval" && isEmailReplyPayload(payload);
   const missingSourceNote = approvalMissingSourceNote(approval.type, payload);
@@ -207,9 +213,19 @@ export function ApprovalCard({
               pendingAction={pendingAction}
               trailing={detailsControl}
               approveGuard={draftGate.approveGuard}
+              error={error}
+              onDismissError={onDismissError}
             />
           ) : (
-            <div className="flex justify-end">{detailsControl}</div>
+            // A request that can no longer be decided here keeps the error its last decision came back with.
+            <div className={cn("flex flex-wrap items-center gap-3", error ? "justify-between" : "justify-end")}>
+              {error ? (
+                <p role="alert" className="min-w-0 break-words text-sm font-medium leading-5 text-destructive">
+                  {error}
+                </p>
+              ) : null}
+              {detailsControl}
+            </div>
           )}
         </div>
       ) : null}

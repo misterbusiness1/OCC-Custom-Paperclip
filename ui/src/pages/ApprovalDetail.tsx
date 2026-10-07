@@ -15,7 +15,11 @@ import {
   BudgetOverridePayload,
   typeLabel,
 } from "../components/ApprovalPayload";
-import { ApprovalDecisionActions, useSettlingApprovals } from "../components/ApprovalDecisionActions";
+import {
+  ApprovalDecisionActions,
+  approvalDecisionErrorText,
+  useSettlingApprovals,
+} from "../components/ApprovalDecisionActions";
 import { ApprovalDecisionSummary } from "../components/ApprovalDecisionSummary";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
@@ -34,7 +38,10 @@ export function ApprovalDetail() {
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [commentBody, setCommentBody] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  // Each failure is reported beside the control that caused it.
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [commentError, setCommentError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const { markDecided, isSettling } = useSettlingApprovals();
 
   const { data: approval, isLoading } = useQuery({
@@ -94,64 +101,70 @@ export function ApprovalDetail() {
     }
   };
 
+  const failDecision = (message: string) => {
+    setDecisionError(message);
+    // An error does not prove the decision was not stored: reload, so the page shows the status the server holds.
+    refresh();
+  };
+
   const approveMutation = useMutation({
     mutationFn: (note?: string) => (note ? approvalsApi.approve(approvalId!, note) : approvalsApi.approve(approvalId!)),
+    onMutate: () => setDecisionError(null),
     onSuccess: (decided) => {
-      setError(null);
       markDecided(decided);
       refresh();
       navigate(`/approvals/${approvalId}?resolved=approved`, { replace: true });
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Approve failed"),
+    onError: (err) => failDecision(approvalDecisionErrorText("approve", err)),
   });
 
   const rejectMutation = useMutation({
     mutationFn: (note?: string) => (note ? approvalsApi.reject(approvalId!, note) : approvalsApi.reject(approvalId!)),
+    onMutate: () => setDecisionError(null),
     onSuccess: (decided) => {
-      setError(null);
       markDecided(decided);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Reject failed"),
+    onError: (err) => failDecision(approvalDecisionErrorText("reject", err)),
   });
 
   const revisionMutation = useMutation({
     mutationFn: (note: string) => approvalsApi.requestRevision(approvalId!, note),
+    onMutate: () => setDecisionError(null),
     onSuccess: (decided) => {
-      setError(null);
       markDecided(decided);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Revision request failed"),
+    onError: (err) => failDecision(approvalDecisionErrorText("revision", err)),
   });
 
   const resubmitMutation = useMutation({
     mutationFn: () => approvalsApi.resubmit(approvalId!),
+    onMutate: () => setDecisionError(null),
     onSuccess: () => {
-      setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Resubmit failed"),
+    onError: (err) => failDecision(err instanceof Error ? err.message : "Resubmit failed"),
   });
 
   const addCommentMutation = useMutation({
     mutationFn: () => approvalsApi.addComment(approvalId!, commentBody.trim()),
+    onMutate: () => setCommentError(null),
     onSuccess: () => {
       setCommentBody("");
-      setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Comment failed"),
+    onError: (err) => setCommentError(err instanceof Error ? err.message : "Comment failed"),
   });
 
   const deleteAgentMutation = useMutation({
     mutationFn: (agentId: string) => agentsApi.remove(agentId),
+    onMutate: () => setDeleteError(null),
     onSuccess: () => {
-      setError(null);
       refresh();
       navigate("/approvals");
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Delete failed"),
+    onError: (err) => setDeleteError(err instanceof Error ? err.message : "Delete failed"),
   });
 
   if (isLoading) return <PageSkeleton variant="detail" />;
@@ -161,6 +174,7 @@ export function ApprovalDetail() {
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
+  const showDecisionActions = isActionable && !isBudgetApproval;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
   const subjectText = approvalSubject(payload, approval.type);
   // The heading carries the whole title; the decision buttons name the request by a shorter form of it.
@@ -269,11 +283,16 @@ export function ApprovalDetail() {
           )}
         </div>
 
-        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        {/* The decision buttons carry their own error; this line is for a request that no longer shows them. */}
+        {decisionError && !showDecisionActions && (
+          <p role="alert" className="break-words text-sm font-medium leading-5 text-destructive">
+            {decisionError}
+          </p>
+        )}
 
         {isActionable && (
           <div className="space-y-3 border-t border-border/60 pt-4">
-            {!isBudgetApproval && (
+            {showDecisionActions && (
               <ApprovalDecisionActions
                 subject={subject}
                 status={approval.status}
@@ -292,6 +311,8 @@ export function ApprovalDetail() {
                         ? "revision"
                         : null
                 }
+                error={decisionError}
+                onDismissError={() => setDecisionError(null)}
                 trailing={
                   approval.status === "revision_requested" ? (
                     <Button
@@ -380,6 +401,9 @@ export function ApprovalDetail() {
                 >
                   {deleteAgentMutation.isPending ? "Deleting…" : "Delete disapproved agent"}
                 </Button>
+                {deleteError && (
+                  <p role="alert" className="mt-2 break-words text-sm text-destructive">{deleteError}</p>
+                )}
               </div>
             )}
           </div>
@@ -425,6 +449,9 @@ export function ApprovalDetail() {
               rows={3}
             />
           </div>
+          {commentError && (
+            <p role="alert" className="break-words text-sm text-destructive">{commentError}</p>
+          )}
           <div className="flex justify-end">
             <Button
               size="sm"

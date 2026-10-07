@@ -509,6 +509,203 @@ describe("ApprovalCard", () => {
     expect(onApprove).toHaveBeenCalledExactlyOnceWith(undefined);
   });
 
+  describe("decision feedback", () => {
+    const SUBJECT = "Approve staging hosting spend";
+    const noteField = () => container.querySelector("textarea")!;
+    const alerts = () => [...container.querySelectorAll("[role='alert']")];
+    const keyDown = (target: Element, init: KeyboardEventInit) =>
+      act(() => {
+        target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+      });
+
+    it("shows a decision error as an alert directly above the buttons and keeps the typed note", () => {
+      const onDismissError = vi.fn();
+      const props = { approval: createApproval(), onApprove: vi.fn(), onReject: vi.fn(), onDismissError };
+      render(props);
+      expect(alerts()).toHaveLength(0);
+      click("Add a note");
+      type("Month to month only");
+
+      render({ ...props, error: "Error while approving: Session expired" });
+      expect(alerts()).toHaveLength(1);
+      const [alert] = alerts();
+      expect(alert.textContent).toBe("Error while approving: Session expired");
+      expect(alert.className).toContain("text-destructive");
+      expect(container.querySelector("[data-approval-card]")!.contains(alert)).toBe(true);
+      // The next element is the button row itself: nothing sits between the error and the buttons.
+      expect(alert.nextElementSibling).toBe(button("Approve")!.parentElement!.parentElement);
+      expect(alert.nextElementSibling!.contains(button("Reject")!)).toBe(true);
+      expect(button("Approve")!.getAttribute("aria-describedby")).toBe(alert.id);
+      expect(noteField().value).toBe("Month to month only");
+
+      // Editing the note tells the page the error no longer describes what will be sent.
+      expect(onDismissError).not.toHaveBeenCalled();
+      type("Month to month, from November");
+      expect(onDismissError).toHaveBeenCalledTimes(1);
+
+      render({ ...props, error: null });
+      expect(alerts()).toHaveLength(0);
+      expect(noteField().value).toBe("Month to month, from November");
+    });
+
+    it("keeps the error on a card that can no longer be decided", () => {
+      render({
+        approval: createApproval({ status: "approved" }),
+        onApprove: vi.fn(),
+        onReject: vi.fn(),
+        error: "Error while approving: Agent not found",
+      });
+      expect(button("Approve")).toBeUndefined();
+      expect(alerts().map((alert) => alert.textContent)).toEqual(["Error while approving: Agent not found"]);
+    });
+
+    it.each([
+      ["Reject", "Reject this request?"],
+      ["Request changes", "What should change?"],
+      ["Add a note", "Note for the requester (optional)"],
+    ])("closes the %s panel with Escape or its own button and returns focus to the opener", (opener, prompt) => {
+      const onApprove = vi.fn();
+      const onReject = vi.fn();
+      const onRequestRevision = vi.fn();
+      render({ approval: createApproval(), onApprove, onReject, onRequestRevision });
+      const openerButton = () => button(opener) ?? button("Remove note")!;
+
+      click(opener);
+      expect(container.textContent).toContain(prompt);
+      expect(document.activeElement).toBe(noteField());
+      type("Half a thought");
+      keyDown(noteField(), { key: "Escape" });
+      expect(container.textContent).not.toContain(prompt);
+      expect(container.querySelector("textarea")).toBeNull();
+      expect(document.activeElement).toBe(openerButton());
+      expect(openerButton().disabled).toBe(false);
+
+      // Escape discards the note the way Cancel does, so nothing unseen is sent later.
+      click(opener);
+      expect(noteField().value).toBe("");
+      type("Another thought");
+      click(opener === "Add a note" ? "Remove note" : "Cancel");
+      expect(container.querySelector("textarea")).toBeNull();
+      expect(document.activeElement).toBe(openerButton());
+      expect(document.activeElement).not.toBe(document.body);
+
+      // Escape works from any control inside the panel, not only the field.
+      if (opener !== "Add a note") {
+        click(opener);
+        keyDown(button("Cancel")!, { key: "Escape" });
+        expect(container.querySelector("textarea")).toBeNull();
+        expect(document.activeElement).toBe(openerButton());
+      }
+      expect(onApprove).not.toHaveBeenCalled();
+      expect(onReject).not.toHaveBeenCalled();
+      expect(onRequestRevision).not.toHaveBeenCalled();
+    });
+
+    it("moves the cursor into the field when the note panel becomes a confirmation", () => {
+      render({ approval: createApproval(), onApprove: vi.fn(), onReject: vi.fn(), onRequestRevision: vi.fn() });
+      click("Add a note");
+      type("Too expensive");
+      act(() => button("Reject")!.focus());
+      click("Reject");
+      expect(document.activeElement).toBe(noteField());
+      expect(noteField().value).toBe("Too expensive");
+      click("Cancel");
+      expect(document.activeElement).toBe(button("Reject"));
+    });
+
+    it("sends Request changes on Ctrl+Enter only with a note, rejects on Cmd+Enter, and never approves from the field", () => {
+      const onApprove = vi.fn();
+      const onReject = vi.fn();
+      const onRequestRevision = vi.fn();
+      render({ approval: createApproval(), onApprove, onReject, onRequestRevision });
+
+      click("Request changes");
+      keyDown(noteField(), { key: "Enter", ctrlKey: true });
+      type("   ");
+      keyDown(noteField(), { key: "Enter", ctrlKey: true });
+      keyDown(noteField(), { key: "Enter", metaKey: true });
+      expect(onRequestRevision).not.toHaveBeenCalled();
+
+      type("  Confirm where the data is stored  ");
+      // A plain Enter is a new line in the note.
+      keyDown(noteField(), { key: "Enter" });
+      expect(onRequestRevision).not.toHaveBeenCalled();
+      keyDown(noteField(), { key: "Enter", ctrlKey: true });
+      expect(onRequestRevision).toHaveBeenCalledExactlyOnceWith("Confirm where the data is stored");
+      click("Cancel");
+
+      click("Reject");
+      type("Outside this quarter's budget");
+      keyDown(noteField(), { key: "Enter", metaKey: true });
+      expect(onReject).toHaveBeenCalledExactlyOnceWith("Outside this quarter's budget");
+      click("Cancel");
+
+      click("Add a note");
+      type("Go ahead");
+      keyDown(noteField(), { key: "Enter", ctrlKey: true });
+      keyDown(noteField(), { key: "Enter", metaKey: true });
+      expect(onApprove).not.toHaveBeenCalled();
+      expect(onReject).toHaveBeenCalledTimes(1);
+      expect(onRequestRevision).toHaveBeenCalledTimes(1);
+    });
+
+    it("sends nothing from the keyboard and keeps the panel open while a decision is sending", () => {
+      const onReject = vi.fn();
+      const props = { approval: createApproval(), onApprove: vi.fn(), onReject, onRequestRevision: vi.fn() };
+      render(props);
+      click("Reject");
+      type("Too expensive");
+      render({ ...props, isPending: true, pendingAction: "reject" as const });
+
+      keyDown(noteField(), { key: "Enter", ctrlKey: true });
+      keyDown(noteField(), { key: "Escape" });
+      expect(onReject).not.toHaveBeenCalled();
+      expect(noteField().value).toBe("Too expensive");
+      expect(button("Rejecting...")!.getAttribute("aria-label")).toBe(`Rejecting: ${SUBJECT}`);
+    });
+
+    it("ties each panel's prompt to its field", () => {
+      render({ approval: createApproval(), onApprove: vi.fn(), onReject: vi.fn(), onRequestRevision: vi.fn() });
+      const group = () => container.querySelector("[role='group']")!;
+      const groupLabel = () => document.getElementById(group().getAttribute("aria-labelledby")!)!;
+
+      expect(container.querySelector("[role='group']")).toBeNull();
+      click("Reject");
+      expect(groupLabel().textContent).toBe("Reject this request?");
+      expect(group().contains(noteField())).toBe(true);
+      expect(noteField().getAttribute("aria-describedby")).toBe(groupLabel().id);
+      expect(noteField().labels[0].textContent).toBe("Reason (optional)");
+      expect(noteField().hasAttribute("aria-required")).toBe(false);
+      expect(button("Reject request")!.getAttribute("aria-label")).toBe(`Reject request: ${SUBJECT}`);
+      click("Cancel");
+
+      click("Request changes");
+      expect(groupLabel().textContent).toBe("What should change?");
+      expect(noteField().labels[0]).toBe(groupLabel());
+      expect(noteField().getAttribute("aria-required")).toBe("true");
+      expect(button("Send request")!.getAttribute("aria-label")).toBe(`Send request for changes: ${SUBJECT}`);
+      click("Cancel");
+
+      click("Add a note");
+      expect(groupLabel().textContent).toBe("Note for the requester (optional)");
+    });
+
+    it("marks the whole control busy and names the pressed button while its decision is sending", () => {
+      const props = { approval: createApproval(), onApprove: vi.fn(), onReject: vi.fn(), onRequestRevision: vi.fn() };
+      render(props);
+      expect(button("Approve")!.closest("[aria-busy]")!.getAttribute("aria-busy")).toBe("false");
+
+      render({ ...props, isPending: true, pendingAction: "approve" as const });
+      const approving = button("Approving...")!;
+      expect(approving.disabled).toBe(true);
+      expect(approving.getAttribute("aria-label")).toBe(`Approving: ${SUBJECT}`);
+      const control = approving.closest("[aria-busy]")!;
+      expect(control.getAttribute("aria-busy")).toBe("true");
+      expect(control.contains(button("Reject")!)).toBe(true);
+      expect(button("Reject")!.disabled).toBe(true);
+    });
+  });
+
   describe("with an outgoing email draft", () => {
     const scrollIntoView = vi.fn();
     const draftBlock = () => container.querySelector<HTMLElement>("[data-approval-draft]")!;

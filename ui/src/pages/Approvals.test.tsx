@@ -193,6 +193,170 @@ describe("Approvals", () => {
     await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("oldest"));
   });
 
+  describe("decision feedback", () => {
+    type Sent = { resolve: (approval: Approval) => void; reject: (error: Error) => void };
+    /** Holds every decision request open until the test settles it. */
+    const holdOpen = (mock: typeof apiMocks.approve) => {
+      const sent = new Map<string, Sent>();
+      mock.mockImplementation(
+        (id: string) => new Promise<Approval>((resolve, reject) => sent.set(id, { resolve, reject })),
+      );
+      return sent;
+    };
+    const decided = (id: string, status: Approval["status"]) =>
+      ({ ...approvals.find((approval) => approval.id === id)!, status }) as Approval;
+    const typeNote = (card: HTMLElement, value: string) =>
+      act(async () => {
+        const note = card.querySelector("textarea")!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(note, value);
+        note.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    const alerts = (scope: ParentNode = container) => [...scope.querySelectorAll("[role='alert']")];
+    const announced = () => container.querySelector("[data-approval-announcements]")!.textContent;
+
+    it("keeps each card's own busy state, error and note when two decisions are sent close together", async () => {
+      const sent = holdOpen(apiMocks.approve);
+      await render();
+
+      await click(button(rows()[0], "Add a note"));
+      await typeNote(rows()[0], "Month to month only");
+      await click(button(rows()[0], "Approve"));
+      await click(button(rows()[1], "Approve"));
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(2));
+
+      // The first card stays locked while the second is also sending; the third is untouched.
+      expect(button(rows()[0], "Approving...").disabled).toBe(true);
+      expect(button(rows()[0], "Reject").disabled).toBe(true);
+      expect(button(rows()[1], "Approving...").disabled).toBe(true);
+      expect(button(rows()[2], "Approve").disabled).toBe(false);
+      expect(button(rows()[2], "Approving...")).toBeUndefined();
+      expect(alerts()).toHaveLength(0);
+
+      await act(async () => sent.get("oldest")!.reject(new Error("Session expired")));
+      await vi.waitFor(() => expect(alerts(rows()[0])).toHaveLength(1));
+      // The error is on the card that failed, as an alert, and nowhere else on the page.
+      expect(alerts(rows()[0])[0].textContent).toBe("Error while approving: Session expired");
+      expect(alerts()).toHaveLength(1);
+      expect(rows()[0].querySelector("textarea")!.value).toBe("Month to month only");
+      expect(button(rows()[0], "Approve").disabled).toBe(false);
+      expect(button(rows()[1], "Approving...").disabled).toBe(true);
+      expect(announced()).toBe("Error while approving Request oldest: Session expired");
+
+      await act(async () => sent.get("email")!.resolve(decided("email", "approved")));
+      await vi.waitFor(() => expect(rows()[1].textContent).toContain("approved"));
+      expect(rows()[1].querySelectorAll("button")).toHaveLength(0);
+      expect(alerts(rows()[1])).toHaveLength(0);
+      expect(announced()).toBe("Approved: Request email");
+      // The failed card is still open for a retry, with its error and its note.
+      expect(alerts(rows()[0])[0].textContent).toBe("Error while approving: Session expired");
+      expect(rows()[0].querySelector("textarea")!.value).toBe("Month to month only");
+      expect(order()).toEqual(["oldest", "email", "newest"]);
+    });
+
+    it("clears a card's error when the note is edited or the decision is sent again", async () => {
+      apiMocks.reject.mockRejectedValue(new Error("Session expired"));
+      await render();
+
+      await click(button(rows()[0], "Reject"));
+      await typeNote(rows()[0], "Too expensive");
+      await click(button(rows()[0], "Reject request"));
+      await vi.waitFor(() => expect(alerts(rows()[0])).toHaveLength(1));
+      expect(alerts()[0].textContent).toBe("Error while rejecting: Session expired");
+      expect(announced()).toBe("Error while rejecting Request oldest: Session expired");
+
+      await typeNote(rows()[0], "Too expensive this quarter");
+      expect(alerts()).toHaveLength(0);
+
+      await click(button(rows()[0], "Reject request"));
+      await vi.waitFor(() => expect(alerts(rows()[0])).toHaveLength(1));
+      expect(apiMocks.reject).toHaveBeenLastCalledWith("oldest", "Too expensive this quarter");
+
+      // A retry removes the old error for as long as the new request is on its way.
+      const sent = holdOpen(apiMocks.reject);
+      await click(button(rows()[0], "Reject request"));
+      await vi.waitFor(() => expect(sent.has("oldest")).toBe(true));
+      expect(alerts()).toHaveLength(0);
+      expect(button(rows()[0], "Rejecting...").disabled).toBe(true);
+      await act(async () => sent.get("oldest")!.resolve(decided("oldest", "rejected")));
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("rejected"));
+      expect(announced()).toBe("Rejected: Request oldest");
+    });
+
+    it("sends a request only one decision at a time", async () => {
+      const sent = holdOpen(apiMocks.approve);
+      generalSettingsMock.keyboardShortcutsEnabled = true;
+      await render();
+
+      // Two presses before the page has drawn the busy state, then the shortcut once it has.
+      await act(async () => {
+        button(rows()[0], "Approve").click();
+        button(rows()[0], "Approve").click();
+      });
+      await act(async () => {
+        rows()[0].dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true, bubbles: true }));
+      });
+      await vi.waitFor(() => expect(sent.has("oldest")).toBe(true));
+      expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+      expect(button(rows()[0], "Approving...").disabled).toBe(true);
+    });
+
+    it("keeps a request listed with its error when the reload shows it was decided anyway", async () => {
+      // The server stores an approval before it runs what follows from it, so an error can come back for a stored decision.
+      apiMocks.approve.mockImplementation(async (id: string) => {
+        approvals = approvals.map((approval) => (approval.id === id ? decided(id, "approved") : approval));
+        throw new Error("Agent not found");
+      });
+      await render();
+      const listCalls = apiMocks.list.mock.calls.length;
+
+      await click(button(rows()[0], "Approve"));
+      await vi.waitFor(() => expect(alerts(rows()[0])).toHaveLength(1));
+      await vi.waitFor(() => expect(apiMocks.list.mock.calls.length).toBeGreaterThan(listCalls));
+      await vi.waitFor(() => expect(button(rows()[0], "Approve")).toBeUndefined());
+
+      expect(order()).toEqual(["oldest", "email", "newest"]);
+      expect(rows()[0].textContent).toContain("Request oldest");
+      expect(rows()[0].textContent).toContain("approved");
+      expect(alerts(rows()[0])[0].textContent).toBe("Error while approving: Agent not found");
+      expect(alerts()).toHaveLength(1);
+    });
+
+    it("announces each landed decision in one polite live region", async () => {
+      apiMocks.approve.mockImplementation(async (id: string) => decided(id, "approved"));
+      apiMocks.reject.mockImplementation(async (id: string) => decided(id, "rejected"));
+      apiMocks.requestRevision.mockImplementation(async (id: string) => decided(id, "revision_requested"));
+      await render();
+
+      const regions = container.querySelectorAll("[data-approval-announcements]");
+      expect(regions).toHaveLength(1);
+      expect(regions[0].getAttribute("aria-live")).toBe("polite");
+      expect(regions[0].classList.contains("sr-only")).toBe(true);
+      expect(announced()).toBe("");
+
+      await click(button(rows()[0], "Approve"));
+      await vi.waitFor(() => expect(announced()).toBe("Approved: Request oldest"));
+
+      await click(button(rows()[1], "Request changes"));
+      await typeNote(rows()[1], "Quote the delivery date");
+      await click(button(rows()[1], "Send request"));
+      await vi.waitFor(() => expect(announced()).toBe("Changes requested: Request email"));
+
+      await click(button(rows()[2], "Reject"));
+      await click(button(rows()[2], "Reject request"));
+      await vi.waitFor(() => expect(announced()).toBe("Rejected: Request newest"));
+    });
+
+    it("reports a failure to load the list at the top of the page, as an alert", async () => {
+      apiMocks.list.mockRejectedValue(new Error("Could not reach the server"));
+      await act(async () => {
+        root.render(<QueryClientProvider client={queryClient}><Approvals /></QueryClientProvider>);
+      });
+      await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+      expect(alerts()[0].textContent).toBe("Could not reach the server");
+      expect(alerts()[0].closest("[data-approval-card]")).toBeNull();
+    });
+  });
+
   it("moves between requests with J and K when shortcuts are enabled", async () => {
     await render();
     const press = (key: string) =>
