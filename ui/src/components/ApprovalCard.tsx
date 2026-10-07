@@ -167,15 +167,14 @@ export function ApprovalCard({
           ) : (
             <span>Created {timeAgo(approval.createdAt)}</span>
           )}
-          {missingSourceNote && (
-            <span title="The agent did not attach the request that this approval answers.">{missingSourceNote}</span>
-          )}
+          {missingSourceNote && <span>{missingSourceNote}</span>}
         </div>
       </div>
 
       <ApprovalDecisionSummary
         type={approval.type}
         payload={payload}
+        status={approval.status}
         resolveAgentName={resolveAgentName}
         className="mt-4 border-t border-border/60 pt-4"
       />
@@ -195,7 +194,8 @@ export function ApprovalCard({
               status={approval.status}
               onApprove={onApprove}
               onReject={onReject}
-              onRequestRevision={onRequestRevision}
+              // A change request is addressed to the requesting agent; without one it would reach nobody.
+              onRequestRevision={approval.requestedByAgentId ? onRequestRevision : undefined}
               isPending={isPending}
               pendingAction={pendingAction}
               trailing={detailsControl}

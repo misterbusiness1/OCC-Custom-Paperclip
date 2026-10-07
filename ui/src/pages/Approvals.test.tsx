@@ -52,7 +52,7 @@ function createApproval(id: string, createdAt: string, overrides: Partial<Approv
     id,
     companyId: "company-1",
     type: "request_board_approval",
-    requestedByAgentId: null,
+    requestedByAgentId: "agent-requester",
     requestedByUserId: null,
     status: "pending",
     payload: {

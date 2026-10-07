@@ -38,8 +38,12 @@ The shared decision summary also shows what the board is about to approve:
 
 Hire and strategy approvals carry no recommendation, pros, or risks, so they have their own summary on the card, in the inbox row, and on the detail page:
 
-- A `hire_agent` approval shows the role, job title, manager, adapter and model, monthly budget, the described work, and the skills. It states what each decision does: approval activates the pending agent (or creates it when none exists) and sets the monthly budget when one is given; rejection terminates a pending agent. Only the model name is read from the adapter configuration.
-- An `approve_ceo_strategy` approval shows the plan under a **Plan** label with its line breaks, numbering, and bullets. A long plan shows its first lines and expands in place; the detail page shows it in full.
+- A `hire_agent` approval is headed by the agent's name. It shows the role, job title, manager, adapter and model, monthly budget, the described work, and the skills. A manager is shown by name, never by id. While the decision is open, it states what each decision does: approval activates the agent the request names (or creates one when it names none) and sets the monthly budget when one is given; rejection terminates the named agent. If the request names an existing agent other than the one being hired, the summary says so instead. Only the model name is read from the adapter configuration.
+- An `approve_ceo_strategy` approval shows the plan under a **Plan** label with its line breaks, numbering, bullets, and indentation. A long plan shows its first lines and expands in place; the detail page shows it in full. A recommendation, pros, risks, and next action are shown when the request carries them. A request with no plan field shows its rationale as the plan.
+
+Agent-written text on these summaries is shown as plain text. Markup is removed; identifiers, paths, and link targets are kept.
+
+**Request changes** is offered only when the approval has a requesting agent to receive it.
 
 The approval card, the approval detail page, and Board, hire, and strategy approvals in both inbox presentations use the same decision buttons:
 

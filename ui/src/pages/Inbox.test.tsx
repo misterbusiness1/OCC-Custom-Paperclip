@@ -538,6 +538,7 @@ describe("Inbox toolbar", () => {
       + "The original message continues without shortening.\n".repeat(12);
     apiMocks.approvalsList.mockResolvedValue([createApproval({
       type: "request_board_approval",
+      requestedByAgentId: "agent-1",
       payload: {
         title: "Customer request",
         recommendedAction: "Approve the bounded reply",
@@ -639,13 +640,19 @@ describe("Inbox toolbar", () => {
   it.each([true, false])("shows what a hire or strategy asks for before its inbox decision with streamlined UI %s", async (streamlinedUi) => {
     routerMock.location.pathname = "/inbox/mine";
     apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    apiMocks.agentsList.mockResolvedValue([
+      { id: "agent-ceo", name: "Chief Executive" },
+      { id: "agent-1", name: "Infra Engineer" },
+    ]);
     apiMocks.approvalsList.mockResolvedValue([
       createApproval({
         id: "approval-hire",
         type: "hire_agent",
+        requestedByAgentId: "agent-1",
         payload: {
           name: "Pricing Analyst",
           role: "researcher",
+          reportsTo: "agent-ceo",
           capabilities: "Tracks competitor prices weekly.",
           budgetMonthlyCents: 5000,
           agentId: "agent-pending",
@@ -654,6 +661,7 @@ describe("Inbox toolbar", () => {
       createApproval({
         id: "approval-strategy",
         type: "approve_ceo_strategy",
+        requestedByAgentId: "agent-1",
         payload: { plan: "1. Grow wholesale.\n2. Cut returns." },
       }),
     ]);
@@ -668,6 +676,8 @@ describe("Inbox toolbar", () => {
       const hire = rowFor("Hire Agent: Pricing Analyst");
       const summary = hire.querySelector("[data-approval-hire]")!;
       expect(summary.textContent).toContain("Monthly budget$50.00");
+      // The manager is named from the company's agent list, on both inbox layouts.
+      expect(summary.textContent).toContain("Reports toChief Executive");
       expect(summary.textContent).toContain("What it will doTracks competitor prices weekly.");
       expect(summary.textContent).toContain("If rejectedThe pending agent is terminated.");
       // A hire is never rejected on a single click: the pending agent would be terminated.
@@ -679,7 +689,7 @@ describe("Inbox toolbar", () => {
       await act(async () => button(hire, "Cancel").click());
 
       const strategy = rowFor("CEO Strategy");
-      expect(strategy.querySelector("[data-approval-plan] p.whitespace-pre-line")!.textContent).toBe(
+      expect(strategy.querySelector("[data-approval-plan] p.whitespace-pre-wrap")!.textContent).toBe(
         "1. Grow wholesale.\n2. Cut returns.",
       );
       expect(button(strategy, "Request changes")).toBeDefined();
@@ -700,6 +710,7 @@ describe("Inbox toolbar", () => {
     apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
     apiMocks.approvalsList.mockResolvedValue([createApproval({
       type: "request_board_approval",
+      requestedByAgentId: "agent-1",
       payload: {
         title: "Historical email approval",
         recommendedAction: "Review the proposed reply",
