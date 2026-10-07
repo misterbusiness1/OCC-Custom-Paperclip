@@ -144,6 +144,13 @@ export const ApprovalDecisionActions = forwardRef<
     error?: string | null;
     /** Called when the board edits the note, so a parent can drop an error that no longer describes the draft. */
     onDismissError?: () => void;
+    /**
+     * A note the board had already typed for this request, for controls that are drawn again after
+     * an approval was undone or failed. The note panel starts open with it; focus is left alone.
+     */
+    defaultNote?: string;
+    /** Called with the new text whenever the board edits or discards the note. */
+    onNoteChange?: (note: string) => void;
   }
 >(function ApprovalDecisionActions(
   {
@@ -162,11 +169,13 @@ export const ApprovalDecisionActions = forwardRef<
     approveHoldKey,
     error = null,
     onDismissError,
+    defaultNote,
+    onNoteChange,
   },
   ref,
 ) {
-  const [mode, setMode] = useState<Mode>(null);
-  const [note, setNote] = useState("");
+  const [mode, setMode] = useState<Mode>(defaultNote?.trim() ? "note" : null);
+  const [note, setNote] = useState(defaultNote?.trim() ? defaultNote : "");
   const [heldBackMessage, setHeldBackMessage] = useState<string | null>(null);
   const noteId = useId();
   const noteLabelId = useId();
@@ -188,6 +197,8 @@ export const ApprovalDecisionActions = forwardRef<
   useEffect(() => {
     const from = previousStatus.current;
     previousStatus.current = status;
+    // The first run, with nothing decided yet: a note the controls started with stays.
+    if (from === status) return;
     // A request that comes back as pending was resubmitted by its requester: what the board was typing stays.
     if (from === "revision_requested" && status === "pending") return;
     setMode(null);
@@ -220,11 +231,16 @@ export const ApprovalDecisionActions = forwardRef<
     returnFocusTo.current = mode;
     setMode(null);
     setNote("");
+    onNoteChange?.("");
   };
 
   // Opening a panel, or turning the note panel into a confirmation, puts the cursor in its field.
   // Closing one hands focus back to the button that opened it, which is disabled until this render.
+  // A panel that is open from the start (a restored note) does not take focus.
+  const previousMode = useRef(mode);
   useEffect(() => {
+    if (previousMode.current === mode) return;
+    previousMode.current = mode;
     if (mode) {
       noteRef.current?.focus();
       return;
@@ -295,6 +311,7 @@ export const ApprovalDecisionActions = forwardRef<
             value={note}
             onChange={(event) => {
               setNote(event.target.value);
+              onNoteChange?.(event.target.value);
               if (error) onDismissError?.();
             }}
             onKeyDown={handleNoteKeyDown}

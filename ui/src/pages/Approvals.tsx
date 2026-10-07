@@ -7,6 +7,7 @@ import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useGeneralSettings } from "../context/GeneralSettingsContext";
+import { useOptionalToastActions } from "../context/ToastContext";
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
@@ -19,6 +20,12 @@ import {
   useApprovalDecisionFeedback,
   type ApprovalDecisionKind,
 } from "../components/ApprovalDecisionActions";
+import {
+  APPROVE_HOLD_MS,
+  ApprovalHoldCountdown,
+  useApprovalHolds,
+  type HeldApproval,
+} from "../components/ApprovalHold";
 import { approvalExcerpt, approvalSubject, isEmailReplyPayload, typeLabel } from "../components/ApprovalPayload";
 import { ApprovalChangesAskedFor, ApprovalSentBackTime, approvalSentBackAt } from "../components/ApprovalRevision";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -122,27 +129,61 @@ const DECISION_LANDED_LEAD: Record<ApprovalDecisionKind, string> = {
 /**
  * What is left of a card once it is decided here, so the queue keeps its place.
  * It can always take focus, so a decision never drops focus on the page.
+ *
+ * An approval is first `held`: nothing has been sent, the row counts down and offers Undo.
+ * The same row then shows the request being sent and, once it lands, the decision, so focus
+ * resting on the row stays there throughout.
  */
-function DecidedApprovalRow({ approval }: { approval: Approval }) {
-  const subject = approvalDisplaySubject(approval);
+function DecidedApprovalRow({
+  approval,
+  held = null,
+  onUndo,
+}: {
+  approval: Approval;
+  held?: HeldApproval | null;
+  onUndo?: () => void;
+}) {
+  const subject = held?.subject ?? approvalDisplaySubject(approval);
+  const note = held ? held.note : approval.decisionNote;
   return (
     <div
       className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border/70 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       data-approval-card={approval.id}
-      data-approval-decided-row=""
+      data-approval-decided-row={held ? undefined : ""}
+      data-approval-held-row={held ? held.phase : undefined}
       tabIndex={-1}
     >
-      <StatusBadge status={approval.status} />
+      {held ? (
+        <span className="text-xs font-medium text-foreground" data-approval-hold-status="">
+          {held.phase === "holding" ? <ApprovalHoldCountdown sendAt={held.sendAt} /> : "Approving..."}
+        </span>
+      ) : (
+        <StatusBadge status={approval.status} />
+      )}
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{subject}</span>
-      <Link
-        to={`/approvals/${approval.id}`}
-        className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
-      >
-        View details
-      </Link>
-      {approval.decisionNote && (
+      {held ? (
+        held.phase === "holding" && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onUndo}
+            aria-label={`Undo approval: ${subject}`}
+            data-approval-undo=""
+          >
+            Undo
+          </Button>
+        )
+      ) : (
+        <Link
+          to={`/approvals/${approval.id}`}
+          className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
+        >
+          View details
+        </Link>
+      )}
+      {note && (
         <p className="basis-full break-words text-xs leading-5 text-muted-foreground">
-          <span className="font-medium text-foreground">Your note.</span> {approval.decisionNote}
+          <span className="font-medium text-foreground">Your note.</span> {note}
         </p>
       )}
     </div>
@@ -180,6 +221,7 @@ export function Approvals() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { keyboardShortcutsEnabled } = useGeneralSettings();
+  const toasts = useOptionalToastActions();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -203,6 +245,8 @@ export function Approvals() {
   const [decidedHere, setDecidedHere] = useState<Record<string, Approval>>({});
   // Requests sent back for changes sit below the queue, folded away until asked for.
   const [showSentBack, setShowSentBack] = useState(false);
+  // The note typed with an approval that was undone or failed, handed back to the card when it returns.
+  const [restoredNotes, setRestoredNotes] = useState<Record<string, string>>({});
   const listRef = useRef<HTMLDivElement>(null);
   // The row that last held focus. J and K continue from it when focus has left the list.
   const lastFocusedId = useRef<string | null>(null);
@@ -216,6 +260,9 @@ export function Approvals() {
     advances: boolean;
   }>({ rows: [], openId: null, collapsible: true, advances: true });
   const handledHash = useRef<string | null>(null);
+  // What the page shows now, for an approval that settles after the reader has moved on or left.
+  const shownRef = useRef<{ mounted: boolean; companyId: string | null }>({ mounted: false, companyId: null });
+  const undoLatestRef = useRef<() => boolean>(() => false);
   // The oldest request has waited longest, so it leads the queue; history reads newest first.
   const sortOrder: SortOrder = sortOverride ?? (statusFilter === "pending" ? "oldest" : "newest");
 
@@ -224,16 +271,11 @@ export function Approvals() {
   }, [setBreadcrumbs]);
 
   useEffect(() => {
-    setVisibleCount(PAGE_SIZE);
-    setKindFilter("all");
-    setDecidedHere({});
-    setShowSentBack(false);
-    setOpenId(undefined);
-    lastFocusedId.current = null;
-    pendingMove.current = null;
-    clearDecisionErrors();
-    setAnnouncement(null);
-  }, [statusFilter, selectedCompanyId, clearDecisionErrors]);
+    shownRef.current.mounted = true;
+    return () => {
+      shownRef.current.mounted = false;
+    };
+  }, []);
 
   const rowElements = () =>
     Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-approval-card]") ?? []);
@@ -260,9 +302,15 @@ export function Approvals() {
   useEffect(() => {
     if (!keyboardShortcutsEnabled) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "j" && event.key !== "k") return;
+      const isUndo = event.key === "Z" && event.shiftKey;
+      if (event.key !== "j" && event.key !== "k" && !isUndo) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) return;
       if (isKeyboardShortcutTextInputTarget(event.target) || hasBlockingShortcutDialog(document)) return;
+      if (isUndo) {
+        // Shift+Z takes back the approval held most recently. A held key undoes one, not all of them.
+        if (!event.repeat && undoLatestRef.current()) event.preventDefault();
+        return;
+      }
       const cards = Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-approval-card]") ?? []);
       if (cards.length === 0) return;
       const active = document.activeElement instanceof HTMLElement
@@ -281,8 +329,9 @@ export function Approvals() {
       const id = row.dataset.approvalCard ?? null;
       if (!id) return;
       lastFocusedId.current = id;
-      // Moving to a request opens it; a compact decided row has nothing to open.
-      setOpenId(row.hasAttribute("data-approval-decided-row") ? null : id);
+      // Moving to a request opens it; a compact decided or held row has nothing to open.
+      const compactRow = row.hasAttribute("data-approval-decided-row") || row.hasAttribute("data-approval-held-row");
+      setOpenId(compactRow ? null : id);
       pendingMove.current = { targetId: id, focus: true };
       setMoveSeq((seq) => seq + 1);
     };
@@ -306,27 +355,135 @@ export function Approvals() {
     setAnnouncement((current) => ({ seq: (current?.seq ?? 0) + 1, text }));
 
   // These run once for every decision sent, also when several are on their way at once.
-  const handleDecided = (action: ApprovalDecisionKind) => (approval: Approval, { id, subject }: Decision) => {
-    settleDecision(id);
+  const recordDecided = (action: ApprovalDecisionKind, approval: Approval, subject: string, companyId: string) => {
+    settleDecision(approval.id);
     setDecidedHere((current) => ({ ...current, [approval.id]: approval }));
     announce(`${DECISION_LANDED_LEAD[action]}: ${subject}`);
-    advanceFrom(id);
-    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(approval.id) });
   };
-  const handleFailed = (action: ApprovalDecisionKind) => (err: unknown, { id, subject }: Decision) => {
+  const recordFailed = (action: ApprovalDecisionKind, err: unknown, id: string, subject: string, companyId: string) => {
     settleDecision(id, approvalDecisionErrorText(action, err));
     announce(approvalDecisionErrorText(action, err, subject));
     // An error does not prove the decision was not stored: reload, so the card shows the status the server holds.
-    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(id) });
   };
+  const handleDecided = (action: ApprovalDecisionKind) => (approval: Approval, { id, subject }: Decision) => {
+    recordDecided(action, approval, subject, selectedCompanyId!);
+    advanceFrom(id);
+  };
+  const handleFailed = (action: ApprovalDecisionKind) => (err: unknown, { id, subject }: Decision) => {
+    recordFailed(action, err, id, subject, selectedCompanyId!);
+  };
 
-  const approveMutation = useMutation({
-    mutationFn: ({ id, note }: Decision) => (note ? approvalsApi.approve(id, note) : approvalsApi.approve(id)),
-    onSuccess: handleDecided("approve"),
-    onError: handleFailed("approve"),
-  });
+  const forgetRestoredNote = (id: string) =>
+    setRestoredNotes((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  /** Hands a note back to the card that returns after an approval was undone or failed. */
+  const restoreCard = (held: HeldApproval) => {
+    if (held.note) setRestoredNotes((current) => ({ ...current, [held.id]: held.note! }));
+    // The returning card joins the page; nothing that was on the page leaves it to make room.
+    setVisibleCount((count) => count + 1);
+  };
+
+  /**
+   * The undo window of a held approval is over, or the page is about to stop showing it: the
+   * request goes out, marked to outlive the page. Called once for a hold, by `useApprovalHolds`.
+   */
+  const sendHeldApproval = (held: HeldApproval) => {
+    // The Undo button leaves the row now; focus resting on it stays with the row.
+    const row = rowElement(held.id);
+    const active = document.activeElement;
+    if (row && active instanceof HTMLElement && active.hasAttribute("data-approval-undo") && row.contains(active)) {
+      row.focus({ preventScroll: true });
+    }
+    new Promise<Approval>((resolve) => resolve(approvalsApi.approve(held.id, held.note, { keepalive: true }))).then(
+      (approval) => {
+        releaseHeldApproval(held.id);
+        // The reader was moved on when the hold began, so nothing moves now.
+        recordDecided("approve", approval, held.subject, held.companyId);
+      },
+      (err: unknown) => {
+        releaseHeldApproval(held.id);
+        recordFailed("approve", err, held.id, held.subject, held.companyId);
+        const shown = shownRef.current;
+        const listed =
+          shown.mounted && shown.companyId === held.companyId && queueRef.current.rows.some((row) => row.id === held.id);
+        // The note is handed back with the card, also when the card is only seen again later.
+        restoreCard(held);
+        if (!listed) {
+          // The page no longer lists the request (the reader left, or changed company or filter): say so where they are.
+          toasts?.pushToast({
+            title: approvalDecisionErrorText("approve", err, held.subject),
+            tone: "error",
+            ttlMs: 15_000,
+            dedupeKey: `approval-hold-failed:${held.id}`,
+            action: { label: "View request", href: `/approvals/${held.id}` },
+          });
+          return;
+        }
+        const focused = document.activeElement;
+        // Someone typing is not interrupted: the closed row shows the error, and the card opens when they turn to it.
+        if (isKeyboardShortcutTextInputTarget(focused)) return;
+        // Focus on a control outside the list stays there; anywhere else it goes to the card that came back.
+        const elsewhere =
+          focused instanceof HTMLElement &&
+          focused !== document.body &&
+          !listRef.current?.contains(focused) &&
+          !(listRef.current && focused.contains(listRef.current));
+        setOpenId(held.id);
+        if (!elsewhere) lastFocusedId.current = held.id;
+        requestMove({ targetId: held.id, focus: !elsewhere });
+      },
+    );
+  };
+  const {
+    held: heldApprovals,
+    hold: holdApproval,
+    undo: cancelHeldApproval,
+    release: releaseHeldApproval,
+    flush: flushHeldApprovals,
+    latestRunningId: latestHeldApprovalId,
+  } = useApprovalHolds({ send: sendHeldApproval });
+
+  /** Takes back a held approval: nothing is sent, and its card returns open, in focus, with its note. */
+  const undoHeldApproval = (id: string) => {
+    const held = cancelHeldApproval(id);
+    // Too late: the request has been sent.
+    if (!held) return false;
+    settleDecision(id);
+    restoreCard(held);
+    announce(`Not approved: ${held.subject}. Nothing was sent.`);
+    setOpenId(id);
+    lastFocusedId.current = id;
+    requestMove({ targetId: id, focus: true });
+    return true;
+  };
+  undoLatestRef.current = () => {
+    const id = latestHeldApprovalId();
+    return id ? undoHeldApproval(id) : false;
+  };
+
+  // A change of tab or company starts the page afresh.
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+    setKindFilter("all");
+    setDecidedHere({});
+    setShowSentBack(false);
+    setOpenId(undefined);
+    setRestoredNotes({});
+    lastFocusedId.current = null;
+    pendingMove.current = null;
+    clearDecisionErrors();
+    setAnnouncement(null);
+    // The list the held approvals were shown in is gone, and their Undo with it: they are sent now.
+    flushHeldApprovals();
+  }, [statusFilter, selectedCompanyId, clearDecisionErrors, flushHeldApprovals]);
 
   const rejectMutation = useMutation({
     mutationFn: ({ id, note }: Decision) => (note ? approvalsApi.reject(id, note) : approvalsApi.reject(id)),
@@ -378,18 +535,33 @@ export function Approvals() {
   };
 
   const decide = (approval: Approval, action: ApprovalDecisionKind, note?: string) => {
-    // A request whose decision is still on its way is not sent a second one.
+    // A request whose decision is held or still on its way is not sent a second one.
     if (!decisions.start(approval.id, action)) return;
     const decision: Decision = { id: approval.id, note, subject: approvalDisplaySubject(approval) };
-    if (action === "approve") approveMutation.mutate(decision);
-    else if (action === "reject") rejectMutation.mutate(decision);
-    else revisionMutation.mutate(decision);
+    if (action === "reject") rejectMutation.mutate(decision);
+    else if (action === "revision") revisionMutation.mutate(decision);
+    else {
+      // An approval cannot be reversed once the server has it, so it is held here first. The card
+      // becomes its compact row and the reader moves on at once, as if the decision had landed.
+      if (!holdApproval({ ...decision, companyId: selectedCompanyId! })) {
+        settleDecision(approval.id);
+        return;
+      }
+      forgetRestoredNote(approval.id);
+      announce(`Approving ${decision.subject} in ${APPROVE_HOLD_MS / 1000} seconds. Undo is available.`);
+      advanceFrom(approval.id);
+    }
   };
 
   // A request whose decision came back as an error stays listed with that error, whatever status the reload shows.
+  // So does one whose approval is held or on its way, even when a reload already shows it decided.
   const inTab = (data ?? []).filter(
     (a) =>
-      statusFilter === "all" || needsBoard(a) || Boolean(decidedHere[a.id]) || Boolean(decisions.errors[a.id]),
+      statusFilter === "all" ||
+      needsBoard(a) ||
+      Boolean(decidedHere[a.id]) ||
+      Boolean(decisions.errors[a.id]) ||
+      Boolean(heldApprovals[a.id]),
   );
   // Everything else that was sent back waits on its requester. The kind filter and the sort do not apply to it.
   const listedIds = new Set(inTab.map((a) => a.id));
@@ -414,34 +586,39 @@ export function Approvals() {
     return reopened ? null : decided;
   };
 
+  /** Shown as one compact row: decided on this visit, or an approval that is held or on its way. */
+  const isCompactRow = (approval: Approval) => Boolean(heldApprovals[approval.id]) || decidedRowFor(approval) !== null;
+
   const pendingCount = (data ?? []).filter(needsBoard).length;
-  const decidedCount = (data ?? []).filter((a) => decidedRowFor(a) !== null).length;
-  // A decision counts as soon as it lands, before the reloaded list confirms it.
-  const leftCount = (data ?? []).filter((a) => needsBoard(a) && !decidedRowFor(a)).length;
+  // A held approval counts as decided: the reader has dealt with it unless they undo it.
+  const decidedCount = (data ?? []).filter(isCompactRow).length;
+  // A decision counts as soon as it is made, before the reloaded list confirms it.
+  const leftCount = (data ?? []).filter((a) => needsBoard(a) && !isCompactRow(a)).length;
   // Only cards count against the page size. Each decision therefore brings the next request onto
   // the page, and the page holds a full page of undecided requests for as long as more exist.
   const visible: Approval[] = [];
   let cardsShown = 0;
   for (const approval of filtered) {
-    if (!decidedRowFor(approval)) {
+    if (!isCompactRow(approval)) {
       if (cardsShown >= visibleCount) break;
       cardsShown += 1;
     }
     visible.push(approval);
   }
-  const remaining = filtered.filter((a) => !decidedRowFor(a)).length - cardsShown;
+  const remaining = filtered.filter((a) => !isCompactRow(a)).length - cardsShown;
 
   // "To decide" in the compact view opens one card at a time; "All decisions" always starts closed.
   const collapsibleList = statusFilter === "all" || view === "compact";
-  const firstCardId = visible.find((a) => !decidedRowFor(a))?.id ?? null;
+  const firstCardId = visible.find((a) => !isCompactRow(a))?.id ?? null;
   const effectiveOpenId = openId === undefined ? (statusFilter === "pending" ? firstCardId : null) : openId;
   queueRef.current = {
-    rows: filtered.map((a) => ({ id: a.id, undecided: needsBoard(a) && !decidedRowFor(a) })),
+    rows: filtered.map((a) => ({ id: a.id, undecided: needsBoard(a) && !isCompactRow(a) })),
     openId: effectiveOpenId,
     collapsible: collapsibleList,
     // Under "All decisions" the next undecided request can be far down the history; the reader stays where they are.
     advances: statusFilter === "pending",
   };
+  shownRef.current.companyId = selectedCompanyId ?? null;
 
   // A link to one request (#approval-<id>): open it, put it on the page, and take the reader to it.
   const hashTarget = approvalIdFromHash(location.hash ?? "");
@@ -454,7 +631,7 @@ export function Approvals() {
     handledHash.current = hashTarget;
     if (isSentBackTarget) setShowSentBack(true);
     if (index < 0) return;
-    const cardsUpToTarget = filtered.slice(0, index + 1).filter((a) => !decidedRowFor(a)).length;
+    const cardsUpToTarget = filtered.slice(0, index + 1).filter((a) => !isCompactRow(a)).length;
     setVisibleCount((count) => Math.max(count, Math.ceil(cardsUpToTarget / PAGE_SIZE) * PAGE_SIZE));
     setOpenId(hashTarget);
     lastFocusedId.current = hashTarget;
@@ -545,7 +722,7 @@ export function Approvals() {
           <div className="flex flex-wrap items-center gap-3">
             {keyboardShortcutsEnabled && statusFilter === "pending" && (
               <span className="hidden text-xs text-muted-foreground md:inline">
-                J / K to move · Shift+A approve · Shift+C request changes · Shift+X reject
+                J / K to move · Shift+A approve · Shift+C request changes · Shift+X reject · Shift+Z undo approve
               </span>
             )}
             {decidedCount > 0 && (
@@ -599,8 +776,18 @@ export function Approvals() {
         <>
           <div className="grid gap-3" ref={listRef} onFocus={rememberFocusedRow}>
             {visible.map((approval, index) => {
+              const held = heldApprovals[approval.id] ?? null;
               const decided = decidedRowFor(approval);
-              if (decided) return <DecidedApprovalRow key={approval.id} approval={decided} />;
+              if (held || decided) {
+                return (
+                  <DecidedApprovalRow
+                    key={approval.id}
+                    approval={decided ?? approval}
+                    held={held}
+                    onUndo={() => undoHeldApproval(approval.id)}
+                  />
+                );
+              }
               const pendingAction = decisions.inFlight[approval.id] ?? null;
               return (
                 <ApprovalCard
@@ -615,6 +802,8 @@ export function Approvals() {
                   pendingAction={pendingAction}
                   error={decisions.errors[approval.id] ?? null}
                   onDismissError={() => decisions.clearError(approval.id)}
+                  defaultNote={restoredNotes[approval.id]}
+                  onNoteChange={() => forgetRestoredNote(approval.id)}
                   linkedIssues={linkedIssueQueries[index]?.data}
                   enableShortcuts={keyboardShortcutsEnabled}
                   focusable

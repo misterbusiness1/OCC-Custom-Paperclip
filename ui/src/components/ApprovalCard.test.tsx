@@ -156,6 +156,40 @@ describe("ApprovalCard", () => {
     expect(onApprove).toHaveBeenLastCalledWith("Go ahead, month to month only.");
   });
 
+  it("starts with a note it is handed, its panel open, without taking focus, and reports edits to it", () => {
+    const onApprove = vi.fn();
+    const onNoteChange = vi.fn();
+    render({
+      approval: createApproval(),
+      onApprove,
+      onReject: vi.fn(),
+      defaultNote: "Month to month only",
+      onNoteChange,
+    });
+
+    const field = container.querySelector("textarea")!;
+    expect(field.value).toBe("Month to month only");
+    expect(button("Remove note")!.getAttribute("aria-expanded")).toBe("true");
+    // The card was put back by the page; the page decides where focus goes.
+    expect(document.activeElement).not.toBe(field);
+    expect(onNoteChange).not.toHaveBeenCalled();
+
+    click("Approve");
+    expect(onApprove).toHaveBeenLastCalledWith("Month to month only");
+
+    type("Month to month, from March");
+    expect(onNoteChange).toHaveBeenLastCalledWith("Month to month, from March");
+    click("Remove note");
+    expect(onNoteChange).toHaveBeenLastCalledWith("");
+    expect(container.querySelector("textarea")).toBeNull();
+    click("Approve");
+    expect(onApprove).toHaveBeenLastCalledWith(undefined);
+
+    // A panel the board opens still takes the cursor.
+    click("Add a note");
+    expect(document.activeElement).toBe(container.querySelector("textarea"));
+  });
+
   it("names the approval in each decision button for assistive technology", () => {
     render({ approval: createApproval(), onApprove: vi.fn(), onReject: vi.fn(), onRequestRevision: vi.fn() });
 
