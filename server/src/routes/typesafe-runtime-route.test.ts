@@ -139,6 +139,15 @@ describe("TypeSafe runtime REST/MCP routes", () => {
     mocks.search.mockRejectedValueOnce(new HttpError(403, "The run no longer has authority"));
     const forbidden = await call("connections_search", { query: "calendar" });
     expect(forbidden.status).toBe(403);
+
+    // A task reassigned between the route's check and the service's own reload
+    // surfaces as a 409 from the service. It is still lost authority.
+    mocks.validate.mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new HttpError(409, "The requesting agent no longer owns this task"));
+    mocks.request.mockRejectedValueOnce(new HttpError(409, "The requesting agent no longer owns this task"));
+    const raced = await call("connection_request", { service: "example" });
+    expect(raced.status).toBe(409);
+    expect(raced.body.result).toBeUndefined();
   });
 
   it("answers a body that is not one JSON-RPC request with 400, never 500", async () => {

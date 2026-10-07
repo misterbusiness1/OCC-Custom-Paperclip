@@ -193,6 +193,11 @@ export function runtimeConnectionIntentRoutes(db: Db) {
         } catch (err) {
           const failure = toolCallFailure(err);
           if (!failure) throw err;
+          // The service reloads the run and its task. If the task was
+          // reassigned or closed after the check above, its 404 or 409 is lost
+          // authority, not an outcome to hand the agent: validating again
+          // throws it as the HTTP error it is.
+          await service.validate(claims);
           res.json({ jsonrpc: "2.0", id, result: { ...resultContent(failure), isError: true } });
         }
         return;
