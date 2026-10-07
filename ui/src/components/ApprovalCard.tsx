@@ -21,6 +21,7 @@ import {
 import {
   ApprovalDecisionActions,
   type ApprovalDecisionActionsHandle,
+  type ApprovalNoteMode,
   type ApprovalPendingAction,
 } from "./ApprovalDecisionActions";
 import {
@@ -28,6 +29,7 @@ import {
   ApprovalWaitingOnRequester,
   composeApproveGuards,
   useApprovalRevisionGuard,
+  type ApprovalRevisionMemory,
 } from "./ApprovalRevision";
 import { timeAgo } from "../lib/timeAgo";
 import { isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
@@ -45,6 +47,13 @@ const DECIDED_LEAD: Record<string, string> = {
   approved: "Approved",
   rejected: "Rejected",
   cancelled: "Cancelled",
+};
+
+/** What a closed row says when its request holds a text that was typed and not sent. */
+const UNSENT_NOTE_LABEL: Record<ApprovalNoteMode, string> = {
+  note: "Note not sent",
+  revision: "Change request not sent",
+  reject: "Rejection reason not sent",
 };
 
 export type ApprovalCardLinkedIssue = {
@@ -77,7 +86,10 @@ export function ApprovalCard({
   error = null,
   onDismissError,
   defaultNote,
+  defaultNoteMode,
   onNoteChange,
+  unsentNote = null,
+  revisionMemory,
   linkedIssues,
   enableShortcuts = false,
   resolveAgentName,
@@ -99,10 +111,22 @@ export function ApprovalCard({
   error?: string | null;
   /** Called when the board edits the note after an error. */
   onDismissError?: () => void;
-  /** A note already typed for this request; the decision controls start with it, their note panel open. */
+  /** A text already typed for this request; the decision controls start with it, its panel open. */
   defaultNote?: string;
-  /** Called with the new text whenever the board edits or discards the note. */
-  onNoteChange?: (note: string) => void;
+  /** The panel that text was typed in: a note, a change request or a rejection reason. */
+  defaultNoteMode?: ApprovalNoteMode;
+  /** Called with the text and its panel whenever the board edits, moves or discards it. */
+  onNoteChange?: (note: string, mode: ApprovalNoteMode | null) => void;
+  /**
+   * The request holds a text that was typed and not sent. A closed row has no field to show it in,
+   * so its header says so; the open card shows the text itself.
+   */
+  unsentNote?: ApprovalNoteMode | null;
+  /**
+   * Where a page keeps the version first shown of each request and the revisions confirmed, so that
+   * they outlast this card being closed, paged, filtered or taken off the list and brought back.
+   */
+  revisionMemory?: ApprovalRevisionMemory;
   linkedIssues?: ApprovalCardLinkedIssue[];
   /** Shift+A approves, Shift+C asks for changes and Shift+X rejects while the card has focus. */
   enableShortcuts?: boolean;
@@ -141,7 +165,7 @@ export function ApprovalCard({
   // A long outgoing draft is cut on the card: the first Approve opens it instead of sending.
   const draftGate = useApprovalDraftGate(approval.type, payload);
   // A request resubmitted while this card is open is not approved until the board confirms it read the revision.
-  const revision = useApprovalRevisionGuard(approval);
+  const revision = useApprovalRevisionGuard(approval, revisionMemory);
   const approveGuard = composeApproveGuards(revision.approveGuard, draftGate.approveGuard);
   const title = subject ?? kindLabel;
   // One line of what is asked, for the closed row only. A request titled by its own recommendation does not repeat it.
@@ -230,6 +254,11 @@ export function ApprovalCard({
         <span className="font-medium text-amber-700 dark:text-amber-300">Revised while this page was open</span>
       )}
       {!isOpen && isPending && <span>Sending your decision...</span>}
+      {!isOpen && unsentNote && showResolutionButtons && (
+        <span className="font-medium text-foreground" data-approval-unsent-note="">
+          {UNSENT_NOTE_LABEL[unsentNote]}
+        </span>
+      )}
     </div>
   );
 
@@ -274,6 +303,7 @@ export function ApprovalCard({
               error={error}
               onDismissError={onDismissError}
               defaultNote={defaultNote}
+              defaultNoteMode={defaultNoteMode}
               onNoteChange={onNoteChange}
             />
           ) : (
@@ -304,7 +334,7 @@ export function ApprovalCard({
     return (
       <Card
         className={cn(
-          "block min-w-0 border-border/70 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "block min-w-0 scroll-mt-16 border-border/70 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:scroll-mt-2",
           // The open card is the one the shortcuts act on, so it is marked whether or not it holds focus.
           isOpen && "border-ring ring-1 ring-ring",
         )}
@@ -364,7 +394,7 @@ export function ApprovalCard({
   return (
     <Card
       className={cn(
-        "block min-w-0 border-border/70 p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "block min-w-0 scroll-mt-16 border-border/70 p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:scroll-mt-2",
         // With shortcuts on, the card that holds focus is the one they act on: mark it for mouse focus too.
         enableShortcuts && "focus-within:border-ring focus-within:ring-1 focus-within:ring-ring",
       )}

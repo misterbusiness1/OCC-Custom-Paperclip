@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Approval } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -94,6 +94,20 @@ function jsonEqual(a: unknown, b: unknown): boolean {
 type GuardedApproval = Pick<Approval, "id" | "status" | "updatedAt" | "payload">;
 type ReadVersion = { id: string; updatedAt: number; payload: unknown };
 
+/**
+ * What a page remembers about the requests it has shown, per approval id: the version the reader
+ * last had in front of them as the one to decide, and how many revisions they have confirmed. A
+ * page that draws a request's card more than once (a queue whose cards close, page and are
+ * filtered) hands one such memory to every {@link useApprovalRevisionGuard}, so that neither a
+ * confirmation nor an unconfirmed revision is forgotten when a card is drawn again, and a request
+ * that left the list and returns changed is still recognised as revised.
+ */
+export type ApprovalRevisionMemory = Map<string, { read: ReadVersion; reviewCount: number }>;
+
+export function createApprovalRevisionMemory(): ApprovalRevisionMemory {
+  return new Map();
+}
+
 function readVersion(approval: GuardedApproval | null | undefined): ReadVersion | null {
   if (!approval) return null;
   return { id: approval.id, updatedAt: new Date(approval.updatedAt).getTime(), payload: approval.payload };
@@ -118,20 +132,38 @@ export const APPROVAL_REVISED_HELD_BACK_MESSAGE = "Confirm that you have reviewe
  *
  * Render {@link ApprovalRevisedNotice} above the summary and pass
  * `approveGuard` (through {@link composeApproveGuards}) to the decision buttons.
+ *
+ * Without `memory` the hook remembers for as long as its component is mounted. With one, the
+ * remembered version and the confirmations live in it and outlast the component: see
+ * {@link ApprovalRevisionMemory}.
  */
-export function useApprovalRevisionGuard(approval: GuardedApproval | null | undefined) {
+export function useApprovalRevisionGuard(
+  approval: GuardedApproval | null | undefined,
+  memory?: ApprovalRevisionMemory,
+) {
   const current = readVersion(approval);
-  const [read, setRead] = useState<ReadVersion | null>(current);
+  const remembered = current && memory ? (memory.get(current.id) ?? null) : null;
+  const [read, setRead] = useState<ReadVersion | null>(remembered?.read ?? current);
   // How many revisions the reader has confirmed on this approval.
-  const [reviewCount, setReviewCount] = useState(0);
+  const [reviewCount, setReviewCount] = useState(remembered?.reviewCount ?? 0);
   const noticeRef = useRef<HTMLDivElement>(null);
 
-  // Another approval in the same place (or the first one to load) starts from what is shown now.
+  // Another approval in the same place (or the first one to load) starts from what the page
+  // remembers of it, or from what is shown now.
   const sameApproval = current !== null && read !== null && current.id === read.id;
   if (!sameApproval && (current !== null || read !== null)) {
-    setRead(current);
-    setReviewCount(0);
+    setRead(remembered?.read ?? current);
+    setReviewCount(remembered?.reviewCount ?? 0);
   }
+
+  // The first version shown of a request is the one the page remembers it by.
+  const currentId = current?.id;
+  useEffect(() => {
+    if (!memory || !current || memory.has(current.id)) return;
+    memory.set(current.id, { read: current, reviewCount: 0 });
+    // Only a request the memory does not hold yet is written, so the version shown at that moment is enough.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memory, currentId]);
 
   const status = approval?.status;
   const payload = approval?.payload;
@@ -147,7 +179,8 @@ export function useApprovalRevisionGuard(approval: GuardedApproval | null | unde
     // The button is about to leave the page: focus stays on the notice it sat in.
     noticeRef.current?.focus({ preventScroll: true });
     setRead(current);
-    setReviewCount((count) => count + 1);
+    setReviewCount(reviewCount + 1);
+    if (memory && current) memory.set(current.id, { read: current, reviewCount: reviewCount + 1 });
   };
 
   /** The message to show when Approve is held back, or null when it may send. */

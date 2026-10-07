@@ -13,6 +13,7 @@ vi.mock("@/lib/router", () => ({
 
 import { ApprovalCard } from "./ApprovalCard";
 import { ApprovalDecisionSummary } from "./ApprovalDecisionSummary";
+import { createApprovalRevisionMemory } from "./ApprovalRevision";
 import {
   approvalDraftPreview,
   approvalExcerpt,
@@ -179,10 +180,11 @@ describe("ApprovalCard", () => {
     click("Approve");
     expect(onApprove).toHaveBeenLastCalledWith("Month to month only");
 
+    // Every report names the panel the text sits in, so whoever keeps a copy can hand it back to that panel.
     type("Month to month, from March");
-    expect(onNoteChange).toHaveBeenLastCalledWith("Month to month, from March");
+    expect(onNoteChange).toHaveBeenLastCalledWith("Month to month, from March", "note");
     click("Remove note");
-    expect(onNoteChange).toHaveBeenLastCalledWith("");
+    expect(onNoteChange).toHaveBeenLastCalledWith("", null);
     expect(container.querySelector("textarea")).toBeNull();
     click("Approve");
     expect(onApprove).toHaveBeenLastCalledWith(undefined);
@@ -190,6 +192,117 @@ describe("ApprovalCard", () => {
     // A panel the board opens still takes the cursor.
     click("Add a note");
     expect(document.activeElement).toBe(container.querySelector("textarea"));
+  });
+
+  it("hands a text back to the panel it was typed in, never to the approval note", () => {
+    const onApprove = vi.fn();
+    const onReject = vi.fn();
+    const onRequestRevision = vi.fn();
+    render({
+      approval: createApproval(),
+      onApprove,
+      onReject,
+      onRequestRevision,
+      defaultNote: "No. Too expensive.",
+      defaultNoteMode: "reject",
+    });
+
+    // The rejection is still being confirmed: Approve cannot send the reason as its note.
+    expect(container.textContent).toContain("Reject this request?");
+    expect(container.querySelector("textarea")!.value).toBe("No. Too expensive.");
+    expect(button("Approve")!.disabled).toBe(true);
+    expect(document.activeElement).not.toBe(container.querySelector("textarea"));
+    click("Reject request");
+    expect(onReject).toHaveBeenCalledExactlyOnceWith("No. Too expensive.");
+    expect(onApprove).not.toHaveBeenCalled();
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    render({
+      approval: createApproval(),
+      onApprove,
+      onReject,
+      onRequestRevision,
+      defaultNote: "Quote the delivery date",
+      defaultNoteMode: "revision",
+    });
+    expect(container.textContent).toContain("What should change?");
+    expect(button("Approve")!.disabled).toBe(true);
+    click("Send request");
+    expect(onRequestRevision).toHaveBeenCalledExactlyOnceWith("Quote the delivery date");
+
+    // Where changes cannot be requested, a change request is not handed back as anything else.
+    act(() => root.unmount());
+    root = createRoot(container);
+    render({
+      approval: createApproval({ requestedByAgentId: null }),
+      onApprove,
+      onReject,
+      onRequestRevision,
+      defaultNote: "Quote the delivery date",
+      defaultNoteMode: "revision",
+    });
+    expect(container.querySelector("textarea")).toBeNull();
+    click("Approve");
+    expect(onApprove).toHaveBeenCalledExactlyOnceWith(undefined);
+  });
+
+  it("reports the panel a text moves to, so a kept copy follows it", () => {
+    const onNoteChange = vi.fn();
+    render({
+      approval: createApproval(),
+      onApprove: vi.fn(),
+      onReject: vi.fn(),
+      onRequestRevision: vi.fn(),
+      onNoteChange,
+    });
+
+    // An empty panel is nothing to keep.
+    click("Reject");
+    expect(onNoteChange).not.toHaveBeenCalled();
+    type("Too expensive");
+    expect(onNoteChange).toHaveBeenLastCalledWith("Too expensive", "reject");
+    click("Cancel");
+    expect(onNoteChange).toHaveBeenLastCalledWith("", null);
+
+    click("Add a note");
+    type("Month to month only");
+    expect(onNoteChange).toHaveBeenLastCalledWith("Month to month only", "note");
+    // The note becomes the change request.
+    click("Request changes");
+    expect(onNoteChange).toHaveBeenLastCalledWith("Month to month only", "revision");
+    click("Cancel");
+    expect(onNoteChange).toHaveBeenLastCalledWith("", null);
+  });
+
+  it("brings its decision controls into view when a panel opens, and leaves a panel that starts open alone", () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render({ approval: createApproval(), onApprove: vi.fn(), onReject: vi.fn(), onRequestRevision: vi.fn() });
+      expect(scrollIntoView).not.toHaveBeenCalled();
+
+      click("Request changes");
+      // The field and the buttons that send it, together; only as far as needed.
+      expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: "nearest" });
+      const controls = scrollIntoView.mock.contexts[0] as HTMLElement;
+      expect(controls.contains(container.querySelector("textarea"))).toBe(true);
+      expect(controls.contains(button("Send request")!)).toBe(true);
+      expect(controls.contains(button("Approve")!)).toBe(true);
+
+      act(() => root.unmount());
+      root = createRoot(container);
+      scrollIntoView.mockReset();
+      render({
+        approval: createApproval(),
+        onApprove: vi.fn(),
+        onReject: vi.fn(),
+        defaultNote: "Month to month only",
+      });
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      delete (Element.prototype as Partial<Element>).scrollIntoView;
+    }
   });
 
   it("names the approval in each decision button for assistive technology", () => {
@@ -413,7 +526,8 @@ describe("ApprovalCard", () => {
       expect(heldBackMessage()).toBe(HELD_BACK);
       // Focus lands on the notice, not on its button: a second Enter confirms nothing.
       expect(document.activeElement).toBe(notice());
-      expect(scrollIntoView.mock.contexts[0]).toBe(notice());
+      // Opening the note panel scrolled the controls into view earlier; this press brought the notice in.
+      expect(scrollIntoView.mock.contexts.at(-1)).toBe(notice());
       pressApprove();
       expect(onApprove).not.toHaveBeenCalled();
 
@@ -1456,6 +1570,68 @@ describe("ApprovalCard as a collapsible queue row", () => {
     expect(button("I have reviewed it")).toBeDefined();
     act(() => button("Approve")!.click());
     expect(props.onApprove).not.toHaveBeenCalled();
+  });
+
+  it("says on the closed row that a typed text was not sent, and which kind", () => {
+    const props = { onApprove: vi.fn(), onReject: vi.fn(), onRequestRevision: vi.fn() };
+    const marker = () => container.querySelector("[data-approval-unsent-note]")?.textContent ?? null;
+
+    render({ approval: createApproval(), open: false, ...props });
+    expect(marker()).toBeNull();
+    render({ approval: createApproval(), open: false, unsentNote: "note", ...props });
+    expect(marker()).toBe("Note not sent");
+    render({ approval: createApproval(), open: false, unsentNote: "revision", ...props });
+    expect(marker()).toBe("Change request not sent");
+    render({ approval: createApproval(), open: false, unsentNote: "reject", ...props });
+    expect(marker()).toBe("Rejection reason not sent");
+
+    // The open card shows the text itself; a request that can no longer be decided here has nowhere to send it.
+    render({ approval: createApproval(), open: true, unsentNote: "note", ...props });
+    expect(marker()).toBeNull();
+    render({ approval: createApproval({ status: "approved" }), open: false, unsentNote: "note", ...props });
+    expect(marker()).toBeNull();
+  });
+
+  it("remembers the version first shown and a confirmed revision in the page's memory, across being drawn again", () => {
+    const first = createApproval();
+    const revised = createApproval({
+      updatedAt: new Date("2026-10-06T11:00:00.000Z"),
+      payload: { ...(first.payload as Record<string, unknown>), recommendedAction: "Approve provider Y instead." },
+    });
+    const notice = () => container.querySelector<HTMLElement>("[data-approval-revised]");
+    const remount = (props: Partial<ComponentProps<typeof ApprovalCard>> & { approval: Approval }) => {
+      act(() => root.unmount());
+      root = createRoot(container);
+      render(props);
+    };
+    const onApprove = vi.fn();
+    const props = { onApprove, onReject: vi.fn() };
+
+    // Without a memory a card drawn again knows only the version it is drawn with.
+    render({ approval: first, ...props });
+    remount({ approval: revised, ...props });
+    expect(notice()).toBeNull();
+
+    const revisionMemory = createApprovalRevisionMemory();
+    remount({ approval: first, revisionMemory, ...props });
+    expect(notice()).toBeNull();
+    // The request leaves the page and returns in another version: the card that is drawn then is held back.
+    remount({ approval: revised, revisionMemory, ...props });
+    expect(notice()!.dataset.approvalRevised).toBe("unreviewed");
+    act(() => button("Approve")!.click());
+    expect(onApprove).not.toHaveBeenCalled();
+    // Still unconfirmed when it is drawn once more, also as a closed row.
+    remount({ approval: revised, revisionMemory, open: false, ...props });
+    expect(container.textContent).toContain("Revised while this page was open");
+
+    remount({ approval: revised, revisionMemory, ...props });
+    act(() => button("I have reviewed it")!.click());
+    expect(notice()!.dataset.approvalRevised).toBe("reviewed");
+    // The confirmation is kept: drawn again, the card does not ask a second time.
+    remount({ approval: revised, revisionMemory, ...props });
+    expect(notice()!.dataset.approvalRevised).toBe("reviewed");
+    act(() => button("Approve")!.click());
+    expect(onApprove).toHaveBeenCalledTimes(1);
   });
 
   it("leaves a card that is not collapsible as it was: always open, with a plain heading", () => {
