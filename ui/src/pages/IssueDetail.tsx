@@ -2499,7 +2499,7 @@ type IssueDetailActivityTabProps = {
     approvalId: string;
     action: "approve" | "reject";
   } | null;
-  onApprovalAction: (approvalId: string, action: "approve" | "reject") => void;
+  onApprovalAction: (approvalId: string, action: "approve" | "reject", note?: string) => void;
   handoffFocusSignal?: number;
   externalReferences?: MarkdownExternalReferenceMap;
 };
@@ -2823,8 +2823,8 @@ function IssueDetailActivityTab({
                   ? (agentMap.get(approval.requestedByAgentId) ?? null)
                   : null
               }
-              onApprove={() => onApprovalAction(approval.id, "approve")}
-              onReject={() => onApprovalAction(approval.id, "reject")}
+              onApprove={(note) => onApprovalAction(approval.id, "approve", note)}
+              onReject={(note) => onApprovalAction(approval.id, "reject", note)}
               detailLink={`/approvals/${approval.id}`}
               isPending={pendingApprovalAction?.approvalId === approval.id}
               pendingAction={
@@ -4389,14 +4389,16 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     mutationFn: async ({
       approvalId,
       action,
+      note,
     }: {
       approvalId: string;
       action: "approve" | "reject";
+      note?: string;
     }) => {
       if (action === "approve") {
-        return approvalsApi.approve(approvalId);
+        return note ? approvalsApi.approve(approvalId, note) : approvalsApi.approve(approvalId);
       }
-      return approvalsApi.reject(approvalId);
+      return note ? approvalsApi.reject(approvalId, note) : approvalsApi.reject(approvalId);
     },
     onMutate: ({ approvalId, action }) => {
       setPendingApprovalAction({ approvalId, action });
@@ -7932,8 +7934,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   userProfileMap={userProfileMap}
                   pendingApprovalAction={pendingApprovalAction}
                   handoffFocusSignal={handoffFocusSignal}
-                  onApprovalAction={(approvalId, action) => {
-                    approvalDecision.mutate({ approvalId, action });
+                  onApprovalAction={(approvalId, action, note) => {
+                    approvalDecision.mutate({ approvalId, action, note });
                   }}
                   externalReferences={
                     externalObjectsState.isEnabled

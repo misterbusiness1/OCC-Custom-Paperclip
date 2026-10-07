@@ -78,8 +78,8 @@ interface CommentThreadProps {
   timelineEvents?: IssueTimelineEvent[];
   companyId?: string | null;
   projectId?: string | null;
-  onApproveApproval?: (approvalId: string) => Promise<void>;
-  onRejectApproval?: (approvalId: string) => Promise<void>;
+  onApproveApproval?: (approvalId: string, note?: string) => Promise<void>;
+  onRejectApproval?: (approvalId: string, note?: string) => Promise<void>;
   pendingApprovalAction?: {
     approvalId: string;
     action: "approve" | "reject";
@@ -565,8 +565,8 @@ const TimelineList = memo(function TimelineList({
   currentUserId?: string | null;
   companyId?: string | null;
   projectId?: string | null;
-  onApproveApproval?: (approvalId: string) => Promise<void>;
-  onRejectApproval?: (approvalId: string) => Promise<void>;
+  onApproveApproval?: (approvalId: string, note?: string) => Promise<void>;
+  onRejectApproval?: (approvalId: string, note?: string) => Promise<void>;
   pendingApprovalAction?: {
     approvalId: string;
     action: "approve" | "reject";
@@ -609,8 +609,8 @@ const TimelineList = memo(function TimelineList({
               <ApprovalCard
                 approval={approval}
                 requesterAgent={approval.requestedByAgentId ? agentMap?.get(approval.requestedByAgentId) ?? null : null}
-                onApprove={onApproveApproval ? () => void onApproveApproval(approval.id) : undefined}
-                onReject={onRejectApproval ? () => void onRejectApproval(approval.id) : undefined}
+                onApprove={onApproveApproval ? (note) => void onApproveApproval(approval.id, note) : undefined}
+                onReject={onRejectApproval ? (note) => void onRejectApproval(approval.id, note) : undefined}
                 detailLink={`/approvals/${approval.id}`}
                 isPending={isPending}
                 pendingAction={isPending ? pendingApprovalAction?.action ?? null : null}

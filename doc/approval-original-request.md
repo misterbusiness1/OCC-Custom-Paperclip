@@ -24,4 +24,22 @@ For an existing Paperclip issue comment, set `source.kind` to `paperclip_comment
 
 Resubmitting decision fields without an `originalRequest` preserves the prior snapshot. Supplying a new `originalRequest` is an explicit source change and is recorded in approval activity. Existing approvals are not backfilled; absent snapshots render a clear missing-source state.
 
-Approval detail, shared approval cards, and both inbox presentations place the original request between Recommendation and Why. Inbox decisions follow the shared decision summary, including the missing-source state for historical approvals. Compact summaries let the reader expand long requests without shortening their retained text.
+Approval detail, shared approval cards, and both inbox presentations place the original request between Recommendation and Why. Inbox decisions follow the shared decision summary. Compact summaries show the first lines of a long request and let the reader expand it; the retained text is never shortened. The provenance line names the channel of an external source and links a Paperclip source back to its comment.
+
+A historical approval without a retained source shows the missing-source state. When it also has no pros and no risks, the summary states that once in a single line instead of three empty fields.
+
+## Decision surfaces
+
+The shared decision summary also shows what the board is about to approve:
+
+- An email-reply approval (an outgoing `body` with `subject`, `recipient`, or `channel`) shows the draft under a **Draft reply** label, after the decision brief and before the decision buttons. The draft is never used as the original request.
+- Long recommendation and rationale text, and pros and risks beyond the first two, expand in place.
+- `nextActionOnApproval` appears as **If approved**.
+
+The approval card, the approval detail page, and Board approvals in both inbox presentations use the same decision buttons:
+
+- **Approve** sends at once. **Add a note** attaches an optional `decisionNote`.
+- **Request changes** is available while the approval is `pending` and requires a `decisionNote`, so the requester knows what to revise.
+- **Reject** asks for confirmation and accepts an optional reason as the `decisionNote`.
+
+Board approvals decided on the Approvals page or in the inbox are decided in place. The Approvals page lists the longest-waiting request first, marks requests that have waited seven days or more, shows linked tasks on each card, and filters by kind. With keyboard shortcuts enabled, `J`/`K` move between cards, and `Shift+A`, `Shift+C`, and `Shift+X` approve, request changes, and reject for the focused card.
