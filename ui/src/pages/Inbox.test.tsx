@@ -279,6 +279,11 @@ function createJoinRequest(
   };
 }
 
+/** What a decision is sent with: the `updatedAt` of the request as its row showed it. */
+const SHOWN_VERSION = { expectedUpdatedAt: new Date("2026-03-11T00:00:00.000Z") };
+/** The same, for a list whose times are counted back from the clock of the test. */
+const ANY_SHOWN_VERSION = { expectedUpdatedAt: expect.any(Date) };
+
 function createApproval(overrides: Partial<Approval> = {}): Approval {
   return {
     id: "approval-1",
@@ -604,7 +609,7 @@ describe("Inbox toolbar", () => {
       });
       await act(async () => button("Send request").click());
       await vi.waitFor(() =>
-        expect(apiMocks.requestRevision).toHaveBeenCalledWith("approval-1", "Quote the delivery date"));
+        expect(apiMocks.requestRevision).toHaveBeenCalledWith("approval-1", "Quote the delivery date", SHOWN_VERSION));
       // The decision is stored but the list still shows the old approval: nothing can be sent twice.
       await vi.waitFor(() => expect(apiMocks.approvalsList.mock.calls.length).toBeGreaterThan(1));
       // Let the mutation settle, so only the lock (not the in-flight request) can disable the controls.
@@ -697,7 +702,7 @@ describe("Inbox toolbar", () => {
       // Approving a hire still opens its confirmation page.
       apiMocks.approve.mockResolvedValue(createApproval({ id: "approval-hire", type: "hire_agent", status: "approved" }));
       await act(async () => button(hire, "Approve").click());
-      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-hire"));
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-hire", undefined, SHOWN_VERSION));
       await vi.waitFor(() =>
         expect(routerMock.navigate).toHaveBeenCalledWith("/approvals/approval-hire?resolved=approved"));
     } finally {
@@ -1048,12 +1053,12 @@ describe("Inbox toolbar", () => {
 
       // A draft that is shown whole is approved at once.
       await act(async () => button(short, "Approve").click());
-      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-short"));
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-short", undefined, SHOWN_VERSION));
 
       // With the whole draft on the page, the next Approve sends.
       await vi.waitFor(() => expect(button(long, "Approve").disabled).toBe(false));
       await act(async () => button(long, "Approve").click());
-      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-long"));
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-long", undefined, SHOWN_VERSION));
       expect(apiMocks.approve).toHaveBeenCalledTimes(2);
       expect(heldBack(long)).toBe(false);
       expect(apiMocks.reject).not.toHaveBeenCalled();
@@ -1310,6 +1315,58 @@ describe("Inbox toolbar", () => {
     }
   });
 
+  it.each([true, false])("reports a decision the server refused because the request changed, and reloads the row, with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    const message = "This request changed after you opened it. Reload it and decide again.";
+    const changedAt = new Date("2026-03-11T00:10:00.000Z");
+    const request = (overrides: Partial<Approval> = {}) => createApproval({
+      id: "approval-stale",
+      type: "request_board_approval",
+      payload: { title: "Stale request", recommendedAction: "Approve it", reasoning: "It fits the request" },
+      ...overrides,
+    });
+    apiMocks.approvalsList.mockResolvedValue([request()]);
+    // Sent back and resubmitted unchanged elsewhere; the Inbox has not reloaded.
+    apiMocks.approve.mockImplementationOnce(async () => {
+      apiMocks.approvalsList.mockResolvedValue([request({ updatedAt: changedAt })]);
+      throw Object.assign(new Error(message), {
+        status: 409,
+        body: { error: message, code: "approval_version_conflict", details: { currentStatus: "pending" } },
+      });
+    });
+    apiMocks.approve.mockResolvedValue(request({ status: "approved", updatedAt: changedAt }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Stale request"));
+      const row = () =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes("Stale request"))!;
+      const approve = () => [...row().querySelectorAll("button")].find((candidate) => candidate.textContent === "Approve")!;
+      const loads = apiMocks.approvalsList.mock.calls.length;
+
+      await act(async () => approve().click());
+      await vi.waitFor(() => expect(row().querySelectorAll("[role='alert']")).toHaveLength(1));
+
+      expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-stale", undefined, SHOWN_VERSION);
+      expect(row().querySelector("[role='alert']")!.textContent).toBe(`Error while approving: ${message}`);
+      // An error, never an approved row.
+      expect(row().querySelector("[data-approval-inbox-outcome]")).toBeNull();
+      // The Inbox does not reload on other errors; on this one it does, so the row shows the version the server holds.
+      await vi.waitFor(() => expect(apiMocks.approvalsList.mock.calls.length).toBeGreaterThan(loads));
+
+      // The next press names that version.
+      await vi.waitFor(() => expect(approve().disabled).toBe(false));
+      await act(async () => approve().click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(2));
+      expect(apiMocks.approve).toHaveBeenLastCalledWith("approval-stale", undefined, { expectedUpdatedAt: changedAt });
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it.each([true, false])("holds Approve back when a request is revised while its row is open with streamlined UI %s", async (streamlinedUi) => {
     routerMock.location.pathname = "/inbox/mine";
     apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
@@ -1392,7 +1449,7 @@ describe("Inbox toolbar", () => {
 
       // A request whose content did not change is approved at once.
       await act(async () => buttons(same, "Approve")[0].click());
-      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-same"));
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-same", undefined, { expectedUpdatedAt: later }));
 
       await act(async () => buttons(board, "I have reviewed it")[0].click());
       expect(board.textContent).not.toContain(NOTICE);
@@ -1400,11 +1457,12 @@ describe("Inbox toolbar", () => {
       expect(board.querySelector("textarea")!.value).toBe("Month to month only");
       await act(async () => buttons(board, "Approve")[0].click());
       await vi.waitFor(() =>
-        expect(apiMocks.approve).toHaveBeenCalledWith("approval-board", "Month to month only"));
+        // Each approval names the revision its row shows now, not the version first shown.
+        expect(apiMocks.approve).toHaveBeenCalledWith("approval-board", "Month to month only", { expectedUpdatedAt: later }));
 
       await act(async () => buttons(plain, "I have reviewed it")[0].click());
       await act(async () => buttons(plain, "Approve")[0].click());
-      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-plain"));
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-plain", undefined, { expectedUpdatedAt: later }));
       expect(apiMocks.approve).toHaveBeenCalledTimes(3);
     } finally {
       act(() => root.unmount());
@@ -1478,7 +1536,7 @@ describe("Inbox toolbar", () => {
       // A row with the plain buttons shows its error under them, once.
       await act(async () => buttons(plain, "Reject")[0].click());
       await vi.waitFor(() => expect(alerts(plain)).toHaveLength(1));
-      expect(apiMocks.reject).toHaveBeenCalledExactlyOnceWith("approval-plain");
+      expect(apiMocks.reject).toHaveBeenCalledExactlyOnceWith("approval-plain", undefined, SHOWN_VERSION);
       expect(alerts(plain)[0].textContent).toBe("Error while rejecting: Not allowed");
       expect(alerts(plain)[0]).toBe(plain.querySelector("[role='alert']:last-child"));
       expect(alerts(container)).toHaveLength(2);
@@ -1583,7 +1641,7 @@ describe("Inbox toolbar", () => {
       await act(async () => buttons(rowFor("Decided here"), "Approve")[0].click());
       await vi.waitFor(() => expect(outcome(rowFor("Decided here"))).not.toBeNull());
       const here = rowFor("Decided here");
-      expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-here");
+      expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-here", undefined, ANY_SHOWN_VERSION);
       expect(outcome(here)!.textContent).toBe("This request is approved.");
       // As tall as the buttons it replaces (h-8), with the same gap above it.
       expect(outcome(here)!.className).toContain("min-h-8");
@@ -1688,18 +1746,18 @@ describe("Inbox toolbar", () => {
 
       // The row above the new one did not move: its press is taken at once.
       await pointerPress("Request top");
-      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-top"));
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-top", undefined, ANY_SHOWN_VERSION));
 
       // A press by the keyboard is never held up.
       await keyboardPress("Request new");
       await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(2));
-      expect(apiMocks.approve).toHaveBeenLastCalledWith("approval-new");
+      expect(apiMocks.approve).toHaveBeenLastCalledWith("approval-new", undefined, ANY_SHOWN_VERSION);
 
       // 900 ms after the move the same pointer press on the row that was pushed down is taken.
       now += 600;
       await pointerPress("Request low");
       await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(3));
-      expect(apiMocks.approve).toHaveBeenLastCalledWith("approval-low");
+      expect(apiMocks.approve).toHaveBeenLastCalledWith("approval-low", undefined, ANY_SHOWN_VERSION);
     } finally {
       clock.mockRestore();
       act(() => root.unmount());
@@ -1770,13 +1828,13 @@ describe("Inbox toolbar", () => {
           .querySelector<HTMLButtonElement>("button[aria-label^='Approve:']")!
           .click();
       });
-      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-2"));
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-2", undefined, ANY_SHOWN_VERSION));
 
       // Long after the move, a pointer press is taken as usual.
       now += 60_000;
       await pointerPress("Request three");
       await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(2));
-      expect(apiMocks.approve).toHaveBeenLastCalledWith("approval-3");
+      expect(apiMocks.approve).toHaveBeenLastCalledWith("approval-3", undefined, ANY_SHOWN_VERSION);
     } finally {
       clock.mockRestore();
       act(() => root.unmount());

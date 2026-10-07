@@ -23,6 +23,7 @@ import {
   approvalDecisionErrorText,
   useSettlingApprovals,
 } from "../components/ApprovalDecisionActions";
+import type { ApprovalVersion } from "../lib/approval-version";
 import { ApprovalDecisionSummary, type ApprovalAgentNameResolver } from "../components/ApprovalDecisionSummary";
 import { APPROVE_AFTER_ADVANCE_MS } from "../components/ApprovalHold";
 import {
@@ -50,6 +51,9 @@ const BREADCRUMB_SUBJECT_LENGTH = 40;
 export const MARK_RESUBMITTED_CONFIRM =
   "Mark this request as resubmitted? It returns to the queue unchanged. Your change request stays on it, " +
   "and the requester can no longer resubmit a revised version.";
+
+/** A decision as it is sent: the note, and the `updatedAt` of the request as the page showed it when the button was pressed. */
+type DecisionInput = { note?: string; expectedUpdatedAt: ApprovalVersion };
 
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
@@ -147,7 +151,8 @@ export function ApprovalDetail() {
   };
 
   const approveMutation = useMutation({
-    mutationFn: (note?: string) => (note ? approvalsApi.approve(approvalId!, note) : approvalsApi.approve(approvalId!)),
+    mutationFn: ({ note, expectedUpdatedAt }: DecisionInput) =>
+      approvalsApi.approve(approvalId!, note || undefined, { expectedUpdatedAt }),
     onMutate: () => setDecisionError(null),
     onSuccess: (decided) => {
       markDecided(decided);
@@ -158,7 +163,8 @@ export function ApprovalDetail() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: (note?: string) => (note ? approvalsApi.reject(approvalId!, note) : approvalsApi.reject(approvalId!)),
+    mutationFn: ({ note, expectedUpdatedAt }: DecisionInput) =>
+      approvalsApi.reject(approvalId!, note || undefined, { expectedUpdatedAt }),
     onMutate: () => setDecisionError(null),
     onSuccess: (decided) => {
       markDecided(decided);
@@ -168,7 +174,8 @@ export function ApprovalDetail() {
   });
 
   const revisionMutation = useMutation({
-    mutationFn: (note: string) => approvalsApi.requestRevision(approvalId!, note),
+    mutationFn: ({ note, expectedUpdatedAt }: DecisionInput) =>
+      approvalsApi.requestRevision(approvalId!, note, { expectedUpdatedAt }),
     onMutate: () => setDecisionError(null),
     onSuccess: (decided) => {
       markDecided(decided);
@@ -361,10 +368,13 @@ export function ApprovalDetail() {
                 approveArmDelayMs={APPROVE_AFTER_ADVANCE_MS}
                 subject={subject}
                 status={approval.status}
-                onApprove={(note) => approveMutation.mutate(note)}
-                onReject={(note) => rejectMutation.mutate(note)}
+                // Each decision names the version on the page now; the server refuses it for any later one.
+                onApprove={(note) => approveMutation.mutate({ note, expectedUpdatedAt: approval.updatedAt })}
+                onReject={(note) => rejectMutation.mutate({ note, expectedUpdatedAt: approval.updatedAt })}
                 onRequestRevision={
-                  approval.requestedByAgentId ? (note) => revisionMutation.mutate(note) : undefined
+                  approval.requestedByAgentId
+                    ? (note) => revisionMutation.mutate({ note, expectedUpdatedAt: approval.updatedAt })
+                    : undefined
                 }
                 isPending={decisionPending}
                 pendingAction={

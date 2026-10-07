@@ -116,6 +116,7 @@ import {
   composeApproveGuards,
   useApprovalRevisionGuard,
 } from "../components/ApprovalRevision";
+import { isApprovalVersionConflict, type ApprovalVersion } from "../lib/approval-version";
 import { APPROVE_AFTER_ADVANCE_MS, useRowMovedAt } from "../components/ApprovalHold";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
@@ -1769,9 +1770,17 @@ export function Inbox() {
     shownApprovalIdsRef.current = shown;
   }, [filteredWorkItems]);
 
+  // The server refused a decision because the request changed after its row was drawn. The row
+  // shows the error; the list is reloaded so the row shows the version the server holds, and the
+  // next decision is made for that one.
+  const reloadAfterVersionConflict = (err: unknown) => {
+    if (!isApprovalVersionConflict(err) || !selectedCompanyId) return;
+    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId) });
+  };
+
   const approveMutation = useMutation({
-    mutationFn: ({ id, note }: { id: string; note?: string }) =>
-      note ? approvalsApi.approve(id, note) : approvalsApi.approve(id),
+    mutationFn: ({ id, note, expectedUpdatedAt }: { id: string; note?: string; expectedUpdatedAt: ApprovalVersion }) =>
+      approvalsApi.approve(id, note || undefined, { expectedUpdatedAt }),
     onSuccess: (approval, { id }) => {
       setActionError(null);
       markApprovalDecided(approval);
@@ -1791,12 +1800,13 @@ export function Inbox() {
     },
     onError: (err, { id }) => {
       settleApprovalDecision(id, approvalDecisionErrorText("approve", err));
+      reloadAfterVersionConflict(err);
     },
   });
 
   const rejectMutation = useMutation({
-    mutationFn: ({ id, note }: { id: string; note?: string }) =>
-      note ? approvalsApi.reject(id, note) : approvalsApi.reject(id),
+    mutationFn: ({ id, note, expectedUpdatedAt }: { id: string; note?: string; expectedUpdatedAt: ApprovalVersion }) =>
+      approvalsApi.reject(id, note || undefined, { expectedUpdatedAt }),
     onSuccess: (approval, { id }) => {
       setActionError(null);
       markApprovalDecided(approval);
@@ -1805,11 +1815,13 @@ export function Inbox() {
     },
     onError: (err, { id }) => {
       settleApprovalDecision(id, approvalDecisionErrorText("reject", err));
+      reloadAfterVersionConflict(err);
     },
   });
 
   const requestRevisionMutation = useMutation({
-    mutationFn: ({ id, note }: { id: string; note: string }) => approvalsApi.requestRevision(id, note),
+    mutationFn: ({ id, note, expectedUpdatedAt }: { id: string; note: string; expectedUpdatedAt: ApprovalVersion }) =>
+      approvalsApi.requestRevision(id, note, { expectedUpdatedAt }),
     onSuccess: (approval, { id }) => {
       setActionError(null);
       markApprovalDecided(approval);
@@ -1818,6 +1830,7 @@ export function Inbox() {
     },
     onError: (err, { id }) => {
       settleApprovalDecision(id, approvalDecisionErrorText("revision", err));
+      reloadAfterVersionConflict(err);
     },
   });
 
@@ -3107,17 +3120,17 @@ export function Inbox() {
                           resolveAgentName={(agentId) => (agents ? agentName(agentId) : undefined)}
                           onApprove={(note) => {
                             if (approvalDecisions.start(item.approval.id, "approve")) {
-                              approveMutation.mutate({ id: item.approval.id, note });
+                              approveMutation.mutate({ id: item.approval.id, note, expectedUpdatedAt: item.approval.updatedAt });
                             }
                           }}
                           onReject={(note) => {
                             if (approvalDecisions.start(item.approval.id, "reject")) {
-                              rejectMutation.mutate({ id: item.approval.id, note });
+                              rejectMutation.mutate({ id: item.approval.id, note, expectedUpdatedAt: item.approval.updatedAt });
                             }
                           }}
                           onRequestRevision={(note) => {
                             if (approvalDecisions.start(item.approval.id, "revision")) {
-                              requestRevisionMutation.mutate({ id: item.approval.id, note });
+                              requestRevisionMutation.mutate({ id: item.approval.id, note, expectedUpdatedAt: item.approval.updatedAt });
                             }
                           }}
                           isPending={

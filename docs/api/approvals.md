@@ -72,6 +72,34 @@ POST /api/approvals/{approvalId}/request-revision
 { "decisionNote": "Please reduce the budget and clarify capabilities." }
 ```
 
+## Expected Version
+
+Approve, Reject and Request Revision accept an optional `expectedUpdatedAt`: the `updatedAt` of the approval as the caller read it, as an ISO 8601 string.
+
+```
+POST /api/approvals/{approvalId}/approve
+{ "decisionNote": "Approved.", "expectedUpdatedAt": "2026-10-07T12:34:56.789Z" }
+```
+
+When the field is sent and the approval has changed since (resubmitted, sent back, decided, cancelled), nothing is stored and the answer is `409`:
+
+```
+{
+  "error": "This request changed after you opened it. Reload it and decide again.",
+  "code": "approval_version_conflict",
+  "details": {
+    "code": "approval_version_conflict",
+    "currentStatus": "pending",
+    "currentUpdatedAt": "2026-10-07T12:40:00.000Z",
+    "expectedUpdatedAt": "2026-10-07T12:34:56.789Z"
+  }
+}
+```
+
+Read the approval again and decide on what it shows now. Every change of an approval's state moves `updatedAt`; comments and issue links do not. The comparison is made at millisecond precision, the precision of the value the API returns. A value that is not an ISO 8601 date-time is a `400`.
+
+Without the field the routes behave as before: the decision is applied to whatever version is stored, and repeating a decision that is already stored changes nothing.
+
 ## Resubmit
 
 ```

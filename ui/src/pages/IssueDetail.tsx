@@ -170,6 +170,7 @@ import {
 import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
 import type { ApprovalDecisionKind } from "../components/ApprovalDecisionActions";
+import { isApprovalVersionConflict, type ApprovalVersion } from "../lib/approval-version";
 import { ProjectTile } from "../components/ProjectTile";
 import { InlineEditor } from "../components/InlineEditor";
 import {
@@ -2500,7 +2501,13 @@ type IssueDetailActivityTabProps = {
     approvalId: string;
     action: ApprovalDecisionKind;
   } | null;
-  onApprovalAction: (approvalId: string, action: ApprovalDecisionKind, note?: string) => void;
+  /** `expectedUpdatedAt` is the `updatedAt` of the approval as its card shows it: the version decided on. */
+  onApprovalAction: (
+    approvalId: string,
+    action: ApprovalDecisionKind,
+    note: string | undefined,
+    expectedUpdatedAt: ApprovalVersion,
+  ) => void;
   handoffFocusSignal?: number;
   externalReferences?: MarkdownExternalReferenceMap;
 };
@@ -2827,10 +2834,10 @@ function IssueDetailActivityTab({
               resolveAgentName={(agentId) =>
                 agentMap.size > 0 ? (agentMap.get(agentId)?.name ?? null) : undefined
               }
-              onApprove={(note) => onApprovalAction(approval.id, "approve", note)}
-              onReject={(note) => onApprovalAction(approval.id, "reject", note)}
+              onApprove={(note) => onApprovalAction(approval.id, "approve", note, approval.updatedAt)}
+              onReject={(note) => onApprovalAction(approval.id, "reject", note, approval.updatedAt)}
               // The card hides the button when the request has no requesting agent or is not pending.
-              onRequestRevision={(note) => onApprovalAction(approval.id, "revision", note)}
+              onRequestRevision={(note) => onApprovalAction(approval.id, "revision", note, approval.updatedAt)}
               detailLink={`/approvals/${approval.id}`}
               isPending={pendingApprovalAction?.approvalId === approval.id}
               pendingAction={
@@ -4396,17 +4403,19 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       approvalId,
       action,
       note,
+      expectedUpdatedAt,
     }: {
       approvalId: string;
       action: ApprovalDecisionKind;
       note?: string;
+      expectedUpdatedAt: ApprovalVersion;
     }) => {
-      if (action === "approve") {
-        return note ? approvalsApi.approve(approvalId, note) : approvalsApi.approve(approvalId);
-      }
+      // The server refuses the decision when the approval has changed since its card was drawn.
+      const version = { expectedUpdatedAt };
+      if (action === "approve") return approvalsApi.approve(approvalId, note || undefined, version);
       // The card sends a change request only with a note.
-      if (action === "revision") return approvalsApi.requestRevision(approvalId, note);
-      return note ? approvalsApi.reject(approvalId, note) : approvalsApi.reject(approvalId);
+      if (action === "revision") return approvalsApi.requestRevision(approvalId, note, version);
+      return approvalsApi.reject(approvalId, note || undefined, version);
     },
     onMutate: ({ approvalId, action }) => {
       setPendingApprovalAction({ approvalId, action });
@@ -4446,6 +4455,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         body: err instanceof Error ? err.message : "Unable to update approval",
         tone: "error",
       });
+      // The request changed after its card was drawn: reload the card, so the next decision is for the version shown.
+      if (isApprovalVersionConflict(err)) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId!) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(variables.approvalId) });
+      }
     },
     onSettled: () => {
       setPendingApprovalAction(null);
@@ -7946,8 +7960,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   userProfileMap={userProfileMap}
                   pendingApprovalAction={pendingApprovalAction}
                   handoffFocusSignal={handoffFocusSignal}
-                  onApprovalAction={(approvalId, action, note) => {
-                    approvalDecision.mutate({ approvalId, action, note });
+                  onApprovalAction={(approvalId, action, note, expectedUpdatedAt) => {
+                    approvalDecision.mutate({ approvalId, action, note, expectedUpdatedAt });
                   }}
                   externalReferences={
                     externalObjectsState.isEnabled

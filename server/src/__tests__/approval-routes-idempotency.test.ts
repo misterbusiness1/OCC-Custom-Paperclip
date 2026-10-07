@@ -56,7 +56,8 @@ function registerModuleMocks() {
 const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
   const { errorHandler } = await import("../middleware/index.js");
   const { approvalRoutes } = await import("../routes/approvals.js");
-  return { errorHandler, approvalRoutes };
+  const { conflict } = await import("../errors.js");
+  return { errorHandler, approvalRoutes, conflict };
 });
 
 async function createApp(actorOverrides: Record<string, unknown> = {}) {
@@ -342,6 +343,111 @@ describe("approval routes idempotent retries", () => {
       "user-1",
       "Need changes",
     );
+  });
+
+  describe("expected version of a decision", () => {
+    const VERSION = "2026-10-07T12:34:56.789Z";
+    const pending = {
+      id: "approval-7",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: null,
+    };
+
+    beforeEach(() => {
+      mockApprovalService.getById.mockResolvedValue(pending);
+      mockApprovalService.approve.mockResolvedValue({ approval: { ...pending, status: "approved" }, applied: true });
+      mockApprovalService.reject.mockResolvedValue({ approval: { ...pending, status: "rejected" }, applied: true });
+      mockApprovalService.requestRevision.mockResolvedValue({ ...pending, status: "revision_requested" });
+    });
+
+    it.each([
+      ["approve", () => mockApprovalService.approve],
+      ["reject", () => mockApprovalService.reject],
+      ["request-revision", () => mockApprovalService.requestRevision],
+    ] as const)("passes the version to the service on %s only when the caller sent one", async (route, service) => {
+      const app = await createApp();
+
+      const without = await request(app).post(`/api/approvals/approval-7/${route}`).send({ decisionNote: "ok" });
+      expect(without.status).toBe(200);
+      // Exactly the call made before the field existed: three arguments, no trailing undefined.
+      expect(service().mock.calls[0]).toEqual(["approval-7", "user-1", "ok"]);
+
+      const withVersion = await request(app)
+        .post(`/api/approvals/approval-7/${route}`)
+        .send({ decisionNote: "ok", expectedUpdatedAt: VERSION });
+      expect(withVersion.status).toBe(200);
+      expect(service().mock.calls[1]).toEqual(["approval-7", "user-1", "ok", { expectedUpdatedAt: new Date(VERSION) }]);
+    });
+
+    it.each(["approve", "reject", "request-revision"] as const)(
+      "answers 409 with the conflict and runs nothing that follows a decision on %s",
+      async (route) => {
+        const stale = routeModules.value.conflict(
+          "This request changed after you opened it. Reload it and decide again.",
+          {
+            code: "approval_version_conflict",
+            currentStatus: "pending",
+            currentUpdatedAt: "2026-10-07T12:40:00.000Z",
+            expectedUpdatedAt: VERSION,
+          },
+        );
+        mockApprovalService.approve.mockRejectedValue(stale);
+        mockApprovalService.reject.mockRejectedValue(stale);
+        mockApprovalService.requestRevision.mockRejectedValue(stale);
+
+        const res = await request(await createApp())
+          .post(`/api/approvals/approval-7/${route}`)
+          .send({ decisionNote: "ok", expectedUpdatedAt: VERSION });
+
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({
+          error: "This request changed after you opened it. Reload it and decide again.",
+          code: "approval_version_conflict",
+          details: {
+            code: "approval_version_conflict",
+            currentStatus: "pending",
+            currentUpdatedAt: "2026-10-07T12:40:00.000Z",
+            expectedUpdatedAt: VERSION,
+          },
+        });
+        expect(mockLogActivity).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["approve", "reject", "request-revision"] as const)(
+      "refuses a malformed version with 400 before the service on %s",
+      async (route) => {
+        const res = await request(await createApp())
+          .post(`/api/approvals/approval-7/${route}`)
+          .send({ decisionNote: "ok", expectedUpdatedAt: "yesterday" });
+
+        expect(res.status).toBe(400);
+        expect(mockApprovalService.approve).not.toHaveBeenCalled();
+        expect(mockApprovalService.reject).not.toHaveBeenCalled();
+        expect(mockApprovalService.requestRevision).not.toHaveBeenCalled();
+      },
+    );
+
+    it("keeps the version check behind the board and company checks", async () => {
+      // An agent is refused before anything is read, with or without a version.
+      const agent = await request(await createAgentApp())
+        .post("/api/approvals/approval-7/approve")
+        .send({ expectedUpdatedAt: VERSION });
+      expect(agent.status).toBe(403);
+
+      // A board user of another company gets 404, not the 409 that would confirm the approval exists.
+      mockApprovalService.getById.mockResolvedValue({ ...pending, companyId: "company-2" });
+      const outsider = await request(await createApp())
+        .post("/api/approvals/approval-7/approve")
+        .send({ expectedUpdatedAt: VERSION });
+      expect(outsider.status).toBe(404);
+      expect(mockApprovalService.approve).not.toHaveBeenCalled();
+    });
   });
 
   it("lets agents create generic issue-linked board approval requests", async () => {

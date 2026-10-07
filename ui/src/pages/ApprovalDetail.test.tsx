@@ -58,6 +58,9 @@ import { ThemeProvider } from "../context/ThemeContext";
 
 const MANAGER_ID = "11111111-1111-4111-8111-111111111111";
 
+/** What a decision is sent with: the `updatedAt` of the request as the page showed it. */
+const SHOWN_VERSION = { expectedUpdatedAt: new Date("2026-10-05T12:00:00.000Z") };
+
 function createApproval(overrides: Partial<Approval> = {}): Approval {
   return {
     id: "approval-1",
@@ -588,7 +591,11 @@ describe("ApprovalDetail", () => {
       expect(notice()).toBeNull();
 
       await act(async () => button(panel(), "Approve").click());
-      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-1"));
+      // The approval names the version that was sent back, which is the one on the page.
+      await vi.waitFor(() =>
+        expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-1", undefined, {
+          expectedUpdatedAt: new Date("2026-10-06T10:00:00.000Z"),
+        }));
     });
 
     it("ignores a pointer press on Approve just after the page is drawn, and takes it after that", async () => {
@@ -613,7 +620,7 @@ describe("ApprovalDetail", () => {
         // A press by the keyboard reports no click count and is not held up; here the moment has passed.
         now += 100;
         await press();
-        await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-1"));
+        await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-1", undefined, SHOWN_VERSION));
       } finally {
         clock.mockRestore();
       }
@@ -681,7 +688,10 @@ describe("ApprovalDetail", () => {
 
       await act(async () => button(panel(), "Approve").click());
       await vi.waitFor(() =>
-        expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-1", "Month to month only"));
+        // The approval names the revision the board confirmed, not the version first shown.
+        expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-1", "Month to month only", {
+          expectedUpdatedAt: new Date("2026-10-06T11:00:00.000Z"),
+        }));
     });
 
     it("raises no notice when only the time changed", async () => {
@@ -802,11 +812,42 @@ describe("ApprovalDetail", () => {
       expect(alert.nextElementSibling!.contains(approve)).toBe(true);
       expect(alert.nextElementSibling!.contains(button(panel(), "Reject"))).toBe(true);
       expect(panel().querySelector("textarea")!.value).toBe("Outside this quarter's budget");
-      expect(apiMocks.reject).toHaveBeenCalledExactlyOnceWith("approval-1", "Outside this quarter's budget");
+      expect(apiMocks.reject).toHaveBeenCalledExactlyOnceWith("approval-1", "Outside this quarter's budget", SHOWN_VERSION);
 
       // Editing the note takes the error away until the decision is sent again.
       await typeInto(panel().querySelector("textarea")!, "Outside this year's budget");
       expect(alerts()).toHaveLength(0);
+    });
+
+    it("reports a decision the server refused because the request changed, reloads, and decides the new version next", async () => {
+      const message = "This request changed after you opened it. Reload it and decide again.";
+      const revisedAt = new Date("2026-10-06T11:00:00.000Z");
+      await render(createApproval());
+      // The requester resubmitted and the page has not reloaded: the server refuses the approval.
+      apiMocks.approve.mockImplementationOnce(async () => {
+        apiMocks.get.mockResolvedValue(createApproval({ updatedAt: revisedAt }));
+        throw Object.assign(new Error(message), {
+          status: 409,
+          body: { error: message, code: "approval_version_conflict", details: { currentStatus: "pending" } },
+        });
+      });
+      apiMocks.approve.mockResolvedValue(createApproval({ status: "approved", updatedAt: revisedAt }));
+      const loads = apiMocks.get.mock.calls.length;
+
+      await act(async () => button(panel(), "Approve").click());
+      await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+
+      expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-1", undefined, SHOWN_VERSION);
+      expect(alerts()[0].textContent).toBe(`Error while approving: ${message}`);
+      // An error, never the approved page.
+      expect(routerMock.navigate).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(apiMocks.get.mock.calls.length).toBeGreaterThan(loads));
+
+      // The next press names the version the reload brought.
+      await vi.waitFor(() => expect(button(panel(), "Approve").disabled).toBe(false));
+      await act(async () => button(panel(), "Approve").click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledTimes(2));
+      expect(apiMocks.approve).toHaveBeenLastCalledWith("approval-1", undefined, { expectedUpdatedAt: revisedAt });
     });
 
     it("keeps the error on the page when the reload shows the decision was stored anyway", async () => {

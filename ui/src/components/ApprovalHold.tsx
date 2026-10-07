@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ApprovalVersion } from "../lib/approval-version";
 
 /**
  * How long an approval is held in the browser before it is sent. The server acts on an
@@ -55,6 +56,11 @@ export type HeldApproval = {
   subject: string;
   /** The company whose list the request belongs to, for the reload once the approval lands. */
   companyId: string;
+  /**
+   * The `updatedAt` of the request as it was drawn when Approve was pressed. It goes out with the
+   * approval and is never refreshed: the server refuses an approval of any later version.
+   */
+  expectedUpdatedAt?: ApprovalVersion;
   /** When the approval is sent, in milliseconds since the epoch. It moves on when a paused hold runs again. */
   sendAt: number;
   /** The time left, in milliseconds, of a hold whose countdown is paused. Null or absent while it runs. */
@@ -145,7 +151,7 @@ export function useApprovalHolds({
 
   /** Starts the hold. False when the request is already held or on its way. */
   const hold = useCallback(
-    (input: Pick<HeldApproval, "id" | "note" | "subject" | "companyId">) => {
+    (input: Pick<HeldApproval, "id" | "note" | "subject" | "companyId" | "expectedUpdatedAt">) => {
       if (active.current.has(input.id)) return false;
       active.current.add(input.id);
       seq.current += 1;

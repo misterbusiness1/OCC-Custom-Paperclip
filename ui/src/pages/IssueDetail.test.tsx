@@ -5192,7 +5192,10 @@ describe("IssueDetail", () => {
       status: "pending",
       requestedByAgentId: "agent-1",
       payload: { title: "Publish the report" },
+      updatedAt: "2026-10-06T09:00:00.000Z",
     };
+    /** What a decision is sent with: the `updatedAt` of the approval as its card showed it. */
+    const SHOWN_VERSION = { expectedUpdatedAt: "2026-10-06T09:00:00.000Z" };
 
     async function openActivityTab() {
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({
@@ -5245,7 +5248,7 @@ describe("IssueDetail", () => {
       await flushReact();
 
       expect(mockApprovalsApi.requestRevision).toHaveBeenCalledTimes(1);
-      expect(mockApprovalsApi.requestRevision).toHaveBeenCalledWith("approval-1", "Use the Q3 figures");
+      expect(mockApprovalsApi.requestRevision).toHaveBeenCalledWith("approval-1", "Use the Q3 figures", SHOWN_VERSION);
       expect(mockApprovalsApi.approve).not.toHaveBeenCalled();
       expect(mockApprovalsApi.reject).not.toHaveBeenCalled();
       // The card is told which decision is on its way.
@@ -5281,6 +5284,47 @@ describe("IssueDetail", () => {
       expect(mockApprovalsApi.reject).not.toHaveBeenCalled();
     });
 
+    it("reports an approval the server refused because the request changed, and reloads the card", async () => {
+      const message = "This request changed after you opened it. Reload it and decide again.";
+      mockApprovalsApi.approve.mockRejectedValue(
+        new ApiError(message, 409, {
+          error: message,
+          code: "approval_version_conflict",
+          details: { code: "approval_version_conflict", currentStatus: "pending" },
+        }),
+      );
+      const card = await openActivityTab();
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+      await act(async () => {
+        cardButton(card, "card approve")!.click();
+      });
+      await flushReact();
+
+      expect(mockApprovalsApi.approve).toHaveBeenCalledExactlyOnceWith("approval-1", undefined, SHOWN_VERSION);
+      // An error, never a success: nothing was approved.
+      expect(mockPushToast).toHaveBeenCalledWith({ title: "Approval failed", body: message, tone: "error" });
+      expect(mockPushToast).not.toHaveBeenCalledWith(expect.objectContaining({ tone: "success" }));
+      // The card is reloaded, so the next decision names the version it then shows.
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.approvals("PAP-1") });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.approvals.detail("approval-1") });
+      expect(card.dataset.pendingAction).toBe("");
+    });
+
+    it("does not reload the card for another kind of error", async () => {
+      mockApprovalsApi.reject.mockRejectedValue(new ApiError("Server unavailable", 503, { error: "Server unavailable" }));
+      const card = await openActivityTab();
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+      await act(async () => {
+        cardButton(card, "card reject")!.click();
+      });
+      await flushReact();
+
+      expect(mockPushToast).toHaveBeenCalledWith({ title: "Rejection failed", body: "Server unavailable", tone: "error" });
+      expect(invalidate).not.toHaveBeenCalledWith({ queryKey: queryKeys.issues.approvals("PAP-1") });
+    });
+
     it("still approves and rejects through their own routes", async () => {
       mockApprovalsApi.approve.mockResolvedValue({ ...linkedApproval, status: "approved" });
       mockApprovalsApi.reject.mockResolvedValue({ ...linkedApproval, status: "rejected" });
@@ -5290,14 +5334,14 @@ describe("IssueDetail", () => {
         cardButton(card, "card approve")!.click();
       });
       await flushReact();
-      expect(mockApprovalsApi.approve).toHaveBeenCalledWith("approval-1");
+      expect(mockApprovalsApi.approve).toHaveBeenCalledWith("approval-1", undefined, SHOWN_VERSION);
       expect(mockPushToast).toHaveBeenCalledWith({ title: "Approval approved", tone: "success" });
 
       await act(async () => {
         cardButton(card, "card reject")!.click();
       });
       await flushReact();
-      expect(mockApprovalsApi.reject).toHaveBeenCalledWith("approval-1");
+      expect(mockApprovalsApi.reject).toHaveBeenCalledWith("approval-1", undefined, SHOWN_VERSION);
       expect(mockPushToast).toHaveBeenCalledWith({ title: "Approval rejected", tone: "success" });
       expect(mockApprovalsApi.requestRevision).not.toHaveBeenCalled();
     });
