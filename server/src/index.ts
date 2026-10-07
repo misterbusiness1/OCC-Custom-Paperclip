@@ -1794,14 +1794,26 @@ async function startServerWithDatabaseTeardown(
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
           // persisted queued work is still being driven forward.
-          trackHeartbeatSchedulerWork(heartbeat
-            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-            .then(() => heartbeat.promoteDueScheduledRetries())
-            .then(async (promotion) => {
-              await heartbeat.resumeQueuedRuns();
+          // Each step runs even when an earlier one fails. They are separate
+          // safety nets: when the stranded-issue pass threw on one bad issue,
+          // the dependency wakes, watchdogs and stale-lock sweep behind it in
+          // one chain did not run either, for as long as it kept throwing.
+          const recoveryStep = async <T>(step: string, work: () => Promise<T>): Promise<T | null> => {
+            try {
+              return await work();
+            } catch (err) {
+              logger.error({ err, step }, "periodic heartbeat recovery failed");
+              return null;
+            }
+          };
+          trackHeartbeatSchedulerWork((async () => {
+            await recoveryStep("reap_orphaned_runs", () => heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 }));
+            const promotion = await recoveryStep("promote_scheduled_retries", () => heartbeat.promoteDueScheduledRetries());
+            await recoveryStep("resume_queued_runs", () => heartbeat.resumeQueuedRuns());
+            await recoveryStep("reconcile_stranded_issues", async () => {
               const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
               if (
-                promotion.promoted > 0 ||
+                (promotion?.promoted ?? 0) > 0 ||
                 reconciled.assignmentDispatched > 0 ||
                 reconciled.dispatchRequeued > 0 ||
                 reconciled.continuationRequeued > 0 ||
@@ -1809,38 +1821,36 @@ async function startServerWithDatabaseTeardown(
                 reconciled.escalated > 0
               ) {
                 logger.warn(
-                  { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+                  { promotedScheduledRetries: promotion?.promoted ?? 0, promotedScheduledRetryRunIds: promotion?.runIds ?? [], ...reconciled },
                   "periodic heartbeat recovery changed assigned issue state",
                 );
               }
-            })
-            .then(async () => {
+            });
+            await recoveryStep("reconcile_dependency_wakes", async () => {
               const reconciled = await heartbeat.reconcileResolvedDependencyWakes();
               if (reconciled.healed > 0) {
                 logger.warn({ ...reconciled }, "periodic dependency-wake reconciliation restored task execution paths");
               }
-            })
-            .then(async () => {
+            });
+            await recoveryStep("reconcile_task_watchdogs", async () => {
               const reconciled = await heartbeat.reconcileTaskWatchdogs();
               if (reconciled.triggered > 0) {
                 logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
               }
-            })
-            .then(async () => {
+            });
+            await recoveryStep("scan_silent_active_runs", async () => {
               const scanned = await heartbeat.scanSilentActiveRuns();
               if (scanned.created > 0 || scanned.escalated > 0) {
                 logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
               }
-            })
-            .then(async () => {
+            });
+            await recoveryStep("sweep_stale_issue_locks", async () => {
               const swept = await heartbeat.sweepStaleIssueLocks();
               if (swept.cleared > 0) {
                 logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
               }
-            })
-            .catch((err) => {
-              logger.error({ err }, "periodic heartbeat recovery failed");
-            }));
+            });
+          })());
         }
       })().catch((err) => {
         logger.error({ err }, "heartbeat scheduler tick failed");

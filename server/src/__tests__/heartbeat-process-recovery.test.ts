@@ -15205,13 +15205,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       sql`create trigger test_native_blocked_wait_fault before insert on issue_comments for each row execute function test_native_blocked_wait_fault()`,
     );
     try {
-      await expect(
-        heartbeatService(db).reconcileStrandedAssignedIssues(),
-      ).rejects.toMatchObject({
-        cause: expect.objectContaining({
-          message: "native_blocked_wait_fixture_fault",
-        }),
-      });
+      // The fault is contained to this issue: its transaction rolls back, the
+      // pass counts it as skipped and finishes. It used to reject here, which
+      // in production stopped the sweep for every other issue as well.
+      const faulted = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(faulted.escalated).toBe(0);
+      expect(faulted.skipped).toBeGreaterThanOrEqual(1);
+      expect(faulted.issueIds).not.toContain(issueId);
     } finally {
       await db.execute(
         sql`drop trigger test_native_blocked_wait_fault on issue_comments`,

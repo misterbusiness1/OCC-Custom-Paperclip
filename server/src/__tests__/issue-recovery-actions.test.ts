@@ -742,6 +742,61 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     })]);
   });
 
+  it("keeps reconciling the other issues when one issue cannot be reconciled", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    await db.delete(issues).where(eq(issues.companyId, companyId));
+    // Two assigned issues that were never dispatched. Dispatching the first
+    // one fails; in production the failure was a blocker cycle already in the
+    // data, which threw on every sweep.
+    const failingIssueId = randomUUID();
+    const healthyIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: failingIssueId, companyId, title: "Cannot be reconciled", status: "todo", priority: "medium", assigneeAgentId: coderId, issueNumber: 2, identifier: `${prefix}-2` },
+      { id: healthyIssueId, companyId, title: "Unrelated stranded work", status: "todo", priority: "medium", assigneeAgentId: coderId, issueNumber: 3, identifier: `${prefix}-3` },
+    ]);
+    const dispatched: string[] = [];
+    const enqueueWakeup = vi.fn(async (_agentId: string, wake: { payload?: { issueId?: string } }) => {
+      const issueId = String(wake?.payload?.issueId ?? "");
+      if (issueId === failingIssueId) throw new Error("Blocking relations cannot contain cycles");
+      dispatched.push(issueId);
+      return { id: randomUUID() };
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: enqueueWakeup as never });
+
+    // Before the fix this call rejected, so no issue after the failing one
+    // was reconciled, and neither were the steps the scheduler runs after it.
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
+    expect(dispatched).toEqual([healthyIssueId]);
+    expect(result.assignmentDispatched).toBe(1);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.issueIds).toContain(healthyIssueId);
+    expect(result.issueIds).not.toContain(failingIssueId);
+  });
+
+  it("stops a pass after consecutive failures instead of retrying a shared fault for every issue", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    await db.delete(issues).where(eq(issues.companyId, companyId));
+    await db.insert(issues).values(Array.from({ length: 8 }, (_, index) => ({
+      id: randomUUID(), companyId, title: `Stranded work ${index}`, status: "todo", priority: "medium",
+      assigneeAgentId: coderId, issueNumber: index + 2, identifier: `${prefix}-${index + 2}`,
+    })));
+    // Every dispatch fails the same way, as it would with the database down.
+    const enqueueWakeup = vi.fn(async () => {
+      throw new Error("connection refused");
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: enqueueWakeup as never });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    // Five in a row is not an item problem. The other three are left for the
+    // next sweep rather than failing the same call three more times.
+    expect(enqueueWakeup).toHaveBeenCalledTimes(5);
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(5);
+  });
+
   it("schedules a provider-quota monitor for the original assignee without creating recovery work", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const runId = randomUUID();

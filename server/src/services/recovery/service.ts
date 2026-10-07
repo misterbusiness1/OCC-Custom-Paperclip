@@ -2404,6 +2404,48 @@ export function recoveryService(
     return Boolean(budgetBlock);
   }
 
+  // A failure that repeats on every 30-second sweep would bury the log. Report
+  // each failing issue (or phase) at most once per ten minutes.
+  const reconcileFailureReportedAt = new Map<string, number>();
+  function noteReconcileFailure(scope: string, issueId: string | null, err: unknown) {
+    const key = `${scope}:${issueId ?? ""}`;
+    const now = Date.now();
+    if (now - (reconcileFailureReportedAt.get(key) ?? 0) < 10 * 60 * 1000) return;
+    if (reconcileFailureReportedAt.size > 5000) reconcileFailureReportedAt.clear();
+    reconcileFailureReportedAt.set(key, now);
+    logger.error(
+      { err, scope, issueId },
+      "stranded issue recovery could not reconcile one item; the sweep continues with the rest",
+    );
+  }
+
+  // Containing a failure to one item is right when the item is the problem.
+  // When the database or another shared dependency is down, every item fails
+  // the same way: stop the pass after a short run of consecutive failures
+  // instead of repeating the failing call for each remaining candidate.
+  const RECONCILE_CONSECUTIVE_FAILURE_LIMIT = 5;
+  function createReconcileFailureBreaker(scope: string) {
+    let index = -1;
+    let lastFailedIndex = -2;
+    let consecutive = 0;
+    return {
+      next() {
+        index += 1;
+      },
+      /** Records a failure for the current item. True when the pass must stop. */
+      tripped(): boolean {
+        consecutive = lastFailedIndex === index - 1 ? consecutive + 1 : 1;
+        lastFailedIndex = index;
+        if (consecutive < RECONCILE_CONSECUTIVE_FAILURE_LIMIT) return false;
+        logger.error(
+          { scope, consecutiveFailures: consecutive },
+          "stranded issue recovery stopped this pass after consecutive failures; a shared dependency is likely failing",
+        );
+        return true;
+      },
+    };
+  }
+
   async function reconcileUnassignedBlockingIssues() {
     const candidates = await db
       .select({
@@ -3703,7 +3745,11 @@ export function recoveryService(
       skipped: 0,
       issueIds: [] as string[],
     };
+    const actionBreaker = createReconcileFailureBreaker("active_recovery_action");
     for (const { action, issue } of rows) {
+      actionBreaker.next();
+      // Same containment as the stranded-issue pass. Body not re-indented.
+      try {
       const wakePolicy = parseObject(action.wakePolicy);
       const wakePolicyType = readNonEmptyString(wakePolicy.type);
       if (
@@ -3825,6 +3871,11 @@ export function recoveryService(
       // Legacy takeover actions remain readable and resolvable, but recovery no
       // longer schedules another agent-owned wake for them.
       result.skipped += 1;
+      } catch (err) {
+        noteReconcileFailure("active_recovery_action", issue.id, err);
+        result.skipped += 1;
+        if (actionBreaker.tripped()) break;
+      }
     }
     return result;
   }
@@ -4605,7 +4656,15 @@ export function recoveryService(
       }
     }
 
+    const issueBreaker = createReconcileFailureBreaker("stranded_assigned_issue");
     for (const issue of candidates) {
+      issueBreaker.next();
+      // One issue that cannot be reconciled must not stop the pass for every
+      // other issue: a single blocker cycle in the data once failed this sweep,
+      // and every step scheduled after it, 181 times in 90 minutes. The body
+      // below is deliberately not re-indented, to keep this change and later
+      // merges with upstream small.
+      try {
       if (issue.conversationAgentId) {
         const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
         if (lastRun?.status === "succeeded") {
@@ -5624,18 +5683,35 @@ export function recoveryService(
       } else {
         result.skipped += 1;
       }
+      } catch (err) {
+        // See the note where this `try` opens.
+        noteReconcileFailure("stranded_assigned_issue", issue.id, err);
+        result.skipped += 1;
+        if (issueBreaker.tripped()) break;
+      }
     }
 
-    const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues();
-    result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
-    result.skipped += orphanBlockerRecovery.skipped;
-    result.issueIds.push(...orphanBlockerRecovery.issueIds);
+    // The two phases below are independent of the per-issue pass and of each
+    // other. A failure in one must not hide the other's work or the counts
+    // already gathered above.
+    try {
+      const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues();
+      result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
+      result.skipped += orphanBlockerRecovery.skipped;
+      result.issueIds.push(...orphanBlockerRecovery.issueIds);
+    } catch (err) {
+      noteReconcileFailure("unassigned_blocking_issues", null, err);
+    }
 
-    const activeRecovery = await reconcileActiveRecoveryActions();
-    result.continuationRequeued += activeRecovery.requeued;
-    result.escalated += activeRecovery.escalated;
-    result.skipped += activeRecovery.skipped;
-    result.issueIds.push(...activeRecovery.issueIds);
+    try {
+      const activeRecovery = await reconcileActiveRecoveryActions();
+      result.continuationRequeued += activeRecovery.requeued;
+      result.escalated += activeRecovery.escalated;
+      result.skipped += activeRecovery.skipped;
+      result.issueIds.push(...activeRecovery.issueIds);
+    } catch (err) {
+      noteReconcileFailure("active_recovery_actions", null, err);
+    }
     result.issueIds = [...new Set(result.issueIds)];
 
     return result;
