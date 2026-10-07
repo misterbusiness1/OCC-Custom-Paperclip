@@ -780,7 +780,7 @@ export function Approvals() {
 
       {filtered.length > 0 && (
         <>
-          <div className="grid gap-3" ref={listRef} onFocus={rememberFocusedRow}>
+          <div className="grid grid-cols-1 gap-3" ref={listRef} onFocus={rememberFocusedRow}>
             {visible.map((approval, index) => {
               const held = heldApprovals[approval.id] ?? null;
               const decided = decidedRowFor(approval);
@@ -857,7 +857,7 @@ export function Approvals() {
                 Sent back for changes. A request returns to the queue when its requester resubmits it. Open one to
                 approve or reject it as it stands.
               </p>
-              <ul className="grid gap-3">
+              <ul className="grid grid-cols-1 gap-3">
                 {sentBack.map((approval) => (
                   <SentBackApprovalRow key={approval.id} approval={approval} />
                 ))}

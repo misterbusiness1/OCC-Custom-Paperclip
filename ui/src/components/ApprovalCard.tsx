@@ -304,7 +304,7 @@ export function ApprovalCard({
     return (
       <Card
         className={cn(
-          "block border-border/70 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "block min-w-0 border-border/70 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           // The open card is the one the shortcuts act on, so it is marked whether or not it holds focus.
           isOpen && "border-ring ring-1 ring-ring",
         )}
@@ -364,7 +364,7 @@ export function ApprovalCard({
   return (
     <Card
       className={cn(
-        "block border-border/70 p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "block min-w-0 border-border/70 p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         // With shortcuts on, the card that holds focus is the one they act on: mark it for mouse focus too.
         enableShortcuts && "focus-within:border-ring focus-within:ring-1 focus-within:ring-ring",
       )}
