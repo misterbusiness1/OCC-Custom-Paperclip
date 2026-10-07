@@ -669,6 +669,7 @@ function ApprovalInboxRow({
           type={approval.type}
           payload={approval.payload}
           status={approval.status}
+          requestedByAgentId={approval.requestedByAgentId}
           resolveAgentName={resolveAgentName}
           draftControl={draftGate.draftControl}
           className="mt-3"

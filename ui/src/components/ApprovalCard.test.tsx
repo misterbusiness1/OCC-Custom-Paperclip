@@ -138,7 +138,7 @@ describe("ApprovalCard", () => {
     // The verbatim source stays the only <pre>; the draft never fills that slot.
     expect(container.querySelectorAll("pre")).toHaveLength(1);
     expect(container.querySelector("pre")?.textContent).toBe("Could you send your wholesale price list?");
-    expect(text).toContain("Email · Sam Example · Requester-provided external source snapshot");
+    expect(text).toContain("Email · Sam Example · Quoted by the requesting agent, not verified");
     expect(text.indexOf("Original request")).toBeLessThan(text.indexOf("Draft reply"));
     expect(text.indexOf("Draft reply")).toBeLessThan(text.indexOf("ApproveReject"));
   });
@@ -797,7 +797,8 @@ describe("ApprovalCard", () => {
 
     const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "View comment");
     expect(link?.getAttribute("href")).toBe(`/issues/${ISSUE_ID}#comment-${COMMENT_ID}`);
-    expect(container.textContent).toContain("Paperclip source snapshot");
+    expect(container.textContent).toContain("Saved from the original comment · View comment");
+    expect(container.textContent).not.toContain("snapshot");
   });
 
   it("shows linked tasks and how long the request has waited", () => {
@@ -1830,6 +1831,252 @@ describe("ApprovalCard for requests without a source, hires and strategies", () 
     expect(container.textContent).toContain("Why 9.");
     expect(container.textContent).toContain("R4.");
     expect(container.querySelector("button")).toBeNull();
+  });
+
+  const labels = () => [...container.querySelectorAll("p, dt")].map((element) => element.textContent);
+  const summaryOf = (payload: Record<string, unknown>, type = "request_board_approval") =>
+    act(() => root.render(<ApprovalDecisionSummary type={type} payload={payload} />));
+
+  it("leads with the summary when the request says it nowhere else", () => {
+    // The shape the agent instructions show: the cost sits in `summary`, beside a title and a rationale.
+    render({
+      approval: createApproval({
+        payload: {
+          title: "Approve staging hosting spend",
+          summary: "Estimated cost is $42/month for provider X.",
+          recommendedAction: "Approve provider X.",
+          reasoning: "Provider X meets every condition in the request.",
+          pros: ["Fixed monthly commitment."],
+          risks: ["The bill rises if traffic doubles."],
+        },
+      }),
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("SummaryEstimated cost is $42/month for provider X.");
+    expect(text.indexOf("SummaryEstimated cost")).toBeLessThan(text.indexOf("RecommendationApprove provider X."));
+    expect(text).toContain("WhyProvider X meets every condition in the request.");
+  });
+
+  it("shows a long summary by its first lines, as plain text, and whole where the page asks for it", () => {
+    const summary = `**Cost:** ${"The provider bills per seat and per region. ".repeat(12)}Total is $420/month.`;
+    const payload = { title: "Approve hosting", summary, recommendedAction: "Approve.", reasoning: "It fits." };
+    summaryOf(payload);
+    expect(container.textContent).not.toContain("Total is $420/month.");
+    expect(container.textContent).not.toContain("**");
+    expect(container.querySelector("strong")).toBeNull();
+    const more = button("Show more")!;
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    act(() => more.click());
+    expect(container.textContent).toContain("Total is $420/month.");
+
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={payload} full />));
+    expect(container.textContent).toContain("Total is $420/month.");
+    expect(container.querySelector("button")).toBeNull();
+  });
+
+  it("does not repeat a summary that is already shown as the rationale, the recommendation or the title", () => {
+    // With no rationale of its own, the request's summary is what "Why" shows.
+    summaryOf({ title: "Approve hosting", summary: "Costs $42/month.", recommendedAction: "Approve." });
+    expect(labels()).not.toContain("Summary");
+    expect(container.textContent).toContain("WhyCosts $42/month.");
+    expect((container.textContent ?? "").split("Costs $42/month.")).toHaveLength(2);
+
+    // The same words as the recommendation, whatever the case and spacing.
+    summaryOf({ title: "Approve hosting", summary: "  approve   provider X. ", recommendedAction: "Approve provider X.", reasoning: "It fits." });
+    expect(labels()).not.toContain("Summary");
+
+    // With no title, the summary is the title the card already shows.
+    render({ approval: createApproval({ payload: { summary: "Costs $42/month.", recommendedAction: "Approve.", reasoning: "It fits." } }) });
+    expect(container.querySelector("h3")!.textContent).toBe("Costs $42/month.");
+    expect(labels()).not.toContain("Summary");
+
+    // A title cuts a long subject; a summary too long to be shown whole as the title is not dropped.
+    const long = `${"The provider bills per seat and per region. ".repeat(4)}Total is $420/month.`;
+    render({ approval: createApproval({ payload: { summary: long, recommendedAction: "Approve.", reasoning: "It fits." } }) });
+    expect(container.querySelector("h3")!.textContent).not.toContain("Total is $420/month.");
+    expect(labels()).toContain("Summary");
+    expect(container.textContent).toContain("Total is $420/month.");
+
+    // Hire and strategy approvals have their own summaries.
+    summaryOf({ name: "Clerk", summary: "Costs $42/month.", capabilities: "Files invoices." }, "hire_agent");
+    expect(labels()).not.toContain("Summary");
+    summaryOf({ plan: "Grow.", summary: "Costs $42/month.", reasoning: "It fits." }, "approve_ceo_strategy");
+    expect(labels()).not.toContain("Summary");
+  });
+
+  it("labels the channel of an email draft Via, and shows From only for a sender the request names", () => {
+    const envelope = () =>
+      [...container.querySelectorAll("[data-approval-draft] dl > div")].map((row) => [
+        row.querySelector("dt")!.textContent,
+        row.querySelector("dd")!.textContent,
+      ]);
+
+    summaryOf({ ...emailPayload("Hi Sam."), channel: "email from info@" });
+    expect(envelope()).toEqual([
+      ["Via", "email from info@"],
+      ["To", "buyer@example.test"],
+      ["Subject", "Re: Wholesale price list"],
+    ]);
+
+    summaryOf({ ...emailPayload("Hi Sam."), channel: "email from info@", from: "info@example.test" });
+    expect(envelope()).toEqual([
+      ["Via", "email from info@"],
+      ["From", "info@example.test"],
+      ["To", "buyer@example.test"],
+      ["Subject", "Re: Wholesale price list"],
+    ]);
+
+    // A sender that is not text is not shown.
+    summaryOf({ ...emailPayload("Hi Sam."), from: { address: "info@example.test" } });
+    expect(envelope().map(([label]) => label)).toEqual(["To", "Subject"]);
+  });
+
+  it("says what approving an email reply does, only while it is open and only when nobody else has said it", () => {
+    const effect = () => container.querySelector("[data-approval-reply-effect]");
+    const summary = (
+      payload: Record<string, unknown>,
+      props: { status?: string; requestedByAgentId?: string | null } = {},
+    ) =>
+      act(() =>
+        root.render(
+          <ApprovalDecisionSummary
+            type="request_board_approval"
+            payload={payload}
+            status="pending"
+            requestedByAgentId="agent-requester"
+            {...props}
+          />,
+        ),
+      );
+
+    // On the card: after the draft, before the buttons.
+    render({ approval: createApproval({ payload: emailPayload("Hi Sam.") }), onApprove: vi.fn(), onReject: vi.fn() });
+    expect(effect()!.textContent).toBe("If approved, the requester is told to send this reply to buyer@example.test.");
+    const draft = container.querySelector("[data-approval-draft]")!;
+    expect(draft.compareDocumentPosition(effect()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(effect()!.compareDocumentPosition(button("Approve")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The sentence claims no sending by Paperclip itself.
+    expect(effect()!.textContent).not.toMatch(/is sent|will be sent|sends/);
+
+    // The agent's own line is the one shown.
+    summary({ ...emailPayload("Hi Sam."), nextActionOnApproval: "I send the reply and close the ticket." });
+    expect(effect()).toBeNull();
+    expect(container.textContent).toContain("If approvedI send the reply and close the ticket.");
+
+    // A decision wakes the requesting agent and nobody else: with no such agent, nobody is told.
+    summary(emailPayload("Hi Sam."), { requestedByAgentId: null });
+    expect(effect()).toBeNull();
+    render({ approval: createApproval({ requestedByAgentId: null, payload: emailPayload("Hi Sam.") }), onApprove: vi.fn(), onReject: vi.fn() });
+    expect(effect()).toBeNull();
+
+    // Only while the decision is open.
+    for (const status of ["approved", "rejected", "revision_requested", "cancelled"]) {
+      summary(emailPayload("Hi Sam."), { status });
+      expect(effect()).toBeNull();
+    }
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={emailPayload("Hi Sam.")} requestedByAgentId="agent-requester" />));
+    expect(effect()).toBeNull();
+
+    // Without a recipient there is nobody to name; a request that is not an email has no such line.
+    const { recipient: _recipient, ...noRecipient } = emailPayload("Hi Sam.");
+    summary(noRecipient);
+    expect(container.querySelector("[data-approval-draft]")).not.toBeNull();
+    expect(effect()).toBeNull();
+    summary({ title: "Approve hosting", recommendedAction: "Approve.", recipient: "buyer@example.test" });
+    expect(effect()).toBeNull();
+
+    // A recipient written over several lines stays one sentence.
+    summary({ ...emailPayload("Hi Sam."), recipient: "Sam Example\n  <sam@example.test>" });
+    expect(effect()!.textContent).toBe(
+      "If approved, the requester is told to send this reply to Sam Example <sam@example.test>.",
+    );
+  });
+
+  describe("who sent the original request", () => {
+    const AGENT_ID = "44444444-4444-4444-8444-444444444444";
+    const UNKNOWN_ID = "55555555-5555-4555-8555-555555555555";
+    const SENT_AT = "2026-10-07T01:23:48.000Z";
+    const provenance = () =>
+      [...container.querySelectorAll("p")].find((p) => p.textContent === "Original request")!.nextElementSibling!
+        .textContent ?? "";
+    const withSource = (source: Record<string, unknown>) => ({
+      title: "Approve staging hosting spend",
+      recommendedAction: "Approve provider X.",
+      reasoning: "It meets the request.",
+      pros: ["Fixed cost."],
+      risks: ["May rise."],
+      originalRequest: { text: "Use provider X if it stays under $50.", source },
+    });
+    const comment = (sender?: string) =>
+      withSource({
+        kind: "paperclip_comment",
+        commentId: COMMENT_ID,
+        issueId: ISSUE_ID,
+        ...(sender ? { sender } : {}),
+        sentAt: SENT_AT,
+        reference: `paperclip-comment:${COMMENT_ID}`,
+        snapshotOrigin: "server",
+      });
+    const resolveAgentName = (agentId: string) => (agentId === AGENT_ID ? "Operations Lead" : null);
+    const time = new Date(SENT_AT).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+
+    it("names the agent that wrote the comment, and prints the time to the minute", () => {
+      render({ approval: createApproval({ payload: comment(AGENT_ID) }), resolveAgentName });
+      expect(provenance()).toBe(`Operations Lead · ${time} · Saved from the original comment · View comment`);
+      expect(provenance()).not.toMatch(/\d:\d\d:\d\d/);
+      expect(container.querySelector("time")!.getAttribute("datetime")).toBe(SENT_AT);
+      expect(container.textContent).not.toContain(AGENT_ID);
+    });
+
+    it("shows Board for the local board user and never prints an id it cannot resolve", () => {
+      render({ approval: createApproval({ payload: comment("local-board") }), resolveAgentName });
+      expect(provenance()).toBe(`Board · ${time} · Saved from the original comment · View comment`);
+      expect(container.textContent).not.toContain("local-board");
+
+      // An agent the list does not hold, a list that is not loaded yet, no resolver at all, and a user id.
+      for (const [sender, resolver] of [
+        [UNKNOWN_ID, resolveAgentName],
+        [AGENT_ID, () => undefined],
+        [AGENT_ID, undefined],
+        ["u_8Hq2LmZx0PaYt4Wc", resolveAgentName],
+        ["local-implicit", resolveAgentName],
+      ] as const) {
+        render({ approval: createApproval({ payload: comment(sender) }), resolveAgentName: resolver });
+        expect(provenance()).toBe(`${time} · Saved from the original comment · View comment`);
+        expect(container.textContent).not.toContain(sender);
+      }
+
+      render({ approval: createApproval({ payload: comment() }), resolveAgentName });
+      expect(provenance()).toBe(`${time} · Saved from the original comment · View comment`);
+    });
+
+    it("keeps a sender an external source names, unless it is an id, and says the text is not verified", () => {
+      const external = (sender: string) =>
+        withSource({ kind: "external", channel: "Email", sender, sentAt: SENT_AT, reference: "thread 8841", snapshotOrigin: "requester" });
+      render({ approval: createApproval({ payload: external("Sam Example <sam@example.test>") }), resolveAgentName });
+      expect(provenance()).toBe(
+        `Email · Sam Example <sam@example.test> · ${time} · thread 8841 · Quoted by the requesting agent, not verified`,
+      );
+
+      render({ approval: createApproval({ payload: external(AGENT_ID) }), resolveAgentName });
+      expect(provenance()).toBe(`Email · Operations Lead · ${time} · thread 8841 · Quoted by the requesting agent, not verified`);
+
+      for (const sender of [UNKNOWN_ID, "local-board-2"]) {
+        render({ approval: createApproval({ payload: external(sender) }), resolveAgentName });
+        expect(provenance()).toBe(`Email · ${time} · thread 8841 · Quoted by the requesting agent, not verified`);
+      }
+    });
+
+    it("leaves out a time that is not a date", () => {
+      render({
+        approval: createApproval({
+          payload: withSource({ kind: "external", sender: "Sam Example", sentAt: "last Tuesday", snapshotOrigin: "requester" }),
+        }),
+      });
+      expect(provenance()).toBe("Sam Example · Quoted by the requesting agent, not verified");
+      expect(container.querySelector("time")).toBeNull();
+    });
   });
 
   it("states the fields a Board approval leaves empty only where the summary is shown in full", () => {

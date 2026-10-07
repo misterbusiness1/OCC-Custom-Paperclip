@@ -6,6 +6,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Identity } from "./Identity";
 import {
   approvalAskLine,
+  APPROVAL_TITLE_LENGTH,
   approvalExcerpt,
   approvalMissingSourceNote,
   approvalSubject,
@@ -105,7 +106,7 @@ export function ApprovalCard({
   linkedIssues?: ApprovalCardLinkedIssue[];
   /** Shift+A approves, Shift+C asks for changes and Shift+X rejects while the card has focus. */
   enableShortcuts?: boolean;
-  /** Lets a hire request name the manager the new agent reports to. */
+  /** Lets a hire request name the manager the new agent reports to, and a Board approval the agent that wrote its original request. */
   resolveAgentName?: ApprovalAgentNameResolver;
   /**
    * For a queue: the header becomes a button that opens and closes the card. A closed card is one
@@ -123,7 +124,7 @@ export function ApprovalCard({
   const isOpen = !collapsible || open;
   const payload = approval.payload as Record<string, unknown> | null;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
-  const subject = approvalExcerpt(approvalSubject(payload, approval.type), 120);
+  const subject = approvalExcerpt(approvalSubject(payload, approval.type), APPROVAL_TITLE_LENGTH);
   // Sent back for changes: the requester has it now. The card offers no one-click decision on the
   // version the board asked to change; the detail page keeps Approve and Reject.
   const isSentBack = approval.status === "revision_requested";
@@ -240,6 +241,7 @@ export function ApprovalCard({
         type={approval.type}
         payload={payload}
         status={approval.status}
+        requestedByAgentId={approval.requestedByAgentId}
         resolveAgentName={resolveAgentName}
         draftControl={draftGate.draftControl}
         className="mt-4 border-t border-border/60 pt-4"

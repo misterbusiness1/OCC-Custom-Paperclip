@@ -212,10 +212,59 @@ describe("ApprovalDetail", () => {
     expect(source[0].textContent).toBe(original);
     expect(source[0].className).not.toMatch(/line-clamp|max-h-|overflow-/);
     expect(isBefore(source[0], draft)).toBe(true);
-    expect(panel().textContent).toContain("Email · Sam Example · Requester-provided external source snapshot");
+    expect(panel().textContent).toContain("Email · Sam Example · Quoted by the requesting agent, not verified");
+    // The channel is a description of how the reply goes out, not a sender address.
+    expect(draft.textContent).toContain("ViaEmail from info@");
+    expect(draft.textContent).not.toContain("From");
+    // The request has a requesting agent and no "If approved" line of its own: the page states what approval does.
+    const effect = panel().querySelector<HTMLElement>("[data-approval-reply-effect]")!;
+    expect(effect.textContent).toBe("If approved, the requester is told to send this reply to buyer@example.test.");
+    expect(isBefore(draft, effect)).toBe(true);
+    expect(isBefore(effect, button(panel(), "Approve"))).toBe(true);
     // The draft is never offered as the original request.
     expect(source[0].textContent).not.toContain("Last line of the draft.");
     expect(controlsAboveDecision()).toEqual([]);
+  });
+
+  it("names who wrote the original comment instead of printing an id, above the buttons and in Full request", async () => {
+    const sentAt = "2026-10-07T01:23:48.000Z";
+    await render(
+      createApproval({
+        payload: {
+          title: "Approve staging hosting spend",
+          summary: "Estimated cost is $42/month for provider X.",
+          recommendedAction: "Approve provider X.",
+          reasoning: "Provider X meets every condition in the request.",
+          pros: ["Fixed monthly commitment."],
+          risks: ["The bill rises if traffic doubles."],
+          originalRequest: {
+            text: "Use provider X if it stays under $50.",
+            source: {
+              kind: "paperclip_comment",
+              commentId: "22222222-2222-4222-8222-222222222222",
+              issueId: "33333333-3333-4333-8333-333333333333",
+              sender: MANAGER_ID,
+              sentAt,
+              snapshotOrigin: "server",
+            },
+          },
+        },
+      }),
+    );
+
+    const time = new Date(sentAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    const line = `Chief Executive · ${time} · Saved from the original comment · View comment`;
+    expect(panel().textContent).toContain(line);
+    // The summary leads the panel: the cost an agent puts there is in front of the board.
+    const text = panel().textContent ?? "";
+    expect(text).toContain("SummaryEstimated cost is $42/month for provider X.");
+    expect(text.indexOf("SummaryEstimated cost")).toBeLessThan(text.indexOf("RecommendationApprove provider X."));
+
+    const fullRequest = container.querySelector("details")!;
+    expect(fullRequest.textContent).toContain(line);
+    // Only the raw payload, a technical view inside Full request, still holds the id.
+    expect(panel().textContent).not.toContain(MANAGER_ID);
+    expect(panel().textContent).not.toContain("snapshot");
   });
 
   it("states that no original request was attached, and which fields the request leaves empty", async () => {

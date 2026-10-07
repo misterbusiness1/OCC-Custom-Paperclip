@@ -20,21 +20,37 @@ Board approval payloads may include an `originalRequest` object so the decision 
 
 `text` is an immutable plain-text snapshot. UI clients render it as escaped text, never Markdown or HTML. They must not derive it from `summary`, `reasoning`, `recommendedAction`, an issue description, or an outgoing email `body`.
 
-For an existing Paperclip issue comment, set `source.kind` to `paperclip_comment` and provide its real `commentId`. The approval create/resubmit route retrieves the non-deleted comment inside the approval company and replaces the text and provenance with a server snapshot (`snapshotOrigin: "server"`). A missing or cross-company comment is rejected. For external sources, the requester supplies the exact retrieved text and any actually known provenance; Paperclip labels the snapshot requester-provided and does not claim independent verification.
+For an existing Paperclip issue comment, set `source.kind` to `paperclip_comment` and provide its real `commentId`. The approval create/resubmit route retrieves the non-deleted comment inside the approval company and replaces the text and provenance with a server snapshot (`snapshotOrigin: "server"`). A missing or cross-company comment is rejected. For external sources, the requester supplies the exact retrieved text and any actually known provenance; Paperclip marks the snapshot as requester-provided (`snapshotOrigin: "requester"`) and does not claim independent verification.
 
 Resubmitting decision fields without an `originalRequest` preserves the prior snapshot. Supplying a new `originalRequest` is an explicit source change and is recorded in approval activity. Existing approvals are not backfilled; absent snapshots render a clear missing-source state.
 
-Approval detail, shared approval cards, and both inbox presentations place the original request between Recommendation and Why. Inbox decisions follow the shared decision summary. Compact summaries (the card and the inbox row) show the first lines of a long request, more than 480 characters or more than 16 lines, behind a **Show full request (N characters)** button; the retained text is never shortened. The approval detail page shows the whole request. No surface puts the request, or the proposed reply, in a box with its own scrollbar: the text is either shown whole or behind that announced preview. The provenance line names the channel of an external source and links a Paperclip source back to its comment.
+Approval detail, shared approval cards, and both inbox presentations place the original request between Recommendation and Why. Inbox decisions follow the shared decision summary. Compact summaries (the card and the inbox row) show the first lines of a long request, more than 480 characters or more than 16 lines, behind a **Show full request (N characters)** button; the retained text is never shortened. The approval detail page shows the whole request. No surface puts the request, or the proposed reply, in a box with its own scrollbar: the text is either shown whole or behind that announced preview. The provenance line under **Original request** is described in "Who asked, and when" below.
 
 `originalRequest` is optional, so an approval can have no source: an older record, or a request the agent raised by itself. The interface does not guess which. The card and the inbox row add "No original request attached" to their header line and show no empty source section. The approval detail page keeps the **Original request** section and states that no original request was attached. A request that also has no pros and no risks says so once in a single line instead of empty fields.
+
+### Who asked, and when
+
+The line under **Original request** answers who sent the request and when, in words the board can read. Its parts are separated by `·` and each is left out when it is not known:
+
+- **Channel**, for an external source (for example `Email`).
+- **Sender.** For a Paperclip comment the server stores the author's user id or agent id, not a name. The interface never prints that id: it shows the agent's name when the id is an agent in the company's loaded agent list, **Board** for the local board user (`local-board`), and otherwise no sender. Other users are not named, because the interface has no user names to resolve an id against. For an external source the sender the requesting agent supplied is shown as written (`Sam Example <sam@example.test>`), unless it is an id (a UUID, or a value that starts with `local-`), which is resolved or left out in the same way.
+- **Time sent**, in the reader's locale, with a medium date and the time to the minute (`Oct 7, 2026, 1:23 AM`). A value that is not a date is left out.
+- **Reference**, for a source that is not linked to a comment (for example a thread reference).
+- **How the text got here.** **Saved from the original comment** for a snapshot the server took from a Paperclip comment; **Quoted by the requesting agent, not verified** for an external source the requester supplied. Paperclip has not checked that an external source says what the agent quotes.
+- **View comment**, a link to the Paperclip comment the request came from.
+
+The approval detail page shows the same line above the decision buttons and in **Full request**. The raw payload inside **Full request** is a technical view and still holds the stored ids.
 
 ## Decision surfaces
 
 One shared decision summary is used by the approval card, both inbox presentations, and the approval detail page. It shows what the board is about to approve:
 
+- A Board approval's `summary` leads the brief under a **Summary** label, with the same preview as the other text fields. Agents are told to send a summary and may put the cost in it, so it is not left to **Full request**. It is not repeated when the surface already shows the same words (compared without case, markup, and extra spaces): as the recommendation; as the rationale, which is the summary itself when the request gives no other; or as the title, when the request has no `title` and the summary is short enough to be shown whole as one (120 characters). Hire and strategy approvals have their own summaries and show no such field.
 - An email-reply approval (an outgoing `body` with `subject`, `recipient`, or `channel`) shows the draft under a **Draft reply** label, after the decision brief and before the decision buttons. The draft is never used as the original request.
+- The draft's header rows are **Via**, **From**, **To**, and **Subject**, each shown only when the request carries it. **Via** is the payload's `channel`, a free-text description of how the reply goes out (for example `email from info@`); it is not a sender address and is not labelled as one. **From** is shown only when the payload has a `from` string. **To** is `recipient`. **Full request** uses the same rows.
+- Under the draft, while the approval is `pending`, one line written by the interface says what approval sets in motion: **If approved, the requester is told to send this reply to _recipient_.** The server wakes the requesting agent with the decision; Paperclip sends no email itself, and the line does not say the reply is sent. The line appears only when the payload has a `recipient`, the approval was requested by an agent (nobody else is woken), and the request has no `nextActionOnApproval` of its own.
 - The draft body is shown whole when it is at most 1,500 characters (blank space at its end is not counted). A longer body is shown whole on the approval detail page. The card and the inbox row show about its first 1,500 characters, cut at a line or word boundary and ending in `…`, with a **Show full reply (N characters)** button. The body is never clamped to a number of lines.
-- `nextActionOnApproval` appears as **If approved**.
+- `nextActionOnApproval` appears as **If approved**. It is the requesting agent's own statement and takes the place of the line above.
 - Each pro and each risk sits beside one bullet. One leading list marker of its own (`- `, `* `, `• `, `1. `, `1) `) is dropped, so a numbered risk does not show a bullet and a number. An item that is itself a list of several lines keeps its markers.
 
 The summary has two modes:
@@ -81,6 +97,8 @@ Feedback for a decision stays with the request it belongs to:
 Board approvals decided on the Approvals page or in the inbox are decided in place. The Approvals page lists the longest-waiting request first, marks requests that have waited seven days or more, shows linked tasks on each card, and filters by kind. With keyboard shortcuts enabled, `J`/`K` move between requests, `Shift+A`, `Shift+C`, and `Shift+X` approve, request changes, and reject for the open card that holds focus, and `Shift+Z` takes back the approval held most recently. A held-down key decides nothing. The `?` cheatsheet lists these keys under **Approvals**.
 
 ### The queue on the Approvals page
+
+The sidebar has an **Approvals** item directly under **Inbox**, in both sidebar layouts. It opens `/approvals/pending` and its badge counts the company's `pending` approvals: the requests listed under **To decide**. Requests sent back for changes are not counted. The count is read from the same approvals list the Approvals page and the inbox load, so it adds no request of its own and follows live approval events. The mobile bottom bar has no such item; on a phone the queue is reached from the sidebar drawer.
 
 The queue is built to be scanned and to keep the reader's place.
 
