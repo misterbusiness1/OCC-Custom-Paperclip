@@ -1,12 +1,43 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+
+const engine = vi.hoisted(() => ({ received: [] as AdapterExecutionContext[] }));
+vi.mock("@paperclipai/adapter-utils/acpx-engine/execute", () => ({
+  createAcpxEngineExecutor: () => async (ctx: AdapterExecutionContext) => {
+    engine.received.push(ctx);
+    return { exitCode: 0, signal: null, timedOut: false };
+  },
+}));
+
 import {
   buildKimiAcpConfig,
+  createKimiAcpExecutor,
   nodeVersionMeetsKimiAcpMinimum,
   prepareKimiRunContext,
   prepareKimiRuntimeMcpContext,
   resolveKimiExecutionEngine,
 } from "./acp.js";
+
+describe("createKimiAcpExecutor", () => {
+  it("hands the shared engine a task run with a cleared session and the run's runtime-tools server", async () => {
+    engine.received.length = 0;
+    await createKimiAcpExecutor()({
+      config: {},
+      context: {},
+      runtime: { sessionId: "saved-session", sessionParams: { acpSessionId: "saved-session" } },
+      runtimeTools: { mcpEndpoint: "https://paperclip.test/mcp/runtime-tools", bearerToken: "run-token-6" },
+    } as unknown as AdapterExecutionContext);
+
+    const received = engine.received[0]!;
+    expect(received.config.agent).toBe("kimi");
+    expect(received.runtime.sessionId).toBeNull();
+    expect(received.runtimeMcp?.getServers()).toEqual([
+      { name: "Paperclip connections", url: "https://paperclip.test/mcp/runtime-tools", token: "run-token-6", connectionId: "paperclip-runtime-tools" },
+    ]);
+    // The environment delivery stays available to the agent's shell.
+    expect(received.runtimeTools?.bearerToken).toBe("run-token-6");
+  });
+});
 
 describe("prepareKimiRunContext", () => {
   it("clears a saved ACP session for a task heartbeat", () => {

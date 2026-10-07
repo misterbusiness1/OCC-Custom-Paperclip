@@ -3,20 +3,22 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeToolsToken } from "../runtime-tools-token.js";
 
-const mocks = vi.hoisted(() => ({ validate: vi.fn(), judge: vi.fn() }));
+const mocks = vi.hoisted(() => ({ validate: vi.fn(), judge: vi.fn(), search: vi.fn(), request: vi.fn() }));
 vi.mock("../services/connection-intents.js", () => ({
-  connectionIntentService: () => ({ validate: mocks.validate, search: vi.fn(), request: vi.fn() }),
+  connectionIntentService: () => ({ validate: mocks.validate, search: mocks.search, request: mocks.request }),
 }));
 vi.mock("../services/typesafe-runtime-tool.js", async () => {
   const actual = await vi.importActual<typeof import("../services/typesafe-runtime-tool.js")>("../services/typesafe-runtime-tool.js");
   return { ...actual, typeSafeRuntimeToolService: () => ({ judge: mocks.judge }) };
 });
 import { runtimeConnectionIntentRoutes } from "./connection-intents.js";
+import { HttpError } from "../errors.js";
 
 describe("TypeSafe runtime REST/MCP routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "typesafe-route-test-secret");
+    vi.stubEnv("PAPERCLIP_TYPESAFE_TOOL_ENABLED", "true");
     mocks.validate.mockResolvedValue(undefined);
     mocks.judge.mockResolvedValue({ ok: true, model: "jev-test", answers: {}, rendered: "" });
   });
@@ -91,6 +93,72 @@ describe("TypeSafe runtime REST/MCP routes", () => {
     const tooMany = await call(Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`q${index}`, { type: "noul", instructions: "Does it apply?" }])));
     expect(tooMany).toEqual([{ path: "questions", message: "Send 1 to 32 questions" }]);
     expect(mocks.judge).not.toHaveBeenCalled();
+  });
+
+  it("says disabled, not how to fix the input, when the tool is switched off", async () => {
+    vi.stubEnv("PAPERCLIP_TYPESAFE_TOOL_ENABLED", "false");
+    mocks.judge.mockResolvedValue({ ok: false, error: { code: "disabled", retryable: false } });
+    const app = express().use(express.json()).use(runtimeConnectionIntentRoutes(null as never));
+    const malformed = { state: "synthetic", model: "jev-latest", questions: { sev: { type: "score", instructions: "How severe?", criteria: "prose" } } };
+    const called = await request(app).post("/mcp/runtime-tools").set("authorization", bearer())
+      .send({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "typesafe_judge", arguments: malformed } });
+
+    // The service owns the switch and answers before it reads the input.
+    expect(called.status).toBe(200);
+    expect(called.body.result.isError).toBe(true);
+    expect(called.body.result.structuredContent).toEqual({ ok: false, error: { code: "disabled", retryable: false } });
+    expect(mocks.judge).toHaveBeenCalledWith(expect.objectContaining({ run_id: "run-a" }), malformed);
+  });
+
+  it("returns ordinary connection-tool outcomes as tool results, and authority failures as HTTP errors", async () => {
+    const app = express().use(express.json()).use(runtimeConnectionIntentRoutes(null as never));
+    const call = (name: string, args: unknown) => request(app).post("/mcp/runtime-tools").set("authorization", bearer())
+      .send({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name, arguments: args } });
+
+    // An unavailable service, an unknown slug, a declined request: the agent
+    // must read these. An HTTP error status would look like a dead transport.
+    mocks.request.mockRejectedValueOnce(new HttpError(422, "That service is not available for this workspace"));
+    const unavailable = await call("connection_request", { service: "example" });
+    expect(unavailable.status).toBe(200);
+    expect(unavailable.body.result.isError).toBe(true);
+    expect(unavailable.body.result.structuredContent).toEqual({ error: "That service is not available for this workspace", status: 422 });
+
+    const badArgs = await call("connection_request", { service: 42 });
+    expect(badArgs.status).toBe(200);
+    expect(badArgs.body.result.isError).toBe(true);
+    expect(badArgs.body.result.structuredContent).toMatchObject({ error: "Invalid arguments", status: 400 });
+    expect(JSON.stringify(badArgs.body)).not.toContain("42,");
+
+    mocks.search.mockResolvedValueOnce({ matches: [] });
+    const found = await call("connections_search", { query: "calendar" });
+    expect(found.status).toBe(200);
+    expect(found.body.result.isError).toBeUndefined();
+    expect(found.body.result.structuredContent).toEqual({ matches: [] });
+
+    // Lost authority is not the agent's to work around.
+    mocks.search.mockRejectedValueOnce(new HttpError(403, "The run no longer has authority"));
+    const forbidden = await call("connections_search", { query: "calendar" });
+    expect(forbidden.status).toBe(403);
+  });
+
+  it("answers a body that is not one JSON-RPC request with 400, never 500", async () => {
+    const app = express().use(express.json()).use(runtimeConnectionIntentRoutes(null as never));
+    const post = () => request(app).post("/mcp/runtime-tools").set("authorization", bearer());
+
+    const noBody = await post();
+    const text = await post().set("content-type", "text/plain").send("ping");
+    const batch = await post().send([{ jsonrpc: "2.0", id: 1, method: "ping" }]);
+    const objectMethod = await post().send({ jsonrpc: "2.0", id: 1, method: { toString: 1 } });
+    for (const response of [noBody, text, batch, objectMethod]) {
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe(-32600);
+    }
+
+    // Only a JSON-RPC id (a number or a short string) is echoed back.
+    const objectId = await post().send({ jsonrpc: "2.0", id: { big: "x".repeat(5000) }, method: "ping" });
+    expect(objectId.body).toEqual({ jsonrpc: "2.0", id: null, result: {} });
+    const longId = await post().send({ jsonrpc: "2.0", id: "x".repeat(5000), method: "ping" });
+    expect(longId.body.id).toBeNull();
   });
 
   it("keeps HTTP 400 for malformed input on the REST endpoint", async () => {

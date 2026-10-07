@@ -138,6 +138,11 @@ type Deps = {
   loadCatalogRevision?: (companyId: string) => Promise<string>;
 };
 
+/** The kill switch. Off unless the instance turns it on. */
+export function typeSafeToolEnabled(env: Record<string, string | undefined> = process.env) {
+  return /^(1|true|yes|on)$/i.test(env.PAPERCLIP_TYPESAFE_TOOL_ENABLED ?? "");
+}
+
 export function typeSafeRuntimeToolService(db: Db, deps: Deps = {}) {
   const request = deps.fetch ?? fetch;
   const env = deps.env ?? process.env;
@@ -165,7 +170,7 @@ export function typeSafeRuntimeToolService(db: Db, deps: Deps = {}) {
     // must precede agent/config/secret reads so a stale capability has no access
     // to company-scoped credential state.
     await validateCapability(claims);
-    if (!/^(1|true|yes|on)$/i.test(env.PAPERCLIP_TYPESAFE_TOOL_ENABLED ?? "")) return { ok: false, error: { code: "disabled", retryable: false } };
+    if (!typeSafeToolEnabled(env)) return { ok: false, error: { code: "disabled", retryable: false } };
     const input = typeSafeJudgeInputSchema.parse(raw);
     const agent = await loadAgent(claims.company_id, claims.sub);
     const binding = bindingOf(agent);

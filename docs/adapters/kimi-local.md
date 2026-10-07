@@ -83,10 +83,13 @@ Skills delivery depends on the execution engine:
   skill list. On a local task run, the run-scoped runtime-tools capability (for
   example `typesafe_judge`) is also registered as a native HTTP MCP server
   ("Paperclip connections") alongside the other MCP servers, authorized with
-  the current run's bearer. A task run starts a fresh ACP session every time,
-  so the registration never carries an earlier run's bearer. A conversation
-  turn resumes its session, so it receives the runtime tools through the
-  `PAPERCLIP_RUNTIME_TOOLS_*` environment variables only. Remote ACP targets keep the tracked-only
+  the current run's bearer. A task run builds its runtime from its own options
+  every time. On a later run of the same task the ACP client may reload the
+  task's session (`session/load`) instead of creating one; it passes the
+  current run's servers and bearer when it does. A conversation turn can reuse
+  a live runtime from an earlier turn, so it receives the runtime tools through
+  the `PAPERCLIP_RUNTIME_TOOLS_*` environment variables only, and it keeps the
+  tracked-only skill behavior so that a skill edit does not end its session. Remote ACP targets keep the tracked-only
   behavior: no bundle, no prompt skill root, and no native runtime-tools MCP
   server.
 

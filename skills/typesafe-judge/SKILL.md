@@ -42,12 +42,13 @@ message was sent, a test passed, or an approval exists.
 
 1. Discover `typesafe_judge` in this run's tool list and load this skill. Its
    presence in documentation alone does not mean this runtime can call it.
-   Some runtimes receive Paperclip's runtime tools through the environment
-   instead of the tool list: there, `PAPERCLIP_RUNTIME_TOOLS_AVAILABLE` names
-   the tool, and `PAPERCLIP_RUNTIME_TOOLS_TYPESAFE_JUDGE_URL` accepts the same
-   input as a JSON `POST` authorized with this run's
-   `PAPERCLIP_RUNTIME_TOOLS_TOKEN` as the bearer. That is the same governed
-   gateway. Never print or store the token.
+   If the tool is in your tool list, use it there. Only when it is not, check
+   the environment: some runtimes receive Paperclip's runtime tools that way.
+   `PAPERCLIP_RUNTIME_TOOLS_AVAILABLE` names the tool, and
+   `PAPERCLIP_RUNTIME_TOOLS_TYPESAFE_JUDGE_URL` accepts the same input as a
+   JSON `POST` authorized with this run's `PAPERCLIP_RUNTIME_TOOLS_TOKEN` as
+   the bearer. That URL is Paperclip's own gateway for this tool, so calling it
+   is using the tool. Never print or store the token.
 2. Supply minimal, non-sensitive context in `state`; it is sent to the external
    TypeSafe provider. Exclude credentials and unrelated data. Private customer
    information requires explicit authorization for that disclosure; otherwise
@@ -65,9 +66,11 @@ message was sent, a test passed, or an approval exists.
    backticks, such as `ticket.messages[0].text`.
    Each question must stand alone; questions in one call cannot see each other's
    answers. Batch only independent questions about the same state.
-4. Invoke the existing tool once. Supply `model` explicitly: use the task's model
-   pin if required, otherwise `jev-latest`. The runtime owns timeout and its
-   bounded retry. Do not add a retry loop, even when `error.retryable` is true.
+4. Invoke the existing tool once per judgment. Supply `model` explicitly: use
+   the task's model pin if required, otherwise `jev-latest`. The runtime owns
+   timeout and its bounded retry, so do not call again after a failure, even
+   when `error.retryable` is true. The one exception is `invalid_input`: that
+   call never reached TypeSafe, so correct it and send it again, twice at most.
 
 For synthetic qualification, use [pilot.json](pilot.json) unchanged. It is the
 single source for the pilot state, questions, and rubric. For recurring real
@@ -91,14 +94,20 @@ work, keep that task's questions and criteria in one small shared task file.
   task's existing review and approval gates.
 - With `ok: false`, inspect `error.code`. Optional advice that is unavailable,
   malformed, stale, or inconclusive supplies no usable judgment. Continue through
-  the existing authorized workflow and report the limitation when relevant.
-  `invalid_input` means the call itself was malformed: read `error.issues`,
-  correct the input, and call once more.
+  the existing authorized workflow and say in your task comment that the
+  judgment was unavailable, when it matters to the result.
+- `invalid_input` means the call itself was malformed: read `error.issues` and
+  `error.hint`, correct the input, and call again, twice at most. Through the
+  environment URL the same mistake is an HTTP 400 with `details` in place of
+  `error.issues`.
+- `disabled` means the tool is switched off on this instance. Do not call it
+  again in this run.
 - If task/run authority is revoked or the control plane tells you to stop, stop
   work under that authority. This is not an optional-advice fallback.
-- If discovery fails, the tool is disabled, or credentials are denied, report
-  the missing capability to the operator. Never bypass it with a separate API
-  call, credential lookup, script, or another agent's authority.
+- If discovery fails, the tool is disabled, or credentials are denied, the
+  capability is missing for this run: say so in your task comment and continue
+  without it. Never work around it by calling the TypeSafe vendor API yourself,
+  looking up a credential, or using another agent's authority.
 
 The official `typesafe-ai` developer skill explains the vendor API and patterns.
 This skill governs operational calls inside Paperclip; the company-scoped managed
