@@ -66,6 +66,16 @@ describe("approvalExcerpt", () => {
     );
   });
 
+  it("keeps a link target and the characters that are not markup", () => {
+    expect(approvalExcerpt("**Approve:** [Run the bounded check](https://example.test/run_v2) now.")).toBe(
+      "Approve: Run the bounded check (https://example.test/run_v2) now.",
+    );
+    expect(approvalExcerpt("Costs ~$42/month; run deploy_prod_v2 against orders_2026_q4")).toBe(
+      "Costs ~$42/month; run deploy_prod_v2 against orders_2026_q4",
+    );
+    expect(approvalExcerpt("Margin is 3 * 12 = 36")).toBe("Margin is 3 * 12 = 36");
+  });
+
   it("preserves order numbers and comparison symbols", () => {
     expect(approvalExcerpt("Order #90210: margin > cost")).toBe("Order #90210: margin > cost");
   });
@@ -415,6 +425,8 @@ describe("ApprovalPayloadRenderer", () => {
     expect(originalRequest?.classList.contains("break-all")).toBe(false);
     expect(originalRequest?.classList.contains("font-mono")).toBe(false);
     expect(originalRequest?.classList.contains("text-xs")).toBe(false);
+    // The whole text flows in the page: no height cap, no inner scroll box, no clamp.
+    expect(originalRequest?.className).not.toMatch(/max-h-|overflow-|line-clamp/);
 
     const proposedReply = proseBodies.find(
       (element) => element.textContent === "Proposed outgoing reply — not the source",
@@ -425,6 +437,7 @@ describe("ApprovalPayloadRenderer", () => {
     expect(proposedReply?.classList.contains("wrap-anywhere")).toBe(true);
     expect(proposedReply?.classList.contains("font-mono")).toBe(false);
     expect(proposedReply?.classList.contains("text-xs")).toBe(false);
+    expect(proposedReply?.className).not.toMatch(/max-h-|overflow-|line-clamp/);
     expect(container.querySelector("script")).toBeNull();
     expect(container.querySelector("pre")?.textContent).toBe(original);
     expect(text).toContain("Requester-provided external source snapshot");
@@ -432,6 +445,61 @@ describe("ApprovalPayloadRenderer", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("shows a long original request, proposed reply and proposed comment whole, with no button", () => {
+    const root = createRoot(container);
+    const original = `${"A long request line that the board must read to its end.\n".repeat(60)}Stop and ask first.`;
+    const body = `${"A long reply line.\n".repeat(60)}Last line of the reply.`;
+    const proposedComment = `${"A long comment line.\n".repeat(60)}Last line of the comment.`;
+    const source = { kind: "external", sender: "Synthetic Sender" };
+
+    act(() => {
+      root.render(
+        <ThemeProvider>
+          <ApprovalPayloadRenderer
+            type="request_board_approval"
+            payload={{ subject: "Synthetic request", body, originalRequest: { text: original, source } }}
+          />
+          <ApprovalPayloadRenderer
+            type="request_board_approval"
+            payload={{ title: "Post a comment", proposedComment, originalRequest: { text: original, source } }}
+          />
+        </ThemeProvider>,
+      );
+    });
+
+    const blocks = Array.from(container.querySelectorAll("pre"));
+    expect(blocks.map((block) => block.textContent)).toEqual([original, body, original, proposedComment]);
+    for (const block of blocks) {
+      expect(block.className).not.toMatch(/max-h-|overflow-|line-clamp/);
+      expect(block.classList.contains("whitespace-pre-wrap")).toBe(true);
+      expect(block.classList.contains("wrap-anywhere")).toBe(true);
+    }
+    expect(container.querySelector("button")).toBeNull();
+    act(() => root.unmount());
+  });
+
+  it("shows a strategy plan whole, and a plan that is not text as the request's data", () => {
+    const root = createRoot(container);
+    const plan = `${"A long plan line.\n".repeat(60)}Last line of the plan.`;
+
+    act(() => {
+      root.render(<ApprovalPayloadRenderer type="approve_ceo_strategy" payload={{ title: "Q4", plan }} />);
+    });
+    expect(container.textContent).toContain(plan);
+    expect(container.querySelector("[class*='max-h-']")).toBeNull();
+
+    act(() => {
+      root.render(
+        <ApprovalPayloadRenderer type="approve_ceo_strategy" payload={{ plan: { goals: ["Grow wholesale"] } }} />,
+      );
+    });
+    expect(container.textContent).not.toContain("[object Object]");
+    expect(container.textContent).toContain('"goals"');
+    expect(container.textContent).toContain("Grow wholesale");
+    expect(container.querySelector("[class*='max-h-']")).toBeNull();
+    act(() => root.unmount());
   });
 
   it("does not relabel a draft body as the original request when the source is absent", () => {

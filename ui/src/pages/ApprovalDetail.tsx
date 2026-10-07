@@ -9,15 +9,14 @@ import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
 import {
-  approvalDecisionBrief,
   approvalExcerpt,
   approvalSubject,
-  OriginalRequestBlock,
   ApprovalPayloadRenderer,
+  BudgetOverridePayload,
   typeLabel,
 } from "../components/ApprovalPayload";
 import { ApprovalDecisionActions, useSettlingApprovals } from "../components/ApprovalDecisionActions";
-import { ApprovalDecisionSummary, ApprovalEmailDraftBlock } from "../components/ApprovalDecisionSummary";
+import { ApprovalDecisionSummary } from "../components/ApprovalDecisionSummary";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -162,17 +161,11 @@ export function ApprovalDetail() {
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
-  // Hire and strategy requests carry no recommendation, pros or risks: they get their own summary.
-  const hasTypeSummary = approval.type === "hire_agent" || approval.type === "approve_ceo_strategy";
   const kindLabel = typeLabel[approval.type] ?? approval.type;
-  const subject = approvalExcerpt(approvalSubject(payload, approval.type), 160) ?? kindLabel;
-  const brief = approvalDecisionBrief(payload);
-  // ponytail: Keep the board scan bounded; the complete request remains available below.
-  const recommendation = approvalExcerpt(brief.recommendation, 320);
-  const reasoning = approvalExcerpt(brief.reasoning, 420);
-  const pros = brief.pros.slice(0, 3).map((item) => approvalExcerpt(item, 220)).filter(Boolean);
-  const cons = brief.cons.slice(0, 3).map((item) => approvalExcerpt(item, 220)).filter(Boolean);
-  const nextAction = approvalExcerpt(brief.nextAction, 280);
+  const subjectText = approvalSubject(payload, approval.type);
+  // The heading carries the whole title; the decision buttons name the request by a shorter form of it.
+  const title = approvalExcerpt(subjectText, Number.POSITIVE_INFINITY) ?? kindLabel;
+  const subject = approvalExcerpt(subjectText, 160) ?? kindLabel;
   const decisionPending =
     approveMutation.isPending ||
     rejectMutation.isPending ||
@@ -231,8 +224,8 @@ export function ApprovalDetail() {
             >
               {kindLabel}
             </Badge>
-            <h1 id="approval-title" className="text-xl font-semibold leading-7 text-foreground">
-              {subject}
+            <h1 id="approval-title" className="break-words text-xl font-semibold leading-7 text-foreground">
+              {title}
             </h1>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               {approval.requestedByAgentId && (
@@ -251,7 +244,12 @@ export function ApprovalDetail() {
         </header>
 
         <div className="space-y-5 border-t border-border/60 pt-4">
-          {hasTypeSummary ? (
+          {/* This page has the room: everything the board decides on is shown in full, above the buttons. */}
+          {isBudgetApproval ? (
+            <div className="-mt-3">
+              <BudgetOverridePayload payload={payload} />
+            </div>
+          ) : (
             <ApprovalDecisionSummary
               type={approval.type}
               payload={payload}
@@ -259,76 +257,6 @@ export function ApprovalDetail() {
               resolveAgentName={(agentId) => (agents ? (agentNameById.get(agentId) ?? null) : undefined)}
               full
             />
-          ) : (
-            <>
-              <div className="rounded-lg bg-muted/40 px-3.5 py-3">
-                <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                  Recommendation
-                </p>
-                <p className="mt-1 text-sm leading-6 text-foreground">
-                  {recommendation ?? "No recommendation was supplied."}
-                </p>
-              </div>
-
-              {approval.type === "request_board_approval" && <OriginalRequestBlock payload={payload} />}
-
-              <div>
-                <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                  Why
-                </p>
-                <p className="mt-1 text-sm leading-6 text-foreground">
-                  {reasoning ?? "No rationale was supplied."}
-                </p>
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                    Pros
-                  </p>
-                  {pros.length > 0 ? (
-                    <ul className="mt-1.5 space-y-1.5 text-sm text-foreground">
-                      {pros.map((item) => (
-                        <li key={item} className="flex items-start gap-2 leading-5">
-                          <span aria-hidden className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
-                          <span>{item}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-1 text-sm leading-5 text-muted-foreground">No explicit benefit was supplied.</p>
-                  )}
-                </div>
-                <div>
-                  <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                    Risks
-                  </p>
-                  {cons.length > 0 ? (
-                    <ul className="mt-1.5 space-y-1.5 text-sm text-foreground">
-                      {cons.map((item) => (
-                        <li key={item} className="flex items-start gap-2 leading-5">
-                          <span aria-hidden className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
-                          <span>{item}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-1 text-sm leading-5 text-muted-foreground">No explicit tradeoff was supplied.</p>
-                  )}
-                </div>
-              </div>
-
-              {approval.type === "request_board_approval" && <ApprovalEmailDraftBlock payload={payload} />}
-
-              {nextAction && (
-                <div>
-                  <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                    If approved
-                  </p>
-                  <p className="mt-1 text-sm leading-6 text-foreground">{nextAction}</p>
-                </div>
-              )}
-            </>
           )}
 
           {approval.decisionNote && (

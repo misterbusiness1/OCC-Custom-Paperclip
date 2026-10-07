@@ -13,7 +13,13 @@ vi.mock("@/lib/router", () => ({
 
 import { ApprovalCard } from "./ApprovalCard";
 import { ApprovalDecisionSummary } from "./ApprovalDecisionSummary";
-import { approvalReadableText, approvalStrategyPlan, approvalTextPreview } from "./ApprovalPayload";
+import {
+  approvalExcerpt,
+  approvalReadableText,
+  approvalStrategyPlan,
+  approvalTextPreview,
+  stripLeadingListMarker,
+} from "./ApprovalPayload";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -202,6 +208,198 @@ describe("ApprovalCard", () => {
     expect(container.textContent).not.toContain("Third pro.");
     click("+1 more");
     expect(container.textContent).toContain("Third pro.");
+  });
+
+  it("keeps the characters that carry meaning in the recommendation, why, pros, risks and next action", () => {
+    render({
+      approval: createApproval({
+        payload: {
+          title: "Approve the price sync",
+          recommendedAction: "Run deploy_prod_v2 against orders_2026_q4 for ~$42/month.",
+          reasoning: "Margin is 3 * 12 = 36, which is > 30%. See [the diff](https://example.test/price_list_v2.pdf).",
+          pros: ["+ 12% conversion on pricing_rules"],
+          risks: ["> 5 minutes of stale prices in ~/cache"],
+          nextActionOnApproval: "Set SYNC__ENABLED and call __init__ in pricing__rules.py.",
+        },
+      }),
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("RecommendationRun deploy_prod_v2 against orders_2026_q4 for ~$42/month.");
+    expect(text).toContain("Margin is 3 * 12 = 36, which is > 30%.");
+    // A link keeps its target: where it points can be what the board is approving.
+    expect(text).toContain("See the diff (https://example.test/price_list_v2.pdf).");
+    expect(text).toContain("+ 12% conversion on pricing_rules");
+    expect(text).toContain("> 5 minutes of stale prices in ~/cache");
+    expect(text).toContain("If approvedSet SYNC__ENABLED and call __init__ in pricing__rules.py.");
+    // Agent-written text stays plain text: no link, emphasis or other markup is built from it.
+    expect(container.querySelector("a[href^='https://example.test']")).toBeNull();
+    expect(container.querySelector(".paperclip-markdown")).toBeNull();
+  });
+
+  it("keeps the line breaks of short multi-line text, with nothing to expand", () => {
+    render({
+      approval: createApproval({
+        payload: {
+          title: "Approve the price page",
+          recommendedAction: "1. Publish the page.\n2. Tell support.",
+          reasoning: "- Prices match the approved sheet\n- Legal signed off\n\nThe old page 404s on mobile.",
+          pros: ["Fixed cost."],
+          risks: ["May rise."],
+          nextActionOnApproval: "**Publish** today.\nReview on Monday.",
+        },
+      }),
+    });
+
+    const paragraphs = [...container.querySelectorAll("p.whitespace-pre-wrap")].map((p) => p.textContent);
+    expect(paragraphs).toEqual([
+      "1. Publish the page.\n2. Tell support.",
+      "\u2022 Prices match the approved sheet\n\u2022 Legal signed off\n\nThe old page 404s on mobile.",
+      "Publish today.\nReview on Monday.",
+    ]);
+    expect(button("Show more")).toBeUndefined();
+  });
+
+  it("previews long multi-line text by its first lines and expands it in place", () => {
+    const reasoning = ["First reason.", "Second reason.", "Third reason.", "Fourth reason.", "Fifth and final reason."].join("\n");
+    render({
+      approval: createApproval({
+        payload: {
+          title: "Approve the price page",
+          recommendedAction: "Publish the page.",
+          reasoning,
+          pros: ["Fixed cost."],
+          risks: ["May rise."],
+        },
+      }),
+    });
+
+    const why = () => [...container.querySelectorAll("p.whitespace-pre-wrap")].map((p) => p.textContent)[1];
+    expect(why()).toBe("First reason.\nSecond reason.\nThird reason.\u2026");
+    expect(button("Show more")?.getAttribute("aria-expanded")).toBe("false");
+    click("Show more");
+    expect(why()).toBe(reasoning);
+    expect(button("Show less")?.getAttribute("aria-expanded")).toBe("true");
+    click("Show less");
+    expect(why()).toBe("First reason.\nSecond reason.\nThird reason.\u2026");
+  });
+
+  it("shows a fourth line instead of a control that would reveal only that line", () => {
+    const reasoning = "First reason.\nSecond reason.\nThird reason.\nFourth and final reason.";
+    render({
+      approval: createApproval({
+        payload: { title: "Approve the price page", recommendedAction: "Publish.", reasoning, pros: ["A."], risks: ["B."] },
+      }),
+    });
+
+    expect(container.textContent).toContain("Fourth and final reason.");
+    expect(button("Show more")).toBeUndefined();
+  });
+
+  it("shows each pro and risk beside one bullet, without the item's own list marker", () => {
+    render({
+      approval: createApproval({
+        payload: {
+          title: "Approve the price page",
+          recommendedAction: "Publish the page.",
+          reasoning: "It is ready.",
+          pros: ["- **Dash** pro.", "* Star pro."],
+          risks: ["1. Cached copies stay stale for an hour.", "2) Second numbered risk.", "\u2022 Dot risk.", "1.5x the cost of today"],
+        },
+      }),
+    });
+
+    click("+2 more");
+    const items = [...container.querySelectorAll("li")].map((item) => item.textContent);
+    expect(items).toEqual([
+      "Dash pro.",
+      "Star pro.",
+      "Cached copies stay stale for an hour.",
+      "Second numbered risk.",
+      "Dot risk.",
+      "1.5x the cost of today",
+    ]);
+  });
+
+  it("keeps every marker of a risk that is itself a list, on separate lines", () => {
+    render({
+      approval: createApproval({
+        payload: {
+          title: "Approve the price page",
+          recommendedAction: "Publish the page.",
+          reasoning: "It is ready.",
+          pros: ["Fixed cost."],
+          // One string, not an array: the agent wrote its risks as a numbered list.
+          risks: "1. Cached copies stay stale.\n2. Support is not briefed.\n3. No rollback.",
+        },
+      }),
+    });
+
+    const risk = () => [...container.querySelectorAll("li")].at(-1)!;
+    expect(risk().textContent).toBe("1. Cached copies stay stale.\n2. Support is not briefed.\n3. No rollback.");
+    expect(risk().querySelector("span.whitespace-pre-wrap")).not.toBeNull();
+
+    // A marked item with detail lines under it is one item: its own marker goes, the detail keeps its place.
+    render({
+      approval: createApproval({
+        payload: {
+          title: "Approve the price page",
+          recommendedAction: "Publish the page.",
+          reasoning: "It is ready.",
+          pros: ["Fixed cost."],
+          risks: ["- Cached copies stay stale.\n  - for up to an hour\n  - on mobile only"],
+        },
+      }),
+    });
+    expect(risk().textContent).toBe("Cached copies stay stale.\n  \u2022 for up to an hour\n  \u2022 on mobile only");
+  });
+
+  it("previews a long original request behind a button that states its size, and never in a scroll box", () => {
+    const longByLength = `${"Use provider X if it stays under $50 a month. ".repeat(12)}Stop and ask first.`;
+    const longByLines = `${"Line.\n".repeat(20)}Stop and ask first.`;
+    expect(longByLines.length).toBeLessThan(480);
+
+    for (const original of [longByLength, longByLines]) {
+      render({
+        approval: createApproval({
+          payload: {
+            title: "Approve staging hosting spend",
+            recommendedAction: "Approve provider X.",
+            reasoning: "It meets the request.",
+            pros: ["Fixed cost."],
+            risks: ["May rise."],
+            originalRequest: { text: original, source: { kind: "external", sender: "Board" } },
+          },
+        }),
+      });
+
+      const source = () => container.querySelector("pre")!;
+      const label = `Show full request (${original.length.toLocaleString()} characters)`;
+      // The retained text is whole in the page; the preview is a visual clamp that the button announces.
+      expect(source().textContent).toBe(original);
+      expect(source().className).toContain("line-clamp-4");
+      expect(button(label)?.getAttribute("aria-expanded")).toBe("false");
+      click(label);
+      expect(source().className).not.toMatch(/line-clamp|max-h-|overflow-/);
+      click("Show less");
+      expect(source().className).toContain("line-clamp-4");
+    }
+
+    // A short request is shown whole, with no button and no height cap.
+    render({
+      approval: createApproval({
+        payload: {
+          title: "Approve staging hosting spend",
+          recommendedAction: "Approve provider X.",
+          reasoning: "It meets the request.",
+          pros: ["Fixed cost."],
+          risks: ["May rise."],
+          originalRequest: { text: "Use provider X.\nStop and ask first.", source: { kind: "external", sender: "Board" } },
+        },
+      }),
+    });
+    expect(container.querySelector("pre")!.className).not.toMatch(/line-clamp|max-h-|overflow-/);
+    expect([...container.querySelectorAll("button")].some((b) => b.textContent?.startsWith("Show full request"))).toBe(false);
   });
 
   it("links a Paperclip source back to its comment", () => {
@@ -577,6 +775,76 @@ describe("ApprovalCard for requests without a source, hires and strategies", () 
     expect(container.textContent).toContain("Step 12.");
     expect(button("Show full plan")).toBeUndefined();
   });
+
+  it("shows every part of a Board approval in full, with no control and no clamp, where the page asks for it", () => {
+    const long = (label: string) => `${`${label} sentence that repeats. `.repeat(30)}${label} ends here.`;
+    const payload = {
+      title: "Reply to wholesale request",
+      recommendedAction: long("Recommendation"),
+      reasoning: Array.from({ length: 12 }, (_, index) => `Reason ${index + 1}.`).join("\n"),
+      pros: ["Pro 1.", "Pro 2.", "Pro 3.", "Pro 4.", "Pro 5."],
+      risks: ["Risk 1.", "Risk 2.", "Risk 3.", "Risk 4.", "Risk 5."],
+      nextActionOnApproval: long("Next action"),
+      recipient: "buyer@example.test",
+      body: long("Draft"),
+      originalRequest: {
+        text: `${long("Request")}\n${"Line.\n".repeat(30)}Stop and ask before going any further.`,
+        source: { kind: "external", sender: "Sam Example" },
+      },
+    };
+
+    // The same request on a compact surface previews and offers to expand.
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={payload} />));
+    expect(container.textContent).not.toContain("Recommendation ends here.");
+    expect(container.textContent).not.toContain("Risk 5.");
+    expect(container.querySelectorAll("button").length).toBeGreaterThan(0);
+
+    act(() => root.render(<ApprovalDecisionSummary key="full" type="request_board_approval" payload={payload} full />));
+    const text = container.textContent ?? "";
+    for (const end of ["Recommendation ends here.", "Reason 12.", "Pro 5.", "Risk 5.", "Next action ends here.", "Draft ends here."]) {
+      expect(text).toContain(end);
+    }
+    expect(text).not.toContain("\u2026");
+    expect(container.querySelectorAll("li")).toHaveLength(10);
+    expect(container.querySelector("pre")!.textContent).toBe(payload.originalRequest.text);
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector("[aria-expanded]")).toBeNull();
+    expect(container.querySelector("[class*='line-clamp']")).toBeNull();
+    expect(container.querySelector("[class*='max-h-']")).toBeNull();
+    expect(container.querySelector("[class*='overflow-y']")).toBeNull();
+  });
+
+  it("shows every skill of a hire and every risk of a strategy in full, where the page asks for it", () => {
+    const desiredSkills = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9"];
+    act(() => root.render(<ApprovalDecisionSummary type="hire_agent" payload={{ name: "Clerk", desiredSkills }} full />));
+    expect(container.querySelectorAll("[data-approval-hire] li")).toHaveLength(9);
+    expect(container.querySelector("button")).toBeNull();
+
+    act(() =>
+      root.render(
+        <ApprovalDecisionSummary
+          type="approve_ceo_strategy"
+          payload={{ plan: "Grow.", reasoning: Array.from({ length: 9 }, (_, i) => `Why ${i + 1}.`).join("\n"), risks: ["R1.", "R2.", "R3.", "R4."] }}
+          full
+        />,
+      ),
+    );
+    expect(container.textContent).toContain("Why 9.");
+    expect(container.textContent).toContain("R4.");
+    expect(container.querySelector("button")).toBeNull();
+  });
+
+  it("states the fields a Board approval leaves empty only where the summary is shown in full", () => {
+    const payload = { title: "Approve the price page", risks: ["May rise."] };
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={payload} />));
+    expect(container.textContent).not.toContain("Recommendation");
+    expect(container.textContent).not.toContain("Original request");
+
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={payload} full />));
+    expect(container.textContent).toContain("RecommendationNot supplied.");
+    expect(container.textContent).toContain("Original requestNo original request was attached to this approval.");
+    expect(container.textContent).toContain("WhyNot supplied.");
+  });
 });
 
 describe("approval text helpers", () => {
@@ -592,6 +860,45 @@ describe("approval text helpers", () => {
     );
     expect(approvalReadableText("one\r\ntwo\rthree   ")).toBe("one\ntwo\nthree");
     expect(approvalReadableText("   ")).toBeNull();
+    // A leading ">" or "+" may be a comparison or a sign, so neither is taken for markup.
+    expect(approvalReadableText("> 30% margin\n+ 12% conversion\n- one bullet")).toBe(
+      "> 30% margin\n+ 12% conversion\n\u2022 one bullet",
+    );
+  });
+
+  it("makes a one-line title without deleting characters that carry meaning", () => {
+    for (const title of [
+      "Review pricing_rules before the sync",
+      "Move ~/reports to the shared drive",
+      "Raise the cap to 2**10 rows",
+      "> 30% margin on the Q4 bundle",
+      "+ 2 seats for ~$42/month",
+      "Order #90210: 3 * 12 = 36",
+    ]) {
+      expect(approvalExcerpt(title)).toBe(title);
+    }
+    // Markup goes, link targets stay, and line breaks fold into single spaces.
+    expect(approvalExcerpt("## **Approve** the `sync`\n\n1. Now\n2. Later")).toBe("Approve the sync 1. Now 2. Later");
+    expect(approvalExcerpt("See [the diff](https://example.test/a_b)")).toBe("See the diff (https://example.test/a_b)");
+    expect(approvalExcerpt("   ")).toBeNull();
+    expect(approvalExcerpt(null)).toBeNull();
+
+    // Cut at a word boundary, and never between the halves of one character.
+    expect(approvalExcerpt("Approve the pricing_rules sync for the wholesale portal", 30)).toBe("Approve the pricing_rules sync\u2026");
+    expect(approvalExcerpt("\u{1F600}".repeat(10), 5)).toBe(`${"\u{1F600}".repeat(2)}\u2026`);
+    expect(approvalExcerpt("word ".repeat(5_000), Number.POSITIVE_INFINITY)).toBe("word ".repeat(5_000).trim());
+  });
+
+  it("strips exactly one leading list marker, and nothing that only looks like one", () => {
+    expect(stripLeadingListMarker("- Dash")).toBe("Dash");
+    expect(stripLeadingListMarker("* Star")).toBe("Star");
+    expect(stripLeadingListMarker("\u2022 Dot")).toBe("Dot");
+    expect(stripLeadingListMarker("1. Number")).toBe("Number");
+    expect(stripLeadingListMarker("12) Paren")).toBe("Paren");
+    expect(stripLeadingListMarker("- - Twice")).toBe("- Twice");
+    for (const kept of ["-5% margin", "1.5x the cost", "+ 2 seats", "> 30% margin", "2026. A year, not a marker", "*bold*"]) {
+      expect(stripLeadingListMarker(kept)).toBe(kept);
+    }
   });
 
   it("stays fast on hostile input", () => {

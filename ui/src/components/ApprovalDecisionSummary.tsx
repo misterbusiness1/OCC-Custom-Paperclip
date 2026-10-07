@@ -5,14 +5,14 @@ import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import {
   approvalDecisionBrief,
   approvalEmailDraft,
-  approvalExcerpt,
   approvalHireFacts,
   approvalOriginalRequest,
-  approvalPlainText,
+  approvalReadableText,
   approvalStrategyBrief,
   approvalStrategyPlan,
   approvalTextPreview,
   OriginalRequestBlock,
+  stripLeadingListMarker,
 } from "./ApprovalPayload";
 
 /**
@@ -25,58 +25,53 @@ const labelClass =
   "text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground";
 const moreClass =
   "mt-1 inline-flex min-h-6 items-center text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground";
+const emptyClass = "mt-1 text-sm leading-5 text-muted-foreground";
 const LIST_PREVIEW_COUNT = 2;
 const DRAFT_PREVIEW_LENGTH = 320;
 const SKILL_PREVIEW_COUNT = 6;
+// What a compact surface shows of each field before "Show more".
+const RECOMMENDATION_PREVIEW = { maxLines: 3, maxLength: 180 };
+const WHY_PREVIEW = { maxLines: 3, maxLength: 220 };
+const NEXT_ACTION_PREVIEW = { maxLines: 3, maxLength: 220 };
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
-/** Shows the clipped excerpt first; the full text stays one click away on the card. */
-function ExpandableText({ value, limit }: { value: string; limit: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const excerpt = approvalExcerpt(value, limit);
-  const full = approvalPlainText(value);
-  if (!excerpt || !full) return null;
-  const canExpand = full.replace(/\s+/g, " ").length > limit;
-
-  return (
-    <>
-      <p className="mt-1 whitespace-pre-line break-words text-sm leading-5 text-foreground">
-        {expanded ? full : excerpt}
-      </p>
-      {canExpand && (
-        <button
-          type="button"
-          className={moreClass}
-          aria-expanded={expanded}
-          onClick={() => setExpanded((current) => !current)}
-        >
-          {expanded ? "Show less" : "Show more"}
-        </button>
-      )}
-    </>
-  );
+/**
+ * One pro or risk as readable plain text. The item sits beside a bullet, so a
+ * leading list marker of its own is dropped. An item that is itself a list
+ * (a later line carries a marker at the same level) keeps every marker:
+ * dropping only the first would leave a list that starts at "2.".
+ */
+function decisionPointText(item: string): string | null {
+  const text = approvalReadableText(item);
+  if (!text) return null;
+  const isList = text
+    .split("\n")
+    .slice(1)
+    .some((line) => stripLeadingListMarker(line) !== line);
+  return isList ? text : stripLeadingListMarker(text).trim() || null;
 }
 
-function DecisionPoints({ label, items }: { label: string; items: string[] }) {
+/** Pros or risks. `full` lists every item; otherwise the first two, with the rest one click away. */
+function DecisionPoints({ label, items, full }: { label: string; items: string[]; full: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const points = items.flatMap((item) => {
-    const text = approvalPlainText(item);
+    const text = decisionPointText(item);
     return text ? [text] : [];
   });
-  const hidden = points.length - LIST_PREVIEW_COUNT;
-  const visible = expanded ? points : points.slice(0, LIST_PREVIEW_COUNT);
+  const hidden = full ? 0 : points.length - LIST_PREVIEW_COUNT;
+  const visible = full || expanded ? points : points.slice(0, LIST_PREVIEW_COUNT);
 
   return (
     <div className="min-w-0">
       <p className={labelClass}>{label}</p>
       {points.length === 0 ? (
-        <p className="mt-1 text-sm leading-5 text-muted-foreground">Not supplied.</p>
+        <p className={emptyClass}>Not supplied.</p>
       ) : (
         <ul className="mt-1 space-y-1 text-sm leading-5 text-foreground">
           {visible.map((point, index) => (
             <li key={`${index}-${point}`} className="flex items-start gap-2">
               <span aria-hidden className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
-              <span className="min-w-0 break-words">{point}</span>
+              <span className="min-w-0 whitespace-pre-wrap break-words">{point}</span>
             </li>
           ))}
         </ul>
@@ -95,11 +90,18 @@ function DecisionPoints({ label, items }: { label: string; items: string[] }) {
   );
 }
 
-export function ApprovalEmailDraftBlock({ payload }: { payload?: Record<string, unknown> | null }) {
+function ApprovalEmailDraftBlock({
+  payload,
+  full,
+}: {
+  payload?: Record<string, unknown> | null;
+  /** Show the whole draft, with nothing to expand. */
+  full: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const draft = approvalEmailDraft(payload);
   if (!draft) return null;
-  const canExpand = draft.body.length > DRAFT_PREVIEW_LENGTH;
+  const canExpand = !full && draft.body.length > DRAFT_PREVIEW_LENGTH;
   const envelope = [
     ["From", draft.from],
     ["To", draft.to],
@@ -146,25 +148,32 @@ export function ApprovalEmailDraftBlock({ payload }: { payload?: Record<string, 
   );
 }
 
-/** Agent-written text with its line breaks, shown by its first lines until expanded. */
+/**
+ * Agent-written text with its line breaks, shown by its first lines until
+ * expanded. Text that is already readable plain text goes in; `full` shows all
+ * of it with nothing to expand.
+ */
 function ReadableText({
   text,
   maxLines,
   maxLength,
   full = false,
-  moreLabel,
+  moreLabel = "Show more",
 }: {
   text: string;
   maxLines: number;
   maxLength: number;
   full?: boolean;
-  moreLabel: string;
+  moreLabel?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { preview, truncated } = useMemo(
-    () => approvalTextPreview(text, maxLines, maxLength),
-    [text, maxLines, maxLength],
-  );
+  const { preview, truncated } = useMemo(() => {
+    // A control that reveals a single extra line takes the room of that line: show the line.
+    const cut = approvalTextPreview(text, maxLines, maxLength);
+    return cut.truncated && approvalTextPreview(text, maxLines + 1, maxLength).truncated
+      ? cut
+      : { preview: text, truncated: false };
+  }, [text, maxLines, maxLength]);
   const collapsible = truncated && !full;
 
   return (
@@ -183,6 +192,41 @@ function ReadableText({
         </button>
       )}
     </>
+  );
+}
+
+/**
+ * One labelled field of the decision brief (recommendation, why, if approved),
+ * as readable plain text. `emptyText` is shown where the request must state the
+ * field and does not; without it an empty field is left out.
+ */
+function DecisionField({
+  label,
+  value,
+  maxLines,
+  maxLength,
+  full,
+  emptyText,
+}: {
+  label: string;
+  value: string | null;
+  maxLines: number;
+  maxLength: number;
+  full: boolean;
+  emptyText?: string;
+}) {
+  const text = useMemo(() => approvalReadableText(value), [value]);
+  if (!text && !emptyText) return null;
+
+  return (
+    <div className="min-w-0">
+      <p className={labelClass}>{label}</p>
+      {text ? (
+        <ReadableText text={text} maxLines={maxLines} maxLength={maxLength} full={full} />
+      ) : (
+        <p className={emptyClass}>{emptyText}</p>
+      )}
+    </div>
   );
 }
 
@@ -233,8 +277,8 @@ function HireAgentSummary({
     ["Runs on", runsOn],
     ["Monthly budget", budget],
   ].filter((fact): fact is [string, string] => Boolean(fact[1]));
-  const hiddenSkills = hire.skills.length - SKILL_PREVIEW_COUNT;
-  const skills = showAllSkills ? hire.skills : hire.skills.slice(0, SKILL_PREVIEW_COUNT);
+  const hiddenSkills = full ? 0 : hire.skills.length - SKILL_PREVIEW_COUNT;
+  const skills = full || showAllSkills ? hire.skills : hire.skills.slice(0, SKILL_PREVIEW_COUNT);
   const agentName = hire.name ?? "The agent";
   // The server acts on whatever agent the request names. If that is not the agent
   // being hired, the board must see it before it decides.
@@ -254,9 +298,9 @@ function HireAgentSummary({
       <div className="min-w-0">
         <p className={labelClass}>What it will do</p>
         {hire.capabilities ? (
-          <ReadableText text={hire.capabilities} maxLines={4} maxLength={220} full={full} moreLabel="Show more" />
+          <ReadableText text={hire.capabilities} maxLines={4} maxLength={220} full={full} />
         ) : (
-          <p className="mt-1 text-sm leading-5 text-muted-foreground">The request does not describe the agent's work.</p>
+          <p className={emptyClass}>The request does not describe the agent's work.</p>
         )}
       </div>
       {hire.skills.length > 0 && (
@@ -328,47 +372,32 @@ function StrategySummary({
   const plan = useMemo(() => approvalStrategyPlan(payload), [payload]);
   const brief = approvalStrategyBrief(payload);
   // With no plan field, the request's own rationale is the closest thing to one.
-  const planText = plan.kind === "text" ? plan.text : approvalPlainText(brief.reasoning);
+  const planText = plan.kind === "text" ? plan.text : approvalReadableText(brief.reasoning);
   const why = plan.kind === "text" ? brief.reasoning : null;
 
   return (
     <div className={cn("space-y-3", className)}>
-      {brief.recommendation && (
-        <div className="min-w-0">
-          <p className={labelClass}>Recommendation</p>
-          <ExpandableText value={brief.recommendation} limit={180} />
-        </div>
-      )}
+      <DecisionField label="Recommendation" value={brief.recommendation} {...RECOMMENDATION_PREVIEW} full={full} />
       <div className="min-w-0" data-approval-plan>
         <p className={labelClass}>Plan</p>
         {planText ? (
           <ReadableText text={planText} maxLines={6} maxLength={480} full={full} moreLabel="Show full plan" />
         ) : (
-          <p className="mt-1 text-sm leading-5 text-muted-foreground">
+          <p className={emptyClass}>
             {plan.kind === "unreadable"
               ? "The plan is not plain text. Open the full request to read it."
               : "The request contains no plan text."}
           </p>
         )}
       </div>
-      {why && (
-        <div className="min-w-0">
-          <p className={labelClass}>Why</p>
-          <ExpandableText value={why} limit={220} />
-        </div>
-      )}
+      <DecisionField label="Why" value={why} {...WHY_PREVIEW} full={full} />
       {(brief.pros.length > 0 || brief.cons.length > 0) && (
         <div className="grid gap-3 sm:grid-cols-2">
-          {brief.pros.length > 0 && <DecisionPoints label="Pros" items={brief.pros} />}
-          {brief.cons.length > 0 && <DecisionPoints label="Risks" items={brief.cons} />}
+          {brief.pros.length > 0 && <DecisionPoints label="Pros" items={brief.pros} full={full} />}
+          {brief.cons.length > 0 && <DecisionPoints label="Risks" items={brief.cons} full={full} />}
         </div>
       )}
-      {brief.nextAction && (
-        <div className="min-w-0">
-          <p className={labelClass}>If approved</p>
-          <ExpandableText value={brief.nextAction} limit={220} />
-        </div>
-      )}
+      <DecisionField label="If approved" value={brief.nextAction} {...NEXT_ACTION_PREVIEW} full={full} />
     </div>
   );
 }
@@ -411,8 +440,17 @@ export function ApprovalDecisionSummary({
   const hasDraft = isBoardApproval && approvalEmailDraft(payload) !== null;
   const hasBrief =
     isBoardApproval ||
-    Boolean(brief.recommendation || brief.reasoning || brief.pros.length > 0 || brief.cons.length > 0);
-  if (!hasBrief) return null;
+    Boolean(
+      brief.recommendation || brief.reasoning || brief.pros.length > 0 || brief.cons.length > 0 || brief.nextAction,
+    );
+  if (!hasBrief) {
+    // A page that shows the summary in full says so when there is nothing to show.
+    return full ? (
+      <p className={cn("text-sm leading-5 text-muted-foreground", className)}>
+        This request carries no recommendation, rationale, pros or risks.
+      </p>
+    ) : null;
+  }
 
   // Requests filed before decision fields were required carry no source, pros or risks.
   // One line says so (the header line already notes the missing source); empty
@@ -423,26 +461,29 @@ export function ApprovalDecisionSummary({
     brief.pros.length === 0 &&
     brief.cons.length === 0;
   const showPoints = !isBareLegacyRequest && (isBoardApproval || brief.pros.length > 0 || brief.cons.length > 0);
+  // In full, a Board approval states the fields its request leaves empty instead of dropping them.
+  const emptyText = full && isBoardApproval ? "Not supplied." : undefined;
 
   return (
     <div className={cn("space-y-3", className)}>
-      {brief.recommendation && (
-        <div className="min-w-0">
-          <p className={labelClass}>Recommendation</p>
-          <ExpandableText value={brief.recommendation} limit={180} />
-        </div>
-      )}
-      {isBoardApproval && <OriginalRequestBlock payload={payload} compact />}
-      {brief.reasoning && (
-        <div className="min-w-0">
-          <p className={labelClass}>Why</p>
-          <ExpandableText value={brief.reasoning} limit={220} />
-        </div>
-      )}
+      <DecisionField
+        label="Recommendation"
+        value={brief.recommendation}
+        {...RECOMMENDATION_PREVIEW}
+        full={full}
+        emptyText={emptyText}
+      />
+      {/* Compact: an announced preview, and a missing source is noted once in the header line. In full: all of it. */}
+      {isBoardApproval && <OriginalRequestBlock payload={payload} compact={!full} />}
+      <DecisionField label="Why" value={brief.reasoning} {...WHY_PREVIEW} full={full} emptyText={emptyText} />
       {showPoints && (
         <div className="grid gap-3 sm:grid-cols-2">
-          {(brief.pros.length > 0 || isBoardApproval) && <DecisionPoints label="Pros" items={brief.pros} />}
-          {(brief.cons.length > 0 || isBoardApproval) && <DecisionPoints label="Risks" items={brief.cons} />}
+          {(brief.pros.length > 0 || isBoardApproval) && (
+            <DecisionPoints label="Pros" items={brief.pros} full={full} />
+          )}
+          {(brief.cons.length > 0 || isBoardApproval) && (
+            <DecisionPoints label="Risks" items={brief.cons} full={full} />
+          )}
         </div>
       )}
       {isBareLegacyRequest && (
@@ -450,13 +491,8 @@ export function ApprovalDecisionSummary({
           Older request: no pros or risks were recorded.
         </p>
       )}
-      {hasDraft && <ApprovalEmailDraftBlock payload={payload} />}
-      {brief.nextAction && (
-        <div className="min-w-0">
-          <p className={labelClass}>If approved</p>
-          <ExpandableText value={brief.nextAction} limit={220} />
-        </div>
-      )}
+      {hasDraft && <ApprovalEmailDraftBlock payload={payload} full={full} />}
+      <DecisionField label="If approved" value={brief.nextAction} {...NEXT_ACTION_PREVIEW} full={full} />
     </div>
   );
 }
