@@ -26,6 +26,7 @@ const apiMocks = vi.hoisted(() => ({
   approvalsList: vi.fn(),
   approve: vi.fn(),
   reject: vi.fn(),
+  requestRevision: vi.fn(),
   joinRequestsList: vi.fn(),
   userDirectoryList: vi.fn(),
   authSession: vi.fn(),
@@ -48,6 +49,7 @@ vi.mock("../api/approvals", () => ({
     list: apiMocks.approvalsList,
     approve: apiMocks.approve,
     reject: apiMocks.reject,
+    requestRevision: apiMocks.requestRevision,
   },
 }));
 
@@ -354,6 +356,7 @@ function resetInboxApiMocks() {
   apiMocks.approvalsList.mockResolvedValue([]);
   apiMocks.approve.mockResolvedValue(createApproval({ status: "approved" }));
   apiMocks.reject.mockResolvedValue(createApproval({ status: "rejected" }));
+  apiMocks.requestRevision.mockResolvedValue(createApproval({ status: "revision_requested" }));
   apiMocks.joinRequestsList.mockResolvedValue([]);
   apiMocks.userDirectoryList.mockResolvedValue({ users: [] });
   apiMocks.authSession.mockResolvedValue({
@@ -554,24 +557,50 @@ describe("Inbox toolbar", () => {
       await vi.waitFor(() => expect(container.textContent).toContain("Customer request"));
       const row = [...container.querySelectorAll("[data-inbox-item]")]
         .find((item) => item.textContent?.includes("Customer request"))!;
-      expect(row.querySelector("pre")?.textContent).toBe(original);
-      expect(row.querySelector("details summary")?.textContent).toBe("Show verbatim request");
+      const source = row.querySelector("pre")!;
+      expect(source.textContent).toBe(original);
+      // A long request shows its first lines; the retained text is never shortened.
+      expect(source.classList.contains("line-clamp-4")).toBe(true);
+      const expandSource = [...row.querySelectorAll("button")]
+        .find((button) => button.textContent?.startsWith("Show full request"))!;
+      expect(expandSource.textContent).toBe(`Show full request (${original.length.toLocaleString()} characters)`);
+      await act(async () => expandSource.click());
+      expect(source.classList.contains("line-clamp-4")).toBe(false);
+      expect(source.textContent).toBe(original);
       expect(row.querySelector("script")).toBeNull();
       expect(row.textContent).toContain("Requester-provided external source snapshot");
       const text = row.textContent!;
       expect(text.indexOf("Recommendation")).toBeLessThan(text.indexOf("Original request"));
       expect(text.indexOf("Original request")).toBeLessThan(text.indexOf("Why"));
-      expect(text.indexOf("Why")).toBeLessThan(text.indexOf("Benefit"));
-      expect(text.indexOf("Tradeoff")).toBeLessThan(text.indexOf("ApproveReject"));
-      const buttons = [...row.querySelectorAll("button")];
-      const approve = buttons.find((button) => button.textContent === "Approve")!;
-      const reject = buttons.find((button) => button.textContent === "Reject")!;
-      await act(async () => approve.click());
+      expect(text.indexOf("Why")).toBeLessThan(text.indexOf("Pros"));
+      expect(text.indexOf("Risks")).toBeLessThan(text.indexOf("ApproveRequest changesReject"));
+      const button = (label: string) =>
+        [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
+      apiMocks.approve.mockResolvedValue(createApproval({ type: "request_board_approval", status: "approved" }));
+      await act(async () => button("Approve").click());
       await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-1"));
-      await vi.waitFor(() => expect(routerMock.navigate).toHaveBeenCalledWith("/approvals/approval-1?resolved=approved"));
-      await vi.waitFor(() => expect(reject.disabled).toBe(false));
-      await act(async () => reject.click());
+      // A Board request is decided in place: the Inbox stays on screen.
+      await vi.waitFor(() => expect(button("Reject").disabled).toBe(false));
+      expect(routerMock.navigate).not.toHaveBeenCalled();
+      // Rejecting asks for confirmation before anything is sent.
+      await act(async () => button("Reject").click());
+      expect(apiMocks.reject).not.toHaveBeenCalled();
+      await act(async () => button("Reject request").click());
       await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("approval-1"));
+      await vi.waitFor(() => expect(button("Cancel").disabled).toBe(false));
+      await act(async () => button("Cancel").click());
+      // Asking for changes needs a note, and the note travels with the request.
+      await vi.waitFor(() => expect(button("Request changes").disabled).toBe(false));
+      await act(async () => button("Request changes").click());
+      expect(button("Send request").disabled).toBe(true);
+      const note = row.querySelector("textarea")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(note, "Quote the delivery date");
+        note.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => button("Send request").click());
+      await vi.waitFor(() =>
+        expect(apiMocks.requestRevision).toHaveBeenCalledWith("approval-1", "Quote the delivery date"));
       expect(row.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
       expect(row.querySelector('button[aria-label="Archive"]')).not.toBeNull();
       expect(row.querySelector('a[to="/approvals/approval-1"]')).not.toBeNull();
@@ -602,12 +631,16 @@ describe("Inbox toolbar", () => {
       const row = [...container.querySelectorAll("[data-inbox-item]")]
         .find((item) => item.textContent?.includes("Historical email approval"))!;
       const text = row.textContent!;
-      expect(text).toContain("Original source was not retained for this approval.");
+      expect(text).toContain("Older request: no original source, pros or risks were recorded.");
+      // The outbound draft is shown as a draft, after the decision brief; it never fills the source slot.
       expect(row.querySelector("pre")).toBeNull();
-      expect(text).not.toContain("A generated outbound draft is not the original email");
-      expect(text.indexOf("Recommendation")).toBeLessThan(text.indexOf("Original request"));
-      expect(text.indexOf("Original request")).toBeLessThan(text.indexOf("Why"));
-      expect(text.indexOf("Tradeoff")).toBeLessThan(text.indexOf("ApproveReject"));
+      expect(text).not.toContain("Original request");
+      const draft = row.querySelector("[data-approval-draft]")!;
+      expect(draft.textContent).toContain("Draft reply");
+      expect(draft.textContent).toContain("A generated outbound draft is not the original email");
+      expect(text.indexOf("Recommendation")).toBeLessThan(text.indexOf("Why"));
+      expect(text.indexOf("Why")).toBeLessThan(text.indexOf("Draft reply"));
+      expect(text.indexOf("Draft reply")).toBeLessThan(text.indexOf("ApproveRequest changesReject"));
     } finally {
       act(() => root.unmount());
       queryClient.clear();

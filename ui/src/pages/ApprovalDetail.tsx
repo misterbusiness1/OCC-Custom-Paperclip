@@ -16,6 +16,8 @@ import {
   ApprovalPayloadRenderer,
   typeLabel,
 } from "../components/ApprovalPayload";
+import { ApprovalDecisionActions } from "../components/ApprovalDecisionActions";
+import { ApprovalEmailDraftBlock } from "../components/ApprovalDecisionSummary";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -93,7 +95,7 @@ export function ApprovalDetail() {
   };
 
   const approveMutation = useMutation({
-    mutationFn: () => approvalsApi.approve(approvalId!),
+    mutationFn: (note?: string) => (note ? approvalsApi.approve(approvalId!, note) : approvalsApi.approve(approvalId!)),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -103,7 +105,7 @@ export function ApprovalDetail() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: () => approvalsApi.reject(approvalId!),
+    mutationFn: (note?: string) => (note ? approvalsApi.reject(approvalId!, note) : approvalsApi.reject(approvalId!)),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -112,7 +114,7 @@ export function ApprovalDetail() {
   });
 
   const revisionMutation = useMutation({
-    mutationFn: () => approvalsApi.requestRevision(approvalId!),
+    mutationFn: (note: string) => approvalsApi.requestRevision(approvalId!, note),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -282,7 +284,7 @@ export function ApprovalDetail() {
             </div>
             <div>
               <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                Cons
+                Risks
               </p>
               {cons.length > 0 ? (
                 <ul className="mt-1.5 space-y-1.5 text-sm text-foreground">
@@ -298,6 +300,8 @@ export function ApprovalDetail() {
               )}
             </div>
           </div>
+
+          {approval.type === "request_board_approval" && <ApprovalEmailDraftBlock payload={payload} />}
 
           {nextAction && (
             <div>
@@ -321,38 +325,44 @@ export function ApprovalDetail() {
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
 
         {isActionable && (
-          <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-4">
+          <div className="space-y-3 border-t border-border/60 pt-4">
             {!isBudgetApproval && (
-              <Button size="sm" onClick={() => approveMutation.mutate()} disabled={decisionPending}>
-                {approveMutation.isPending ? "Approving…" : "Approve"}
-              </Button>
-            )}
-            {approval.status === "pending" && !isBudgetApproval && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => revisionMutation.mutate()}
-                disabled={decisionPending}
-              >
-                {revisionMutation.isPending ? "Requesting…" : "Request changes"}
-              </Button>
-            )}
-            {!isBudgetApproval && (
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => rejectMutation.mutate()}
-                disabled={decisionPending}
-              >
-                {rejectMutation.isPending ? "Rejecting…" : "Reject"}
-              </Button>
+              <ApprovalDecisionActions
+                subject={subject}
+                status={approval.status}
+                onApprove={(note) => approveMutation.mutate(note)}
+                onReject={(note) => rejectMutation.mutate(note)}
+                onRequestRevision={(note) => revisionMutation.mutate(note)}
+                isPending={decisionPending}
+                pendingAction={
+                  approveMutation.isPending
+                    ? "approve"
+                    : rejectMutation.isPending
+                      ? "reject"
+                      : revisionMutation.isPending
+                        ? "revision"
+                        : null
+                }
+                trailing={
+                  approval.status === "revision_requested" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => resubmitMutation.mutate()}
+                      disabled={decisionPending}
+                    >
+                      {resubmitMutation.isPending ? "Resubmitting…" : "Mark resubmitted"}
+                    </Button>
+                  ) : null
+                }
+              />
             )}
             {isBudgetApproval && approval.status === "pending" && (
               <p className="text-sm text-muted-foreground">
                 Resolve this budget stop in <Link to="/costs" className="underline underline-offset-2">Costs</Link>.
               </p>
             )}
-            {approval.status === "revision_requested" && (
+            {isBudgetApproval && approval.status === "revision_requested" && (
               <Button
                 size="sm"
                 variant="outline"

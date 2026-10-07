@@ -72,7 +72,7 @@ describe("approvalExcerpt", () => {
 });
 
 describe("ApprovalCard", () => {
-  it("labels missing legacy benefits instead of hiding or inventing them", () => {
+  it("states once that a legacy request carries no source, pros or risks", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -99,8 +99,8 @@ describe("ApprovalCard", () => {
       );
     });
 
-    expect(container.textContent).toContain("BenefitNot supplied.");
-    expect(container.textContent).toContain("TradeoffNot supplied.");
+    expect(container.textContent).toContain("Older request: no original source, pros or risks were recorded.");
+    expect(container.textContent).not.toContain("Not supplied.");
     act(() => root.unmount());
     container.remove();
   });
@@ -164,7 +164,7 @@ describe("ApprovalPayloadRenderer", () => {
     expect(container.textContent).toContain("Post the frog comment on the issue.");
     expect(container.textContent).toContain("Pros");
     expect(container.textContent).toContain("The reply is clear and scoped.");
-    expect(container.textContent).toContain("Cons & risks");
+    expect(container.textContent).toContain("Risks");
     expect(container.textContent).toContain("The frog might be too powerful.");
     expect(container.textContent).toContain("(o)<");
     expect(container.textContent).not.toContain("\"recommendedAction\"");
@@ -253,7 +253,7 @@ describe("ApprovalPayloadRenderer", () => {
     expect(container.textContent).not.toContain("**Bold**");
     expect(container.textContent).not.toContain("[a link](https://example.com)");
 
-    // Fork layout order: recommendation, "Cons & risks" list, then "On approval".
+    // Fork layout order: recommendation, "Risks" list, then "On approval".
     expect(bodies[1].querySelector("strong")?.textContent).toBe("frog");
     expect(bodies[2].querySelector("strong")?.textContent).toBe("frog");
     expect(bodies[3].querySelector("code")?.textContent).toBe("frog");
@@ -409,7 +409,9 @@ describe("ApprovalPayloadRenderer", () => {
     expect(originalRequest).toBeDefined();
     expect(originalRequest?.classList.contains("text-sm")).toBe(true);
     expect(originalRequest?.classList.contains("whitespace-pre-wrap")).toBe(true);
-    expect(originalRequest?.classList.contains("break-all")).toBe(true);
+    // Long unbroken strings must wrap without splitting ordinary words mid-word.
+    expect(originalRequest?.classList.contains("wrap-anywhere")).toBe(true);
+    expect(originalRequest?.classList.contains("break-all")).toBe(false);
     expect(originalRequest?.classList.contains("font-mono")).toBe(false);
     expect(originalRequest?.classList.contains("text-xs")).toBe(false);
 
@@ -419,7 +421,7 @@ describe("ApprovalPayloadRenderer", () => {
     expect(proposedReply).toBeDefined();
     expect(proposedReply?.classList.contains("text-sm")).toBe(true);
     expect(proposedReply?.classList.contains("whitespace-pre-wrap")).toBe(true);
-    expect(proposedReply?.classList.contains("break-all")).toBe(true);
+    expect(proposedReply?.classList.contains("wrap-anywhere")).toBe(true);
     expect(proposedReply?.classList.contains("font-mono")).toBe(false);
     expect(proposedReply?.classList.contains("text-xs")).toBe(false);
     expect(container.querySelector("script")).toBeNull();

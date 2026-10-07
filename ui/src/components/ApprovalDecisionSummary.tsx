@@ -1,5 +1,136 @@
+import { useState } from "react";
 import { cn } from "@/lib/utils";
-import { approvalDecisionBrief, approvalExcerpt, OriginalRequestBlock } from "./ApprovalPayload";
+import {
+  approvalDecisionBrief,
+  approvalEmailDraft,
+  approvalExcerpt,
+  approvalOriginalRequest,
+  approvalPlainText,
+  OriginalRequestBlock,
+} from "./ApprovalPayload";
+
+const labelClass =
+  "text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground";
+const moreClass =
+  "mt-1 text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground";
+const LIST_PREVIEW_COUNT = 2;
+const DRAFT_PREVIEW_LENGTH = 320;
+
+/** Shows the clipped excerpt first; the full text stays one click away on the card. */
+function ExpandableText({ value, limit }: { value: string; limit: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const excerpt = approvalExcerpt(value, limit);
+  const full = approvalPlainText(value);
+  if (!excerpt || !full) return null;
+  const canExpand = full.replace(/\s+/g, " ").length > limit;
+
+  return (
+    <>
+      <p className="mt-1 whitespace-pre-line break-words text-sm leading-5 text-foreground">
+        {expanded ? full : excerpt}
+      </p>
+      {canExpand && (
+        <button
+          type="button"
+          className={moreClass}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </>
+  );
+}
+
+function DecisionPoints({ label, items }: { label: string; items: string[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const points = items.flatMap((item) => {
+    const text = approvalPlainText(item);
+    return text ? [text] : [];
+  });
+  const hidden = points.length - LIST_PREVIEW_COUNT;
+  const visible = expanded ? points : points.slice(0, LIST_PREVIEW_COUNT);
+
+  return (
+    <div className="min-w-0">
+      <p className={labelClass}>{label}</p>
+      {points.length === 0 ? (
+        <p className="mt-1 text-sm leading-5 text-muted-foreground">Not supplied.</p>
+      ) : (
+        <ul className="mt-1 space-y-1 text-sm leading-5 text-foreground">
+          {visible.map((point, index) => (
+            <li key={`${index}-${point}`} className="flex items-start gap-2">
+              <span aria-hidden className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
+              <span className="min-w-0 break-words">{point}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {hidden > 0 && (
+        <button
+          type="button"
+          className={moreClass}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? "Show fewer" : `+${hidden} more`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function ApprovalEmailDraftBlock({ payload }: { payload?: Record<string, unknown> | null }) {
+  const [expanded, setExpanded] = useState(false);
+  const draft = approvalEmailDraft(payload);
+  if (!draft) return null;
+  const canExpand = draft.body.length > DRAFT_PREVIEW_LENGTH;
+  const envelope = [
+    ["From", draft.from],
+    ["To", draft.to],
+    ["Subject", draft.subject],
+  ].filter((row): row is [string, string] => Boolean(row[1]));
+
+  return (
+    <div className="min-w-0" data-approval-draft>
+      <p className={labelClass}>Draft reply</p>
+      <div className="mt-2 overflow-hidden rounded-lg border border-border/60">
+        {envelope.length > 0 && (
+          <dl className="space-y-1 border-b border-border/60 bg-muted/30 px-3.5 py-2.5 text-sm">
+            {envelope.map(([label, value]) => (
+              <div key={label} className="flex gap-2">
+                <dt className={cn(labelClass, "w-16 shrink-0 pt-0.5")}>{label}</dt>
+                <dd className="min-w-0 break-words text-foreground/90">{value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        {/* The clamp sits inside the padding so a cut-off line cannot show through it. */}
+        <div className="px-3.5 py-3">
+          <div
+            className={cn(
+              "whitespace-pre-wrap break-words text-sm leading-6 text-foreground",
+              canExpand && !expanded && "line-clamp-5",
+            )}
+          >
+            {draft.body}
+          </div>
+        </div>
+      </div>
+      {canExpand && (
+        <button
+          type="button"
+          className={moreClass}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? "Show less" : "Show full reply"}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function ApprovalDecisionSummary({
   type,
@@ -11,55 +142,55 @@ export function ApprovalDecisionSummary({
   className?: string;
 }) {
   const brief = approvalDecisionBrief(payload);
-  const recommendation = approvalExcerpt(brief.recommendation, 180);
-  const reasoning = approvalExcerpt(brief.reasoning, 220);
-  const benefit = approvalExcerpt(brief.pros[0] ?? null, 160);
-  const tradeoff = approvalExcerpt(brief.cons[0] ?? null, 160);
-  const showMissingDecisionFields = type === "request_board_approval";
-  const hasBrief = showMissingDecisionFields || Boolean(recommendation || reasoning || benefit || tradeoff);
+  const isBoardApproval = type === "request_board_approval";
+  const hasDraft = isBoardApproval && approvalEmailDraft(payload) !== null;
+  const hasBrief =
+    isBoardApproval ||
+    Boolean(brief.recommendation || brief.reasoning || brief.pros.length > 0 || brief.cons.length > 0);
   if (!hasBrief) return null;
+
+  // Requests filed before sources and decision fields were required carry none of them.
+  // One line says so; three empty fields would only bury the recommendation.
+  const isBareLegacyRequest =
+    isBoardApproval &&
+    !approvalOriginalRequest(payload) &&
+    brief.pros.length === 0 &&
+    brief.cons.length === 0;
+  const showPoints = !isBareLegacyRequest && (isBoardApproval || brief.pros.length > 0 || brief.cons.length > 0);
 
   return (
     <div className={cn("space-y-3", className)}>
-      {recommendation && (
-        <div>
-          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-            Recommendation
-          </p>
-          <p className="mt-1 text-sm leading-5 text-foreground">{recommendation}</p>
+      {brief.recommendation && (
+        <div className="min-w-0">
+          <p className={labelClass}>Recommendation</p>
+          <ExpandableText value={brief.recommendation} limit={180} />
         </div>
       )}
-      {showMissingDecisionFields && <OriginalRequestBlock payload={payload} compact />}
-      {reasoning && (
-        <div>
-          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-            Why
-          </p>
-          <p className="mt-1 text-sm leading-5 text-foreground">{reasoning}</p>
+      {isBoardApproval && !isBareLegacyRequest && <OriginalRequestBlock payload={payload} compact />}
+      {brief.reasoning && (
+        <div className="min-w-0">
+          <p className={labelClass}>Why</p>
+          <ExpandableText value={brief.reasoning} limit={220} />
         </div>
       )}
-      <div className="grid gap-3 sm:grid-cols-2">
-        {(benefit || showMissingDecisionFields) && (
-          <div>
-            <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-              Benefit
-            </p>
-            <p className={cn("mt-1 text-sm leading-5", benefit ? "text-foreground" : "text-muted-foreground")}>
-              {benefit ?? "Not supplied."}
-            </p>
-          </div>
-        )}
-        {(tradeoff || showMissingDecisionFields) && (
-          <div>
-            <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-              Tradeoff
-            </p>
-            <p className={cn("mt-1 text-sm leading-5", tradeoff ? "text-foreground" : "text-muted-foreground")}>
-              {tradeoff ?? "Not supplied."}
-            </p>
-          </div>
-        )}
-      </div>
+      {showPoints && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {(brief.pros.length > 0 || isBoardApproval) && <DecisionPoints label="Pros" items={brief.pros} />}
+          {(brief.cons.length > 0 || isBoardApproval) && <DecisionPoints label="Risks" items={brief.cons} />}
+        </div>
+      )}
+      {isBareLegacyRequest && (
+        <p className="text-sm leading-5 text-muted-foreground">
+          Older request: no original source, pros or risks were recorded.
+        </p>
+      )}
+      {hasDraft && <ApprovalEmailDraftBlock payload={payload} />}
+      {brief.nextAction && (
+        <div className="min-w-0">
+          <p className={labelClass}>If approved</p>
+          <ExpandableText value={brief.nextAction} limit={220} />
+        </div>
+      )}
     </div>
   );
 }

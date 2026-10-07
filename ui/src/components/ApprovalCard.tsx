@@ -1,3 +1,4 @@
+import { useRef, type KeyboardEvent } from "react";
 import { Link } from "@/lib/router";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -5,45 +6,115 @@ import { Identity } from "./Identity";
 import {
   approvalExcerpt,
   approvalSubject,
+  isEmailReplyPayload,
   typeLabel,
 } from "./ApprovalPayload";
 import { ApprovalDecisionSummary } from "./ApprovalDecisionSummary";
+import {
+  ApprovalDecisionActions,
+  type ApprovalDecisionActionsHandle,
+  type ApprovalPendingAction,
+} from "./ApprovalDecisionActions";
 import { timeAgo } from "../lib/timeAgo";
+import { isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
 import type { Approval, Agent } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 import { StatusBadge } from "./StatusBadge";
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+/** A request the board has left this long is called out in the header. */
+const LONG_WAIT_DAYS = 7;
+
+export type ApprovalCardLinkedIssue = {
+  id: string;
+  identifier?: string | null;
+  title?: string | null;
+};
+
+function waitingLabel(createdAt: Date | string): { label: string; long: boolean } {
+  const elapsed = Date.now() - new Date(createdAt).getTime();
+  if (elapsed < HOUR_MS) return { label: "Waiting under an hour", long: false };
+  if (elapsed < DAY_MS) {
+    const hours = Math.floor(elapsed / HOUR_MS);
+    return { label: `Waiting ${hours} ${hours === 1 ? "hour" : "hours"}`, long: false };
+  }
+  const days = Math.floor(elapsed / DAY_MS);
+  return { label: `Waiting ${days} ${days === 1 ? "day" : "days"}`, long: days >= LONG_WAIT_DAYS };
+}
 
 export function ApprovalCard({
   approval,
   requesterAgent,
   onApprove,
   onReject,
+  onRequestRevision,
   onOpen,
   detailLink,
   isPending = false,
   pendingAction = null,
+  linkedIssues,
+  enableShortcuts = false,
 }: {
   approval: Approval;
   requesterAgent: Agent | null;
-  onApprove?: () => void;
-  onReject?: () => void;
+  onApprove?: (note?: string) => void;
+  onReject?: (note?: string) => void;
+  onRequestRevision?: (note: string) => void;
   onOpen?: () => void;
   detailLink?: string;
   isPending?: boolean;
-  pendingAction?: "approve" | "reject" | null;
+  pendingAction?: ApprovalPendingAction;
+  linkedIssues?: ApprovalCardLinkedIssue[];
+  /** Shift+A approves, Shift+C asks for changes and Shift+X rejects while the card has focus. */
+  enableShortcuts?: boolean;
 }) {
+  const actionsRef = useRef<ApprovalDecisionActionsHandle>(null);
   const payload = approval.payload as Record<string, unknown> | null;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
   const subject = approvalExcerpt(approvalSubject(payload), 120);
+  const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const showResolutionButtons =
     Boolean(onApprove && onReject) &&
     approval.type !== "budget_override_required" &&
-    (approval.status === "pending" || approval.status === "revision_requested");
+    isActionable;
   const hasFooter = showResolutionButtons || Boolean(detailLink || onOpen);
+  const waiting = isActionable ? waitingLabel(approval.createdAt) : null;
+  const isEmailReply = approval.type === "request_board_approval" && isEmailReplyPayload(payload);
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (isKeyboardShortcutTextInputTarget(event.target)) return;
+    const actions = actionsRef.current;
+    if (!actions) return;
+    if (event.key === "A") actions.approve();
+    else if (event.key === "C") actions.openRevision();
+    else if (event.key === "X") actions.openReject();
+    else return;
+    event.preventDefault();
+  };
+
+  const detailsControl = detailLink ? (
+    <Link
+      to={detailLink}
+      className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
+    >
+      View details
+    </Link>
+  ) : onOpen ? (
+    <Button variant="ghost" size="sm" className="h-auto px-2 text-xs text-muted-foreground" onClick={onOpen}>
+      View details
+    </Button>
+  ) : null;
 
   return (
-    <Card className="block border-border/70 p-4">
+    <Card
+      className="block border-border/70 p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      data-approval-card={approval.id}
+      tabIndex={enableShortcuts ? -1 : undefined}
+      onKeyDown={enableShortcuts && showResolutionButtons ? handleKeyDown : undefined}
+    >
       <div className="min-w-0 space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <Badge
@@ -52,7 +123,25 @@ export function ApprovalCard({
           >
             {kindLabel}
           </Badge>
+          {isEmailReply && (
+            <Badge
+              variant="outline"
+              className="border-border/70 px-2 py-0.5 text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground"
+            >
+              Email reply
+            </Badge>
+          )}
           <StatusBadge status={approval.status} />
+          {(linkedIssues ?? []).map((issue) => (
+            <Link
+              key={issue.id}
+              to={`/issues/${issue.identifier ?? issue.id}`}
+              title={issue.title ?? undefined}
+              className="rounded border border-border/70 px-1.5 py-0.5 font-mono text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            >
+              {issue.identifier ?? issue.id.slice(0, 8)}
+            </Link>
+          ))}
         </div>
         <h3 className="text-base font-semibold leading-6 text-foreground">
           {subject ?? kindLabel}
@@ -63,7 +152,16 @@ export function ApprovalCard({
               Requested by <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
             </span>
           )}
-          <span>Created {timeAgo(approval.createdAt)}</span>
+          {waiting ? (
+            <span
+              className={cn(waiting.long && "font-medium text-amber-700 dark:text-amber-300")}
+              title={new Date(approval.createdAt).toLocaleString()}
+            >
+              {waiting.label}
+            </span>
+          ) : (
+            <span>Created {timeAgo(approval.createdAt)}</span>
+          )}
         </div>
       </div>
 
@@ -80,42 +178,22 @@ export function ApprovalCard({
       )}
 
       {hasFooter ? (
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4">
-          <div className="flex flex-wrap items-center gap-2">
-            {showResolutionButtons && (
-              <>
-                <Button
-                  size="sm"
-                  onClick={onApprove}
-                  disabled={isPending}
-                >
-                  {pendingAction === "approve" ? "Approving..." : "Approve"}
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={onReject}
-                  disabled={isPending}
-                >
-                  {pendingAction === "reject" ? "Rejecting..." : "Reject"}
-                </Button>
-              </>
-            )}
-          </div>
-          {(detailLink || onOpen) ? (
-            detailLink ? (
-              <Link
-                to={detailLink}
-                className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
-              >
-                View details
-              </Link>
-            ) : (
-              <Button variant="ghost" size="sm" className="h-auto px-2 text-xs text-muted-foreground" onClick={onOpen}>
-                View details
-              </Button>
-            )
-          ) : null}
+        <div className="mt-4 border-t border-border/60 pt-4">
+          {showResolutionButtons && onApprove && onReject ? (
+            <ApprovalDecisionActions
+              ref={actionsRef}
+              subject={subject ?? kindLabel}
+              status={approval.status}
+              onApprove={onApprove}
+              onReject={onReject}
+              onRequestRevision={onRequestRevision}
+              isPending={isPending}
+              pendingAction={pendingAction}
+              trailing={detailsControl}
+            />
+          ) : (
+            <div className="flex justify-end">{detailsControl}</div>
+          )}
         </div>
       ) : null}
     </Card>

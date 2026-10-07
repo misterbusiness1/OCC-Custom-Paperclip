@@ -1,4 +1,7 @@
+import { useState } from "react";
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Link } from "@/lib/router";
+import { cn } from "@/lib/utils";
 import { MarkdownBody } from "./MarkdownBody";
 import { formatCents } from "../lib/utils";
 
@@ -77,6 +80,8 @@ export type ApprovalOriginalRequest = {
   text: string;
   source: {
     kind: "paperclip_comment" | "external";
+    commentId?: string;
+    issueId?: string;
     sender?: string;
     sentAt?: string;
     reference?: string;
@@ -104,6 +109,8 @@ export function approvalOriginalRequest(
     text: record.text,
     source: {
       kind: sourceRecord.kind,
+      commentId: optionalString("commentId"),
+      issueId: optionalString("issueId"),
       sender: optionalString("sender"),
       sentAt: optionalString("sentAt"),
       reference: optionalString("reference"),
@@ -139,10 +146,16 @@ export function OriginalRequestBlock({
     );
   }
 
+  const commentHref =
+    original.source.kind === "paperclip_comment" && original.source.issueId && original.source.commentId
+      ? `/issues/${original.source.issueId}#comment-${original.source.commentId}`
+      : null;
   const provenance = [
+    original.source.kind === "external" ? original.source.channel : null,
     original.source.sender,
     original.source.sentAt ? new Date(original.source.sentAt).toLocaleString() : null,
-    original.source.reference,
+    // The comment link below replaces the raw comment reference.
+    commentHref ? null : original.source.reference,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -152,32 +165,57 @@ export function OriginalRequestBlock({
       : original.source.kind === "paperclip_comment" && original.source.snapshotOrigin === "server"
         ? "Paperclip source snapshot"
         : null;
-  const content = (
-    <pre className="mt-2 max-h-96 overflow-y-auto whitespace-pre-wrap break-all rounded-md bg-muted/40 p-3 text-sm leading-6 text-foreground">
-      {original.text}
-    </pre>
-  );
 
   return (
     <div>
       <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
         Original request
       </p>
-      {(provenance || sourceNote) && (
-        <p className="mt-1 text-xs text-muted-foreground">
-          {provenance || sourceNote}
-          {provenance && sourceNote ? ` · ${sourceNote}` : ""}
+      {(provenance || sourceNote || commentHref) && (
+        <p className="mt-1 break-words text-xs text-muted-foreground">
+          {[provenance, sourceNote].filter(Boolean).join(" · ")}
+          {commentHref && (
+            <>
+              {provenance || sourceNote ? " · " : ""}
+              <Link to={commentHref} className="underline underline-offset-2 hover:text-foreground">
+                View comment
+              </Link>
+            </>
+          )}
         </p>
       )}
-      {compact && original.text.length > 480 ? (
-        <details className="mt-2">
-          <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-            Show verbatim request
-          </summary>
-          {content}
-        </details>
-      ) : content}
+      <OriginalRequestText text={original.text} collapsible={compact && original.text.length > 480} />
     </div>
+  );
+}
+
+function OriginalRequestText({ text, collapsible }: { text: string; collapsible: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const clamped = collapsible && !expanded;
+
+  return (
+    <>
+      <div className="mt-2 rounded-md bg-muted/40 p-3">
+        <pre
+          className={cn(
+            "whitespace-pre-wrap wrap-anywhere text-sm leading-6 text-foreground",
+            clamped ? "line-clamp-4" : "max-h-96 overflow-y-auto",
+          )}
+        >
+          {text}
+        </pre>
+      </div>
+      {collapsible && (
+        <button
+          type="button"
+          className="mt-1 text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? "Show less" : `Show full request (${text.length.toLocaleString()} characters)`}
+        </button>
+      )}
+    </>
   );
 }
 
@@ -198,6 +236,21 @@ export function approvalExcerpt(value: string | null, maxLength = 240): string |
   return `${plain.slice(0, end).trimEnd()}…`;
 }
 
+/** Like {@link approvalExcerpt} without the cut: plain text that keeps its line breaks. */
+export function approvalPlainText(value: string | null): string | null {
+  if (!value) return null;
+  const plain = value
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}(?:#{1,6}|>|[-+])\s+/gm, "")
+    .replace(/[`*_~]/g, "")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/ ?\n ?/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return plain || null;
+}
+
 export function approvalSubject(payload?: Record<string, unknown> | null): string | null {
   return firstNonEmptyString(
     payload?.title,
@@ -215,6 +268,24 @@ export function isEmailReplyPayload(payload?: Record<string, unknown> | null): b
     typeof payload.recipient === "string" ||
     typeof payload.channel === "string";
   return hasBody && hasEnvelope;
+}
+
+export type ApprovalEmailDraft = {
+  from: string | null;
+  to: string | null;
+  subject: string | null;
+  body: string;
+};
+
+/** The outgoing draft of an email-reply approval. Never a source for the original request. */
+export function approvalEmailDraft(payload?: Record<string, unknown> | null): ApprovalEmailDraft | null {
+  if (!payload || !isEmailReplyPayload(payload)) return null;
+  return {
+    from: firstNonEmptyString(payload.channel),
+    to: firstNonEmptyString(payload.recipient),
+    subject: firstNonEmptyString(payload.subject),
+    body: String(payload.body),
+  };
 }
 
 /** Build a contextual label for an approval, e.g. "Hire Agent: Designer" */
@@ -400,7 +471,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
       {(brief.pros.length > 0 || brief.cons.length > 0) && (
         <div className="grid gap-3 sm:grid-cols-2">
           <DecisionList label="Pros" items={brief.pros} />
-          <DecisionList label="Cons & risks" items={brief.cons} />
+          <DecisionList label="Risks" items={brief.cons} />
         </div>
       )}
       {brief.nextAction && (
@@ -512,14 +583,14 @@ export function EmailReplyPayload({ payload }: { payload: Record<string, unknown
       {(brief.pros.length > 0 || brief.cons.length > 0) && (
         <div className="grid gap-3 sm:grid-cols-2">
           <DecisionList label="Pros" items={brief.pros} />
-          <DecisionList label="Cons & risks" items={brief.cons} />
+          <DecisionList label="Risks" items={brief.cons} />
         </div>
       )}
       <div className="space-y-1">
         <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
           Proposed reply
         </p>
-        <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap break-all rounded-md bg-muted/40 p-3 text-sm leading-6 text-foreground">
+        <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap wrap-anywhere rounded-md bg-muted/40 p-3 text-sm leading-6 text-foreground">
           {body}
         </pre>
       </div>
