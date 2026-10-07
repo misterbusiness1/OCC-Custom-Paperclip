@@ -1166,6 +1166,264 @@ describe("ApprovalCard", () => {
   });
 });
 
+describe("ApprovalCard as a collapsible queue row", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.useRealTimers();
+  });
+
+  const render = (props: Partial<ComponentProps<typeof ApprovalCard>> & { approval: Approval }) =>
+    act(() => root.render(<ApprovalCard requesterAgent={null} collapsible {...props} />));
+  const card = () => container.querySelector<HTMLElement>("[data-approval-card]")!;
+  const header = () => container.querySelector<HTMLButtonElement>("h3 > button")!;
+  const ask = () => container.querySelector("[data-approval-ask]")?.textContent ?? null;
+  const button = (label: string) =>
+    [...container.querySelectorAll("button")].find((candidate) => candidate.textContent === label);
+  const press = (key: string, init: KeyboardEventInit = {}) =>
+    act(() => {
+      card().dispatchEvent(new KeyboardEvent("keydown", { key, shiftKey: true, bubbles: true, ...init }));
+    });
+
+  it("is one row when closed: what it is, who asked, how long it has waited, and one line of what is asked", () => {
+    const onOpenChange = vi.fn();
+    render({
+      approval: createApproval({ createdAt: new Date("2026-09-27T12:00:00.000Z") }),
+      requesterAgent: { id: "agent-requester", name: "Pricing Analyst" } as Agent,
+      linkedIssues: [{ id: ISSUE_ID, identifier: "DEMO-398", title: "Staging environment" }],
+      open: false,
+      onOpenChange,
+      onApprove: vi.fn(),
+      onReject: vi.fn(),
+      onRequestRevision: vi.fn(),
+      detailLink: "/approvals/approval-1",
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Board Approval");
+    expect(text).toContain("pending");
+    expect(text).toContain("Requested by");
+    expect(text).toContain("Pricing Analyst");
+    expect(text).toContain("Waiting 9 days");
+    expect(text).toContain("No original request attached");
+    expect(text).not.toContain("agent-requester");
+    expect(ask()).toBe("Recommendation: Approve provider X at the quoted monthly price.");
+    // Title and the one line are cut to the row's width by the browser, not in the text.
+    expect(header().querySelector("span")!.className).toContain("truncate");
+    expect(container.querySelector("[data-approval-ask]")!.className).toContain("truncate");
+
+    // The header is a real button inside the heading, and it says the card is closed.
+    expect(container.querySelector("h3")!.textContent).toBe("Approve staging hosting spend");
+    expect(header().getAttribute("aria-expanded")).toBe("false");
+    const body = document.getElementById(header().getAttribute("aria-controls")!)!;
+    expect(body.hidden).toBe(true);
+    expect(body.childElementCount).toBe(0);
+
+    // The task chip stays a link of its own, outside the button.
+    const chip = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "DEMO-398")!;
+    expect(chip.getAttribute("href")).toBe("/issues/DEMO-398");
+    expect(chip.closest("button")).toBeNull();
+    expect(header().querySelector("a")).toBeNull();
+
+    // Nothing can be decided, and nothing of the summary is drawn.
+    expect(container.querySelectorAll("button")).toHaveLength(1);
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(text).not.toContain("Provider X meets every condition");
+    expect(text).not.toContain("View details");
+
+    act(() => header().click());
+    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it("draws the summary and the decision controls only when open, and marks the open card", () => {
+    const onOpenChange = vi.fn();
+    const props = {
+      approval: createApproval(),
+      onOpenChange,
+      onApprove: vi.fn(),
+      onReject: vi.fn(),
+      onRequestRevision: vi.fn(),
+    };
+    render({ ...props, open: false });
+    expect(card().className).not.toContain("ring-1");
+    const closedHeader = header();
+
+    render({ ...props, open: true });
+    // The same button, so a keyboard user who opened the card is still on it.
+    expect(header()).toBe(closedHeader);
+    expect(header().getAttribute("aria-expanded")).toBe("true");
+    const body = document.getElementById(header().getAttribute("aria-controls")!)!;
+    expect(body.hidden).toBe(false);
+    expect(body.textContent).toContain("Provider X meets every condition in the request.");
+    expect(button("Approve")).toBeDefined();
+    expect(button("Reject")).toBeDefined();
+    expect(card().className).toContain("ring-1");
+    expect(card().className).toContain("border-ring");
+    // The one-line preview gives way to the full recommendation.
+    expect(ask()).toBeNull();
+    expect(header().querySelector("span")!.className).not.toContain("truncate");
+
+    act(() => header().click());
+    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it("decides nothing from the keyboard while closed, and nothing on a held key", () => {
+    const onApprove = vi.fn();
+    const props = {
+      approval: createApproval(),
+      onApprove,
+      onReject: vi.fn(),
+      onRequestRevision: vi.fn(),
+      enableShortcuts: true,
+    };
+    render({ ...props, open: false });
+    expect(card().tabIndex).toBe(-1);
+    press("A");
+    press("C");
+    press("X");
+    expect(onApprove).not.toHaveBeenCalled();
+    expect(container.querySelector("textarea")).toBeNull();
+
+    render({ ...props, open: true });
+    press("A", { repeat: true });
+    expect(onApprove).not.toHaveBeenCalled();
+    press("A");
+    expect(onApprove).toHaveBeenCalledExactlyOnceWith(undefined);
+  });
+
+  it("can take focus from the page when asked to, also with shortcuts off", () => {
+    render({ approval: createApproval(), open: false });
+    expect(card().hasAttribute("tabindex")).toBe(false);
+    render({ approval: createApproval(), open: false, focusable: true });
+    expect(card().tabIndex).toBe(-1);
+  });
+
+  it("gives the one line for a hire and for a strategy, and none when the request carries nothing to show", () => {
+    render({
+      approval: createApproval({
+        type: "hire_agent",
+        payload: { name: "Pricing Analyst", capabilities: "Tracks competitor prices weekly.\nWrites `weekly_report`." },
+      }),
+      open: false,
+    });
+    expect(container.querySelector("h3")!.textContent).toBe("Pricing Analyst");
+    expect(ask()).toBe("What it will do: Tracks competitor prices weekly. Writes weekly_report.");
+
+    render({
+      approval: createApproval({
+        type: "approve_ceo_strategy",
+        payload: { title: "Q4 strategy", plan: "\n## Grow wholesale\n1. Hire one analyst.\n2. Cut returns." },
+      }),
+      open: false,
+    });
+    expect(ask()).toBe("Plan: Grow wholesale");
+
+    render({
+      approval: createApproval({
+        type: "approve_ceo_strategy",
+        payload: { title: "Q4 strategy", rationale: "Wholesale margins are higher.\nRetail is flat." },
+      }),
+      open: false,
+    });
+    expect(ask()).toBe("Plan: Wholesale margins are higher.");
+
+    render({ approval: createApproval({ payload: { title: "Bare request", reasoning: "No action named." } }), open: false });
+    expect(ask()).toBeNull();
+    render({ approval: createApproval({ type: "hire_agent", payload: { name: "Pricing Analyst" } }), open: false });
+    expect(ask()).toBeNull();
+
+    // A request titled by its own recommendation does not say it twice.
+    render({ approval: createApproval({ payload: { recommendedAction: "Approve provider X." } }), open: false });
+    expect(container.querySelector("h3")!.textContent).toBe("Approve provider X.");
+    expect(ask()).toBeNull();
+  });
+
+  it("says on the closed row that a decision is sending, that one failed, and when it was decided", () => {
+    render({
+      approval: createApproval(),
+      open: false,
+      onApprove: vi.fn(),
+      onReject: vi.fn(),
+      isPending: true,
+      pendingAction: "approve",
+    });
+    expect(container.textContent).toContain("Sending your decision...");
+
+    render({
+      approval: createApproval(),
+      open: false,
+      onApprove: vi.fn(),
+      onReject: vi.fn(),
+      error: "Error while approving: Session expired",
+    });
+    expect(container.textContent).not.toContain("Sending your decision...");
+    expect(container.querySelector("[role='alert']")!.textContent).toBe("Error while approving: Session expired");
+
+    render({
+      approval: createApproval({ status: "rejected", decidedAt: new Date("2026-10-06T09:00:00.000Z") }),
+      open: false,
+    });
+    expect(container.textContent).toContain("Rejected 3h ago");
+    expect(container.querySelector("[role='alert']")).toBeNull();
+  });
+
+  it("says on the closed row that the request was revised, and asks for the review once it is opened", () => {
+    const first = createApproval();
+    const props = { onApprove: vi.fn(), onReject: vi.fn() };
+    render({ approval: first, open: false, ...props });
+    expect(container.textContent).not.toContain("Revised while this page was open");
+
+    const revised = createApproval({
+      updatedAt: new Date("2026-10-06T11:00:00.000Z"),
+      payload: { ...(first.payload as Record<string, unknown>), recommendedAction: "Approve provider Y instead." },
+    });
+    render({ approval: revised, open: false, ...props });
+    expect(container.textContent).toContain("Revised while this page was open");
+    expect(ask()).toBe("Recommendation: Approve provider Y instead.");
+    expect(button("I have reviewed it")).toBeUndefined();
+
+    render({ approval: revised, open: true, ...props });
+    expect(button("I have reviewed it")).toBeDefined();
+    act(() => button("Approve")!.click());
+    expect(props.onApprove).not.toHaveBeenCalled();
+  });
+
+  it("leaves a card that is not collapsible as it was: always open, with a plain heading", () => {
+    act(() =>
+      root.render(
+        <ApprovalCard requesterAgent={null} approval={createApproval()} onApprove={vi.fn()} onReject={vi.fn()} open={false} />,
+      ));
+    expect(container.querySelector("h3")!.querySelector("button")).toBeNull();
+    expect(button("Approve")).toBeDefined();
+    expect(container.textContent).toContain("Provider X meets every condition in the request.");
+    expect(card().className).not.toContain("ring-1");
+  });
+
+  it("marks the card that holds focus when shortcuts act on it and it is not collapsible", () => {
+    act(() =>
+      root.render(
+        <ApprovalCard requesterAgent={null} approval={createApproval()} onApprove={vi.fn()} onReject={vi.fn()} enableShortcuts />,
+      ));
+    expect(card().className).toContain("focus-within:ring-1");
+    act(() =>
+      root.render(
+        <ApprovalCard requesterAgent={null} approval={createApproval()} onApprove={vi.fn()} onReject={vi.fn()} />,
+      ));
+    expect(card().className).not.toContain("focus-within:ring-1");
+  });
+});
+
 describe("ApprovalCard for requests without a source, hires and strategies", () => {
   let container: HTMLDivElement;
   let root: Root;
