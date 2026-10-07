@@ -1,4 +1,5 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { APPROVE_HOLD_MS } from "./ApprovalHold";
 
 interface ShortcutEntry {
   keys: string[];
@@ -47,6 +48,21 @@ const sections: ShortcutSection[] = [
       { keys: ["↑"], label: "Move up" },
       { keys: ["Enter"], label: "Open or close selected decision" },
       { keys: ["x"], label: "Dismiss selected decision" },
+    ],
+  },
+  {
+    title: "Approvals",
+    shortcuts: [
+      { keys: ["j"], label: "Next request" },
+      { keys: ["k"], label: "Previous request" },
+      { keys: ["Shift", "A"], label: "Approve the open request", combo: true },
+      { keys: ["Shift", "C"], label: "Request changes to the open request", combo: true },
+      { keys: ["Shift", "X"], label: "Reject the open request (asks to confirm)", combo: true },
+      {
+        keys: ["Shift", "Z"],
+        label: `Undo the last approval (within ${APPROVE_HOLD_MS / 1000} seconds)`,
+        combo: true,
+      },
     ],
   },
   {

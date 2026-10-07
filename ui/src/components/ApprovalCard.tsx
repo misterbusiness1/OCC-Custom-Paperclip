@@ -75,6 +75,8 @@ export function ApprovalCard({
   pendingAction = null,
   error = null,
   onDismissError,
+  defaultNote,
+  onNoteChange,
   linkedIssues,
   enableShortcuts = false,
   resolveAgentName,
@@ -96,6 +98,10 @@ export function ApprovalCard({
   error?: string | null;
   /** Called when the board edits the note after an error. */
   onDismissError?: () => void;
+  /** A note already typed for this request; the decision controls start with it, their note panel open. */
+  defaultNote?: string;
+  /** Called with the new text whenever the board edits or discards the note. */
+  onNoteChange?: (note: string) => void;
   linkedIssues?: ApprovalCardLinkedIssue[];
   /** Shift+A approves, Shift+C asks for changes and Shift+X rejects while the card has focus. */
   enableShortcuts?: boolean;
@@ -263,6 +269,8 @@ export function ApprovalCard({
               approveHoldKey={revision.reviewCount}
               error={error}
               onDismissError={onDismissError}
+              defaultNote={defaultNote}
+              onNoteChange={onNoteChange}
             />
           ) : (
             <div className="space-y-3">

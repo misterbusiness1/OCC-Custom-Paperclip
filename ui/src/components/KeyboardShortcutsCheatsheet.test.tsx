@@ -18,6 +18,35 @@ describe("KeyboardShortcutsCheatsheet", () => {
     document.body.innerHTML = "";
   });
 
+  it("lists the Approvals page shortcuts, with the undo that follows an approval", () => {
+    const root = createRoot(container);
+    flushSync(() => {
+      root.render(<KeyboardShortcutsCheatsheetContent />);
+    });
+
+    const section = [...container.querySelectorAll("h3")].find((node) => node.textContent === "Approvals")
+      ?.parentElement;
+    expect(section).toBeDefined();
+    const entries = [...section!.querySelectorAll(":scope > div > div")].map((row) => [
+      row.querySelector("span")!.textContent,
+      [...row.querySelectorAll("kbd")].map((key) => key.textContent).join("+"),
+    ]);
+    expect(entries).toEqual([
+      ["Next request", "j"],
+      ["Previous request", "k"],
+      ["Approve the open request", "Shift+A"],
+      ["Request changes to the open request", "Shift+C"],
+      ["Reject the open request (asks to confirm)", "Shift+X"],
+      ["Undo the last approval (within 5 seconds)", "Shift+Z"],
+    ]);
+    // A chord reads "Shift + A", not "Shift then A".
+    expect(section!.textContent).not.toContain("then");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   it("does not advertise the retired sidebar collapse shortcut", () => {
     const root = createRoot(container);
     flushSync(() => {
