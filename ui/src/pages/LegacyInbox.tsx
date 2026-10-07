@@ -87,8 +87,8 @@ import { SwipeToArchive } from "../components/SwipeToArchive";
 import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
-import { approvalLabel, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
-import { ApprovalDecisionSummary } from "../components/ApprovalDecisionSummary";
+import { approvalLabel, approvalMissingSourceNote, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
+import { ApprovalDecisionSummary, type ApprovalAgentNameResolver } from "../components/ApprovalDecisionSummary";
 import { ApprovalDecisionActions, useSettlingApprovals } from "../components/ApprovalDecisionActions";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
@@ -441,6 +441,7 @@ function ApprovalInboxRow({
   onApprove,
   onReject,
   onRequestRevision,
+  resolveAgentName,
   isPending,
   unreadState = null,
   onMarkRead,
@@ -454,6 +455,7 @@ function ApprovalInboxRow({
   onApprove: (note?: string) => void;
   onReject: (note?: string) => void;
   onRequestRevision?: (note: string) => void;
+  resolveAgentName?: ApprovalAgentNameResolver;
   isPending: boolean;
   unreadState?: NonIssueUnreadState;
   onMarkRead?: () => void;
@@ -464,7 +466,15 @@ function ApprovalInboxRow({
 }) {
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
-  const showBoardDecisionSummary = approval.type === "request_board_approval";
+  // These types carry enough to decide on in the row: they get the shared summary and decision controls.
+  const showDecisionSummary =
+    approval.type === "request_board_approval" ||
+    approval.type === "hire_agent" ||
+    approval.type === "approve_ceo_strategy";
+  const missingSourceNote = approvalMissingSourceNote(
+    approval.type,
+    approval.payload as Record<string, unknown> | null,
+  );
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
     ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
@@ -520,15 +530,16 @@ function ApprovalInboxRow({
               <span className="capitalize">{approvalStatusLabel(approval.status)}</span>
               {requesterName ? <span>requested by {requesterName}</span> : null}
               <span>updated {timeAgo(approval.updatedAt)}</span>
+              {missingSourceNote ? <span>{missingSourceNote.toLowerCase()}</span> : null}
             </span>
           </span>
         </Link>
-        {(onArchive || (showResolutionButtons && !showBoardDecisionSummary)) ? (
+        {(onArchive || (showResolutionButtons && !showDecisionSummary)) ? (
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
             {onArchive ? (
               <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} />
             ) : null}
-            {showResolutionButtons && !showBoardDecisionSummary ? (
+            {showResolutionButtons && !showDecisionSummary ? (
               <>
                 <Button
                   size="sm"
@@ -552,17 +563,23 @@ function ApprovalInboxRow({
           </div>
         ) : null}
       </div>
-      {showBoardDecisionSummary && (
-        <ApprovalDecisionSummary type={approval.type} payload={approval.payload} className="mt-3" />
+      {showDecisionSummary && (
+        <ApprovalDecisionSummary
+          type={approval.type}
+          payload={approval.payload}
+          status={approval.status}
+          resolveAgentName={resolveAgentName}
+          className="mt-3"
+        />
       )}
-      {showResolutionButtons && showBoardDecisionSummary ? (
+      {showResolutionButtons && showDecisionSummary ? (
         <ApprovalDecisionActions
           className="mt-3"
           subject={label}
           status={approval.status}
           onApprove={onApprove}
           onReject={onReject}
-          onRequestRevision={onRequestRevision}
+          onRequestRevision={approval.requestedByAgentId ? onRequestRevision : undefined}
           isPending={isPending}
           buttonClassName="h-8 px-3"
           approveClassName="bg-(--status-task-icon-done) text-white hover:bg-(--status-task-done)"
@@ -2942,6 +2959,7 @@ export function Inbox() {
                           approval={item.approval}
                           selected={isSelected}
                           requesterName={agentName(item.approval.requestedByAgentId)}
+                          resolveAgentName={(agentId) => (agents ? agentName(agentId) : undefined)}
                           onApprove={(note) => approveMutation.mutate({ id: item.approval.id, note })}
                           onReject={(note) => rejectMutation.mutate({ id: item.approval.id, note })}
                           onRequestRevision={(note) => requestRevisionMutation.mutate({ id: item.approval.id, note })}

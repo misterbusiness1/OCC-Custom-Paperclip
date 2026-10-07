@@ -17,7 +17,7 @@ import {
   typeLabel,
 } from "../components/ApprovalPayload";
 import { ApprovalDecisionActions, useSettlingApprovals } from "../components/ApprovalDecisionActions";
-import { ApprovalEmailDraftBlock } from "../components/ApprovalDecisionSummary";
+import { ApprovalDecisionSummary, ApprovalEmailDraftBlock } from "../components/ApprovalDecisionSummary";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -162,8 +162,10 @@ export function ApprovalDetail() {
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
+  // Hire and strategy requests carry no recommendation, pros or risks: they get their own summary.
+  const hasTypeSummary = approval.type === "hire_agent" || approval.type === "approve_ceo_strategy";
   const kindLabel = typeLabel[approval.type] ?? approval.type;
-  const subject = approvalExcerpt(approvalSubject(payload), 160) ?? kindLabel;
+  const subject = approvalExcerpt(approvalSubject(payload, approval.type), 160) ?? kindLabel;
   const brief = approvalDecisionBrief(payload);
   // ponytail: Keep the board scan bounded; the complete request remains available below.
   const recommendation = approvalExcerpt(brief.recommendation, 320);
@@ -249,72 +251,84 @@ export function ApprovalDetail() {
         </header>
 
         <div className="space-y-5 border-t border-border/60 pt-4">
-          <div className="rounded-lg bg-muted/40 px-3.5 py-3">
-            <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-              Recommendation
-            </p>
-            <p className="mt-1 text-sm leading-6 text-foreground">
-              {recommendation ?? "No recommendation was supplied."}
-            </p>
-          </div>
+          {hasTypeSummary ? (
+            <ApprovalDecisionSummary
+              type={approval.type}
+              payload={payload}
+              status={approval.status}
+              resolveAgentName={(agentId) => (agents ? (agentNameById.get(agentId) ?? null) : undefined)}
+              full
+            />
+          ) : (
+            <>
+              <div className="rounded-lg bg-muted/40 px-3.5 py-3">
+                <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+                  Recommendation
+                </p>
+                <p className="mt-1 text-sm leading-6 text-foreground">
+                  {recommendation ?? "No recommendation was supplied."}
+                </p>
+              </div>
 
-          {approval.type === "request_board_approval" && <OriginalRequestBlock payload={payload} />}
+              {approval.type === "request_board_approval" && <OriginalRequestBlock payload={payload} />}
 
-          <div>
-            <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-              Why
-            </p>
-            <p className="mt-1 text-sm leading-6 text-foreground">
-              {reasoning ?? "No rationale was supplied."}
-            </p>
-          </div>
+              <div>
+                <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+                  Why
+                </p>
+                <p className="mt-1 text-sm leading-6 text-foreground">
+                  {reasoning ?? "No rationale was supplied."}
+                </p>
+              </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                Pros
-              </p>
-              {pros.length > 0 ? (
-                <ul className="mt-1.5 space-y-1.5 text-sm text-foreground">
-                  {pros.map((item) => (
-                    <li key={item} className="flex items-start gap-2 leading-5">
-                      <span aria-hidden className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mt-1 text-sm leading-5 text-muted-foreground">No explicit benefit was supplied.</p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+                    Pros
+                  </p>
+                  {pros.length > 0 ? (
+                    <ul className="mt-1.5 space-y-1.5 text-sm text-foreground">
+                      {pros.map((item) => (
+                        <li key={item} className="flex items-start gap-2 leading-5">
+                          <span aria-hidden className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
+                          <span>{item}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-1 text-sm leading-5 text-muted-foreground">No explicit benefit was supplied.</p>
+                  )}
+                </div>
+                <div>
+                  <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+                    Risks
+                  </p>
+                  {cons.length > 0 ? (
+                    <ul className="mt-1.5 space-y-1.5 text-sm text-foreground">
+                      {cons.map((item) => (
+                        <li key={item} className="flex items-start gap-2 leading-5">
+                          <span aria-hidden className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
+                          <span>{item}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-1 text-sm leading-5 text-muted-foreground">No explicit tradeoff was supplied.</p>
+                  )}
+                </div>
+              </div>
+
+              {approval.type === "request_board_approval" && <ApprovalEmailDraftBlock payload={payload} />}
+
+              {nextAction && (
+                <div>
+                  <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+                    If approved
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-foreground">{nextAction}</p>
+                </div>
               )}
-            </div>
-            <div>
-              <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                Risks
-              </p>
-              {cons.length > 0 ? (
-                <ul className="mt-1.5 space-y-1.5 text-sm text-foreground">
-                  {cons.map((item) => (
-                    <li key={item} className="flex items-start gap-2 leading-5">
-                      <span aria-hidden className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mt-1 text-sm leading-5 text-muted-foreground">No explicit tradeoff was supplied.</p>
-              )}
-            </div>
-          </div>
-
-          {approval.type === "request_board_approval" && <ApprovalEmailDraftBlock payload={payload} />}
-
-          {nextAction && (
-            <div>
-              <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                If approved
-              </p>
-              <p className="mt-1 text-sm leading-6 text-foreground">{nextAction}</p>
-            </div>
+            </>
           )}
 
           {approval.decisionNote && (
@@ -337,7 +351,9 @@ export function ApprovalDetail() {
                 status={approval.status}
                 onApprove={(note) => approveMutation.mutate(note)}
                 onReject={(note) => rejectMutation.mutate(note)}
-                onRequestRevision={(note) => revisionMutation.mutate(note)}
+                onRequestRevision={
+                  approval.requestedByAgentId ? (note) => revisionMutation.mutate(note) : undefined
+                }
                 isPending={decisionPending}
                 pendingAction={
                   approveMutation.isPending

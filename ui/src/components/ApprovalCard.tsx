@@ -5,11 +5,12 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Identity } from "./Identity";
 import {
   approvalExcerpt,
+  approvalMissingSourceNote,
   approvalSubject,
   isEmailReplyPayload,
   typeLabel,
 } from "./ApprovalPayload";
-import { ApprovalDecisionSummary } from "./ApprovalDecisionSummary";
+import { ApprovalDecisionSummary, type ApprovalAgentNameResolver } from "./ApprovalDecisionSummary";
 import {
   ApprovalDecisionActions,
   type ApprovalDecisionActionsHandle,
@@ -56,6 +57,7 @@ export function ApprovalCard({
   pendingAction = null,
   linkedIssues,
   enableShortcuts = false,
+  resolveAgentName,
 }: {
   approval: Approval;
   requesterAgent: Agent | null;
@@ -69,11 +71,13 @@ export function ApprovalCard({
   linkedIssues?: ApprovalCardLinkedIssue[];
   /** Shift+A approves, Shift+C asks for changes and Shift+X rejects while the card has focus. */
   enableShortcuts?: boolean;
+  /** Lets a hire request name the manager the new agent reports to. */
+  resolveAgentName?: ApprovalAgentNameResolver;
 }) {
   const actionsRef = useRef<ApprovalDecisionActionsHandle>(null);
   const payload = approval.payload as Record<string, unknown> | null;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
-  const subject = approvalExcerpt(approvalSubject(payload), 120);
+  const subject = approvalExcerpt(approvalSubject(payload, approval.type), 120);
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const showResolutionButtons =
     Boolean(onApprove && onReject) &&
@@ -82,6 +86,7 @@ export function ApprovalCard({
   const hasFooter = showResolutionButtons || Boolean(detailLink || onOpen);
   const waiting = isActionable ? waitingLabel(approval.createdAt) : null;
   const isEmailReply = approval.type === "request_board_approval" && isEmailReplyPayload(payload);
+  const missingSourceNote = approvalMissingSourceNote(approval.type, payload);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -162,12 +167,15 @@ export function ApprovalCard({
           ) : (
             <span>Created {timeAgo(approval.createdAt)}</span>
           )}
+          {missingSourceNote && <span>{missingSourceNote}</span>}
         </div>
       </div>
 
       <ApprovalDecisionSummary
         type={approval.type}
         payload={payload}
+        status={approval.status}
+        resolveAgentName={resolveAgentName}
         className="mt-4 border-t border-border/60 pt-4"
       />
 
@@ -186,7 +194,8 @@ export function ApprovalCard({
               status={approval.status}
               onApprove={onApprove}
               onReject={onReject}
-              onRequestRevision={onRequestRevision}
+              // A change request is addressed to the requesting agent; without one it would reach nobody.
+              onRequestRevision={approval.requestedByAgentId ? onRequestRevision : undefined}
               isPending={isPending}
               pendingAction={pendingAction}
               trailing={detailsControl}

@@ -26,7 +26,7 @@ Resubmitting decision fields without an `originalRequest` preserves the prior sn
 
 Approval detail, shared approval cards, and both inbox presentations place the original request between Recommendation and Why. Inbox decisions follow the shared decision summary. Compact summaries show the first lines of a long request and let the reader expand it; the retained text is never shortened. The provenance line names the channel of an external source and links a Paperclip source back to its comment.
 
-A historical approval without a retained source shows the missing-source state. When it also has no pros and no risks, the summary states that once in a single line instead of three empty fields.
+`originalRequest` is optional, so an approval can have no source: an older record, or a request the agent raised by itself. The interface does not guess which. The card and the inbox row add "No original request attached" to their header line and show no empty source section. The approval detail page keeps the **Original request** section and states that no original request was attached. A request that also has no pros and no risks says so once in a single line instead of empty fields.
 
 ## Decision surfaces
 
@@ -36,7 +36,16 @@ The shared decision summary also shows what the board is about to approve:
 - Long recommendation and rationale text, and pros and risks beyond the first two, expand in place.
 - `nextActionOnApproval` appears as **If approved**.
 
-The approval card, the approval detail page, and Board approvals in both inbox presentations use the same decision buttons:
+Hire and strategy approvals carry no recommendation, pros, or risks, so they have their own summary on the card, in the inbox row, and on the detail page:
+
+- A `hire_agent` approval is headed by the agent's name. It shows the role, job title, manager, adapter and model, monthly budget, the described work, and the skills. A manager is shown by name, never by id. While the decision is open, it states what each decision does: approval activates the agent the request names (or creates one when it names none) and sets the monthly budget when one is given; rejection terminates the named agent. If the request names an existing agent other than the one being hired, the summary says so instead. Only the model name is read from the adapter configuration.
+- An `approve_ceo_strategy` approval shows the plan under a **Plan** label with its line breaks, numbering, bullets, and indentation. A long plan shows its first lines and expands in place; the detail page shows it in full. A recommendation, pros, risks, and next action are shown when the request carries them. A request with no plan field shows its rationale as the plan.
+
+Agent-written text on these summaries is shown as plain text. Markup is removed; identifiers, paths, and link targets are kept.
+
+**Request changes** is offered only when the approval has a requesting agent to receive it.
+
+The approval card, the approval detail page, and Board, hire, and strategy approvals in both inbox presentations use the same decision buttons:
 
 - **Approve** sends at once. **Add a note** attaches an optional `decisionNote`.
 - **Request changes** is available while the approval is `pending` and requires a `decisionNote`, so the requester knows what to revise.

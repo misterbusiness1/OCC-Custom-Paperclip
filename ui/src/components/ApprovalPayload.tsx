@@ -134,13 +134,15 @@ export function OriginalRequestBlock({
 }) {
   const original = approvalOriginalRequest(payload);
   if (!original) {
+    // Compact surfaces state this once in their header line (approvalMissingSourceNote).
+    if (compact) return null;
     return (
       <div>
         <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
           Original request
         </p>
         <p className="mt-1 text-sm leading-5 text-muted-foreground">
-          Original source was not retained for this approval.
+          No original request was attached to this approval.
         </p>
       </div>
     );
@@ -208,7 +210,7 @@ function OriginalRequestText({ text, collapsible }: { text: string; collapsible:
       {collapsible && (
         <button
           type="button"
-          className="mt-1 text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          className="mt-1 inline-flex min-h-6 items-center text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
           aria-expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
         >
@@ -219,11 +221,146 @@ function OriginalRequestText({ text, collapsible }: { text: string; collapsible:
   );
 }
 
+/**
+ * A Board approval may answer a request from a person, or the agent may raise
+ * it by itself. Without an attached source the board should know that, but one
+ * quiet note is enough: it is the normal case for routine agent requests.
+ */
+export function approvalMissingSourceNote(
+  type: string,
+  payload?: Record<string, unknown> | null,
+): string | null {
+  if (type !== "request_board_approval" || approvalOriginalRequest(payload)) return null;
+  return "No original request attached";
+}
+
+export type ApprovalHireFacts = {
+  name: string | null;
+  role: string | null;
+  title: string | null;
+  reportsToAgentId: string | null;
+  adapterType: string | null;
+  model: string | null;
+  /** null when the request names no budget; 0 means no monthly limit is set. */
+  budgetMonthlyCents: number | null;
+  capabilities: string | null;
+  skills: string[];
+  /** The agent this request acts on: approval activates it and rejection terminates it. Null when approval creates one. */
+  agentId: string | null;
+};
+
+export function approvalHireFacts(payload?: Record<string, unknown> | null): ApprovalHireFacts {
+  const adapterConfig =
+    payload?.adapterConfig && typeof payload.adapterConfig === "object" && !Array.isArray(payload.adapterConfig)
+      ? (payload.adapterConfig as Record<string, unknown>)
+      : null;
+  return {
+    name: firstNonEmptyString(payload?.name),
+    role: firstNonEmptyString(payload?.role),
+    title: firstNonEmptyString(payload?.title),
+    reportsToAgentId: firstNonEmptyString(payload?.reportsTo),
+    adapterType: firstNonEmptyString(payload?.adapterType),
+    model: firstNonEmptyString(adapterConfig?.model),
+    budgetMonthlyCents:
+      typeof payload?.budgetMonthlyCents === "number" && Number.isFinite(payload.budgetMonthlyCents)
+        ? payload.budgetMonthlyCents
+        : null,
+    capabilities: approvalReadableText(firstNonEmptyString(payload?.capabilities)),
+    skills: uniqueStrings(payload?.desiredSkills),
+    agentId: firstNonEmptyString(payload?.agentId),
+  };
+}
+
+/**
+ * Agent-written text as readable plain text. Line breaks, numbering, bullets
+ * and indentation are structure, so they stay; only the markup around the
+ * words goes. Identifiers keep their underscores and tildes: the board must
+ * read what the agent wrote. Every pattern is bounded, so a hostile payload
+ * cannot stall the page.
+ */
+export function approvalReadableText(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const plain = value
+    .replace(/\r\n?/g, "\n")
+    .replace(/\t/g, "  ")
+    .replace(/!\[([^\]\n]{0,300})\]\([^)\n]{0,2000}\)/g, "$1")
+    // A link keeps its target: where it points can be what the board is approving.
+    .replace(/\[([^\]\n]{1,300})\]\(([^)\n]{0,2000})\)/g, (_match, text: string, url: string) =>
+      url && url !== text ? `${text} (${url})` : text,
+    )
+    .split("\n")
+    .map((line) => line.trimEnd())
+    // A line that is only a rule (---, ***, ___) carries no words.
+    .filter((line) => !/^ {0,3}([-*_])(?: {0,2}\1){2,}$/.test(line))
+    .map((line) =>
+      line
+        .replace(/^ {0,3}#{1,6} +/, "")
+        .replace(/^( {0,12})[-*+] +/, "$1• ")
+        .replace(/\*\*(?=\S)([^\n*]{0,200}?\S)\*\*/g, "$1")
+        .replace(/`([^`\n]{1,200})`/g, "$1"),
+    )
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return plain || null;
+}
+
+export type ApprovalStrategyPlan =
+  | { kind: "text"; text: string }
+  /** The request carries a plan, but not as text the summary can show. */
+  | { kind: "unreadable" }
+  | { kind: "missing" };
+
+const STRATEGY_PLAN_FIELDS = ["plan", "description", "strategy", "text"] as const;
+
+/** The plan a strategy approval asks the board to accept. */
+export function approvalStrategyPlan(payload?: Record<string, unknown> | null): ApprovalStrategyPlan {
+  const text = approvalReadableText(
+    firstNonEmptyString(...STRATEGY_PLAN_FIELDS.map((field) => payload?.[field])),
+  );
+  if (text) return { kind: "text", text };
+  const plan = payload?.plan;
+  if (Array.isArray(plan) && plan.length > 0 && plan.every((step) => typeof step === "string")) {
+    const joined = approvalReadableText(plan.join("\n"));
+    if (joined) return { kind: "text", text: joined };
+  }
+  return plan !== null && plan !== undefined && typeof plan !== "string" ? { kind: "unreadable" } : { kind: "missing" };
+}
+
+/** The decision brief of a strategy approval, without the plan fields the summary shows as the plan. */
+export function approvalStrategyBrief(payload?: Record<string, unknown> | null) {
+  const rest: Record<string, unknown> = { ...(payload ?? {}) };
+  for (const field of STRATEGY_PLAN_FIELDS) delete rest[field];
+  return approvalDecisionBrief(rest);
+}
+
+/** The first lines of a long text, cut at a line or word boundary. */
+export function approvalTextPreview(
+  text: string,
+  maxLines = 6,
+  maxLength = 480,
+): { preview: string; truncated: boolean } {
+  const lines = text.split("\n");
+  let preview = lines.slice(0, maxLines).join("\n");
+  let truncated = lines.length > maxLines;
+  if (preview.length > maxLength) {
+    const clipped = preview.slice(0, maxLength + 1);
+    const boundary = Math.max(clipped.lastIndexOf(" "), clipped.lastIndexOf("\n"));
+    let end = boundary > maxLength / 2 ? boundary : maxLength;
+    // Never cut between the two halves of one character (an emoji, for example).
+    const last = preview.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+    preview = preview.slice(0, end);
+    truncated = true;
+  }
+  return { preview: truncated ? `${preview.trimEnd()}…` : preview, truncated };
+}
+
 export function approvalExcerpt(value: string | null, maxLength = 240): string | null {
   if (!value) return null;
   const plain = value
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/!\[([^\]\n]{0,300})\]\([^)\n]{0,2000}\)/g, "$1")
+    .replace(/\[([^\]\n]{1,300})\]\([^)\n]{0,2000}\)/g, "$1")
     .replace(/^\s{0,3}(?:#{1,6}|>|[-+])\s+/gm, "")
     .replace(/[`*_~]/g, "")
     .replace(/\s+/g, " ")
@@ -240,8 +377,8 @@ export function approvalExcerpt(value: string | null, maxLength = 240): string |
 export function approvalPlainText(value: string | null): string | null {
   if (!value) return null;
   const plain = value
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/!\[([^\]\n]{0,300})\]\([^)\n]{0,2000}\)/g, "$1")
+    .replace(/\[([^\]\n]{1,300})\]\([^)\n]{0,2000}\)/g, "$1")
     .replace(/^\s{0,3}(?:#{1,6}|>|[-+])\s+/gm, "")
     .replace(/[`*_~]/g, "")
     .replace(/[^\S\n]+/g, " ")
@@ -251,7 +388,9 @@ export function approvalPlainText(value: string | null): string | null {
   return plain || null;
 }
 
-export function approvalSubject(payload?: Record<string, unknown> | null): string | null {
+export function approvalSubject(payload?: Record<string, unknown> | null, type?: string): string | null {
+  // A hire is about a named agent; its `title` is the job title, not the subject.
+  if (type === "hire_agent") return firstNonEmptyString(payload?.name, payload?.title);
   return firstNonEmptyString(
     payload?.title,
     payload?.name,
@@ -291,7 +430,7 @@ export function approvalEmailDraft(payload?: Record<string, unknown> | null): Ap
 /** Build a contextual label for an approval, e.g. "Hire Agent: Designer" */
 export function approvalLabel(type: string, payload?: Record<string, unknown> | null): string {
   const base = typeLabel[type] ?? type;
-  const subject = approvalSubject(payload);
+  const subject = approvalSubject(payload, type);
   if (subject) {
     return `${base}: ${subject}`;
   }

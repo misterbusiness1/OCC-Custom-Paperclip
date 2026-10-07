@@ -12,6 +12,8 @@ vi.mock("@/lib/router", () => ({
 }));
 
 import { ApprovalCard } from "./ApprovalCard";
+import { ApprovalDecisionSummary } from "./ApprovalDecisionSummary";
+import { approvalReadableText, approvalStrategyPlan, approvalTextPreview } from "./ApprovalPayload";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -25,7 +27,7 @@ function createApproval(overrides: Partial<Approval> = {}): Approval {
     id: "approval-1",
     companyId: "company-1",
     type: "request_board_approval",
-    requestedByAgentId: null,
+    requestedByAgentId: "agent-requester",
     requestedByUserId: null,
     status: "pending",
     payload: {
@@ -282,5 +284,339 @@ describe("ApprovalCard", () => {
     click("Cancel");
     press("A", card);
     expect(onApprove).toHaveBeenCalledExactlyOnceWith(undefined);
+  });
+});
+
+describe("ApprovalCard for requests without a source, hires and strategies", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.useRealTimers();
+  });
+
+  const render = (props: Partial<ComponentProps<typeof ApprovalCard>> & { approval: Approval }) =>
+    act(() => root.render(<ApprovalCard requesterAgent={null} {...props} />));
+  const button = (label: string) =>
+    [...container.querySelectorAll("button")].find((candidate) => candidate.textContent === label);
+
+  it("notes a missing source once in the header line instead of an empty section", () => {
+    render({ approval: createApproval() });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Waiting 1 dayNo original request attached");
+    expect(text).not.toContain("Original request");
+    expect(text).not.toContain("was not retained");
+    expect(container.querySelector("pre")).toBeNull();
+    // Pros and risks the agent supplied are still shown.
+    expect(text).toContain("Fixed monthly commitment.");
+  });
+
+  it("does not add the note when a source is attached or for other approval types", () => {
+    render({
+      approval: createApproval({
+        payload: {
+          title: "Approve staging hosting spend",
+          recommendedAction: "Approve provider X.",
+          reasoning: "It meets the request.",
+          pros: ["Fixed cost."],
+          risks: ["May rise."],
+          originalRequest: { text: "Use provider X.", source: { kind: "external", sender: "Board" } },
+        },
+      }),
+    });
+    expect(container.textContent).not.toContain("No original request attached");
+    expect(container.textContent).toContain("Original request");
+
+    render({ approval: createApproval({ type: "hire_agent", payload: { name: "Pricing Analyst" } }) });
+    expect(container.textContent).not.toContain("No original request attached");
+  });
+
+  it("shows who a hire is, what it runs on, what it may spend, and what each decision does", () => {
+    render({
+      approval: createApproval({
+        type: "hire_agent",
+        payload: {
+          name: "Pricing Analyst",
+          role: "researcher",
+          title: "Senior Pricing Analyst",
+          reportsTo: "agent-ceo",
+          capabilities: "Tracks competitor prices weekly, writes weekly_report to ~/reports, and flags changes above five percent.",
+          adapterType: "claude_local",
+          adapterConfig: { model: "claude-opus-5-5", apiKey: "must-never-render" },
+          budgetMonthlyCents: 5000,
+          desiredSkills: ["paperclip", "pricing-research", "s3", "s4", "s5", "s6", "s7"],
+          agentId: "agent-pending",
+        },
+      }),
+      resolveAgentName: (agentId) =>
+        agentId === "agent-ceo" ? "Chief Executive" : agentId === "agent-pending" ? "Pricing Analyst" : null,
+      onApprove: vi.fn(),
+      onReject: vi.fn(),
+    });
+
+    // The card is headed by the agent's name; the job title is one of the facts.
+    expect(container.querySelector("h3")?.textContent).toBe("Pricing Analyst");
+    expect(button("Approve")?.getAttribute("aria-label")).toBe("Approve: Pricing Analyst");
+    const hire = container.querySelector("[data-approval-hire]")!;
+    const facts = Object.fromEntries(
+      [...hire.querySelectorAll("dl > div")].map((row) => [
+        row.querySelector("dt")!.textContent,
+        row.querySelector("dd")!.textContent,
+      ]),
+    );
+    expect(facts).toMatchObject({
+      Role: "Researcher",
+      "Job title": "Senior Pricing Analyst",
+      "Reports to": "Chief Executive",
+      "Monthly budget": "$50.00",
+    });
+    expect(facts["Runs on"]).toContain("claude-opus-5-5");
+    // The described work keeps its identifiers and paths.
+    expect(hire.textContent).toContain("What it will doTracks competitor prices weekly, writes weekly_report to ~/reports");
+    expect(hire.textContent).toContain("If approvedPricing Analyst is activated. Its monthly budget is set to $50.00.");
+    expect(hire.textContent).toContain("If rejectedThe pending agent is terminated.");
+    // Only the model name is read from the adapter configuration.
+    expect(container.textContent).not.toContain("must-never-render");
+    // The old one-line fallback is gone.
+    expect(container.textContent).not.toContain("Why");
+
+    expect(hire.querySelectorAll("li")).toHaveLength(6);
+    act(() => button("+1 more")!.click());
+    expect(hire.querySelectorAll("li")).toHaveLength(7);
+  });
+
+  it("leaves out hire facts the request does not carry, and never shows a raw agent id", () => {
+    render({
+      approval: createApproval({
+        type: "hire_agent",
+        payload: {
+          name: "Pricing Analyst",
+          title: "Pricing Analyst",
+          reportsTo: "11111111-1111-4111-8111-111111111111",
+          budgetMonthlyCents: 0,
+          desiredSkills: ["paperclip"],
+        },
+      }),
+    });
+
+    const hire = container.querySelector("[data-approval-hire]")!;
+    const labels = [...hire.querySelectorAll("dt")].map((dt) => dt.textContent);
+    // No resolver here, so the manager is unknown and left out rather than shown as an id.
+    expect(labels).toEqual(["Monthly budget"]);
+    expect(hire.textContent).toContain("No monthly limit");
+    expect(hire.textContent).not.toContain("11111111");
+    // Approval creates this agent, and the server does not apply skills on that path.
+    expect(hire.textContent).toContain("Requested skills (not applied on approval)");
+    expect(hire.textContent).toContain("The request does not describe the agent's work.");
+    // No pending agent exists yet: approving creates it.
+    expect(hire.textContent).toContain("If approvedPricing Analyst is created.");
+    expect(hire.textContent).not.toContain("monthly budget is set");
+    // No pending agent exists yet, so a rejection terminates nothing.
+    expect(hire.textContent).not.toContain("If rejected");
+  });
+
+  it("shows a strategy plan with its structure and expands a long one in place", () => {
+    const plan = [
+      "## Q4 strategy",
+      "1. Grow wholesale.",
+      "2. Cut returns.",
+      "- Hire one **analyst**",
+      "- Review `pricing_rules` weekly",
+      "",
+      "Line six.",
+      "Line seven.",
+      "Final line of the plan.",
+    ].join("\n");
+    render({ approval: createApproval({ type: "approve_ceo_strategy", payload: { plan } }) });
+
+    const block = container.querySelector("[data-approval-plan]")!;
+    const body = block.querySelector("p.whitespace-pre-wrap")!;
+    expect(block.textContent).toContain("Plan");
+    // Numbering, bullets and line breaks survive; markup characters do not, and identifiers keep their underscores.
+    expect(body.textContent).toContain("Q4 strategy\n1. Grow wholesale.\n2. Cut returns.\n• Hire one analyst\n• Review pricing_rules weekly");
+    expect(body.textContent).not.toContain("#");
+    expect(body.textContent).not.toContain("**");
+    expect(body.textContent).not.toContain("Final line of the plan.");
+    expect(container.textContent).not.toContain("Why");
+
+    act(() => button("Show full plan")!.click());
+    expect(block.querySelector("p.whitespace-pre-wrap")!.textContent).toContain("Final line of the plan.");
+    act(() => button("Show less")!.click());
+    expect(block.querySelector("p.whitespace-pre-wrap")!.textContent).not.toContain("Final line of the plan.");
+  });
+
+  it("shows a short strategy plan whole, with no expander", () => {
+    render({
+      approval: createApproval({ type: "approve_ceo_strategy", payload: { plan: "1. Grow wholesale.\n2. Cut returns." } }),
+    });
+    expect(container.querySelector("[data-approval-plan] p.whitespace-pre-wrap")!.textContent).toBe(
+      "1. Grow wholesale.\n2. Cut returns.",
+    );
+    expect(button("Show full plan")).toBeUndefined();
+  });
+  it("renders a hire whose role is a reserved property name instead of crashing the page", () => {
+    for (const role of ["__proto__", "constructor", "toString"]) {
+      render({ approval: createApproval({ type: "hire_agent", payload: { name: "Odd Role", role } }) });
+      const facts = [...container.querySelectorAll("[data-approval-hire] dl > div")].map((row) => row.textContent);
+      expect(facts).toContain(`Role${role}`);
+    }
+  });
+
+  it("says when a hire's budget is not stated and when its manager is not a known agent", () => {
+    render({
+      approval: createApproval({ type: "hire_agent", payload: { name: "Returns Clerk", reportsTo: "agent-gone" } }),
+      resolveAgentName: () => null,
+    });
+    const hire = container.querySelector("[data-approval-hire]")!;
+    expect(hire.textContent).toContain("Monthly budgetNot stated in the request");
+    expect(hire.textContent).toContain("Reports toAn agent that is not in this company's list");
+    expect(hire.textContent).not.toContain("agent-gone");
+
+    // While the agent list is still loading, nothing is claimed about the manager.
+    render({
+      approval: createApproval({ type: "hire_agent", payload: { name: "Returns Clerk", reportsTo: "agent-gone" } }),
+      resolveAgentName: () => undefined,
+    });
+    expect(container.querySelector("[data-approval-hire]")!.textContent).not.toContain("Reports to");
+  });
+
+  it("warns when a hire request points at a different, existing agent", () => {
+    render({
+      approval: createApproval({ type: "hire_agent", payload: { name: "Pricing Analyst", agentId: "agent-ceo" } }),
+      resolveAgentName: (agentId) => (agentId === "agent-ceo" ? "Chief Executive" : null),
+    });
+    const hire = container.querySelector("[data-approval-hire]")!;
+    expect(hire.textContent).toContain(
+      "This request is linked to the existing agent Chief Executive, not to a new agent named Pricing Analyst.",
+    );
+    expect(hire.textContent).toContain("rejecting terminates it");
+    expect(hire.textContent).not.toContain("The pending agent is terminated.");
+  });
+
+  it("states what a hire decision does only while the decision is open", () => {
+    const payload = { name: "Pricing Analyst", agentId: "agent-pending", budgetMonthlyCents: 5000 };
+    render({ approval: createApproval({ type: "hire_agent", status: "revision_requested", payload }) });
+    expect(container.textContent).toContain("If rejectedThe pending agent is terminated.");
+
+    for (const status of ["approved", "rejected", "cancelled"] as const) {
+      render({ approval: createApproval({ type: "hire_agent", status, payload }) });
+      expect(container.textContent).not.toContain("If approved");
+      expect(container.textContent).not.toContain("If rejected");
+      // The facts stay as the record of what was decided.
+      expect(container.textContent).toContain("Monthly budget$50.00");
+    }
+  });
+
+  it("offers Request changes only when a requesting agent can receive it", () => {
+    render({
+      approval: createApproval({ requestedByAgentId: null }),
+      onApprove: vi.fn(),
+      onReject: vi.fn(),
+      onRequestRevision: vi.fn(),
+    });
+    expect(button("Request changes")).toBeUndefined();
+    expect(button("Approve")).toBeDefined();
+  });
+
+  it("shows the decision fields a strategy carries, and uses its rationale when it has no plan field", () => {
+    render({
+      approval: createApproval({
+        type: "approve_ceo_strategy",
+        payload: {
+          plan: "1. Grow wholesale.\n2. Cut returns.",
+          recommendedAction: "Approve the shift for Q4.",
+          risks: ["Cash runway drops to four months."],
+          nextActionOnApproval: "CEO reallocates budget on Monday.",
+        },
+      }),
+    });
+    let text = container.textContent ?? "";
+    expect(text).toContain("RecommendationApprove the shift for Q4.");
+    expect(text).toContain("Cash runway drops to four months.");
+    expect(text).toContain("If approvedCEO reallocates budget on Monday.");
+    expect(text).not.toContain("Pros");
+
+    render({
+      approval: createApproval({
+        type: "approve_ceo_strategy",
+        payload: { summary: "Shift 30% of ad spend to wholesale outreach." },
+      }),
+    });
+    text = container.textContent ?? "";
+    expect(text).toContain("PlanShift 30% of ad spend to wholesale outreach.");
+    expect(text).not.toContain("no plan text");
+  });
+
+  it("reads a plan given as a list of steps and says so when a plan is not text", () => {
+    render({ approval: createApproval({ type: "approve_ceo_strategy", payload: { plan: ["Step 1: cut costs", "Step 2: hire"] } }) });
+    expect(container.querySelector("[data-approval-plan] p.whitespace-pre-wrap")!.textContent).toBe(
+      "Step 1: cut costs\nStep 2: hire",
+    );
+
+    render({ approval: createApproval({ type: "approve_ceo_strategy", payload: { plan: { goals: ["a"] } } }) });
+    expect(container.textContent).toContain("The plan is not plain text. Open the full request to read it.");
+
+    render({ approval: createApproval({ type: "approve_ceo_strategy", payload: {} }) });
+    expect(container.textContent).toContain("The request contains no plan text.");
+  });
+
+  it("shows a plan in full, with no expander, where the page asks for it", () => {
+    const plan = Array.from({ length: 12 }, (_, index) => `Step ${index + 1}.`).join("\n");
+    act(() => root.render(<ApprovalDecisionSummary type="approve_ceo_strategy" payload={{ plan }} full />));
+    expect(container.textContent).toContain("Step 12.");
+    expect(button("Show full plan")).toBeUndefined();
+  });
+});
+
+describe("approval text helpers", () => {
+  it("keeps identifiers, paths, link targets and nesting, and removes only markup", () => {
+    expect(approvalReadableText("Set STRIPE__WEBHOOK_SECRET, call __init__ in pricing__rules.py, see ~/reports, 2**10")).toBe(
+      "Set STRIPE__WEBHOOK_SECRET, call __init__ in pricing__rules.py, see ~/reports, 2**10",
+    );
+    expect(approvalReadableText("## Plan\n1. **Grow** wholesale\n   - sign `ten` shops\n\t- raise minimum\n---\n2. Cut returns")).toBe(
+      "Plan\n1. Grow wholesale\n   \u2022 sign ten shops\n  \u2022 raise minimum\n2. Cut returns",
+    );
+    expect(approvalReadableText("See [the diff](https://example.test/a_b) and [x](x)")).toBe(
+      "See the diff (https://example.test/a_b) and x",
+    );
+    expect(approvalReadableText("one\r\ntwo\rthree   ")).toBe("one\ntwo\nthree");
+    expect(approvalReadableText("   ")).toBeNull();
+  });
+
+  it("stays fast on hostile input", () => {
+    const started = performance.now();
+    for (const input of ["x" + " ".repeat(100_000) + "y", "[".repeat(100_000), "**".repeat(50_000), "`".repeat(100_000)]) {
+      approvalReadableText(input);
+      approvalStrategyPlan({ plan: input });
+    }
+    expect(performance.now() - started).toBeLessThan(5_000);
+  });
+
+  it("previews by lines and by length, on whole words, and reports every cut", () => {
+    expect(approvalTextPreview("a\nb", 6, 480)).toEqual({ preview: "a\nb", truncated: false });
+    expect(approvalTextPreview("1\n2\n3\n4", 2, 480)).toEqual({ preview: "1\n2\u2026", truncated: true });
+
+    const paragraph = "word ".repeat(200).trim();
+    const cut = approvalTextPreview(paragraph, 6, 480);
+    expect(cut.truncated).toBe(true);
+    expect(cut.preview.length).toBeLessThanOrEqual(481);
+    expect(cut.preview.endsWith("word\u2026")).toBe(true);
+
+    // An unbroken run is cut at the limit, never between the halves of one character.
+    const emoji = "\u{1F600}".repeat(400);
+    const cutEmoji = approvalTextPreview(emoji, 6, 481);
+    expect(cutEmoji.truncated).toBe(true);
+    expect(cutEmoji.preview.slice(0, -1)).toBe("\u{1F600}".repeat(240));
   });
 });
