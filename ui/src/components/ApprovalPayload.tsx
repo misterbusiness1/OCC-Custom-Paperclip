@@ -4,6 +4,9 @@ import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { MarkdownBody } from "./MarkdownBody";
 import { formatCents } from "../lib/utils";
+import { approvalReadableText } from "../lib/approval-readable-text";
+
+export { approvalReadableText };
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
@@ -128,13 +131,26 @@ export function approvalOriginalRequest(
 /** Resolves an agent id to a display name; null or undefined when it is not known. */
 type OriginalRequestSenderResolver = (agentId: string) => string | null | undefined;
 
+/** The shape of an agent id. A user id is free text and, in practice, never this shape. */
 const SENDER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A local user id as the server writes them (`local-board`, `local-implicit-board`): one bare token, no address, no words. */
+const LOCAL_USER_ID_PATTERN = /^local-[a-z0-9_-]+$/i;
 
 /**
- * Who sent the original request, as a name the board can read. The server
- * stores the author's user or agent id for a Paperclip comment; an id is
- * resolved to a name or left out, never printed. A sender the requesting agent
- * supplied for an external source is kept as written unless it is an id.
+ * Who sent the original request, as a name the board can read. An id is
+ * resolved to a name or left out, never printed.
+ *
+ * For a Paperclip comment the server stores the author's id: an agent id (a
+ * UUID) or a board user's id (any other text). An agent is named from the
+ * company's agents. A sender that is not a UUID is a board user and is shown as
+ * "Board", the name the discussion list gives every non-agent author. A UUID
+ * the agent list does not hold is left out: it may be an agent that has since
+ * been removed, and calling its comment the Board's own instruction on the page
+ * where the board decides whether to act on it would be wrong.
+ *
+ * A sender the requesting agent supplied for an external source is kept as
+ * written (`local-pickup@shop.example` is an address, not an id) unless it is
+ * a UUID or a bare local user id.
  */
 export function approvalOriginalRequestSender(
   source: ApprovalOriginalRequest["source"],
@@ -142,12 +158,14 @@ export function approvalOriginalRequestSender(
 ): string | null {
   const sender = source.sender?.trim();
   if (!sender) return null;
-  const isId =
-    source.kind === "paperclip_comment" || SENDER_ID_PATTERN.test(sender) || sender.startsWith("local-");
+  const isAgentIdShaped = SENDER_ID_PATTERN.test(sender);
+  const isComment = source.kind === "paperclip_comment";
+  const isId = isComment || isAgentIdShaped || LOCAL_USER_ID_PATTERN.test(sender);
   if (!isId) return sender;
   const name = resolveAgentName?.(sender)?.trim();
   if (name) return name;
-  return sender === "local-board" ? "Board" : null;
+  if (sender === "local-board") return "Board";
+  return isComment && !isAgentIdShaped ? "Board" : null;
 }
 
 /** The time a request was sent, to the minute. Null when the value is not a date. */
@@ -165,7 +183,7 @@ export function OriginalRequestBlock({
 }: {
   payload?: Record<string, unknown> | null;
   compact?: boolean;
-  /** Names the agent that wrote a Paperclip comment. Without it, or for an unknown id, no sender is shown. */
+  /** Names the agent that wrote a Paperclip comment. Without it, or for an unknown agent id, no sender is shown; a board user is shown as Board. */
   resolveAgentName?: OriginalRequestSenderResolver;
 }) {
   const original = approvalOriginalRequest(payload);
@@ -328,41 +346,6 @@ export function approvalHireFacts(payload?: Record<string, unknown> | null): App
   };
 }
 
-/**
- * Agent-written text as readable plain text. Line breaks, numbering, bullets
- * and indentation are structure, so they stay; only the markup around the
- * words goes. Identifiers keep their underscores and tildes, and a leading
- * ">" or "+" stays where it is (it may be a comparison or a sign): the board
- * must read what the agent wrote. Every pattern is bounded, so a hostile
- * payload cannot stall the page.
- */
-export function approvalReadableText(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const plain = value
-    .replace(/\r\n?/g, "\n")
-    .replace(/\t/g, "  ")
-    .replace(/!\[([^\]\n]{0,300})\]\([^)\n]{0,2000}\)/g, "$1")
-    // A link keeps its target: where it points can be what the board is approving.
-    .replace(/\[([^\]\n]{1,300})\]\(([^)\n]{0,2000})\)/g, (_match, text: string, url: string) =>
-      url && url !== text ? `${text} (${url})` : text,
-    )
-    .split("\n")
-    .map((line) => line.trimEnd())
-    // A line that is only a rule (---, ***, ___) carries no words.
-    .filter((line) => !/^ {0,3}([-*_])(?: {0,2}\1){2,}$/.test(line))
-    .map((line) =>
-      line
-        .replace(/^ {0,3}#{1,6} +/, "")
-        .replace(/^( {0,12})[-*] +/, "$1• ")
-        .replace(/\*\*(?=\S)([^\n*]{0,200}?\S)\*\*/g, "$1")
-        .replace(/`([^`\n]{1,200})`/g, "$1"),
-    )
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return plain || null;
-}
-
 export type ApprovalStrategyPlan =
   | { kind: "text"; text: string }
   /** The request carries a plan, but not as text the summary can show. */
@@ -420,15 +403,37 @@ export function approvalTextPreview(
   return { preview: truncated ? `${preview}…` : preview, truncated };
 }
 
+/** Characters of raw text an excerpt converts beyond four times its length: one label, one target, and their brackets. */
+const EXCERPT_RAW_MARGIN = 2400;
+/** How far back from that limit the cut looks for a space or a line break. */
+const EXCERPT_RAW_BOUNDARY_REACH = 200;
+
 /**
  * One line for a title or a subject: the readable text with its line breaks
  * folded into spaces, cut at a word boundary. Built on
  * {@link approvalReadableText}, so it drops markup and nothing else.
  */
 export function approvalExcerpt(value: string | null, maxLength = 240): string | null {
-  const plain = approvalReadableText(value)?.replace(/\s+/g, " ");
+  // A one-line excerpt reads only the start of the text, so only the start is converted. The
+  // margin lets markup shrink the text fourfold and leaves room for one link of the longest
+  // kind; a text of any length then costs the same.
+  const rawLimit = Number.isFinite(maxLength) ? maxLength * 4 + EXCERPT_RAW_MARGIN : Number.POSITIVE_INFINITY;
+  let raw = value;
+  let rawWasCut = false;
+  if (raw && raw.length > rawLimit) {
+    let end = rawLimit;
+    // Cut between words where one is near, so that no half of a token or of a rule line is left.
+    const boundary = Math.max(raw.lastIndexOf(" ", end), raw.lastIndexOf("\n", end));
+    if (boundary > end - EXCERPT_RAW_BOUNDARY_REACH) end = boundary;
+    const last = raw.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+    raw = raw.slice(0, end);
+    rawWasCut = true;
+  }
+  const plain = approvalReadableText(raw)?.replace(/\s+/g, " ");
   if (!plain) return null;
-  if (plain.length <= maxLength) return plain;
+  // Text that was cut before conversion is never presented as the whole text.
+  if (plain.length <= maxLength) return rawWasCut ? `${plain.trimEnd()}…` : plain;
 
   const clipped = plain.slice(0, maxLength + 1);
   const wordBoundary = clipped.lastIndexOf(" ");
@@ -469,6 +474,9 @@ export function approvalAskLine(
 /** How much of a request's subject a card or queue row shows as its title. */
 export const APPROVAL_TITLE_LENGTH = 120;
 
+/** Longest summary that is checked against the recommendation, rationale and title for being a repeat. */
+const SUMMARY_COMPARE_LIMIT = 20_000;
+
 function comparableText(value: string | null | undefined): string | null {
   return approvalReadableText(value)?.replace(/\s+/g, " ").trim().toLocaleLowerCase() ?? null;
 }
@@ -483,8 +491,12 @@ function comparableText(value: string | null | undefined): string | null {
  */
 export function approvalSummaryText(payload?: Record<string, unknown> | null, type?: string): string | null {
   const summary = firstNonEmptyString(payload?.summary);
+  if (!summary) return null;
+  // A summary this long is not compared with the other fields: it is shown. Comparing a prefix
+  // instead would treat a summary that only starts like the recommendation as already shown.
+  if (summary.length > SUMMARY_COMPARE_LIMIT) return summary;
   const comparable = comparableText(summary);
-  if (!summary || !comparable) return null;
+  if (!comparable) return null;
   const brief = approvalDecisionBrief(payload);
   if (comparable === comparableText(brief.recommendation) || comparable === comparableText(brief.reasoning)) {
     return null;

@@ -83,6 +83,18 @@ describe("approvalExcerpt", () => {
   it("preserves order numbers and comparison symbols", () => {
     expect(approvalExcerpt("Order #90210: margin > cost")).toBe("Order #90210: margin > cost");
   });
+
+  it("leaves a trace of an embedded image and does not rewrite numbers written with two asterisks", () => {
+    expect(approvalExcerpt("see ![](https://files.example/receipt.png) attached")).toBe(
+      "see [image] (https://files.example/receipt.png) attached",
+    );
+    expect(approvalExcerpt("see ![receipt](https://files.example/receipt.png) attached")).toBe(
+      "see [image: receipt] (https://files.example/receipt.png) attached",
+    );
+    expect(approvalExcerpt("Compute grows from 2**10 to 2**12 units")).toBe("Compute grows from 2**10 to 2**12 units");
+    expect(approvalExcerpt("Glob src/**/a.ts and test/**/b.ts")).toBe("Glob src/**/a.ts and test/**/b.ts");
+    expect(approvalExcerpt("Rate: **$5**/unit")).toBe("Rate: $5/unit");
+  });
 });
 
 describe("ApprovalCard", () => {
@@ -179,9 +191,21 @@ describe("approvalOriginalRequestSender", () => {
     expect(approvalOriginalRequestSender(comment("local-board"))).toBe("Board");
     expect(approvalOriginalRequestSender(comment(agentId))).toBeNull();
     expect(approvalOriginalRequestSender(comment(agentId), () => undefined)).toBeNull();
-    // An auth user id is an id whatever it looks like.
-    expect(approvalOriginalRequestSender(comment("u_8Hq2LmZx0PaYt4Wc"), resolve)).toBeNull();
     expect(approvalOriginalRequestSender(comment(), resolve)).toBeNull();
+  });
+
+  it("shows Board for a comment a board user wrote, and never the user's id", () => {
+    const comment = (sender?: string) => ({ kind: "paperclip_comment" as const, sender });
+    // A user id is free text; an agent id is a UUID. Whatever a user id looks like, it is not printed.
+    for (const userId of ["u_8Hq2LmZx0PaYt4Wc", "local-implicit-board", "kP3x9QmB2vLz7RtYw1Na5Hc8Dg4Js6Uf", "sam@example.test"]) {
+      expect(approvalOriginalRequestSender(comment(userId), resolve)).toBe("Board");
+      expect(approvalOriginalRequestSender(comment(userId), () => undefined)).toBe("Board");
+      expect(approvalOriginalRequestSender(comment(userId))).toBe("Board");
+    }
+    // An agent id the list does not hold may be a removed agent: it is not called the Board.
+    const removedAgent = "55555555-5555-4555-8555-555555555555";
+    expect(approvalOriginalRequestSender(comment(removedAgent), resolve)).toBeNull();
+    expect(approvalOriginalRequestSender(comment(removedAgent.toUpperCase()), resolve)).toBeNull();
   });
 
   it("keeps the sender of an external source as written unless it is an id", () => {
@@ -193,6 +217,18 @@ describe("approvalOriginalRequestSender", () => {
     expect(approvalOriginalRequestSender(external(agentId), resolve)).toBe("Operations Lead");
     expect(approvalOriginalRequestSender(external("55555555-5555-4555-8555-555555555555"), resolve)).toBeNull();
     expect(approvalOriginalRequestSender(external("local-implicit"), resolve)).toBeNull();
+    expect(approvalOriginalRequestSender(external("local-board"), resolve)).toBe("Board");
+  });
+
+  it("keeps an external sender that only starts with local-, and never calls an external sender Board by guess", () => {
+    const external = (sender: string) => ({ kind: "external" as const, sender });
+    expect(approvalOriginalRequestSender(external("local-pickup@shop.example"), resolve)).toBe("local-pickup@shop.example");
+    expect(approvalOriginalRequestSender(external("Local-Pickup Desk <local-pickup@shop.example>"), resolve)).toBe(
+      "Local-Pickup Desk <local-pickup@shop.example>",
+    );
+    expect(approvalOriginalRequestSender(external("local-pickup desk"), resolve)).toBe("local-pickup desk");
+    // A bare local user id is still an id: left out, not printed and not named.
+    expect(approvalOriginalRequestSender(external("local-implicit-board"), resolve)).toBeNull();
   });
 });
 

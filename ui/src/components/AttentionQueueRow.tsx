@@ -14,7 +14,6 @@ import {
 import type { Agent, AttentionDetailImage, AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { accessApi } from "../api/access";
-import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -28,6 +27,7 @@ import {
   attentionTaskRef,
   decideByLabel,
   isInlineResolvable,
+  isReviewFirstApproval,
   sourceMeta,
 } from "../lib/attention";
 import { cn, relativeTime } from "../lib/utils";
@@ -36,7 +36,6 @@ import { InteractionAudienceLine } from "./InteractionAudienceLine";
 import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsibleContent } from "./ui/collapsible";
-import { Textarea } from "./ui/textarea";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -60,26 +59,6 @@ const DAY_MS = 24 * HOUR_MS;
 // row's own container is wide enough (`@xl` ≈ 576px). Container-query driven so
 // the row also reflows correctly inside narrow side panels, not just on phones.
 const ACTION_BTN = "h-9 gap-1.5 px-3 text-sm @xl:h-6 @xl:gap-1 @xl:px-2 @xl:text-xs";
-
-/**
- * Approvals this row never decides in place. The row shows a title and a short
- * excerpt: not the outgoing email of a Board approval, not what a hire may
- * spend, not a strategy's plan. Approving or rejecting from here would be a
- * decision on text the board has not been shown, so the row links to the
- * approval's own page, where the whole request sits above the buttons.
- */
-const REVIEW_FIRST_APPROVAL_TYPES: ReadonlySet<string> = new Set([
-  "request_board_approval",
-  "hire_agent",
-  "approve_ceo_strategy",
-]);
-
-/** An approval the feed does not give a type for is not decided blind either. */
-function isReviewFirstApproval(item: AttentionItem): boolean {
-  if (item.sourceKind !== "approval") return false;
-  const type = item.subject.metadata?.type;
-  return typeof type !== "string" || REVIEW_FIRST_APPROVAL_TYPES.has(type);
-}
 
 /** Tomorrow at 9am local time. */
 function tomorrowMorningIso(): string {
@@ -149,7 +128,8 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // The task this row belongs to, whichever field the feed put it in.
   const taskRef = attentionTaskRef(item);
   const isHidden = variant === "hidden";
-  // Decided on the approval's page, not here: no inline resolver, no compact verbs.
+  // Every approval, a budget stop included, is decided on its own page, not here: the row has
+  // no inline resolver and no compact verbs for it, and offers "Review and decide" instead.
   const reviewFirst = !isHidden && isReviewFirstApproval(item);
   const inline = !isHidden && !reviewFirst && isInlineResolvable(item);
   const href = item.subject.href;
@@ -459,12 +439,13 @@ function EyebrowSeparator() {
   );
 }
 
-type CompactDecisionAction = "accept" | "approve" | "reject" | "request_revision";
+type CompactDecisionAction = "accept" | "approve" | "reject";
 
+/**
+ * The verbs a collapsed row may send by itself. An approval has none: whatever verbs the feed
+ * lists for it, the row never approves, rejects or sends one back (see isReviewFirstApproval).
+ */
 function compactDecisionAction(item: AttentionItem, verbId: string): CompactDecisionAction | null {
-  if (item.sourceKind === "approval" && (verbId === "approve" || verbId === "reject" || verbId === "request_revision")) {
-    return verbId;
-  }
   if (item.sourceKind === "join_request" && (verbId === "approve" || verbId === "reject")) {
     return verbId;
   }
@@ -525,11 +506,6 @@ function CompactDecisionActions({
 
   const decision = useMutation<unknown, Error, CompactDecisionAction>({
     mutationFn: (action: CompactDecisionAction) => {
-      if (item.sourceKind === "approval") {
-        if (action === "approve") return approvalsApi.approve(item.subject.id);
-        if (action === "reject") return approvalsApi.reject(item.subject.id);
-        return approvalsApi.requestRevision(item.subject.id);
-      }
       if (item.sourceKind === "join_request") {
         return action === "approve"
           ? accessApi.approveJoinRequest(companyId, item.subject.id)
@@ -545,11 +521,7 @@ function CompactDecisionActions({
     },
     onSuccess: (_result, action) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
-      if (item.sourceKind === "approval") {
-        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
-      } else {
-        queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
-      }
+      queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
       pushToast({
         title: compactDecisionSuccessLabel(item.sourceKind, action),
         tone: "success",
@@ -596,13 +568,11 @@ function CompactDecisionActions({
 }
 
 function decisionLabel(action: CompactDecisionAction): string {
-  if (action === "request_revision") return "sent for revision";
   if (action === "accept" || action === "approve") return "approved";
   return "rejected";
 }
 
 function compactDecisionSuccessLabel(sourceKind: AttentionItem["sourceKind"], action: CompactDecisionAction): string {
-  if (sourceKind === "approval") return `Approval ${decisionLabel(action)}`;
   if (sourceKind === "join_request") return `Join request ${decisionLabel(action)}`;
   return action === "accept" ? "Confirmation accepted" : "Confirmation declined";
 }
@@ -829,10 +799,6 @@ function InlineResolver({
     );
   }
 
-  if (item.sourceKind === "approval") {
-    return <ApprovalResolver item={item} companyId={companyId} toggle={toggle} />;
-  }
-
   if (item.sourceKind === "join_request") {
     return <JoinRequestResolver item={item} companyId={companyId} toggle={toggle} />;
   }
@@ -860,55 +826,6 @@ function ResolverFooter({ toggle, children }: { toggle: ReactNode; children: Rea
       {toggle ?? <span />}
       <div className="flex flex-wrap items-center gap-2">{children}</div>
     </div>
-  );
-}
-
-function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
-  const queryClient = useQueryClient();
-  const [note, setNote] = useState("");
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
-  };
-  const approve = useMutation({
-    mutationFn: () => approvalsApi.approve(item.subject.id, note.trim() || undefined),
-    onSuccess: invalidate,
-  });
-  const reject = useMutation({
-    mutationFn: () => approvalsApi.reject(item.subject.id, note.trim() || undefined),
-    onSuccess: invalidate,
-  });
-  const revise = useMutation({
-    mutationFn: () => approvalsApi.requestRevision(item.subject.id, note.trim() || undefined),
-    onSuccess: invalidate,
-  });
-  const pending = approve.isPending || reject.isPending || revise.isPending;
-
-  // Verb order matches the collapsed row exactly (revise → reject → approve),
-  // so expanding never moves the button the operator was already aiming at.
-  return (
-    <>
-      <Textarea
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        placeholder="Optional decision note…"
-        className="min-h-16 text-sm"
-      />
-      <ResolverFooter toggle={toggle}>
-        <Button size="sm" variant="outline" onClick={() => revise.mutate()} disabled={pending}>
-          {revise.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          Request revision
-        </Button>
-        <Button size="sm" variant="destructive" onClick={() => reject.mutate()} disabled={pending}>
-          {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          Reject
-        </Button>
-        <Button size="sm" onClick={() => approve.mutate()} disabled={pending}>
-          {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          Approve
-        </Button>
-      </ResolverFooter>
-    </>
   );
 }
 

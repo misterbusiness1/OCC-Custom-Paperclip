@@ -158,6 +158,14 @@ function approvalDisplaySubject(approval: Approval): string {
   );
 }
 
+/**
+ * The line beside the sort control, for readers with keyboard shortcuts on. It says what the keys
+ * do: Shift+A, Shift+C and Shift+X are handled by the open card, so they act only while focus is
+ * inside it; J, K, a click or Tab puts it there.
+ */
+export const APPROVAL_SHORTCUT_HINT =
+  "J / K move to a request and open it · With focus in the open request: Shift+A approve, Shift+C request changes, Shift+X reject · Shift+Z undo approve";
+
 /** "revision_requested" as it is spoken: "Revision requested". */
 function statusWords(status: string): string {
   const words = status.replace(/_/g, " ");
@@ -219,6 +227,10 @@ function DecidedApprovalRow({
         "flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border/70 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         ROW_SCROLL_MARGIN,
       )}
+      // The page moves focus to this row after a decision. The name says what the row is and which
+      // request it holds; the countdown is not part of it, so the name does not change every second.
+      role="group"
+      aria-label={`${held ? "Approval held" : statusWords(approval.status)}: ${subject}`}
       data-approval-card={approval.id}
       data-approval-decided-row={held ? undefined : ""}
       data-approval-held-row={held ? held.phase : undefined}
@@ -279,7 +291,7 @@ function DecidedApprovalRow({
         </Link>
       )}
       {note && (
-        <p className="basis-full break-words text-xs leading-5 text-muted-foreground">
+        <p className="basis-full whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground" data-approval-row-note>
           <span className="font-medium text-foreground">{elsewhere ? "Decision note." : "Your note."}</span> {note}
         </p>
       )}
@@ -300,7 +312,8 @@ function SentBackApprovalRow({ approval }: { approval: Approval }) {
         ROW_SCROLL_MARGIN,
       )}
       data-approval-sent-back-row={approval.id}
-      // A link to this request brings the reader here.
+      // A link to this request brings the reader here, so the row is named for what it holds.
+      aria-label={`${statusWords(approval.status)}: ${approvalDisplaySubject(approval)}`}
       tabIndex={-1}
     >
       <StatusBadge status={approval.status} />
@@ -443,8 +456,12 @@ export function Approvals() {
   useEffect(() => {
     if (!keyboardShortcutsEnabled) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      const isUndo = event.key === "Z" && event.shiftKey;
-      if (event.key !== "j" && event.key !== "k" && !isUndo) return;
+      // Compared without case, together with Shift: with Caps Lock on the browser reports "J", "K"
+      // and, with Shift, "z". Shift+J and Shift+K stay unused, and a plain "z" undoes nothing.
+      const key = event.key.toLowerCase();
+      const isUndo = key === "z" && event.shiftKey;
+      const isMove = (key === "j" || key === "k") && !event.shiftKey;
+      if (!isMove && !isUndo) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) return;
       if (isKeyboardShortcutTextInputTarget(event.target) || hasBlockingShortcutDialog(document)) return;
       // The shortcuts cheatsheet and other dialogs of the app are not marked modal: the queue must
@@ -468,7 +485,7 @@ export function Approvals() {
       }
       const next = current < 0
         ? 0
-        : Math.max(0, Math.min(cards.length - 1, current + (event.key === "j" ? 1 : -1)));
+        : Math.max(0, Math.min(cards.length - 1, current + (key === "j" ? 1 : -1)));
       event.preventDefault();
       const row = cards[next];
       const id = row.dataset.approvalCard ?? null;
@@ -1039,7 +1056,7 @@ export function Approvals() {
           <div className="flex flex-wrap items-center gap-3">
             {keyboardShortcutsEnabled && statusFilter === "pending" && (
               <span className="hidden text-xs text-muted-foreground md:inline">
-                J / K to move · Shift+A approve · Shift+C request changes · Shift+X reject · Shift+Z undo approve
+                {APPROVAL_SHORTCUT_HINT}
               </span>
             )}
             {decidedCount > 0 && (
@@ -1127,6 +1144,8 @@ export function Approvals() {
                   isPending={pendingAction !== null}
                   pendingAction={pendingAction}
                   error={decisions.errors[approval.id] ?? null}
+                  // The live region above announces every outcome once; the card's error line stays silent.
+                  announceError={false}
                   onDismissError={() => decisions.clearError(approval.id)}
                   defaultNote={draft?.text}
                   defaultNoteMode={draft?.mode}

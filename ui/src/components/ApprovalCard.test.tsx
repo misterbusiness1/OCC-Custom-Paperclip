@@ -458,6 +458,14 @@ describe("ApprovalCard", () => {
       expect(container.textContent).not.toContain("Changes you asked for");
     }
 
+    // A note typed on several lines is shown with its lines, and a long unbroken run wraps.
+    const lines = "1. Month to month only.\n2. Review in March.";
+    render({ approval: createApproval({ status: "approved", ...decided, decisionNote: lines }) });
+    const note = container.querySelector<HTMLElement>("[data-approval-decision-note]")!;
+    expect(note.textContent).toBe(`Decision note. ${lines}`);
+    expect(note.classList.contains("whitespace-pre-wrap")).toBe(true);
+    expect(note.classList.contains("break-words")).toBe(true);
+
     // Without a recorded time the card falls back to when the request was created.
     render({ approval: createApproval({ status: "approved" }) });
     expect(container.textContent).toContain("Created 1d ago");
@@ -1132,10 +1140,11 @@ describe("ApprovalCard", () => {
 
     it("ties each panel's prompt to its field", () => {
       render({ approval: createApproval(), onApprove: vi.fn(), onReject: vi.fn(), onRequestRevision: vi.fn() });
-      const group = () => container.querySelector("[role='group']")!;
+      // The card is itself a group named by its title; the panels are the groups inside it.
+      const group = () => container.querySelector("[data-approval-card] [role='group']")!;
       const groupLabel = () => document.getElementById(group().getAttribute("aria-labelledby")!)!;
 
-      expect(container.querySelector("[role='group']")).toBeNull();
+      expect(container.querySelector("[data-approval-card] [role='group']")).toBeNull();
       click("Reject");
       expect(groupLabel().textContent).toBe("Reject this request?");
       expect(group().contains(noteField())).toBe(true);
@@ -1643,6 +1652,162 @@ describe("ApprovalCard as a collapsible queue row", () => {
     expect(button("Approve")).toBeDefined();
     expect(container.textContent).toContain("Provider X meets every condition in the request.");
     expect(card().className).not.toContain("ring-1");
+  });
+
+  it("is a group named by its title, open, closed and when it is not collapsible", () => {
+    const props = { approval: createApproval(), onApprove: vi.fn(), onReject: vi.fn() };
+    const name = () => document.getElementById(card().getAttribute("aria-labelledby")!)!.textContent;
+
+    render({ ...props, open: false });
+    expect(card().getAttribute("role")).toBe("group");
+    expect(name()).toBe("Approve staging hosting spend");
+    // The header button is read with the row's kind, status and waiting time.
+    const described = document.getElementById(header().getAttribute("aria-describedby")!)!;
+    expect(described.textContent).toContain("Board Approval");
+    expect(described.textContent).toContain("pending");
+    expect(described.textContent).toContain("Waiting 1 day");
+
+    render({ ...props, open: true });
+    expect(card().getAttribute("role")).toBe("group");
+    expect(name()).toBe("Approve staging hosting spend");
+
+    act(() => root.render(<ApprovalCard requesterAgent={null} {...props} />));
+    expect(card().getAttribute("role")).toBe("group");
+    expect(name()).toBe("Approve staging hosting spend");
+    expect(document.getElementById(card().getAttribute("aria-labelledby")!)!.tagName).toBe("H3");
+  });
+
+  it("decides with Caps Lock on, where Shift+A arrives as a lower-case letter, and never on a plain letter", () => {
+    const onApprove = vi.fn();
+    render({ approval: createApproval(), open: true, onApprove, onReject: vi.fn(), onRequestRevision: vi.fn(), enableShortcuts: true });
+
+    // No Shift: nothing, whichever case the letter arrives in.
+    press("a", { shiftKey: false });
+    press("A", { shiftKey: false });
+    press("x", { shiftKey: false });
+    expect(onApprove).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Reject this request?");
+
+    // Shift with Caps Lock on: "c", "x" and "a".
+    press("c");
+    expect(container.textContent).toContain("What should change?");
+    act(() => button("Cancel")!.click());
+    press("x");
+    expect(container.textContent).toContain("Reject this request?");
+    act(() => button("Cancel")!.click());
+
+    const approveKey = new KeyboardEvent("keydown", { key: "a", shiftKey: true, bubbles: true, cancelable: true });
+    act(() => {
+      card().dispatchEvent(approveKey);
+    });
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    // Claimed, so the app-wide "c" (new task) and the like do not also fire.
+    expect(approveKey.defaultPrevented).toBe(true);
+
+    // Another modifier still decides nothing.
+    press("a", { ctrlKey: true });
+    press("a", { metaKey: true });
+    expect(onApprove).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the held-back message region on the page before it has text", () => {
+    render({
+      approval: createApproval({ payload: emailPayload(emailDraftBody(2000)) }),
+      open: true,
+      onApprove: vi.fn(),
+      onReject: vi.fn(),
+    });
+    const region = container.querySelector<HTMLElement>("[data-approval-held-back]")!;
+    expect(region.getAttribute("role")).toBe("status");
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(region.textContent).toBe("");
+    // Empty, it is hidden from sight only: `display: none` would take the region out of the
+    // accessibility tree, and a message arriving in it would not be spoken.
+    expect(region.className).toContain("empty:sr-only");
+    expect(region.className).not.toContain("hidden");
+
+    // The message arrives in the same node.
+    act(() => button(READ_TO_APPROVE)!.click());
+    expect(container.querySelector("[data-approval-held-back]")).toBe(region);
+    expect(region.textContent).toBe("Read the full reply, then approve.");
+  });
+
+  it("reports its error as an alert unless the page says it announces outcomes itself", () => {
+    const error = "Error while approving: Session expired";
+    const props = { approval: createApproval(), onApprove: vi.fn(), onReject: vi.fn(), error };
+    const line = () =>
+      container.querySelector<HTMLElement>("[data-approval-decision-error], [data-approval-row-error]")!;
+
+    // The detail page, the inbox and a task page have no announcer of their own: the line is an alert.
+    for (const open of [true, false]) {
+      render({ ...props, open });
+      expect(line().textContent).toBe(error);
+      expect(line().getAttribute("role")).toBe("alert");
+    }
+    render({ ...props, approval: createApproval({ status: "approved" }), open: true });
+    expect(line().getAttribute("role")).toBe("alert");
+
+    // The queue announces each outcome in its live region: the same lines are plain text there.
+    for (const open of [true, false]) {
+      render({ ...props, open, announceError: false });
+      expect(line().textContent).toBe(error);
+      expect(line().hasAttribute("role")).toBe(false);
+      expect(container.querySelector("[role='alert']")).toBeNull();
+    }
+    render({ ...props, approval: createApproval({ status: "approved" }), open: true, announceError: false });
+    expect(line().textContent).toBe(error);
+    expect(container.querySelector("[role='alert']")).toBeNull();
+
+    // Open, Approve stays described by the error either way.
+    render({ ...props, open: true, announceError: false });
+    expect(button("Approve")!.getAttribute("aria-describedby")).toBe(line().id);
+    expect(header().getAttribute("aria-describedby")!.split(" ")).toHaveLength(1);
+    // Closed, the header button is described by it, so the reader who tabs to the row hears it.
+    render({ ...props, open: false, announceError: false });
+    expect(header().getAttribute("aria-describedby")!.split(" ")).toContain(line().id);
+  });
+
+  it("keeps the task links, the times and the error out from under the header's click area", () => {
+    render({
+      approval: createApproval({ createdAt: new Date("2026-09-27T12:00:00.000Z") }),
+      requesterAgent: { id: "agent-requester", name: "Pricing Analyst" } as Agent,
+      linkedIssues: [{ id: ISSUE_ID, identifier: "DEMO-398", title: "Staging environment" }],
+      open: false,
+      onApprove: vi.fn(),
+      onReject: vi.fn(),
+      error: "Error while approving: Session expired",
+    });
+    const classes = (element: Element) => element.className.split(/\s+/);
+
+    // The click area is the header button's, stretched over the header.
+    expect(classes(header())).toEqual(expect.arrayContaining(["after:absolute", "after:inset-0"]));
+    // A task link is a target of its own: above that area and at least 24px tall.
+    const chip = [...container.querySelectorAll("a")].find((link) => link.textContent === "DEMO-398")!;
+    expect(classes(chip)).toEqual(expect.arrayContaining(["relative", "z-10", "inline-flex", "min-h-6", "items-center"]));
+    // The line with the requester and the waiting time is above it too: its exact time shows on
+    // hover and its text can be selected.
+    const waiting = [...container.querySelectorAll("span")].find((span) => span.textContent === "Waiting 9 days")!;
+    expect(waiting.getAttribute("title")).toBe(new Date("2026-09-27T12:00:00.000Z").toLocaleString());
+    expect(classes(waiting.parentElement!)).toEqual(expect.arrayContaining(["relative", "z-10"]));
+    // So is the error a closed row shows.
+    const error = container.querySelector("[data-approval-row-error]")!;
+    expect(classes(error)).toEqual(expect.arrayContaining(["relative", "z-10"]));
+    // The title and the one line of what is asked stay the place to click.
+    expect(classes(header().querySelector("span")!)).not.toContain("z-10");
+    expect(classes(container.querySelector("[data-approval-ask]")!)).not.toContain("z-10");
+
+    // A card that is not collapsible has no stretched area, and nothing is raised.
+    act(() =>
+      root.render(
+        <ApprovalCard
+          requesterAgent={null}
+          approval={createApproval()}
+          linkedIssues={[{ id: ISSUE_ID, identifier: "DEMO-398", title: "Staging environment" }]}
+        />,
+      ));
+    const plainChip = [...container.querySelectorAll("a")].find((link) => link.textContent === "DEMO-398")!;
+    expect(classes(plainChip)).not.toContain("z-10");
+    expect(classes(plainChip)).toContain("min-h-6");
   });
 
   it("marks the card that holds focus when shortcuts act on it and it is not collapsible", () => {
@@ -2252,16 +2417,25 @@ describe("ApprovalCard for requests without a source, hires and strategies", () 
       expect(provenance()).toBe(`Board · ${time} · Saved from the original comment · View comment`);
       expect(container.textContent).not.toContain("local-board");
 
-      // An agent the list does not hold, a list that is not loaded yet, no resolver at all, and a user id.
+      // An agent the list does not hold, a list that is not loaded yet, and no resolver at all.
       for (const [sender, resolver] of [
         [UNKNOWN_ID, resolveAgentName],
         [AGENT_ID, () => undefined],
         [AGENT_ID, undefined],
-        ["u_8Hq2LmZx0PaYt4Wc", resolveAgentName],
-        ["local-implicit", resolveAgentName],
       ] as const) {
         render({ approval: createApproval({ payload: comment(sender) }), resolveAgentName: resolver });
         expect(provenance()).toBe(`${time} · Saved from the original comment · View comment`);
+        expect(container.textContent).not.toContain(sender);
+      }
+
+      // A comment written by a board user (its id is not an agent's) is the Board's, also while agents load.
+      for (const [sender, resolver] of [
+        ["u_8Hq2LmZx0PaYt4Wc", resolveAgentName],
+        ["local-implicit", resolveAgentName],
+        ["u_8Hq2LmZx0PaYt4Wc", undefined],
+      ] as const) {
+        render({ approval: createApproval({ payload: comment(sender) }), resolveAgentName: resolver });
+        expect(provenance()).toBe(`Board · ${time} · Saved from the original comment · View comment`);
         expect(container.textContent).not.toContain(sender);
       }
 

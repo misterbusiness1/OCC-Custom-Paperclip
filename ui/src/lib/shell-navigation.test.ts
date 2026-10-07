@@ -4,12 +4,28 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   classifyShellRoute,
   getCompanyPathSegments,
+  isApprovalsRoute,
   readContextualSidebarOrigin,
   rememberContextualSidebarOrigin,
 } from "./shell-navigation";
 
 describe("shell navigation", () => {
   beforeEach(() => window.sessionStorage.clear());
+
+  it("recognises the Approvals pages, with a company prefix and without", () => {
+    for (const pathname of ["/PAP/approvals", "/PAP/approvals/pending", "/PAP/approvals/all", "/PAP/approvals/9b2d7c1e", "/pap/Approvals/all"]) {
+      expect(isApprovalsRoute(pathname, "PAP")).toBe(true);
+    }
+    for (const pathname of ["/approvals/pending", "/approvals/9b2d7c1e"]) {
+      expect(isApprovalsRoute(pathname, undefined)).toBe(true);
+    }
+    for (const pathname of ["/PAP/inbox", "/PAP/decisions", "/PAP/issues/approvals", "/PAP/approvals-archive", "/PAP", "/"]) {
+      expect(isApprovalsRoute(pathname, "PAP")).toBe(false);
+    }
+    // A company whose prefix happens to be the word is not the Approvals page.
+    expect(isApprovalsRoute("/APPROVALS/dashboard", "APPROVALS")).toBe(false);
+    expect(isApprovalsRoute("/APPROVALS/approvals/all", "APPROVALS")).toBe(true);
+  });
 
   it("classifies task detail independently from list routes", () => {
     expect(classifyShellRoute("/PAP/issues", "PAP").isTaskDetail).toBe(false);

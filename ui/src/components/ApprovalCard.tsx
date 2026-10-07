@@ -1,4 +1,4 @@
-import { useId, useRef, type KeyboardEvent } from "react";
+import { useId, useMemo, useRef, type KeyboardEvent } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Badge } from "@/components/ui/badge";
@@ -97,6 +97,7 @@ export function ApprovalCard({
   open = true,
   onOpenChange,
   focusable = false,
+  announceError = true,
 }: {
   approval: Approval;
   requesterAgent: Agent | null;
@@ -142,13 +143,26 @@ export function ApprovalCard({
   onOpenChange?: (open: boolean) => void;
   /** Lets the page move focus to the card itself, also when shortcuts are off. */
   focusable?: boolean;
+  /**
+   * Whether the card's error line is an alert. A page that announces every outcome in a live region
+   * of its own passes false: the error is then spoken once, by the page, and not again each time the
+   * card is closed or opened and the line is drawn anew.
+   */
+  announceError?: boolean;
 }) {
   const actionsRef = useRef<ApprovalDecisionActionsHandle>(null);
   const bodyId = useId();
+  const titleId = useId();
+  const metaId = useId();
+  const rowErrorId = useId();
   const isOpen = !collapsible || open;
   const payload = approval.payload as Record<string, unknown> | null;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
-  const subject = approvalExcerpt(approvalSubject(payload, approval.type), APPROVAL_TITLE_LENGTH);
+  // Converted once per payload: a queue draws its rows again on every hover and key press.
+  const subject = useMemo(
+    () => approvalExcerpt(approvalSubject(payload, approval.type), APPROVAL_TITLE_LENGTH),
+    [payload, approval.type],
+  );
   // Sent back for changes: the requester has it now. The card offers no one-click decision on the
   // version the board asked to change; the detail page keeps Approve and Reject.
   const isSentBack = approval.status === "revision_requested";
@@ -169,7 +183,10 @@ export function ApprovalCard({
   const approveGuard = composeApproveGuards(revision.approveGuard, draftGate.approveGuard);
   const title = subject ?? kindLabel;
   // One line of what is asked, for the closed row only. A request titled by its own recommendation does not repeat it.
-  const ask = isOpen ? null : approvalAskLine(approval.type, payload);
+  const ask = useMemo(
+    () => (isOpen ? null : approvalAskLine(approval.type, payload)),
+    [isOpen, approval.type, payload],
+  );
   const askLine = ask && ask.text !== title ? ask : null;
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -178,9 +195,12 @@ export function ApprovalCard({
     if (isKeyboardShortcutTextInputTarget(event.target)) return;
     const actions = actionsRef.current;
     if (!actions) return;
-    if (event.key === "A") actions.approve();
-    else if (event.key === "C") actions.openRevision();
-    else if (event.key === "X") actions.openReject();
+    // Compared without case: with Caps Lock on, Shift+A arrives as "a". Shift is required above,
+    // so a plain "a" (or a plain "A" typed with Caps Lock) decides nothing.
+    const key = event.key.toLowerCase();
+    if (key === "a") actions.approve();
+    else if (key === "c") actions.openRevision();
+    else if (key === "x") actions.openReject();
     else return;
     event.preventDefault();
   };
@@ -217,7 +237,8 @@ export function ApprovalCard({
           to={`/issues/${issue.identifier ?? issue.id}`}
           title={issue.title ?? undefined}
           className={cn(
-            "rounded border border-border/70 px-1.5 py-0.5 font-mono text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+            // At least 24px tall: a target of its own, not a sliver on the header's click area.
+            "inline-flex min-h-6 items-center rounded border border-border/70 px-1.5 py-0.5 font-mono text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground",
             // Stays a link of its own, above the header button's click area.
             collapsible && "relative z-10",
           )}
@@ -228,7 +249,14 @@ export function ApprovalCard({
     </>
   );
   const meta = (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+    <div
+      className={cn(
+        "flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground",
+        // Above the header button's click area: the exact times show on hover and the text can be
+        // selected. A click here does not open or close the card; the title line does.
+        collapsible && "relative z-10",
+      )}
+    >
       {requesterAgent && (
         <span className="inline-flex min-w-0 items-center gap-1.5">
           Requested by <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
@@ -277,7 +305,10 @@ export function ApprovalCard({
       />
 
       {approval.decisionNote && !isSentBack && (
-        <div className="mt-4 rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground">
+        <div
+          className="mt-4 whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground"
+          data-approval-decision-note
+        >
           <span className="font-medium text-foreground">Decision note.</span> {approval.decisionNote}
         </div>
       )}
@@ -301,6 +332,7 @@ export function ApprovalCard({
               // A revision to confirm comes first: the button says "Read full reply" only when the press will open it.
               approveLabel={revision.revised ? undefined : draftGate.approveLabel}
               error={error}
+              announceError={announceError}
               onDismissError={onDismissError}
               defaultNote={defaultNote}
               defaultNoteMode={defaultNoteMode}
@@ -315,7 +347,11 @@ export function ApprovalCard({
               {(error || detailsControl) && (
                 <div className={cn("flex flex-wrap items-center gap-3", error ? "justify-between" : "justify-end")}>
                   {error ? (
-                    <p role="alert" className="min-w-0 break-words text-sm font-medium leading-5 text-destructive">
+                    <p
+                      role={announceError ? "alert" : undefined}
+                      className="min-w-0 break-words text-sm font-medium leading-5 text-destructive"
+                      data-approval-decision-error=""
+                    >
                       {error}
                     </p>
                   ) : null}
@@ -335,9 +371,13 @@ export function ApprovalCard({
       <Card
         className={cn(
           "block min-w-0 scroll-mt-16 border-border/70 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:scroll-mt-2",
-          // The open card is the one the shortcuts act on, so it is marked whether or not it holds focus.
+          // The open card is marked whether or not it holds focus. Shift+A, Shift+C and Shift+X act
+          // on it only while focus is inside it: J, K, a click or Tab puts it there.
           isOpen && "border-ring ring-1 ring-ring",
         )}
+        // The page moves focus to the card itself; a group named by the title says where that is.
+        role="group"
+        aria-labelledby={titleId}
         data-approval-card={approval.id}
         tabIndex={enableShortcuts || focusable ? -1 : undefined}
         onKeyDown={enableShortcuts && showResolutionButtons && isOpen ? handleKeyDown : undefined}
@@ -349,7 +389,7 @@ export function ApprovalCard({
             isOpen ? "pb-0" : "pb-3 hover:bg-accent/40",
           )}
         >
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <div id={metaId} className="flex flex-wrap items-center gap-x-2 gap-y-1">
             {badges}
             {meta}
           </div>
@@ -363,6 +403,9 @@ export function ApprovalCard({
               type="button"
               aria-expanded={isOpen}
               aria-controls={bodyId}
+              // Kind, status, requester, how long it has waited and what a closed row flags are read
+              // with the title, and so is the error a closed row shows.
+              aria-describedby={!isOpen && error ? `${metaId} ${rowErrorId}` : metaId}
               onClick={() => onOpenChange?.(!isOpen)}
               className="flex w-full min-w-0 cursor-pointer items-start gap-1.5 rounded text-left after:absolute after:inset-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
@@ -370,7 +413,9 @@ export function ApprovalCard({
                 aria-hidden
                 className={cn("h-4 w-4 shrink-0 text-muted-foreground", isOpen ? "mt-1" : "mt-0.5")}
               />
-              <span className={cn("min-w-0", isOpen ? "break-words" : "truncate")}>{title}</span>
+              <span id={titleId} className={cn("min-w-0", isOpen ? "break-words" : "truncate")}>
+                {title}
+              </span>
             </button>
           </h3>
           {askLine && (
@@ -379,7 +424,13 @@ export function ApprovalCard({
             </p>
           )}
           {!isOpen && error && (
-            <p role="alert" className="break-words pl-5.5 text-xs font-medium leading-5 text-destructive">
+            <p
+              id={rowErrorId}
+              role={announceError ? "alert" : undefined}
+              // Above the header's click area, so the message can be selected and copied.
+              className="relative z-10 break-words pl-5.5 text-xs font-medium leading-5 text-destructive"
+              data-approval-row-error=""
+            >
               {error}
             </p>
           )}
@@ -398,13 +449,17 @@ export function ApprovalCard({
         // With shortcuts on, the card that holds focus is the one they act on: mark it for mouse focus too.
         enableShortcuts && "focus-within:border-ring focus-within:ring-1 focus-within:ring-ring",
       )}
+      role="group"
+      aria-labelledby={titleId}
       data-approval-card={approval.id}
       tabIndex={enableShortcuts || focusable ? -1 : undefined}
       onKeyDown={enableShortcuts && showResolutionButtons ? handleKeyDown : undefined}
     >
       <div className="min-w-0 space-y-2">
         <div className="flex flex-wrap items-center gap-2">{badges}</div>
-        <h3 className="text-base font-semibold leading-6 text-foreground">{title}</h3>
+        <h3 id={titleId} className="text-base font-semibold leading-6 text-foreground">
+          {title}
+        </h3>
         {meta}
       </div>
       {body}

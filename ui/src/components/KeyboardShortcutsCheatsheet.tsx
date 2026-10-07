@@ -53,11 +53,17 @@ const sections: ShortcutSection[] = [
   {
     title: "Approvals",
     shortcuts: [
-      { keys: ["j"], label: "Next request" },
-      { keys: ["k"], label: "Previous request" },
-      { keys: ["Shift", "A"], label: "Approve the open request", combo: true },
-      { keys: ["Shift", "C"], label: "Request changes to the open request", combo: true },
-      { keys: ["Shift", "X"], label: "Reject the open request (asks to confirm)", combo: true },
+      // J and K open a request and put focus in it. The three decision keys are handled by the open
+      // request itself, so they act only while focus is inside it; the labels say so.
+      { keys: ["j"], label: "Next request (opens it and moves focus into it)" },
+      { keys: ["k"], label: "Previous request (opens it and moves focus into it)" },
+      { keys: ["Shift", "A"], label: "Approve the open request, with focus inside it", combo: true },
+      { keys: ["Shift", "C"], label: "Request changes to the open request, with focus inside it", combo: true },
+      {
+        keys: ["Shift", "X"],
+        label: "Reject the open request, with focus inside it (asks to confirm)",
+        combo: true,
+      },
       {
         keys: ["Shift", "Z"],
         label: `Undo the last approval (within ${APPROVE_HOLD_MS / 1000} seconds)`,

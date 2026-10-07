@@ -166,8 +166,11 @@ export function Sidebar() {
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
           />
+          {/* Links to /approvals, not /approvals/pending: the route redirects to the queue, and the
+              shorter target makes this the current item (highlight and aria-current) on To decide,
+              on All decisions and on an approval's own page. */}
           <SidebarNavItem
-            to="/approvals/pending"
+            to="/approvals"
             label="Approvals"
             icon={ShieldCheck}
             badge={pendingApprovalCount}

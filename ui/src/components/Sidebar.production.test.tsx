@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { type ReactNode } from "react";
+import { type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -22,21 +22,21 @@ const mockSidebar = vi.hoisted(() => ({
   setCollapsed: vi.fn(),
 }));
 
-vi.mock("@/lib/router", () => ({
-  NavLink: ({ to, children, className, ...props }: {
-    to: string;
-    children: ReactNode;
-    className?: string | ((state: { isActive: boolean }) => string);
-  }) => (
-    <a
-      href={to}
-      className={typeof className === "function" ? className({ isActive: false }) : className}
-      {...props}
-    >
-      {children}
-    </a>
-  ),
-}));
+/** The page the sidebar is drawn on, and the company prefix `@/lib/router` puts before every target. */
+const mockLocation = vi.hoisted(() => ({ pathname: "/", companyPrefix: "" }));
+
+// The router's own NavLink, so that which item is current (class and aria-current) is decided by
+// the router's matching and not by the test. The company prefix is added as `@/lib/router` adds it.
+vi.mock("@/lib/router", async () => {
+  const router = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
+  return {
+    NavLink: ({ to, ...props }: { to: string } & Omit<ComponentProps<typeof router.NavLink>, "to">) => (
+      <router.MemoryRouter initialEntries={[mockLocation.pathname]}>
+        <router.NavLink to={`${mockLocation.companyPrefix}${to}`} {...props} />
+      </router.MemoryRouter>
+    ),
+  };
+});
 
 vi.mock("../context/DialogContext", () => ({
   useDialogActions: () => ({ openNewIssue: vi.fn() }),
@@ -111,6 +111,61 @@ describe("Sidebar (classic layout)", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    mockLocation.pathname = "/";
+    mockLocation.companyPrefix = "";
+  });
+
+  it.each([
+    ["/approvals/pending", ""],
+    ["/approvals/all", ""],
+    ["/approvals/9b2d7c1e-approval", ""],
+    ["/PAP/approvals/all", "/PAP"],
+    ["/PAP/approvals/9b2d7c1e-approval", "/PAP"],
+  ])("marks Approvals as the current item on %s", async (pathname, companyPrefix) => {
+    mockApprovalsApi.list.mockResolvedValue([]);
+    mockLocation.pathname = pathname;
+    mockLocation.companyPrefix = companyPrefix;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    flushSync(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <Sidebar />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const current = [...container.querySelectorAll('nav a[aria-current="page"]')];
+    expect(current.map((anchor) => anchor.textContent)).toEqual(["Approvals"]);
+    expect(current[0].getAttribute("href")).toBe(`${companyPrefix}/approvals`);
+    expect(current[0].className).toContain("bg-accent text-foreground");
+    const inbox = container.querySelector(`nav a[href="${companyPrefix}/inbox"]`)!;
+    expect(inbox.getAttribute("aria-current")).toBeNull();
+
+    // On another page it is not the current item.
+    flushSync(() => {
+      root.unmount();
+    });
+    mockLocation.pathname = `${companyPrefix}/inbox`;
+    const second = createRoot(container);
+    flushSync(() => {
+      second.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <Sidebar />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    expect(container.querySelector(`nav a[href="${companyPrefix}/approvals"]`)!.getAttribute("aria-current")).toBeNull();
+    flushSync(() => {
+      second.unmount();
+    });
+    queryClient.clear();
   });
 
   afterEach(() => {
@@ -139,7 +194,7 @@ describe("Sidebar (classic layout)", () => {
     await flushReact();
 
     const primaryNavLinks = [...container.querySelectorAll("nav > div:first-child a")];
-    const approvalsLink = primaryNavLinks.find((anchor) => anchor.getAttribute("href") === "/approvals/pending");
+    const approvalsLink = primaryNavLinks.find((anchor) => anchor.getAttribute("href") === "/approvals");
     const inboxLink = primaryNavLinks.find((anchor) => anchor.getAttribute("href") === "/inbox");
     expect(approvalsLink?.textContent).toBe("Approvals1");
     expect(approvalsLink?.querySelector("svg")?.classList.contains("lucide-shield-check")).toBe(true);

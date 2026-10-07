@@ -5,6 +5,8 @@ import {
   ATTENTION_GROUP_BY_OPTIONS,
   attentionBadgeCount,
   attentionDateBucket,
+  attentionEnterAction,
+  attentionOpenHref,
   attentionDetailLine,
   attentionIsNewToday,
   attentionKind,
@@ -15,8 +17,10 @@ import {
   countActiveAttentionFilters,
   defaultAttentionFilterState,
   filterAttentionItems,
+  firstInlineResolvable,
   groupAttentionItems,
   isInlineResolvable,
+  isReviewFirstApproval,
   loadAttentionGroupBy,
   NO_GROUP_SENTINEL,
   planAttentionRenderRows,
@@ -86,10 +90,67 @@ describe("attention group preference persistence", () => {
 });
 
 describe("isInlineResolvable", () => {
-  it("is true for approvals/interactions/join when server flags inlineResolvable", () => {
-    for (const kind of ["approval", "issue_thread_interaction", "join_request"] as AttentionSourceKind[]) {
+  it("is true for interactions/join when server flags inlineResolvable", () => {
+    for (const kind of ["issue_thread_interaction", "join_request"] as AttentionSourceKind[]) {
       expect(isInlineResolvable(buildItem({ sourceKind: kind, inlineResolvable: true }))).toBe(true);
     }
+  });
+
+  // The Decisions page asks this one question before it expands a row by itself and before
+  // Enter toggles a row instead of opening its page. The server marks every approval but a
+  // Board approval as resolvable in the row; the UI does not take its word for any of them.
+  it("is false for every approval, whatever its type and whatever the server flags", () => {
+    for (const type of ["hire_agent", "approve_ceo_strategy", "budget_override_required", "request_board_approval", "later_type"]) {
+      const item = buildItem({
+        sourceKind: "approval",
+        inlineResolvable: true,
+        subject: { kind: "approval", id: "s1", companyId: "c1", title: "t", identifier: null, status: null, href: "/PAP/approvals/s1", metadata: { type } },
+      });
+      expect(isInlineResolvable(item)).toBe(false);
+      expect(isReviewFirstApproval(item)).toBe(true);
+    }
+    expect(isReviewFirstApproval(buildItem({ sourceKind: "approval" }))).toBe(true);
+    expect(isReviewFirstApproval(buildItem({ sourceKind: "join_request" }))).toBe(false);
+  });
+
+  it("gives Enter a page to open for an approval, also when the feed sent no link", () => {
+    const withHref = buildItem({
+      sourceKind: "approval",
+      subject: { kind: "approval", id: "s1", companyId: "c1", title: "t", identifier: null, status: null, href: "/PAP/approvals/s1" },
+    });
+    expect(attentionOpenHref(withHref)).toBe("/PAP/approvals/s1");
+    expect(attentionOpenHref(buildItem({ sourceKind: "approval" }))).toBe("/approvals/s1");
+    expect(attentionOpenHref(buildItem({ sourceKind: "failed_run" }))).toBeNull();
+  });
+
+  // What the Decisions page does on Enter and on arrival, for a feed as the server sends it.
+  describe("on the Decisions page", () => {
+    const approval = (id: string, type: string) =>
+      buildItem({
+        id,
+        sourceKind: "approval",
+        // The server marks every approval except a Board approval as resolvable in the row.
+        inlineResolvable: type !== "request_board_approval",
+        subject: { kind: "approval", id: `s-${id}`, companyId: "c1", title: "t", identifier: null, status: "pending", href: `/PAP/approvals/s-${id}`, metadata: { type } },
+      });
+    const join = buildItem({ id: "join", sourceKind: "join_request", inlineResolvable: true });
+
+    it("takes Enter on an approval of any type to its page, never to the row", () => {
+      for (const type of ["budget_override_required", "hire_agent", "approve_ceo_strategy", "request_board_approval"]) {
+        expect(attentionEnterAction(approval("a", type))).toEqual({ kind: "navigate", href: "/PAP/approvals/s-a" });
+      }
+      // What is resolved in place still opens and closes in place.
+      expect(attentionEnterAction(join)).toEqual({ kind: "toggle" });
+      expect(attentionEnterAction(buildItem({ sourceKind: "failed_run" }))).toBeNull();
+    });
+
+    it("does not open an approval by itself on arrival, however the feed marks it", () => {
+      const budget = approval("budget", "budget_override_required");
+      const hire = approval("hire", "hire_agent");
+      expect(firstInlineResolvable([budget, hire, join])).toBe(join);
+      expect(firstInlineResolvable([budget, hire])).toBeNull();
+      expect(firstInlineResolvable([])).toBeNull();
+    });
   });
 
   it("is false when the server marks a row non-inline (e.g. board approval)", () => {
