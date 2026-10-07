@@ -362,6 +362,9 @@ describe("ApprovalCard for requests without a source, hires and strategies", () 
       onReject: vi.fn(),
     });
 
+    // The card is headed by the agent's name; the job title is one of the facts.
+    expect(container.querySelector("h3")?.textContent).toBe("Pricing Analyst");
+    expect(button("Approve")?.getAttribute("aria-label")).toBe("Approve: Pricing Analyst");
     const hire = container.querySelector("[data-approval-hire]")!;
     const facts = Object.fromEntries(
       [...hire.querySelectorAll("dl > div")].map((row) => [

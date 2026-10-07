@@ -77,7 +77,7 @@ export function ApprovalCard({
   const actionsRef = useRef<ApprovalDecisionActionsHandle>(null);
   const payload = approval.payload as Record<string, unknown> | null;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
-  const subject = approvalExcerpt(approvalSubject(payload), 120);
+  const subject = approvalExcerpt(approvalSubject(payload, approval.type), 120);
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const showResolutionButtons =
     Boolean(onApprove && onReject) &&

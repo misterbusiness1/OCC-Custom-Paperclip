@@ -165,7 +165,7 @@ export function ApprovalDetail() {
   // Hire and strategy requests carry no recommendation, pros or risks: they get their own summary.
   const hasTypeSummary = approval.type === "hire_agent" || approval.type === "approve_ceo_strategy";
   const kindLabel = typeLabel[approval.type] ?? approval.type;
-  const subject = approvalExcerpt(approvalSubject(payload), 160) ?? kindLabel;
+  const subject = approvalExcerpt(approvalSubject(payload, approval.type), 160) ?? kindLabel;
   const brief = approvalDecisionBrief(payload);
   // ponytail: Keep the board scan bounded; the complete request remains available below.
   const recommendation = approvalExcerpt(brief.recommendation, 320);
