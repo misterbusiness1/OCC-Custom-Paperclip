@@ -23,7 +23,14 @@ export interface ApprovalDecisionActionsHandle {
   openReject: () => void;
 }
 
-type Mode = "note" | "revision" | "reject" | null;
+/**
+ * The panel a typed text belongs to: a note sent with Approve, a change request, or a rejection
+ * reason. A text is always kept and handed back together with its panel, so that a reason typed
+ * for a rejection never comes back as a note one press away from being sent with an approval.
+ */
+export type ApprovalNoteMode = "note" | "revision" | "reject";
+
+type Mode = ApprovalNoteMode | null;
 
 type DecidedApproval = { id: string; updatedAt: Date | string };
 
@@ -150,12 +157,21 @@ export const ApprovalDecisionActions = forwardRef<
     /** Called when the board edits the note, so a parent can drop an error that no longer describes the draft. */
     onDismissError?: () => void;
     /**
-     * A note the board had already typed for this request, for controls that are drawn again after
-     * an approval was undone or failed. The note panel starts open with it; focus is left alone.
+     * A text the board had already typed for this request, for controls that are drawn again: after
+     * a card was closed and opened, or after an approval was undone or failed. Its panel starts open
+     * with it; focus is left alone. Without these two props the controls keep their own state.
      */
     defaultNote?: string;
-    /** Called with the new text whenever the board edits or discards the note. */
-    onNoteChange?: (note: string) => void;
+    /**
+     * The panel `defaultNote` was typed in; "note" when omitted. A change request for a request that
+     * can no longer be sent back is not handed back at all, rather than shown as an approval note.
+     */
+    defaultNoteMode?: ApprovalNoteMode;
+    /**
+     * Called with the text and the panel it sits in whenever the board edits the text or moves it to
+     * another panel, and with an empty text and null when it is discarded.
+     */
+    onNoteChange?: (note: string, mode: ApprovalNoteMode | null) => void;
   }
 >(function ApprovalDecisionActions(
   {
@@ -176,13 +192,25 @@ export const ApprovalDecisionActions = forwardRef<
     error = null,
     onDismissError,
     defaultNote,
+    defaultNoteMode,
     onNoteChange,
   },
   ref,
 ) {
-  const [mode, setMode] = useState<Mode>(defaultNote?.trim() ? "note" : null);
-  const [note, setNote] = useState(defaultNote?.trim() ? defaultNote : "");
+  const canRequestRevision = Boolean(onRequestRevision) && status === "pending";
+  // Read once, when the controls are first drawn.
+  const [initial] = useState<{ mode: Mode; note: string }>(() => {
+    const text = defaultNote?.trim() ? defaultNote : "";
+    const wanted = defaultNoteMode ?? "note";
+    if (!text || (wanted === "revision" && !canRequestRevision)) return { mode: null, note: "" };
+    return { mode: wanted, note: text };
+  });
+  const [mode, setMode] = useState<Mode>(initial.mode);
+  const [note, setNote] = useState(initial.note);
   const [heldBackMessage, setHeldBackMessage] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const onNoteChangeRef = useRef(onNoteChange);
+  onNoteChangeRef.current = onNoteChange;
   const noteId = useId();
   const noteLabelId = useId();
   const rejectPromptId = useId();
@@ -195,7 +223,6 @@ export const ApprovalDecisionActions = forwardRef<
   // The panel whose opener gets focus back once the panel has closed.
   const returnFocusTo = useRef<Mode>(null);
   const trimmedNote = note.trim();
-  const canRequestRevision = Boolean(onRequestRevision) && status === "pending";
   const confirming = mode === "revision" || mode === "reject";
 
   // A decision that lands changes the status; start the next one from a clean slate.
@@ -210,6 +237,7 @@ export const ApprovalDecisionActions = forwardRef<
     setMode(null);
     setNote("");
     setHeldBackMessage(null);
+    onNoteChangeRef.current?.("", null);
   }, [status]);
 
   useEffect(() => {
@@ -227,17 +255,20 @@ export const ApprovalDecisionActions = forwardRef<
     if (isPending || !canRequestRevision) return;
     setHeldBackMessage(null);
     setMode("revision");
+    // A note already typed becomes the change request: whoever keeps a copy keeps it under that panel.
+    if (trimmedNote && mode !== "revision") onNoteChange?.(note, "revision");
   };
   const openReject = () => {
     if (isPending) return;
     setHeldBackMessage(null);
     setMode("reject");
+    if (trimmedNote && mode !== "reject") onNoteChange?.(note, "reject");
   };
   const cancel = () => {
     returnFocusTo.current = mode;
     setMode(null);
     setNote("");
-    onNoteChange?.("");
+    onNoteChange?.("", null);
   };
 
   // Opening a panel, or turning the note panel into a confirmation, puts the cursor in its field.
@@ -249,6 +280,9 @@ export const ApprovalDecisionActions = forwardRef<
     previousMode.current = mode;
     if (mode) {
       noteRef.current?.focus();
+      // The browser brings only the cursor's line into view. On a card that ends at the bottom of the
+      // screen the field and the buttons that send it open below the edge: bring them in together.
+      rootRef.current?.scrollIntoView?.({ block: "nearest" });
       return;
     }
     const opener =
@@ -291,7 +325,7 @@ export const ApprovalDecisionActions = forwardRef<
   useImperativeHandle(ref, () => ({ approve, openRevision, openReject }));
 
   return (
-    <div className={cn("space-y-3", className)} aria-busy={isPending}>
+    <div ref={rootRef} className={cn("space-y-3", className)} aria-busy={isPending}>
       {mode && (
         <div
           role="group"
@@ -317,7 +351,7 @@ export const ApprovalDecisionActions = forwardRef<
             value={note}
             onChange={(event) => {
               setNote(event.target.value);
-              onNoteChange?.(event.target.value);
+              onNoteChange?.(event.target.value, mode);
               if (error) onDismissError?.();
             }}
             onKeyDown={handleNoteKeyDown}
