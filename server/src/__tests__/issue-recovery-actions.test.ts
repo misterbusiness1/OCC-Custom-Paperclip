@@ -742,6 +742,39 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     })]);
   });
 
+  it("keeps reconciling the other issues when one issue cannot be reconciled", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    await db.delete(issues).where(eq(issues.companyId, companyId));
+    // Two assigned issues that were never dispatched. Dispatching the first
+    // one fails; in production the failure was a blocker cycle already in the
+    // data, which threw on every sweep.
+    const failingIssueId = randomUUID();
+    const healthyIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: failingIssueId, companyId, title: "Cannot be reconciled", status: "todo", priority: "medium", assigneeAgentId: coderId, issueNumber: 2, identifier: `${prefix}-2` },
+      { id: healthyIssueId, companyId, title: "Unrelated stranded work", status: "todo", priority: "medium", assigneeAgentId: coderId, issueNumber: 3, identifier: `${prefix}-3` },
+    ]);
+    const dispatched: string[] = [];
+    const enqueueWakeup = vi.fn(async (_agentId: string, wake: { payload?: { issueId?: string } }) => {
+      const issueId = String(wake?.payload?.issueId ?? "");
+      if (issueId === failingIssueId) throw new Error("Blocking relations cannot contain cycles");
+      dispatched.push(issueId);
+      return { id: randomUUID() };
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: enqueueWakeup as never });
+
+    // Before the fix this call rejected, so no issue after the failing one
+    // was reconciled, and neither were the steps the scheduler runs after it.
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
+    expect(dispatched).toEqual([healthyIssueId]);
+    expect(result.assignmentDispatched).toBe(1);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.issueIds).toContain(healthyIssueId);
+    expect(result.issueIds).not.toContain(failingIssueId);
+  });
+
   it("schedules a provider-quota monitor for the original assignee without creating recovery work", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const runId = randomUUID();
