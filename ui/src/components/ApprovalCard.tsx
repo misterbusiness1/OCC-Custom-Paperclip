@@ -93,6 +93,7 @@ export function ApprovalCard({
   onRequestRevision,
   onOpen,
   detailLink,
+  detailLinkState,
   isPending = false,
   pendingAction = null,
   error = null,
@@ -118,6 +119,8 @@ export function ApprovalCard({
   onRequestRevision?: (note: string) => void;
   onOpen?: () => void;
   detailLink?: string;
+  /** Carried by the "View details" link as its navigation state, for the page it opens. */
+  detailLinkState?: unknown;
   isPending?: boolean;
   pendingAction?: ApprovalPendingAction;
   /** What went wrong with the last decision sent from this card; shown beside its buttons. */
@@ -220,6 +223,7 @@ export function ApprovalCard({
   const detailsControl = detailLink ? (
     <Link
       to={detailLink}
+      state={detailLinkState}
       className={APPROVAL_DETAILS_LINK_CLASS}
     >
       View details

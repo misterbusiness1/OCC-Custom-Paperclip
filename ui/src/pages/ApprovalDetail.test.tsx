@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const routerMock = vi.hoisted(() => ({
   navigate: vi.fn(),
   searchParams: new URLSearchParams(),
+  /** What the link that opened the page carried. "View details" in the queue carries the queue's address. */
+  location: { state: null as unknown },
 }));
 
 const breadcrumbMock = vi.hoisted(() => ({ setBreadcrumbs: vi.fn() }));
@@ -42,6 +44,7 @@ vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: ComponentProps<"a"> & { to: string }) => (
     <a href={to} {...props}>{children}</a>
   ),
+  useLocation: () => routerMock.location,
   useNavigate: () => routerMock.navigate,
   useParams: () => ({ approvalId: "approval-1" }),
   useSearchParams: () => [routerMock.searchParams],
@@ -87,6 +90,7 @@ describe("ApprovalDetail", () => {
   beforeEach(() => {
     for (const mock of Object.values(apiMocks)) mock.mockReset();
     routerMock.navigate.mockReset();
+    routerMock.location.state = null;
     breadcrumbMock.setBreadcrumbs.mockReset();
     apiMocks.listComments.mockResolvedValue([]);
     apiMocks.listIssues.mockResolvedValue([]);
@@ -126,7 +130,8 @@ describe("ApprovalDetail", () => {
   /** The label of the last breadcrumb the page set. */
   const lastCrumb = () => {
     const crumbs = breadcrumbMock.setBreadcrumbs.mock.lastCall![0] as Array<{ label: string; href?: string }>;
-    expect(crumbs[0]).toEqual({ label: "Approvals", href: "/approvals" });
+    // Not opened from the queue: the way back is To decide, at this request.
+    expect(crumbs[0]).toEqual({ label: "Approvals", href: "/approvals/pending#approval-approval-1" });
     expect(crumbs).toHaveLength(2);
     return crumbs[1].label;
   };
@@ -379,6 +384,54 @@ describe("ApprovalDetail", () => {
       copy.querySelector("pre")!.closest("details")!.remove();
       return copy.textContent ?? "";
     };
+
+    describe("the way back to the queue", () => {
+      const backLink = () => container.querySelector<HTMLAnchorElement>("a[data-approval-back-to-queue]")!;
+      const firstCrumb = () =>
+        (breadcrumbMock.setBreadcrumbs.mock.lastCall![0] as Array<{ label: string; href?: string }>)[0];
+
+      it.each([
+        ["/PAP/approvals/pending?kind=email_reply&sort=newest", "/PAP/approvals/pending?kind=email_reply&sort=newest#approval-approval-1"],
+        ["/PAP/approvals/all?sort=oldest", "/PAP/approvals/all?sort=oldest#approval-approval-1"],
+        ["/approvals/pending", "/approvals/pending#approval-approval-1"],
+      ])("leads to the view the request was opened from (%s), at its card", async (queue, target) => {
+        routerMock.location.state = { queue };
+        await render(createApproval({ id: APPROVAL_ID }));
+
+        expect(backLink().textContent).toBe("Back to the queue");
+        expect(backLink().getAttribute("href")).toBe(target);
+        expect(firstCrumb()).toEqual({ label: "Approvals", href: target });
+        // It stands above the request, and navigates only: nothing is decided by it.
+        expect(isBefore(backLink(), panel())).toBe(true);
+        expect(routerMock.navigate).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ["nothing", null],
+        ["what the sidebar's links carry", { paperclipSidebarScrollReset: true }],
+        ["an address that is not the queue's", { queue: "/PAP/inbox" }],
+        ["an address on another site", { queue: "https://example.test/approvals/pending" }],
+      ])("leads to To decide, at this request, when the link that opened the page carried %s", async (_what, state) => {
+        routerMock.location.state = state;
+        await render(createApproval({ id: APPROVAL_ID }));
+
+        expect(backLink().getAttribute("href")).toBe("/approvals/pending#approval-approval-1");
+        expect(firstCrumb()).toEqual({ label: "Approvals", href: "/approvals/pending#approval-approval-1" });
+      });
+
+      it("is as easy to tap as View details in the queue, and no taller", async () => {
+        await render(createApproval({ id: APPROVAL_ID }));
+        for (const name of [
+          "relative",
+          "h-auto",
+          "pointer-coarse:after:absolute",
+          "pointer-coarse:after:inset-x-0",
+          "pointer-coarse:after:-inset-y-3.5",
+        ]) {
+          expect(backLink().classList.contains(name), name).toBe(true);
+        }
+      });
+    });
 
     it("names the request in the breadcrumb by its subject, cut to about 40 characters", async () => {
       await render(createApproval({ id: APPROVAL_ID }));

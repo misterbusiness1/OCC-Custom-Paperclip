@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { approvalQueueReturnTarget } from "../lib/shell-navigation";
+import { cn } from "../lib/utils";
+import { APPROVAL_DETAILS_LINK_CLASS } from "../components/ApprovalCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
 import {
@@ -47,6 +50,8 @@ export function ApprovalDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  // Back to the queue view the reader came from, with its filter and sort, at this request's card.
+  const queueHref = approvalQueueReturnTarget(useLocation().state, approvalId ?? "");
   const queryClient = useQueryClient();
   const [commentBody, setCommentBody] = useState("");
   // Each failure is reported beside the control that caused it.
@@ -111,8 +116,8 @@ export function ApprovalDetail() {
   const breadcrumbLabel = names.breadcrumb;
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Approvals", href: "/approvals" }, { label: breadcrumbLabel }]);
-  }, [setBreadcrumbs, breadcrumbLabel]);
+    setBreadcrumbs([{ label: "Approvals", href: queueHref }, { label: breadcrumbLabel }]);
+  }, [setBreadcrumbs, breadcrumbLabel, queueHref]);
 
   const refresh = () => {
     if (!approvalId) return;
@@ -244,6 +249,11 @@ export function ApprovalDetail() {
 
   return (
     <div className="max-w-3xl space-y-4">
+      <div>
+        <Link to={queueHref} className={cn(APPROVAL_DETAILS_LINK_CLASS, "-ml-2")} data-approval-back-to-queue="">
+          Back to the queue
+        </Link>
+      </div>
       {showApprovedBanner && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-4 py-3">
           <div className="flex items-start gap-2">

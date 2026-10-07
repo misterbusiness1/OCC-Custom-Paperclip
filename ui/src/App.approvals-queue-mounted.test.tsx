@@ -85,15 +85,16 @@ vi.mock("./components/Layout", async () => {
   const { approvalsNavTarget } = await import("./lib/shell-navigation");
   return {
     Layout: () => {
-      const { pathname } = useLocation();
+      // The sidebars hand the item the whole address: on To decide it carries the filter and the sort.
+      const location = useLocation();
       return (
         <>
           <nav>
             <div data-sidebar-layout="streamlined">
-              <SidebarNavItem to={approvalsNavTarget(pathname)} label="Approvals" />
+              <SidebarNavItem to={approvalsNavTarget(location)} label="Approvals" />
             </div>
             <div data-sidebar-layout="classic">
-              <ClassicSidebarNavItem to={approvalsNavTarget(pathname)} label="Approvals" />
+              <ClassicSidebarNavItem to={approvalsNavTarget(location)} label="Approvals" />
             </div>
             <Link to="/approvals" data-test-link="short">The short address</Link>
             <Link to="/approvals/all" data-test-link="all">All decisions</Link>
@@ -150,7 +151,7 @@ import { SIDEBAR_SCROLL_RESET_STATE } from "./lib/navigation-scroll";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-function createApproval(id: string, createdAt: string) {
+function createApproval(id: string, createdAt: string, payload: Record<string, unknown> = {}) {
   return {
     id,
     companyId: "company-1",
@@ -164,6 +165,7 @@ function createApproval(id: string, createdAt: string) {
       reasoning: "It fits the request.",
       pros: ["A pro."],
       risks: ["A risk."],
+      ...payload,
     },
     decisionNote: null,
     decidedByUserId: null,
@@ -210,7 +212,7 @@ describe("the Approvals queue stays mounted when a link to /approvals is followe
     act(async () => {
       await vi.advanceTimersByTimeAsync(ms);
     });
-  const renderAt = async (path: string) => {
+  const renderAt = async (path: string, firstTitle = "Request oldest") => {
     window.history.replaceState(null, "", path);
     await act(async () => {
       root.render(
@@ -222,8 +224,8 @@ describe("the Approvals queue stays mounted when a link to /approvals is followe
       );
     });
     // The list loads on its own time; each step is taken inside act, as every later one is.
-    for (let step = 0; step < 100 && !container.textContent?.includes("Request oldest"); step += 1) await pass(10);
-    expect(container.textContent).toContain("Request oldest");
+    for (let step = 0; step < 100 && !container.textContent?.includes(firstTitle); step += 1) await pass(10);
+    expect(container.textContent).toContain(firstTitle);
   };
   const rows = () => [...container.querySelectorAll<HTMLElement>("[data-approval-card]")];
   const row = (id: string) => rows().find((candidate) => candidate.dataset.approvalCard === id)!;
@@ -354,6 +356,188 @@ describe("the Approvals queue stays mounted when a link to /approvals is followe
       expect(apiMocks.approve).toHaveBeenCalledTimes(1);
     },
   );
+
+  describe("with the kind filter and the sort in the address", () => {
+    /** The same queue with one email reply in it, so that the kind chips are offered. */
+    const withAnEmailReply = (overrides: Record<string, Record<string, unknown>> = {}) => [
+      createApproval("newest", "2026-10-05T00:00:00.000Z", overrides.newest),
+      createApproval("middle", "2026-10-01T00:00:00.000Z", overrides.middle),
+      createApproval("mail", "2026-09-25T00:00:00.000Z", { recipient: "buyer@example.test", body: "Draft body" }),
+      createApproval("oldest", "2026-09-20T00:00:00.000Z", overrides.oldest),
+    ];
+    const order = () => rows().map((card) => card.dataset.approvalCard);
+    const openIds = () =>
+      rows().filter((card) => header(card)?.getAttribute("aria-expanded") === "true").map((card) => card.dataset.approvalCard);
+    const kindChip = (kind: string) =>
+      container.querySelector<HTMLButtonElement>(`button[data-approval-kind="${kind}"]`)!;
+    const sortButton = () =>
+      [...container.querySelectorAll("button")].find((candidate) => candidate.textContent?.startsWith("Sort: "))!;
+
+    beforeEach(() => {
+      apiMocks.list.mockImplementation(async () => withAnEmailReply());
+    });
+
+    it("shows the filtered and sorted view the address names, on load and at a linked card", async () => {
+      await renderAt("/PAP/approvals/pending?kind=request_board_approval&sort=newest#approval-middle", "Request newest");
+
+      expect(window.location.pathname).toBe("/PAP/approvals/pending");
+      expect(window.location.search).toBe("?kind=request_board_approval&sort=newest");
+      expect(order()).toEqual(["newest", "middle", "oldest"]);
+      expect(kindChip("request_board_approval").getAttribute("aria-pressed")).toBe("true");
+      expect(sortButton().textContent).toBe("Sort: Newest first");
+      // The card the way back from "View details" points at is the open one.
+      expect(openIds()).toEqual(["middle"]);
+      expect(lifecycle.events).toEqual(["mount"]);
+    });
+
+    it("keeps the query of the short address when it corrects it", async () => {
+      await renderAt("/PAP/approvals?kind=email_reply", "Request mail");
+      expect(window.location.pathname).toBe("/PAP/approvals/pending");
+      expect(window.location.search).toBe("?kind=email_reply");
+      expect(order()).toEqual(["mail"]);
+      expect(lifecycle.events).toEqual(["mount"]);
+    });
+
+    it("changes the kind and the order in place: the held approval, its Undo, the typed note and the revision on record stay", async () => {
+      await renderAt("/PAP/approvals/pending");
+      expect(order()).toEqual(["oldest", "mail", "middle", "newest"]);
+      await typeANoteAndHoldAnApproval();
+      const heldRow = heldRows()[0];
+      const historyLength = window.history.length;
+
+      // The requester revises "middle" while the page is open.
+      apiMocks.list.mockImplementation(async () =>
+        withAnEmailReply({ middle: { recommendedAction: "Order ten times the standing quantity." } }).map((approval) =>
+          approval.id === "middle" ? { ...approval, updatedAt: new Date("2026-10-06T09:00:00.000Z") } : approval,
+        ),
+      );
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["approvals", "company-1"] });
+      });
+      await pass(20);
+      expect(row("middle").textContent).toContain("Revised while this page was open");
+      // The reader has a Board approval open when they choose another kind.
+      await click(header(row("middle")));
+      expect(openIds()).toEqual(["middle"]);
+
+      await click(kindChip("email_reply"));
+      await pass(20);
+      expect(window.location.pathname).toBe("/PAP/approvals/pending");
+      expect(window.location.search).toBe("?kind=email_reply");
+      // The filtered list starts like a fresh one: its own first card is open, and the card that
+      // was open before is not kept in it. The held approval stays, whatever its kind.
+      expect(order()).toEqual(["oldest", "mail"]);
+      expect(openIds()).toEqual(["mail"]);
+
+      await click(sortButton());
+      await pass(20);
+      expect(window.location.search).toBe("?kind=email_reply&sort=newest");
+      expect(order()).toEqual(["mail", "oldest"]);
+
+      await click(kindChip("all"));
+      await pass(20);
+      expect(window.location.search).toBe("?sort=newest");
+      expect(order()).toEqual(["newest", "middle", "mail", "oldest"]);
+      expect(openIds()).toEqual(["newest"]);
+
+      // One page throughout, one history entry, and nothing sent early.
+      expect(lifecycle.events).toEqual(["mount"]);
+      expect(window.history.length).toBe(historyLength);
+      expect(heldRows()).toEqual([heldRow]);
+      expect(heldRow.isConnected).toBe(true);
+      expect(button(heldRow, "Undo")).toBeDefined();
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+      // The note typed into "newest" is in its card, which is the open one now.
+      expect(row("newest").querySelector("textarea")!.value).toBe("Quote the delivery date");
+      expect(row("newest").textContent).toContain("What should change?");
+      // The revision is still on record: Approve on "middle" waits for the confirmation.
+      expect(row("middle").textContent).toContain("Revised while this page was open");
+      await click(header(row("middle")));
+      await pass(APPROVE_AFTER_ADVANCE_MS);
+      await click(button(row("middle"), "Approve"));
+      expect(heldRows()).toEqual([heldRow]);
+      expect(row("middle").textContent).toContain("Confirm that you have reviewed the revised request, then approve.");
+
+      // The hold then runs out as it would have, and the approval is sent once.
+      await pass(APPROVE_HOLD_MS);
+      expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+      expect(apiMocks.approve.mock.calls[0][0]).toBe("oldest");
+      expect(lifecycle.events).toEqual(["mount"]);
+    });
+
+    it.each(["streamlined", "classic"])(
+      "on a filtered To decide the %s sidebar item still changes nothing: the filter, the held approval and the note stay",
+      async (layout) => {
+        await renderAt("/PAP/approvals/pending?kind=request_board_approval");
+        expect(order()).toEqual(["oldest", "middle", "newest"]);
+        await typeANoteAndHoldAnApproval();
+        const heldRow = heldRows()[0];
+        const historyLength = window.history.length;
+        const shown = order();
+        await pass(700);
+
+        expect(sidebarItem(layout).getAttribute("aria-current")).toBe("page");
+        expect(sidebarItem(layout).getAttribute("href")).toBe(
+          "/PAP/approvals/pending?kind=request_board_approval",
+        );
+        await click(sidebarItem(layout));
+        await pass(50);
+
+        expect(lifecycle.events).toEqual(["mount"]);
+        expect(window.location.pathname).toBe("/PAP/approvals/pending");
+        expect(window.location.search).toBe("?kind=request_board_approval");
+        expect(window.history.length).toBe(historyLength);
+        expect(order()).toEqual(shown);
+        expect(heldRows()).toEqual([heldRow]);
+        expect(button(heldRow, "Undo")).toBeDefined();
+        expect(apiMocks.approve).not.toHaveBeenCalled();
+        expect(unsentNote("newest")).toBe("Change request not sent");
+
+        await pass(APPROVE_HOLD_MS);
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+        await expectTheNoteIsStillThere();
+      },
+    );
+
+    it("changes nothing either when the sidebar item is pressed at a linked card of a filtered To decide", async () => {
+      await renderAt("/PAP/approvals/pending?kind=request_board_approval#approval-middle");
+      expect(openIds()).toEqual(["middle"]);
+      const historyLength = window.history.length;
+
+      expect(sidebarItem("streamlined").getAttribute("href")).toBe(
+        "/PAP/approvals/pending?kind=request_board_approval#approval-middle",
+      );
+      await click(sidebarItem("streamlined"));
+      await pass(50);
+
+      expect(lifecycle.events).toEqual(["mount"]);
+      expect(window.location.search).toBe("?kind=request_board_approval");
+      expect(window.location.hash).toBe("#approval-middle");
+      expect(window.history.length).toBe(historyLength);
+      expect(openIds()).toEqual(["middle"]);
+    });
+
+    it("hands the view to View details, and Back from there shows the same view again", async () => {
+      await renderAt("/PAP/approvals/pending?kind=email_reply&sort=newest", "Request mail");
+      expect(order()).toEqual(["mail"]);
+      const details = [...row("mail").querySelectorAll("a")].find((anchor) => anchor.textContent === "View details")!;
+
+      await click(details);
+      await pass(50);
+      expect(window.location.pathname).toBe("/PAP/approvals/mail");
+      expect(container.textContent).toContain("APPROVAL_DETAIL_PAGE");
+      // What the request's own page builds its way back from.
+      expect(window.history.state?.usr).toEqual({ queue: "/PAP/approvals/pending?kind=email_reply&sort=newest" });
+
+      await act(async () => {
+        window.history.back();
+      });
+      for (let step = 0; step < 100 && !container.textContent?.includes("Request mail"); step += 1) await pass(10);
+      expect(window.location.search).toBe("?kind=email_reply&sort=newest");
+      expect(order()).toEqual(["mail"]);
+      expect(kindChip("email_reply").getAttribute("aria-pressed")).toBe("true");
+    });
+  });
 
   it("opens the company's To decide from the short address without a company prefix", async () => {
     await renderAt("/approvals");

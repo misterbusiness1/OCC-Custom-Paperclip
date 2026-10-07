@@ -89,7 +89,13 @@ import { SwipeToArchive } from "../components/SwipeToArchive";
 import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
-import { approvalLabel, approvalMissingSourceNote, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
+import {
+  approvalDecisionBrief,
+  approvalLabel,
+  approvalMissingSourceNote,
+  defaultTypeIcon,
+  typeIcon,
+} from "../components/ApprovalPayload";
 import {
   ApprovalDecisionSummary,
   useApprovalDraftGate,
@@ -1347,6 +1353,10 @@ export function Inbox() {
         const label = approvalLabel(a.type, a.payload as Record<string, unknown> | null);
         if (label.toLowerCase().includes(q)) return true;
         if (a.type.toLowerCase().includes(q)) return true;
+        // Found by who asked and by what is recommended too, as on the Approvals page.
+        const requester = a.requestedByAgentId ? agentById.get(a.requestedByAgentId) : null;
+        if (requester?.toLowerCase().includes(q)) return true;
+        if (approvalDecisionBrief(a.payload).recommendation?.toLowerCase().includes(q)) return true;
         return false;
       }
       if (item.kind === "failed_run") {

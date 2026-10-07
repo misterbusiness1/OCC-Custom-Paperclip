@@ -1134,6 +1134,62 @@ describe("Inbox toolbar", () => {
     }
   });
 
+  it.each([true, false])("finds an approval by its requester's name and by its recommendation with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    apiMocks.agentsList.mockResolvedValue([
+      { id: "agent-1", name: "Infra Engineer" },
+      { id: "agent-2", name: "Pricing Analyst" },
+    ]);
+    apiMocks.approvalsList.mockResolvedValue([
+      createApproval({
+        id: "approval-hosting",
+        requestedByAgentId: "agent-1",
+        payload: { title: "Staging hosting", recommendedAction: "Sign with Provider X.", reasoning: "Lowest quote." },
+      }),
+      createApproval({
+        id: "approval-prices",
+        requestedByAgentId: "agent-2",
+        payload: { title: "Autumn price list", recommendedAction: "Raise wholesale by two percent.", reasoning: "Costs rose." },
+      }),
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Staging hosting"));
+      await vi.waitFor(() => expect(container.textContent).toContain("Autumn price list"));
+      const field = container.querySelector<HTMLInputElement>("input[data-page-search-target='true']")!;
+      const search = (value: string) =>
+        act(async () => {
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+          field.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      const listed = () =>
+        ["Staging hosting", "Autumn price list"].filter((title) =>
+          [...container.querySelectorAll("[data-inbox-item]")].some((item) => item.textContent?.includes(title)));
+
+      // The requester's name, whatever the case.
+      await search("pricing ANALYST");
+      await vi.waitFor(() => expect(listed()).toEqual(["Autumn price list"]));
+      await search("infra");
+      await vi.waitFor(() => expect(listed()).toEqual(["Staging hosting"]));
+      // The recommendation.
+      await search("provider x");
+      await vi.waitFor(() => expect(listed()).toEqual(["Staging hosting"]));
+      await search("two percent");
+      await vi.waitFor(() => expect(listed()).toEqual(["Autumn price list"]));
+      // The rationale is not searched.
+      await search("lowest quote");
+      await vi.waitFor(() => expect(listed()).toEqual([]));
+      await search("");
+      await vi.waitFor(() => expect(listed()).toEqual(["Staging hosting", "Autumn price list"]));
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it.each([true, false])("offers no decision on a request sent back for changes with streamlined UI %s", async (streamlinedUi) => {
     routerMock.location.pathname = "/inbox/mine";
     apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
