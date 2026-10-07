@@ -1,9 +1,13 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-const script = path.resolve(process.cwd(), "../scripts/qa/synthetic-productive-executor.mjs");
+const script = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../scripts/qa/synthetic-productive-executor.mjs",
+);
 const issueId = "11111111-1111-4111-8111-111111111111";
 const servers: Array<ReturnType<typeof createServer>> = [];
 
