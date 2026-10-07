@@ -3045,7 +3045,7 @@ function shouldRequireIssueCommentForWake(
   );
 }
 
-function allowsIssueInteractionWake(
+export function allowsIssueInteractionWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
@@ -4371,12 +4371,35 @@ async function resolveAcceptedPlanWakeRoutingDecision(args: {
 export function mergeCoalescedContextSnapshot(
   existingRaw: unknown,
   incoming: Record<string, unknown>,
+  options?: {
+    existingInvocationSource?: string | null;
+    validatedRetrySourceMatchesWakeScope?: boolean;
+  },
 ) {
   const existing = parseObject(existingRaw);
   const merged: Record<string, unknown> = {
     ...existing,
     ...incoming,
   };
+  // The run row is authoritative for how this execution was invoked. When a
+  // productive-terminal continuation recovery coalesces into a genuine
+  // scheduler-created timer
+  // run, keep the timer wake reason aligned with invocationSource so runtime
+  // consumers still apply timer-specific behavior (for example, starting a
+  // fresh task session). Requiring both the persisted run source and the
+  // canonical existing reason prevents arbitrary/mismatched context from
+  // upgrading an unrelated run to timer provenance.
+  if (
+    options?.existingInvocationSource === "timer" &&
+    readNonEmptyString(existing.wakeReason) === "heartbeat_timer" &&
+    readNonEmptyString(existing.issueId) === readNonEmptyString(incoming.issueId) &&
+    readNonEmptyString(incoming.wakeReason) === "issue_continuation_needed" &&
+    readNonEmptyString(incoming.retryReason) === "issue_continuation_needed" &&
+    readNonEmptyString(incoming.source) === "issue.productive_terminal_continuation_recovery" &&
+    options.validatedRetrySourceMatchesWakeScope === true
+  ) {
+    merged.wakeReason = "heartbeat_timer";
+  }
   if (existing.forceFreshSession === true || incoming.forceFreshSession === true) {
     merged.forceFreshSession = true;
   }
@@ -4715,6 +4738,38 @@ export async function buildPaperclipWakePayload(input: {
 
 function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
   return deriveTaskKey(run.contextSnapshot as Record<string, unknown> | null, null);
+}
+
+export async function retrySourceMatchesWakeScope(args: {
+  db: Db;
+  companyId: string;
+  agentId: string;
+  taskKey: string | null;
+  contextSnapshot: Record<string, unknown>;
+}) {
+  const retryOfRunId = readNonEmptyString(args.contextSnapshot.retryOfRunId);
+  if (!retryOfRunId || !args.taskKey) return false;
+
+  const sourceRun = await args.db
+    .select()
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.id, retryOfRunId),
+      eq(heartbeatRuns.companyId, args.companyId),
+      eq(heartbeatRuns.agentId, args.agentId),
+    ))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
+  return sourceRun !== null &&
+    sourceRun.status === "succeeded" &&
+    (
+      sourceRun.livenessState === "advanced" ||
+      sourceRun.livenessState === "completed" ||
+      sourceRun.livenessState === "blocked" ||
+      sourceRun.livenessState === "needs_followup"
+    ) &&
+    runTaskKey(sourceRun) === args.taskKey;
 }
 
 function isSameTaskScope(left: string | null, right: string | null) {
@@ -16019,9 +16074,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             && !shouldQueueFollowupForRunningWake
             && availableActiveExecutionRun
           ) {
+            const validatedRetrySourceMatchesWakeScope = await retrySourceMatchesWakeScope({
+              db: tx as unknown as Db,
+              companyId: issue.companyId,
+              agentId,
+              taskKey: effectiveTaskKey,
+              contextSnapshot: enrichedContextSnapshot,
+            });
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               availableActiveExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
+              {
+                existingInvocationSource: availableActiveExecutionRun.invocationSource,
+                validatedRetrySourceMatchesWakeScope,
+              },
             );
             const mergedRun = await tx
               .update(heartbeatRuns)
@@ -16361,9 +16427,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
 
     if (coalescedTargetRun) {
+      const validatedRetrySourceMatchesWakeScope = await retrySourceMatchesWakeScope({
+        db,
+        companyId: agent.companyId,
+        agentId,
+        taskKey: effectiveTaskKey,
+        contextSnapshot: enrichedContextSnapshot,
+      });
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
         coalescedTargetRun.contextSnapshot,
         enrichedContextSnapshot,
+        {
+          existingInvocationSource: coalescedTargetRun.invocationSource,
+          validatedRetrySourceMatchesWakeScope,
+        },
       );
       const mergedRun = await db
         .update(heartbeatRuns)
