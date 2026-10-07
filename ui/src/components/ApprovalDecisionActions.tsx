@@ -175,6 +175,12 @@ export const ApprovalDecisionActions = forwardRef<
      * "Read full reply to approve" while an outgoing draft is still cut. Omit it and the button reads "Approve".
      */
     approveLabel?: string;
+    /**
+     * How long after these controls are drawn a pointer press on Approve is ignored. The approval's
+     * own page sets it: the press that opened the page (a link in a list) can be followed by a second,
+     * slower press at the same point, and this button may now be there. Keyboard presses are taken.
+     */
+    approveArmDelayMs?: number;
     /** What went wrong with the last decision sent from here; shown directly above the buttons. */
     error?: string | null;
     /**
@@ -218,6 +224,7 @@ export const ApprovalDecisionActions = forwardRef<
     approveGuard,
     approveHoldKey,
     approveLabel,
+    approveArmDelayMs = 0,
     error = null,
     announceError = true,
     onDismissError,
@@ -239,6 +246,7 @@ export const ApprovalDecisionActions = forwardRef<
   const [note, setNote] = useState(initial.note);
   const [heldBackMessage, setHeldBackMessage] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const drawnAt = useRef(Date.now());
   const onNoteChangeRef = useRef(onNoteChange);
   onNoteChangeRef.current = onNoteChange;
   const noteId = useId();
@@ -467,6 +475,7 @@ export const ApprovalDecisionActions = forwardRef<
             // by the keyboard and Shift+A report no click count, and are taken as before.
             onClick={(event) => {
               if (event.detail > 1) return;
+              if (event.detail === 1 && Math.abs(Date.now() - drawnAt.current) < approveArmDelayMs) return;
               approve();
             }}
             disabled={isPending || confirming}
