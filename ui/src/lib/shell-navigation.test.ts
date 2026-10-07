@@ -2,9 +2,11 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  approvalsNavTarget,
   classifyShellRoute,
   getCompanyPathSegments,
   isApprovalsRoute,
+  isBareApprovalsPath,
   readContextualSidebarOrigin,
   rememberContextualSidebarOrigin,
 } from "./shell-navigation";
@@ -25,6 +27,31 @@ describe("shell navigation", () => {
     // A company whose prefix happens to be the word is not the Approvals page.
     expect(isApprovalsRoute("/APPROVALS/dashboard", "APPROVALS")).toBe(false);
     expect(isApprovalsRoute("/APPROVALS/approvals/all", "APPROVALS")).toBe(true);
+  });
+
+  it("points the sidebar's Approvals item at To decide itself on To decide, and at the short address elsewhere", () => {
+    expect(approvalsNavTarget("/PAP/approvals/pending")).toBe("/approvals/pending");
+    expect(approvalsNavTarget("/approvals/pending")).toBe("/approvals/pending");
+    for (const pathname of [
+      "/PAP/approvals/all",
+      "/PAP/approvals",
+      "/PAP/approvals/9b2d7c1e",
+      "/PAP/approvals/pending-review",
+      "/PAP/inbox",
+      "/PAP/issues/pending",
+      "/",
+    ]) {
+      expect(approvalsNavTarget(pathname)).toBe("/approvals");
+    }
+  });
+
+  it("recognises the short Approvals address, which shows the queue and is then corrected", () => {
+    for (const pathname of ["/approvals", "/PAP/approvals", "/PAP/approvals/", "/pap/Approvals"]) {
+      expect(isBareApprovalsPath(pathname)).toBe(true);
+    }
+    for (const pathname of ["/PAP/approvals/pending", "/PAP/approvals/all", "/PAP/approvals/9b2d7c1e", "/PAP/approvals-archive", "/PAP/inbox", "/"]) {
+      expect(isBareApprovalsPath(pathname)).toBe(false);
+    }
   });
 
   it("classifies task detail independently from list routes", () => {

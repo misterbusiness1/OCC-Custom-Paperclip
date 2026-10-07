@@ -32,11 +32,13 @@ import { SidebarStarredProjects } from "./SidebarStarredProjects.production";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useLocation } from "@/lib/router";
 import { attentionApi } from "../api/attention";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { attentionBadgeCount } from "../lib/attention";
+import { approvalsNavTarget } from "../lib/shell-navigation";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { usePendingApprovalCount } from "../hooks/usePendingApprovalCount";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
@@ -54,6 +56,7 @@ export function Sidebar() {
   const [companyOpen, setCompanyOpen] = useState(true);
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { collapsed, peeking } = useSidebar();
+  const { pathname } = useLocation();
   const rail = collapsed && !peeking;
   const inboxBadge = useInboxBadge(selectedCompanyId);
   // The queue the board decides from; the badge counts what the Approvals page lists under "To decide".
@@ -166,11 +169,11 @@ export function Sidebar() {
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
           />
-          {/* Links to /approvals, not /approvals/pending: the route redirects to the queue, and the
-              shorter target makes this the current item (highlight and aria-current) on To decide,
-              on All decisions and on an approval's own page. */}
+          {/* Links to /approvals, which shows the queue: the shorter target makes this the current
+              item (highlight and aria-current) on To decide, on All decisions and on an approval's
+              own page. On To decide it links to that page itself, so a press there does nothing. */}
           <SidebarNavItem
-            to="/approvals"
+            to={approvalsNavTarget(pathname)}
             label="Approvals"
             icon={ShieldCheck}
             badge={pendingApprovalCount}

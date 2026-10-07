@@ -139,9 +139,21 @@ describe("App Approvals routing (OXFA-31188)", () => {
     flushSync(() => root.unmount());
   });
 
-  it("redirects the bare /approvals deep link through to the prefixed pending queue", async () => {
+  // The queue page is served on the short address too and corrects the address itself (it is
+  // mocked here, so the address stays as it is). A redirect route in its place would unmount the
+  // queue when a link to /approvals is followed from it: see App.approvals-queue-mounted.test.tsx,
+  // which drives the real page and checks the corrected address.
+  it("redirects the bare /approvals deep link through to the prefixed queue page", async () => {
     const root = renderAppAt(container, "/approvals");
-    await waitForRoute(container, "APPROVALS_PAGE@/PAP/approvals/pending");
+    await waitForRoute(container, "APPROVALS_PAGE@/PAP/approvals");
+    expect(container.textContent).not.toContain("APPROVAL_DETAIL_PAGE");
+    expect(container.textContent).not.toContain("No company matches prefix");
+    flushSync(() => root.unmount());
+  });
+
+  it("serves the Approvals queue at /:company/approvals, with whatever follows the path", async () => {
+    const root = renderAppAt(container, "/PAP/approvals?from=mail");
+    await waitForRoute(container, "APPROVALS_PAGE@/PAP/approvals?from=mail");
     expect(container.textContent).not.toContain("No company matches prefix");
     flushSync(() => root.unmount());
   });

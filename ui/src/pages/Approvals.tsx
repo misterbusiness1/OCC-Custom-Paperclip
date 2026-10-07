@@ -19,6 +19,7 @@ import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { useOptionalToastActions } from "../context/ToastContext";
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
 import { queryKeys } from "../lib/queryKeys";
+import { isBareApprovalsPath } from "../lib/shell-navigation";
 import { cn } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
@@ -379,6 +380,18 @@ export function Approvals() {
   const location = useLocation();
   const pathSegment = location.pathname.split("/").pop() ?? "pending";
   const statusFilter: StatusFilter = pathSegment === "all" ? "all" : "pending";
+  // The bare /approvals address shows To decide (see the route in App.tsx); the address is then
+  // corrected in place, once, with whatever the navigation carried. This page stays mounted while
+  // that happens, so held approvals, typed texts and the revisions on record are not lost.
+  const onBareRoute = isBareApprovalsPath(location.pathname);
+  const { search: locationSearch, hash: locationHash, state: locationState } = location;
+  useEffect(() => {
+    if (!onBareRoute) return;
+    navigate(
+      { pathname: "/approvals/pending", search: locationSearch, hash: locationHash },
+      { replace: true, state: locationState },
+    );
+  }, [onBareRoute, navigate, locationSearch, locationHash, locationState]);
   // In-flight state and the last error are kept per request, so each card answers for its own decision.
   const decisions = useApprovalDecisionFeedback();
   const { settle: settleDecision, clearErrors: clearDecisionErrors } = decisions;

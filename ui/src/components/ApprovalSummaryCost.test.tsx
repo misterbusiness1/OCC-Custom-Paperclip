@@ -153,4 +153,54 @@ describe("the cost of an approval's text", () => {
     expect(approvalSummaryText({ ...brief, summary: short })).toBe(short);
     expect(approvalSummaryText({ ...brief, summary: "**Approve** provider X." })).toBeNull();
   });
+
+  it("does not show a very long summary a second time when it is the rationale or the recommendation", () => {
+    const long = "The plan costs $9,000 a month and replaces provider W. ".repeat(400).trim();
+    expect(long.length).toBeGreaterThan(20_000);
+    const title = "Hosting";
+
+    conversions.mockClear();
+    // No rationale of its own: "Why" falls back to the summary, so the summary is already on the page.
+    expect(approvalSummaryText({ title, summary: long, recommendedAction: "Approve." })).toBeNull();
+    // The same text sent as the rationale, or as the recommendation; blank space around it does not count.
+    expect(approvalSummaryText({ title, summary: long, recommendedAction: "Approve.", reasoning: long })).toBeNull();
+    expect(approvalSummaryText({ title, summary: ` ${long}\n`, recommendedAction: "Approve.", rationale: `${long}  ` })).toBeNull();
+    expect(approvalSummaryText({ title, summary: long, recommendedAction: long, reasoning: "It is due." })).toBeNull();
+    // Still not compared by its start, and still shown when it says something else.
+    expect(
+      approvalSummaryText({ title, summary: `${long} It also ends the old contract.`, recommendedAction: "Approve.", reasoning: long }),
+    ).toBe(`${long} It also ends the old contract.`);
+    expect(approvalSummaryText({ title, summary: long, recommendedAction: "Approve.", reasoning: long.slice(0, -1) })).toBe(long);
+    // The whole texts are compared as they are: nothing is converted for it.
+    expect(conversions).not.toHaveBeenCalled();
+
+    // On the page: the text once, under "Why", and no "Summary" section repeating it.
+    act(() =>
+      root.render(
+        <ApprovalDecisionSummary
+          type="request_board_approval"
+          payload={{ title, summary: long, recommendedAction: "Approve." }}
+          status="pending"
+          requestedByAgentId="agent-1"
+          full
+        />,
+      ),
+    );
+    const marker = "replaces provider W.";
+    expect(container.textContent!.split(marker).length - 1).toBe(400);
+    // The same request with a rationale of its own shows both texts.
+    act(() =>
+      root.render(
+        <ApprovalDecisionSummary
+          type="request_board_approval"
+          payload={{ title, summary: long, recommendedAction: "Approve.", reasoning: "It is due." }}
+          status="pending"
+          requestedByAgentId="agent-1"
+          full
+        />,
+      ),
+    );
+    expect(container.textContent!.split(marker).length - 1).toBe(400);
+    expect(container.textContent).toContain("It is due.");
+  });
 });
