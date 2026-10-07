@@ -7105,7 +7105,40 @@ export function issueService(db: Db) {
             ),
           )
           .returning()
-          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+          .then(async (rows: Array<typeof issues.$inferSelect>) => {
+            const claimed = rows[0] ?? null;
+            if (!claimed || !checkoutRunId) return claimed;
+
+            const [boundRun] = await tx
+              .update(heartbeatRuns)
+              .set({
+                contextSnapshot: sql`
+                  coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb)
+                  || jsonb_build_object('issueId', ${id}::text, 'taskId', ${id}::text)
+                `,
+              })
+              .where(and(
+                eq(heartbeatRuns.id, checkoutRunId),
+                eq(heartbeatRuns.companyId, issueCompany.companyId),
+                eq(heartbeatRuns.agentId, agentId),
+                or(
+                  isNull(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId'`),
+                  eq(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, id),
+                ),
+                or(
+                  isNull(sql`${heartbeatRuns.contextSnapshot} ->> 'taskId'`),
+                  eq(sql`${heartbeatRuns.contextSnapshot} ->> 'taskId'`, id),
+                ),
+              ))
+              .returning({ id: heartbeatRuns.id });
+            if (!boundRun) {
+              throw conflict("Heartbeat run is already scoped to a different issue", {
+                issueId: id,
+                runId: checkoutRunId,
+              });
+            }
+            return claimed;
+          });
       });
 
       if (updated) {

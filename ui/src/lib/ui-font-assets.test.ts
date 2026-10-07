@@ -18,7 +18,11 @@ describe("bundled UI font assets", () => {
       expect(existsSync(fontPath), `${fileName} should exist in ui/public/fonts`).toBe(true);
       expect(statSync(fontPath).isFile(), `${fileName} should be a file`).toBe(true);
       expect(readFileSync(fontPath).subarray(0, 4).toString("ascii")).toBe("wOF2");
-      expect(css).toContain(`url("../fonts/${fileName}")`);
+      // Public assets must use root-absolute URLs. Relative font URLs resolve
+      // below a company-prefixed route (for example /PAP/fonts/...) when the
+      // Vite dev HTML renderer is opened through normal board navigation, and
+      // the SPA fallback then returns HTML with status 200 instead of WOFF2.
+      expect(css).toContain(`url("/fonts/${fileName}")`);
     }
 
     expect(css).toContain('--font-sans: "InterVariable"');

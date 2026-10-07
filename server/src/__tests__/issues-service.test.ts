@@ -4918,6 +4918,109 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     return { issueId, runId };
   }
 
+  it("atomically scopes a generic timer run to the issue claimed by that run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TimerAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "timer",
+      contextSnapshot: { wakeReason: "heartbeat_timer" },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Synthetic timer issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["in_progress"], runId)).resolves.toMatchObject({
+      checkoutRunId: runId,
+      executionRunId: runId,
+    });
+    const [run] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(run?.contextSnapshot).toMatchObject({
+      wakeReason: "heartbeat_timer",
+      issueId,
+      taskId: issueId,
+    });
+  });
+
+  it("fails closed without claiming when the run is scoped to a different issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const otherIssueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TimerAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "timer",
+      contextSnapshot: { wakeReason: "heartbeat_timer", issueId: otherIssueId, taskId: otherIssueId },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Synthetic timer issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["in_progress"], runId)).rejects.toMatchObject({ status: 409 });
+    const [issue] = await db.select({
+      checkoutRunId: issues.checkoutRunId,
+      executionRunId: issues.executionRunId,
+    }).from(issues).where(eq(issues.id, issueId));
+    expect(issue).toEqual({ checkoutRunId: null, executionRunId: null });
+  });
+
   it("clears execution locks owned by terminal runs", async () => {
     const { issueId } = await seedIssueWithRun("failed");
 
