@@ -442,9 +442,10 @@ export function Approvals() {
   const shownCards = useRef<{ pending: Set<string>; openId: string | null }>({ pending: new Set(), openId: null });
   // A row that became compact because its request was decided elsewhere, and should take the focus its card held.
   const refocusLeftRow = useRef<string | null>(null);
-  // When the page last opened a card by itself: after a decision, or because the list that loaded
-  // has another first card than the one shown while it loaded. Null once the reader has picked a
-  // card themselves. See APPROVE_AFTER_ADVANCE_MS.
+  // When a card was last opened where an Approve press may not be meant for it: by the page itself
+  // (after a decision, or because the list that loaded has another first card than the one shown
+  // while it loaded), or by the reader pressing a row's header. Null once the reader has moved with
+  // J/K or undone a hold. See APPROVE_AFTER_ADVANCE_MS.
   const autoAdvance = useRef<number | null>(null);
   // The card shown open, not yet pinned, while the list was still loading.
   const shownUnpinned = useRef<string | null>(null);
@@ -483,6 +484,8 @@ export function Approvals() {
    */
   const openByReader = (id: string | null | undefined) => {
     autoAdvance.current = null;
+    // The list starts again by the reader's own choice: its first card is theirs, not one the page swapped in.
+    if (id === undefined) shownUnpinned.current = null;
     setOpenId(id);
     // The card that was open closes, and when it sat above the pressed row the list moves up by its
     // height: the card just opened is brought back into view. Undo and Show more ask for their own
@@ -570,7 +573,8 @@ export function Approvals() {
       const compactRow = row.hasAttribute("data-approval-decided-row") || row.hasAttribute("data-approval-held-row");
       autoAdvance.current = null;
       setOpenId(compactRow ? null : id);
-      pendingMove.current = { targetId: id, focus: true };
+      // A request taller than the window is shown from its top, as when it is opened by its header.
+      pendingMove.current = { targetId: id, focus: true, readFromTop: true };
       setMoveSeq((seq) => seq + 1);
     };
     document.addEventListener("keydown", handleKeyDown);
@@ -684,7 +688,21 @@ export function Approvals() {
             tone: "error",
             ttlMs: 15_000,
             dedupeKey: `approval-hold-failed:${held.id}`,
-            action: { label: "View request", href: `/approvals/${held.id}` },
+            // Asked when it is pressed, not now: the reader may leave the queue while the toast is up.
+            // While the queue still shows the request the press stays on it and goes to the row. On a
+            // phone the toast lies where the open request's Approve rests, and a tap meant for that
+            // button must not leave the queue. Otherwise it opens the request's own page.
+            action: {
+              label: "View request",
+              onClick: () => {
+                const now = shownRef.current;
+                if (now.mounted && now.companyId === held.companyId && rowElement(held.id)) {
+                  requestMove({ targetId: held.id, focus: true });
+                } else {
+                  navigate(`/approvals/${held.id}`);
+                }
+              },
+            },
           });
         if (!onPage) {
           // The page does not show the request (the reader left, or changed company, tab, filter or sort): say so where they are.
@@ -836,7 +854,8 @@ export function Approvals() {
       // The second press of a double click (or a second Shift+A) just after the page has moved on by
       // itself approves nothing, whichever card it lands on: in the Full cards view the cards below
       // the decided one all move up, and any of their Approve buttons can come to rest under the
-      // pointer. Nothing is marked busy, so the same press works once the moment has passed.
+      // pointer. The same holds just after the reader opened a row by its header: the row opens
+      // where the header was. Nothing is marked busy, so the same press works once the moment has passed.
       const advancedAt = autoAdvance.current;
       if (advancedAt !== null && Math.abs(Date.now() - advancedAt) < APPROVE_AFTER_ADVANCE_MS) return;
     }
@@ -916,7 +935,8 @@ export function Approvals() {
         changedSince &&
         (approval.status !== decided.status || decidedTime(approval) > decidedTime(decided))
       ) {
-        return { record: approval, elsewhere: true };
+        // Unless that later decision is the reader's own, still on its way: it is not called someone else's.
+        return { record: approval, elsewhere: !decisions.inFlight[approval.id] };
       }
       return { record: decided, elsewhere: false };
     }
@@ -1053,7 +1073,9 @@ export function Approvals() {
       takenBack.push({ held: cancelled, sentBack: sentBackMeanwhile });
       // A row out of view cannot say it, and the live region is not seen: then it is said where the
       // reader is too. Not otherwise: the toast would lie over the open request's Approve button.
-      if (!inView) {
+      // It is also said there when the reader sent this request back earlier on this visit: it is
+      // then drawn as a "decided elsewhere" row, which has no place for the line.
+      if (!inView || (sentBackMeanwhile && Boolean(decidedHere[cancelled.id]))) {
         toasts?.pushToast({
           title: `Not approved: ${cancelled.subject}`,
           body: sentBackMeanwhile
@@ -1365,7 +1387,12 @@ export function Approvals() {
                   focusable
                   collapsible={collapsibleList}
                   open={approval.id === effectiveOpenId}
-                  onOpenChange={(next) => openByReader(next ? approval.id : null)}
+                  onOpenChange={(next) => {
+                    openByReader(next ? approval.id : null);
+                    // The card above closes and this one opens where its header was: its Approve can
+                    // now lie under a pointer halfway through a double click, or a second tap.
+                    if (next) autoAdvance.current = Date.now();
+                  }}
                   resolveAgentName={(agentId) =>
                     agents ? (agents.find((a) => a.id === agentId)?.name ?? null) : undefined
                   }

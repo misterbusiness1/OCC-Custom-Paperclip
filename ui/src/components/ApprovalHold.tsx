@@ -10,7 +10,8 @@ export const APPROVE_HOLD_MS = 5_000;
 /**
  * After a decision the queue opens the next request by itself, and the cards below move up: an
  * Approve button can land where the last one was pressed. For this long after such a move an
- * Approve on any card is taken for the second half of a double click, and is ignored.
+ * Approve on any card is taken for the second half of a double click, and is ignored. The same
+ * goes for a row the reader has just opened by its header: its Approve lands where the header was.
  */
 export const APPROVE_AFTER_ADVANCE_MS = 800;
 
@@ -20,6 +21,13 @@ export const APPROVE_AFTER_ADVANCE_MS = 800;
  * left on a row cannot keep an approval unsent for as long as the window stays open.
  */
 export const APPROVE_PAUSE_LIMIT_MS = 30_000;
+
+/**
+ * The least time a hold runs for once that limit has ended its pause, however little it had left
+ * when it was paused (never more than the hold itself): the notice that the pause is over can be
+ * read and heard, and Undo still reached, before the approval goes out.
+ */
+export const APPROVE_AFTER_PAUSE_LIMIT_MS = 3_000;
 
 /** What keeps a hold from running out: the pointer moved onto its row, or keyboard focus on its Undo button. */
 export type ApprovalHoldPauseReason = "pointer" | "focus";
@@ -198,13 +206,15 @@ export function useApprovalHolds({
         if (!paused || paused.pausedBy.size === 0) return;
         // The pointer may still be on the row and focus on Undo: neither holds the clock any longer.
         paused.pausedBy.clear();
+        // A pause that began in the hold's last moment would otherwise end with the approval sent at once.
+        paused.remaining = Math.max(paused.remaining, Math.min(holdMs, APPROVE_AFTER_PAUSE_LIMIT_MS));
         pauseLimitRef.current?.(run(id, paused, true));
       }, hold.pauseLeft);
       const entry: HeldApproval = { ...hold.entry, pausedMs: hold.remaining };
       hold.entry = entry;
       setHeld((current) => (current[id] ? { ...current, [id]: entry } : current));
     },
-    [run],
+    [run, holdMs],
   );
 
   /** Lifts one reason for a pause. Once none is left, the rest of the hold's time runs. */

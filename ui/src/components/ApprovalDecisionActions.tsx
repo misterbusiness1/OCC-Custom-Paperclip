@@ -128,10 +128,12 @@ export function useApprovalDecisionFeedback() {
    * that is still shown. Read from the sets, not the rendered state, so a response handler gets
    * the answer of that moment. A caller that would leave the page on success asks this first:
    * leaving would drop the other request's outcome, or the error and the note already on its row.
+   * `isShown` tells whether a failed request's row is still on the screen: an error no row shows
+   * any longer holds nobody back. It is kept all the same, for when its row comes back.
    */
-  const hasOthersUnsettled = useCallback((id: string) => {
+  const hasOthersUnsettled = useCallback((id: string, isShown?: (other: string) => boolean) => {
     for (const other of sending.current) if (other !== id) return true;
-    for (const other of failed.current) if (other !== id) return true;
+    for (const other of failed.current) if (other !== id && (!isShown || isShown(other))) return true;
     return false;
   }, []);
 
@@ -460,7 +462,13 @@ export const ApprovalDecisionActions = forwardRef<
           <Button
             size="sm"
             className={cn(buttonClassName, approveClassName)}
-            onClick={approve}
+            // The second and later clicks of a double click approve nothing: the first may have been
+            // on a row's header, which opened the row and put this button under the pointer. A press
+            // by the keyboard and Shift+A report no click count, and are taken as before.
+            onClick={(event) => {
+              if (event.detail > 1) return;
+              approve();
+            }}
             disabled={isPending || confirming}
             aria-label={`${pendingAction === "approve" ? "Approving" : (approveLabel ?? "Approve")}: ${subject}`}
             aria-describedby={
