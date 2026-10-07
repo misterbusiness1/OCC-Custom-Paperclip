@@ -70,6 +70,12 @@ export const ApprovalDecisionActions = forwardRef<
     className?: string;
     /** Rendered at the end of the button row, e.g. a link to the detail page. */
     trailing?: ReactNode;
+    /**
+     * Asked on every Approve, from the button or the imperative handle. A
+     * message holds the approval back and is shown beside the buttons; null
+     * lets it send. Reject and Request changes are never held back.
+     */
+    approveGuard?: () => string | null;
   }
 >(function ApprovalDecisionActions(
   {
@@ -84,12 +90,15 @@ export const ApprovalDecisionActions = forwardRef<
     approveClassName,
     className,
     trailing,
+    approveGuard,
   },
   ref,
 ) {
   const [mode, setMode] = useState<Mode>(null);
   const [note, setNote] = useState("");
+  const [heldBackMessage, setHeldBackMessage] = useState<string | null>(null);
   const noteId = useId();
+  const heldBackId = useId();
   const trimmedNote = note.trim();
   const canRequestRevision = Boolean(onRequestRevision) && status === "pending";
   const confirming = mode === "revision" || mode === "reject";
@@ -98,18 +107,24 @@ export const ApprovalDecisionActions = forwardRef<
   useEffect(() => {
     setMode(null);
     setNote("");
+    setHeldBackMessage(null);
   }, [status]);
 
   const approve = () => {
     if (isPending || confirming) return;
+    const heldBack = approveGuard?.() ?? null;
+    setHeldBackMessage(heldBack);
+    if (heldBack) return;
     onApprove(trimmedNote || undefined);
   };
   const openRevision = () => {
     if (isPending || !canRequestRevision) return;
+    setHeldBackMessage(null);
     setMode("revision");
   };
   const openReject = () => {
     if (isPending) return;
+    setHeldBackMessage(null);
     setMode("reject");
   };
   const cancel = () => {
@@ -178,6 +193,16 @@ export const ApprovalDecisionActions = forwardRef<
         </div>
       )}
 
+      {/* Always present, so the message is announced when it appears; it takes no room while empty. */}
+      <p
+        id={heldBackId}
+        role="status"
+        aria-live="polite"
+        className="text-sm font-medium leading-5 text-foreground empty:hidden"
+      >
+        {heldBackMessage}
+      </p>
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -186,6 +211,7 @@ export const ApprovalDecisionActions = forwardRef<
             onClick={approve}
             disabled={isPending || confirming}
             aria-label={`Approve: ${subject}`}
+            aria-describedby={heldBackMessage ? heldBackId : undefined}
           >
             {pendingAction === "approve" ? "Approving..." : "Approve"}
           </Button>

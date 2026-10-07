@@ -33,12 +33,13 @@ Approval detail, shared approval cards, and both inbox presentations place the o
 One shared decision summary is used by the approval card, both inbox presentations, and the approval detail page. It shows what the board is about to approve:
 
 - An email-reply approval (an outgoing `body` with `subject`, `recipient`, or `channel`) shows the draft under a **Draft reply** label, after the decision brief and before the decision buttons. The draft is never used as the original request.
+- The draft body is shown whole when it is at most 1,500 characters (blank space at its end is not counted). A longer body is shown whole on the approval detail page. The card and the inbox row show about its first 1,500 characters, cut at a line or word boundary and ending in `…`, with a **Show full reply (N characters)** button. The body is never clamped to a number of lines.
 - `nextActionOnApproval` appears as **If approved**.
 - Each pro and each risk sits beside one bullet. One leading list marker of its own (`- `, `* `, `• `, `1. `, `1) `) is dropped, so a numbered risk does not show a bullet and a number. An item that is itself a list of several lines keeps its markers.
 
 The summary has two modes:
 
-- **Compact** (card and inbox row). Recommendation, rationale, and next action show their first lines (about three lines, or 180 characters for the recommendation and 220 for the others) with **Show more**. Line breaks are kept, also when nothing is hidden. Pros and risks beyond the first two, a long draft, and a long original request expand in place.
+- **Compact** (card and inbox row). Recommendation, rationale, and next action show their first lines (about three lines, or 180 characters for the recommendation and 220 for the others) with **Show more**. Line breaks are kept, also when nothing is hidden. Pros and risks beyond the first two, a draft of more than 1,500 characters, and a long original request expand in place.
 - **Full** (approval detail page). Nothing is shortened and nothing needs expanding: the whole recommendation, rationale, next action, every pro and risk, the whole draft, and the whole original request are shown above the decision buttons. A Board approval states **Not supplied.** for a recommendation or rationale its request leaves empty; empty pros and risks are stated as on the card. The page heading carries the whole title.
 
 The detail page uses the full summary for Board, hire, and strategy approvals. A budget override, which is resolved in Costs and has no decision buttons here, shows its scope, window, metric, limit, observed amount, and guidance instead. **Full request** below the decision buttons repeats the request with its technical fields; nothing in it is height-capped either, apart from the raw payload.
@@ -56,8 +57,10 @@ Agent-written text on these summaries is shown as plain text, never rendered as 
 
 The approval card, the approval detail page, and Board, hire, and strategy approvals in both inbox presentations use the same decision buttons:
 
-- **Approve** sends at once. **Add a note** attaches an optional `decisionNote`.
+- **Approve** sends at once, with one exception: an outgoing email is never approved while part of it is cut. On the card and in the inbox row, while a long draft is cut, the first **Approve** (a click or `Shift+A`) sends nothing. It opens the whole draft, moves keyboard focus to the draft, scrolls it into view, and shows **Read the full reply, then approve.** beside the buttons. The next **Approve** sends. When the board has already opened the draft with **Show full reply**, **Approve** sends at once; cutting the draft again with **Show less** holds **Approve** back again. In short, **Approve** sends only while the whole draft is on the page. The detail page always shows the whole draft, so **Approve** sends at once there.
+- **Add a note** attaches an optional `decisionNote`. A note typed before **Approve** was held back is kept and sent with the decision.
 - **Request changes** is available while the approval is `pending` and requires a `decisionNote`, so the requester knows what to revise.
 - **Reject** asks for confirmation and accepts an optional reason as the `decisionNote`.
+- **Request changes** and **Reject** are never held back by a cut draft.
 
 Board approvals decided on the Approvals page or in the inbox are decided in place. The Approvals page lists the longest-waiting request first, marks requests that have waited seven days or more, shows linked tasks on each card, and filters by kind. With keyboard shortcuts enabled, `J`/`K` move between cards, and `Shift+A`, `Shift+C`, and `Shift+X` approve, request changes, and reject for the focused card.

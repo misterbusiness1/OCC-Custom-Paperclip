@@ -1,10 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type Ref } from "react";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 import { cn, formatCents } from "@/lib/utils";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import {
   approvalDecisionBrief,
+  approvalDraftPreview,
   approvalEmailDraft,
+  type ApprovalEmailDraft,
   approvalHireFacts,
   approvalOriginalRequest,
   approvalReadableText,
@@ -27,7 +29,6 @@ const moreClass =
   "mt-1 inline-flex min-h-6 items-center text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground";
 const emptyClass = "mt-1 text-sm leading-5 text-muted-foreground";
 const LIST_PREVIEW_COUNT = 2;
-const DRAFT_PREVIEW_LENGTH = 320;
 const SKILL_PREVIEW_COUNT = 6;
 // What a compact surface shows of each field before "Show more".
 const RECOMMENDATION_PREVIEW = { maxLines: 3, maxLength: 180 };
@@ -90,18 +91,78 @@ function DecisionPoints({ label, items, full }: { label: string; items: string[]
   );
 }
 
+/**
+ * Lets the parent that also renders the decision buttons own whether a long
+ * draft is shown whole: Approve must not send a draft that is still cut.
+ */
+export type ApprovalDraftControl = {
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+  /** Receives the draft block, so the parent can move focus to it. */
+  ref?: Ref<HTMLDivElement>;
+};
+
+/** The outgoing draft a summary of this approval shows, if it shows one. */
+function summaryEmailDraft(type: string, payload?: Record<string, unknown> | null) {
+  return type === "request_board_approval" ? approvalEmailDraft(payload) : null;
+}
+
+/** Shown beside the decision buttons when Approve opened a cut draft instead of sending. */
+export const APPROVAL_DRAFT_UNREAD_MESSAGE = "Read the full reply, then approve.";
+
+/**
+ * Keeps an outgoing email from being approved unread. A compact summary cuts a
+ * long draft; while it is cut, the first Approve opens it and moves focus to
+ * it instead of sending. Pass `draftControl` to the summary and `approveGuard`
+ * to the decision buttons rendered beside it.
+ */
+export function useApprovalDraftGate(type: string, payload?: Record<string, unknown> | null) {
+  const [expanded, setExpanded] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const revealRequested = useRef(false);
+  const draft = summaryEmailDraft(type, payload);
+  const isCut = draft !== null && approvalDraftPreview(draft.body) !== null;
+
+  // Runs once the whole draft is on the page, so the scroll sees its real height.
+  useEffect(() => {
+    if (!revealRequested.current) return;
+    revealRequested.current = false;
+    const block = ref.current;
+    if (!block) return;
+    block.focus({ preventScroll: true });
+    block.scrollIntoView?.({ block: "nearest" });
+  });
+
+  /** The message to show when Approve is held back, or null when it may send. */
+  const approveGuard = (): string | null => {
+    if (!isCut || expanded) return null;
+    revealRequested.current = true;
+    setExpanded(true);
+    return APPROVAL_DRAFT_UNREAD_MESSAGE;
+  };
+
+  const draftControl: ApprovalDraftControl = { expanded, onExpandedChange: setExpanded, ref };
+  return { draftControl, approveGuard };
+}
+
 function ApprovalEmailDraftBlock({
-  payload,
+  draft,
   full,
+  control,
 }: {
-  payload?: Record<string, unknown> | null;
+  draft: ApprovalEmailDraft;
   /** Show the whole draft, with nothing to expand. */
   full: boolean;
+  /** Without it the block keeps its own expanded state. */
+  control?: ApprovalDraftControl;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const draft = approvalEmailDraft(payload);
-  if (!draft) return null;
-  const canExpand = !full && draft.body.length > DRAFT_PREVIEW_LENGTH;
+  const [ownExpanded, setOwnExpanded] = useState(false);
+  const labelId = useId();
+  const expanded = control ? control.expanded : ownExpanded;
+  const setExpanded = control ? control.onExpandedChange : setOwnExpanded;
+  // A long draft is cut on compact surfaces only, and always behind a button that states its size.
+  const preview = full ? null : approvalDraftPreview(draft.body);
+  const canExpand = preview !== null;
   const envelope = [
     ["From", draft.from],
     ["To", draft.to],
@@ -109,8 +170,18 @@ function ApprovalEmailDraftBlock({
   ].filter((row): row is [string, string] => Boolean(row[1]));
 
   return (
-    <div className="min-w-0" data-approval-draft>
-      <p className={labelClass}>Draft reply</p>
+    <div
+      ref={control?.ref}
+      className="min-w-0 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      data-approval-draft
+      role="group"
+      aria-labelledby={labelId}
+      // Focusable so a held-back Approve can put the reader on the draft it opened.
+      tabIndex={canExpand ? -1 : undefined}
+    >
+      <p id={labelId} className={labelClass}>
+        Draft reply
+      </p>
       <div className="mt-2 overflow-hidden rounded-lg border border-border/60">
         {envelope.length > 0 && (
           <dl className="space-y-1 border-b border-border/60 bg-muted/30 px-3.5 py-2.5 text-sm">
@@ -122,15 +193,9 @@ function ApprovalEmailDraftBlock({
             ))}
           </dl>
         )}
-        {/* The clamp sits inside the padding so a cut-off line cannot show through it. */}
         <div className="px-3.5 py-3">
-          <div
-            className={cn(
-              "whitespace-pre-wrap break-words text-sm leading-6 text-foreground",
-              canExpand && !expanded && "line-clamp-5",
-            )}
-          >
-            {draft.body}
+          <div className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground" data-approval-draft-body>
+            {canExpand && !expanded ? preview : draft.body}
           </div>
         </div>
       </div>
@@ -139,9 +204,9 @@ function ApprovalEmailDraftBlock({
           type="button"
           className={moreClass}
           aria-expanded={expanded}
-          onClick={() => setExpanded((current) => !current)}
+          onClick={() => setExpanded(!expanded)}
         >
-          {expanded ? "Show less" : "Show full reply"}
+          {expanded ? "Show less" : `Show full reply (${draft.body.length.toLocaleString()} characters)`}
         </button>
       )}
     </div>
@@ -409,6 +474,7 @@ export function ApprovalDecisionSummary({
   resolveAgentName,
   full = false,
   status,
+  draftControl,
 }: {
   type: string;
   payload?: Record<string, unknown> | null;
@@ -419,6 +485,8 @@ export function ApprovalDecisionSummary({
   resolveAgentName?: ApprovalAgentNameResolver;
   /** Show long text in full: for pages with room for it, such as the approval detail page. */
   full?: boolean;
+  /** Hands the draft's expanded state to the parent (see {@link useApprovalDraftGate}); without it the summary keeps its own. */
+  draftControl?: ApprovalDraftControl;
 }) {
   if (type === "hire_agent") {
     return (
@@ -437,7 +505,7 @@ export function ApprovalDecisionSummary({
 
   const brief = approvalDecisionBrief(payload);
   const isBoardApproval = type === "request_board_approval";
-  const hasDraft = isBoardApproval && approvalEmailDraft(payload) !== null;
+  const draft = summaryEmailDraft(type, payload);
   const hasBrief =
     isBoardApproval ||
     Boolean(
@@ -491,7 +559,7 @@ export function ApprovalDecisionSummary({
           Older request: no pros or risks were recorded.
         </p>
       )}
-      {hasDraft && <ApprovalEmailDraftBlock payload={payload} full={full} />}
+      {draft && <ApprovalEmailDraftBlock draft={draft} full={full} control={draftControl} />}
       <DecisionField label="If approved" value={brief.nextAction} {...NEXT_ACTION_PREVIEW} full={full} />
     </div>
   );

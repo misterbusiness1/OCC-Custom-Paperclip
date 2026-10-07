@@ -94,7 +94,11 @@ import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
 import { approvalLabel, approvalMissingSourceNote, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
-import { ApprovalDecisionSummary, type ApprovalAgentNameResolver } from "../components/ApprovalDecisionSummary";
+import {
+  ApprovalDecisionSummary,
+  useApprovalDraftGate,
+  type ApprovalAgentNameResolver,
+} from "../components/ApprovalDecisionSummary";
 import { ApprovalDecisionActions, useSettlingApprovals } from "../components/ApprovalDecisionActions";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
@@ -543,6 +547,8 @@ function ApprovalInboxRow({
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
     ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
+  // A long outgoing draft is cut in the row: the first Approve opens it instead of sending.
+  const draftGate = useApprovalDraftGate(approval.type, approval.payload);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
 
@@ -634,6 +640,7 @@ function ApprovalInboxRow({
           payload={approval.payload}
           status={approval.status}
           resolveAgentName={resolveAgentName}
+          draftControl={draftGate.draftControl}
           className="mt-3"
         />
       )}
@@ -646,6 +653,7 @@ function ApprovalInboxRow({
           onReject={onReject}
           onRequestRevision={approval.requestedByAgentId ? onRequestRevision : undefined}
           isPending={isPending}
+          approveGuard={draftGate.approveGuard}
           buttonClassName="h-8 min-w-(--sz-64px) justify-center px-3"
           approveClassName="bg-green-700 text-white hover:bg-green-600"
         />

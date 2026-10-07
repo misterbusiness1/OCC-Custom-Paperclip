@@ -14,6 +14,7 @@ vi.mock("@/lib/router", () => ({
 import { ApprovalCard } from "./ApprovalCard";
 import { ApprovalDecisionSummary } from "./ApprovalDecisionSummary";
 import {
+  approvalDraftPreview,
   approvalExcerpt,
   approvalReadableText,
   approvalStrategyPlan,
@@ -49,6 +50,30 @@ function createApproval(overrides: Partial<Approval> = {}): Approval {
     createdAt: new Date("2026-10-05T12:00:00.000Z"),
     updatedAt: new Date("2026-10-05T12:00:00.000Z"),
     ...overrides,
+  };
+}
+
+/** The part of an outgoing draft a five-line or 1,500-character cut would hide. */
+const DRAFT_ENDING = "We will ship the same day and split the order at no extra charge.";
+
+/** An email body of exactly `length` characters that ends with the commitment above. */
+function emailDraftBody(length: number): string {
+  const opening = "Hi Sam,\n\nThank you for your message. ";
+  const filler = "Our wholesale terms are in the attached price list. ";
+  const room = length - opening.length - DRAFT_ENDING.length - 2;
+  return `${opening}${filler.repeat(Math.ceil(room / filler.length)).slice(0, room)}\n\n${DRAFT_ENDING}`;
+}
+
+function emailPayload(body: string) {
+  return {
+    title: "Reply to wholesale request",
+    recommendedAction: "Send the drafted reply.",
+    reasoning: "Nothing in the reply commits to a delivery date.",
+    pros: ["Answers both questions."],
+    risks: ["The price list changes next month."],
+    recipient: "buyer@example.test",
+    subject: "Re: Wholesale price list",
+    body,
   };
 }
 
@@ -483,6 +508,153 @@ describe("ApprovalCard", () => {
     press("A", card);
     expect(onApprove).toHaveBeenCalledExactlyOnceWith(undefined);
   });
+
+  describe("with an outgoing email draft", () => {
+    const scrollIntoView = vi.fn();
+    const draftBlock = () => container.querySelector<HTMLElement>("[data-approval-draft]")!;
+    const shownBody = () => draftBlock().querySelector("[data-approval-draft-body]")!.textContent ?? "";
+    const heldBackMessage = () => container.querySelector("[role='status']")!.textContent;
+    const showFullLabel = (body: string) => `Show full reply (${body.length.toLocaleString()} characters)`;
+
+    beforeEach(() => {
+      // jsdom does not implement scrollIntoView.
+      scrollIntoView.mockReset();
+      Element.prototype.scrollIntoView = scrollIntoView;
+    });
+
+    afterEach(() => {
+      delete (Element.prototype as Partial<Element>).scrollIntoView;
+    });
+
+    it.each(["a click", "Shift+A"])(
+      "opens a cut draft and moves focus to it on the first Approve by %s, and sends on the second",
+      (how) => {
+        const onApprove = vi.fn();
+        const body = emailDraftBody(2000);
+        expect(body).toHaveLength(2000);
+        render({
+          approval: createApproval({ payload: emailPayload(body) }),
+          onApprove,
+          onReject: vi.fn(),
+          enableShortcuts: true,
+        });
+        const approve = () =>
+          how === "a click"
+            ? click("Approve")
+            : act(() => {
+                // The shortcut works from wherever focus is inside the card, the opened draft included.
+                const target = container.contains(document.activeElement)
+                  ? document.activeElement!
+                  : container.querySelector("[data-approval-card]")!;
+                target.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true, bubbles: true }));
+              });
+
+        // Cut at a word boundary near 1,500 characters, behind a button that states the size.
+        expect(shownBody()).not.toContain(DRAFT_ENDING);
+        expect(shownBody().endsWith("\u2026")).toBe(true);
+        expect(shownBody().length).toBeGreaterThan(1400);
+        expect(shownBody().length).toBeLessThanOrEqual(1501);
+        expect(body.startsWith(shownBody().slice(0, -1))).toBe(true);
+        expect(button(showFullLabel(body))!.getAttribute("aria-expanded")).toBe("false");
+        expect(draftBlock().querySelector("[class*='line-clamp']")).toBeNull();
+        expect(heldBackMessage()).toBe("");
+
+        approve();
+        expect(onApprove).not.toHaveBeenCalled();
+        expect(shownBody()).toBe(body);
+        expect(button("Show less")!.getAttribute("aria-expanded")).toBe("true");
+        expect(heldBackMessage()).toBe("Read the full reply, then approve.");
+        expect(draftBlock().tabIndex).toBe(-1);
+        expect(document.activeElement).toBe(draftBlock());
+        expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: "nearest" });
+        expect(scrollIntoView.mock.contexts[0]).toBe(draftBlock());
+
+        approve();
+        expect(onApprove).toHaveBeenCalledExactlyOnceWith(undefined);
+        expect(heldBackMessage()).toBe("");
+        expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it("shows a draft of up to 1,500 characters whole and approves it at once", () => {
+      const onApprove = vi.fn();
+      const body = emailDraftBody(900);
+      expect(body).toHaveLength(900);
+      render({ approval: createApproval({ payload: emailPayload(body) }), onApprove, onReject: vi.fn() });
+
+      expect(shownBody()).toBe(body);
+      expect(draftBlock().querySelector("button")).toBeNull();
+      expect(draftBlock().querySelector("[class*='line-clamp']")).toBeNull();
+      expect(draftBlock().hasAttribute("tabindex")).toBe(false);
+
+      click("Approve");
+      expect(onApprove).toHaveBeenCalledExactlyOnceWith(undefined);
+      expect(heldBackMessage()).toBe("");
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(document.activeElement).not.toBe(draftBlock());
+    });
+
+    it("does not hold back Reject or Request changes while the draft is cut", () => {
+      const onApprove = vi.fn();
+      const onReject = vi.fn();
+      const onRequestRevision = vi.fn();
+      const body = emailDraftBody(2000);
+      render({ approval: createApproval({ payload: emailPayload(body) }), onApprove, onReject, onRequestRevision });
+
+      click("Request changes");
+      type("Quote the delivery date");
+      click("Send request");
+      expect(onRequestRevision).toHaveBeenCalledExactlyOnceWith("Quote the delivery date");
+      click("Cancel");
+
+      click("Reject");
+      click("Reject request");
+      expect(onReject).toHaveBeenCalledExactlyOnceWith(undefined);
+
+      expect(button(showFullLabel(body))).toBeDefined();
+      expect(shownBody()).not.toContain(DRAFT_ENDING);
+      expect(heldBackMessage()).toBe("");
+      expect(onApprove).not.toHaveBeenCalled();
+    });
+
+    it("approves at once when the board opened the draft itself, and holds back again once it is cut again", () => {
+      const onApprove = vi.fn();
+      const body = emailDraftBody(2000);
+      render({ approval: createApproval({ payload: emailPayload(body) }), onApprove, onReject: vi.fn() });
+
+      click(showFullLabel(body));
+      expect(shownBody()).toBe(body);
+      click("Approve");
+      expect(onApprove).toHaveBeenCalledTimes(1);
+      expect(heldBackMessage()).toBe("");
+
+      // Approve sends only while the whole draft is on the page.
+      click("Show less");
+      expect(shownBody()).not.toContain(DRAFT_ENDING);
+      click("Approve");
+      expect(onApprove).toHaveBeenCalledTimes(1);
+      expect(shownBody()).toBe(body);
+      expect(heldBackMessage()).toBe("Read the full reply, then approve.");
+      click("Approve");
+      expect(onApprove).toHaveBeenCalledTimes(2);
+    });
+
+    it("sends the note typed before Approve was held back", () => {
+      const onApprove = vi.fn();
+      render({
+        approval: createApproval({ payload: emailPayload(emailDraftBody(2000)) }),
+        onApprove,
+        onReject: vi.fn(),
+      });
+
+      click("Add a note");
+      type("Send it today");
+      click("Approve");
+      expect(onApprove).not.toHaveBeenCalled();
+      click("Approve");
+      expect(onApprove).toHaveBeenCalledExactlyOnceWith("Send it today");
+    });
+  });
 });
 
 describe("ApprovalCard for requests without a source, hires and strategies", () => {
@@ -814,6 +986,31 @@ describe("ApprovalCard for requests without a source, hires and strategies", () 
     expect(container.querySelector("[class*='overflow-y']")).toBeNull();
   });
 
+  it("shows a long email draft whole, with no expander, where the page asks for it", () => {
+    const body = emailDraftBody(2000);
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={emailPayload(body)} full />));
+
+    const draft = container.querySelector("[data-approval-draft]")!;
+    expect(draft.querySelector("[data-approval-draft-body]")!.textContent).toBe(body);
+    expect(draft.querySelector("button")).toBeNull();
+    expect(draft.querySelector("[aria-expanded]")).toBeNull();
+    expect(draft.querySelector("[class*='line-clamp']")).toBeNull();
+    expect(draft.hasAttribute("tabindex")).toBe(false);
+  });
+
+  it("lets a summary used on its own expand and cut a long email draft", () => {
+    const body = emailDraftBody(2000);
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={emailPayload(body)} />));
+    const shownBody = () => container.querySelector("[data-approval-draft-body]")!.textContent ?? "";
+
+    expect(shownBody()).not.toContain(DRAFT_ENDING);
+    act(() => button(`Show full reply (${body.length.toLocaleString()} characters)`)!.click());
+    expect(shownBody()).toBe(body);
+    act(() => button("Show less")!.click());
+    expect(shownBody()).not.toContain(DRAFT_ENDING);
+    expect(button(`Show full reply (${body.length.toLocaleString()} characters)`)).toBeDefined();
+  });
+
   it("shows every skill of a hire and every risk of a strategy in full, where the page asks for it", () => {
     const desiredSkills = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9"];
     act(() => root.render(<ApprovalDecisionSummary type="hire_agent" payload={{ name: "Clerk", desiredSkills }} full />));
@@ -908,6 +1105,27 @@ describe("approval text helpers", () => {
       approvalStrategyPlan({ plan: input });
     }
     expect(performance.now() - started).toBeLessThan(5_000);
+  });
+
+  it("cuts an outgoing draft only above 1,500 characters, at a word or line boundary", () => {
+    expect(approvalDraftPreview("Hi Sam,\n\nShort reply.")).toBeNull();
+    expect(approvalDraftPreview("x".repeat(1500))).toBeNull();
+    // Trailing blank space hides no words.
+    expect(approvalDraftPreview(`${"x".repeat(1500)}\n\n   \n`)).toBeNull();
+
+    const words = "word ".repeat(400);
+    const cut = approvalDraftPreview(words)!;
+    expect(cut.endsWith("word\u2026")).toBe(true);
+    expect(cut.length).toBeLessThanOrEqual(1501);
+    expect(cut.length).toBeGreaterThan(1490);
+
+    // Many short lines are not cut by a line count: only the length counts.
+    const lines = "Line.\n".repeat(300);
+    expect(approvalDraftPreview(lines)!.split("\n").length).toBeGreaterThan(240);
+
+    // An unbroken run is cut at the limit, never between the halves of one character.
+    expect(approvalDraftPreview("x".repeat(1501))).toBe(`${"x".repeat(1500)}\u2026`);
+    expect(approvalDraftPreview(`x${"\u{1F600}".repeat(800)}`)).toBe(`x${"\u{1F600}".repeat(749)}\u2026`);
   });
 
   it("previews by lines and by length, on whole words, and reports every cut", () => {

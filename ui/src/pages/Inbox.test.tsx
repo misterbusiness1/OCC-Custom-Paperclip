@@ -739,6 +739,93 @@ describe("Inbox toolbar", () => {
       expect(text.indexOf("Recommendation")).toBeLessThan(text.indexOf("Why"));
       expect(text.indexOf("Why")).toBeLessThan(text.indexOf("Draft reply"));
       expect(text.indexOf("Draft reply")).toBeLessThan(text.indexOf("ApproveRequest changesReject"));
+      // A short draft is shown whole: there is nothing to expand.
+      expect(draft.querySelector("button")).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([true, false])("opens a cut email draft instead of approving it unread with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    const ending = "We will ship the same day and split the order at no extra charge.";
+    const draftBody = (length: number) => {
+      const filler = "Our wholesale terms are in the attached price list. ";
+      const room = length - ending.length - 2;
+      return `${filler.repeat(Math.ceil(room / filler.length)).slice(0, room)}\n\n${ending}`;
+    };
+    const longBody = draftBody(2000);
+    const shortBody = draftBody(900);
+    expect(longBody).toHaveLength(2000);
+    expect(shortBody).toHaveLength(900);
+    const emailApproval = (id: string, title: string, body: string) => createApproval({
+      id,
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      payload: {
+        title,
+        recommendedAction: "Send the drafted reply",
+        reasoning: "Nothing in the reply commits to a delivery date",
+        recipient: "buyer@example.test",
+        subject: "Re: wholesale order",
+        body,
+      },
+    });
+    apiMocks.approvalsList.mockResolvedValue([
+      emailApproval("approval-long", "Long wholesale reply", longBody),
+      emailApproval("approval-short", "Short wholesale reply", shortBody),
+    ]);
+    apiMocks.approve.mockImplementation(async (id: string) =>
+      createApproval({ id, type: "request_board_approval", status: "approved" }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Long wholesale reply"));
+      const rowFor = (title: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(title))!;
+      const button = (row: Element, label: string) =>
+        [...row.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
+      const shownBody = (row: Element) => row.querySelector("[data-approval-draft-body]")!.textContent ?? "";
+      const heldBack = (row: Element) =>
+        [...row.querySelectorAll("[role='status']")]
+          .some((status) => status.textContent === "Read the full reply, then approve.");
+
+      // The long draft is cut near 1,500 characters behind a button that states its size; the short one is whole.
+      const long = rowFor("Long wholesale reply");
+      const short = rowFor("Short wholesale reply");
+      const draft = long.querySelector<HTMLElement>("[data-approval-draft]")!;
+      expect(shownBody(long)).not.toContain(ending);
+      expect(shownBody(long).endsWith("…")).toBe(true);
+      expect(shownBody(long).length).toBeGreaterThan(1400);
+      expect(draft.querySelector("[class*='line-clamp']")).toBeNull();
+      const expander = button(long, `Show full reply (${longBody.length.toLocaleString()} characters)`);
+      expect(expander.getAttribute("aria-expanded")).toBe("false");
+      expect(shownBody(short)).toBe(shortBody);
+      expect(short.querySelector("[data-approval-draft] button")).toBeNull();
+
+      // The first Approve opens the draft and puts focus on it; nothing is sent.
+      await act(async () => button(long, "Approve").click());
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+      expect(shownBody(long)).toBe(longBody);
+      expect(button(long, "Show less").getAttribute("aria-expanded")).toBe("true");
+      expect(heldBack(long)).toBe(true);
+      expect(heldBack(short)).toBe(false);
+      await vi.waitFor(() => expect(document.activeElement).toBe(draft));
+
+      // A draft that is shown whole is approved at once.
+      await act(async () => button(short, "Approve").click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-short"));
+
+      // With the whole draft on the page, the next Approve sends.
+      await vi.waitFor(() => expect(button(long, "Approve").disabled).toBe(false));
+      await act(async () => button(long, "Approve").click());
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("approval-long"));
+      expect(apiMocks.approve).toHaveBeenCalledTimes(2);
+      expect(heldBack(long)).toBe(false);
+      expect(apiMocks.reject).not.toHaveBeenCalled();
     } finally {
       act(() => root.unmount());
       queryClient.clear();

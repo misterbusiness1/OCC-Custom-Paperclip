@@ -10,7 +10,11 @@ import {
   isEmailReplyPayload,
   typeLabel,
 } from "./ApprovalPayload";
-import { ApprovalDecisionSummary, type ApprovalAgentNameResolver } from "./ApprovalDecisionSummary";
+import {
+  ApprovalDecisionSummary,
+  useApprovalDraftGate,
+  type ApprovalAgentNameResolver,
+} from "./ApprovalDecisionSummary";
 import {
   ApprovalDecisionActions,
   type ApprovalDecisionActionsHandle,
@@ -87,6 +91,8 @@ export function ApprovalCard({
   const waiting = isActionable ? waitingLabel(approval.createdAt) : null;
   const isEmailReply = approval.type === "request_board_approval" && isEmailReplyPayload(payload);
   const missingSourceNote = approvalMissingSourceNote(approval.type, payload);
+  // A long outgoing draft is cut on the card: the first Approve opens it instead of sending.
+  const draftGate = useApprovalDraftGate(approval.type, payload);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -176,6 +182,7 @@ export function ApprovalCard({
         payload={payload}
         status={approval.status}
         resolveAgentName={resolveAgentName}
+        draftControl={draftGate.draftControl}
         className="mt-4 border-t border-border/60 pt-4"
       />
 
@@ -199,6 +206,7 @@ export function ApprovalCard({
               isPending={isPending}
               pendingAction={pendingAction}
               trailing={detailsControl}
+              approveGuard={draftGate.approveGuard}
             />
           ) : (
             <div className="flex justify-end">{detailsControl}</div>
