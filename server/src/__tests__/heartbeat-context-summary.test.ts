@@ -149,7 +149,10 @@ describe("mergeCoalescedContextSnapshot", () => {
         retryOfRunId: "run-1",
         source: "issue.productive_terminal_continuation_recovery",
       },
-      { existingInvocationSource: "timer" },
+      {
+        existingInvocationSource: "timer",
+        validatedRetrySourceMatchesWakeScope: true,
+      },
     );
 
     expect(merged).toMatchObject({
@@ -183,6 +186,25 @@ describe("mergeCoalescedContextSnapshot", () => {
         { existingInvocationSource: "timer" },
       ).wakeReason,
     ).toBe("issue_continuation_needed");
+  });
+
+  it("does not grant timer provenance from a non-empty but unvalidated source run id", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      { issueId: "issue-1", wakeReason: "heartbeat_timer" },
+      {
+        issueId: "issue-1",
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.productive_terminal_continuation_recovery",
+        retryOfRunId: "foreign-run",
+      },
+      {
+        existingInvocationSource: "timer",
+        validatedRetrySourceMatchesWakeScope: false,
+      },
+    );
+
+    expect(merged.wakeReason).toBe("issue_continuation_needed");
   });
 
   it.each(["issue_commented", "issue_comment_mentioned"])(
