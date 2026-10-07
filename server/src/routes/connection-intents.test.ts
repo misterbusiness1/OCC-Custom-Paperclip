@@ -54,7 +54,8 @@ describe("runtime connection MCP contract", () => {
     // An untyped `criteria` reached the tool as prose text from a real agent,
     // so its JSON shapes are declared, and each names the types it serves.
     const criteria = question.properties.criteria.anyOf ?? [];
-    expect(criteria.map((shape) => shape.type)).toEqual(["object", "array"]);
+    expect(criteria.map((shape) => shape.type)).toEqual(["object", "array", "null"]);
+    expect(criteria[2]?.description).toContain("noul only");
     expect(criteria[0]?.description).toContain("choice");
     expect(criteria[0]?.description).toContain("noul");
     expect(criteria[1]?.description).toContain("score");

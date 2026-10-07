@@ -67,6 +67,9 @@ export const RUNTIME_CONNECTION_TOOL_DEFINITIONS = [
                     maxItems: 10,
                     description: "For score (required): the level descriptions, lowest first, each a concrete situation.",
                   },
+                  // The validator reads a null Noul criteria as none. A client
+                  // that checks arguments against this schema must agree.
+                  { type: "null", description: "For noul only: the same as leaving criteria out." },
                 ],
                 description: "The possible answers, as a JSON object or array, never as text. Leave it out for a noul whose question is clear.",
               },
