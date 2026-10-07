@@ -3045,7 +3045,7 @@ function shouldRequireIssueCommentForWake(
   );
 }
 
-function allowsIssueInteractionWake(
+export function allowsIssueInteractionWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
@@ -4379,7 +4379,8 @@ export function mergeCoalescedContextSnapshot(
     ...incoming,
   };
   // The run row is authoritative for how this execution was invoked. When a
-  // continuation recovery coalesces into a genuine scheduler-created timer
+  // productive-terminal continuation recovery coalesces into a genuine
+  // scheduler-created timer
   // run, keep the timer wake reason aligned with invocationSource so runtime
   // consumers still apply timer-specific behavior (for example, starting a
   // fresh task session). Requiring both the persisted run source and the
@@ -4387,7 +4388,12 @@ export function mergeCoalescedContextSnapshot(
   // upgrading an unrelated run to timer provenance.
   if (
     options?.existingInvocationSource === "timer" &&
-    readNonEmptyString(existing.wakeReason) === "heartbeat_timer"
+    readNonEmptyString(existing.wakeReason) === "heartbeat_timer" &&
+    readNonEmptyString(existing.issueId) === readNonEmptyString(incoming.issueId) &&
+    readNonEmptyString(incoming.wakeReason) === "issue_continuation_needed" &&
+    readNonEmptyString(incoming.retryReason) === "issue_continuation_needed" &&
+    readNonEmptyString(incoming.source) === "issue.productive_terminal_continuation_recovery" &&
+    readNonEmptyString(incoming.retryOfRunId) !== null
   ) {
     merged.wakeReason = "heartbeat_timer";
   }
