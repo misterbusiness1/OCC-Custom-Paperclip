@@ -89,6 +89,7 @@ import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
 import { approvalLabel, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
 import { ApprovalDecisionSummary } from "../components/ApprovalDecisionSummary";
+import { ApprovalDecisionActions } from "../components/ApprovalDecisionActions";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import {
@@ -439,6 +440,7 @@ function ApprovalInboxRow({
   requesterName,
   onApprove,
   onReject,
+  onRequestRevision,
   isPending,
   unreadState = null,
   onMarkRead,
@@ -449,8 +451,9 @@ function ApprovalInboxRow({
 }: {
   approval: Approval;
   requesterName: string | null;
-  onApprove: () => void;
-  onReject: () => void;
+  onApprove: (note?: string) => void;
+  onReject: (note?: string) => void;
+  onRequestRevision?: (note: string) => void;
   isPending: boolean;
   unreadState?: NonIssueUnreadState;
   onMarkRead?: () => void;
@@ -530,7 +533,7 @@ function ApprovalInboxRow({
                 <Button
                   size="sm"
                   className="h-8 bg-(--status-task-icon-done) px-3 text-white hover:bg-(--status-task-done)"
-                  onClick={onApprove}
+                  onClick={() => onApprove()}
                   disabled={isPending}
                 >
                   Approve
@@ -539,7 +542,7 @@ function ApprovalInboxRow({
                   variant="destructive"
                   size="sm"
                   className="h-8 px-3"
-                  onClick={onReject}
+                  onClick={() => onReject()}
                   disabled={isPending}
                 >
                   Reject
@@ -552,12 +555,24 @@ function ApprovalInboxRow({
       {showBoardDecisionSummary && (
         <ApprovalDecisionSummary type={approval.type} payload={approval.payload} className="mt-3" />
       )}
-      {showResolutionButtons ? (
-        <div className={cn("mt-3 flex gap-2", !showBoardDecisionSummary && "sm:hidden")}>
+      {showResolutionButtons && showBoardDecisionSummary ? (
+        <ApprovalDecisionActions
+          className="mt-3"
+          subject={label}
+          status={approval.status}
+          onApprove={onApprove}
+          onReject={onReject}
+          onRequestRevision={onRequestRevision}
+          isPending={isPending}
+          buttonClassName="h-8 px-3"
+          approveClassName="bg-(--status-task-icon-done) text-white hover:bg-(--status-task-done)"
+        />
+      ) : showResolutionButtons ? (
+        <div className="mt-3 flex gap-2 sm:hidden">
           <Button
             size="sm"
             className="h-8 bg-(--status-task-icon-done) px-3 text-white hover:bg-(--status-task-done)"
-            onClick={onApprove}
+            onClick={() => onApprove()}
             disabled={isPending}
           >
             Approve
@@ -566,7 +581,7 @@ function ApprovalInboxRow({
             variant="destructive"
             size="sm"
             className="h-8 px-3"
-            onClick={onReject}
+            onClick={() => onReject()}
             disabled={isPending}
           >
             Reject
@@ -1621,11 +1636,13 @@ export function Inbox() {
   }, []);
 
   const approveMutation = useMutation({
-    mutationFn: (id: string) => approvalsApi.approve(id),
-    onSuccess: (_approval, id) => {
+    mutationFn: ({ id, note }: { id: string; note?: string }) =>
+      note ? approvalsApi.approve(id, note) : approvalsApi.approve(id),
+    onSuccess: (approval, { id }) => {
       setActionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
-      navigate(`/approvals/${id}?resolved=approved`);
+      // Board requests are decided in place so the rest of the queue stays in view.
+      if (approval?.type !== "request_board_approval") navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
       setActionError(err instanceof Error ? err.message : "Failed to approve");
@@ -1633,13 +1650,25 @@ export function Inbox() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: (id: string) => approvalsApi.reject(id),
+    mutationFn: ({ id, note }: { id: string; note?: string }) =>
+      note ? approvalsApi.reject(id, note) : approvalsApi.reject(id),
     onSuccess: () => {
       setActionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
       setActionError(err instanceof Error ? err.message : "Failed to reject");
+    },
+  });
+
+  const requestRevisionMutation = useMutation({
+    mutationFn: ({ id, note }: { id: string; note: string }) => approvalsApi.requestRevision(id, note),
+    onSuccess: () => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to request changes");
     },
   });
 
@@ -2908,9 +2937,12 @@ export function Inbox() {
                           approval={item.approval}
                           selected={isSelected}
                           requesterName={agentName(item.approval.requestedByAgentId)}
-                          onApprove={() => approveMutation.mutate(item.approval.id)}
-                          onReject={() => rejectMutation.mutate(item.approval.id)}
-                          isPending={approveMutation.isPending || rejectMutation.isPending}
+                          onApprove={(note) => approveMutation.mutate({ id: item.approval.id, note })}
+                          onReject={(note) => rejectMutation.mutate({ id: item.approval.id, note })}
+                          onRequestRevision={(note) => requestRevisionMutation.mutate({ id: item.approval.id, note })}
+                          isPending={
+                            approveMutation.isPending || rejectMutation.isPending || requestRevisionMutation.isPending
+                          }
                           unreadState={nonIssueUnreadState(approvalKey)}
                           onMarkRead={() => handleMarkNonIssueRead(approvalKey)}
                           onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(approvalKey) : undefined}
