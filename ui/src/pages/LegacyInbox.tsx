@@ -109,8 +109,10 @@ import {
   type ApprovalPendingAction,
 } from "../components/ApprovalDecisionActions";
 import {
+  ApprovalChangesAskedFor,
   ApprovalRevisedNotice,
   ApprovalWaitingOnRequester,
+  approvalChangesAskedFor,
   composeApproveGuards,
   useApprovalRevisionGuard,
 } from "../components/ApprovalRevision";
@@ -523,6 +525,10 @@ function ApprovalInboxRow({
   if (isOpenRequest) lastOpenStatus.current = approval.status;
   const summaryStatus = lastOpenStatus.current;
   const showSummary = showDecisionSummary && summaryStatus !== null;
+  // The change request a revised request answers. Kept like the summary once the request is
+  // decided from this row, so the lines below it do not move.
+  const changesAskedFor = useRef<string | null>(null);
+  if (isOpenRequest) changesAskedFor.current = approvalChangesAskedFor(approval);
   // A new request above this row, a row gone, a re-sort: this row's Approve may now lie where the
   // pointer was resting on another row's. A pointer press on it then waits, as on the approval's page.
   const movedAt = useRowMovedAt(listPosition);
@@ -626,6 +632,8 @@ function ApprovalInboxRow({
         ) : null}
       </div>
       <ApprovalRevisedNotice guard={revision} className="mt-3" />
+      {/* A revised request: the change request it answers, above the summary. */}
+      {showSummary && <ApprovalChangesAskedFor note={changesAskedFor.current} className="mt-3" />}
       {showSummary && (
         <ApprovalDecisionSummary
           type={approval.type}

@@ -1269,6 +1269,47 @@ describe("Inbox toolbar", () => {
     }
   });
 
+  it.each([true, false])("shows the change request a revised request answers on its row with streamlined UI %s", async (streamlinedUi) => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });
+    apiMocks.approvalsList.mockResolvedValue([
+      // Sent back and resubmitted: pending again, and the server kept the board's note on it.
+      createApproval({
+        id: "approval-revised",
+        type: "request_board_approval",
+        decisionNote: "Quote the delivery date.\nName the carrier.",
+        payload: { title: "Revised request", recommendedAction: "Approve it", reasoning: "It fits the request" },
+      }),
+      createApproval({
+        id: "approval-first",
+        type: "request_board_approval",
+        payload: { title: "First request", recommendedAction: "Approve it", reasoning: "It fits the request" },
+      }),
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Revised request"));
+      const rowFor = (title: string) =>
+        [...container.querySelectorAll("[data-inbox-item]")].find((item) => item.textContent?.includes(title))!;
+
+      const revised = rowFor("Revised request");
+      const asked = revised.querySelector<HTMLElement>("[data-approval-changes-asked]")!;
+      expect(asked.textContent).toBe("Changes you asked forQuote the delivery date.\nName the carrier.");
+      // Above the summary and the buttons, and the request can still be decided from the row.
+      const approve = [...revised.querySelectorAll("button")].find((candidate) => candidate.textContent === "Approve")!;
+      expect(approve).toBeDefined();
+      expect(asked.compareDocumentPosition(approve) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(revised.querySelector("[data-approval-sent-back]")).toBeNull();
+      // A request nobody sent back shows no such note.
+      expect(rowFor("First request").querySelector("[data-approval-changes-asked]")).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it.each([true, false])("holds Approve back when a request is revised while its row is open with streamlined UI %s", async (streamlinedUi) => {
     routerMock.location.pathname = "/inbox/mine";
     apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: streamlinedUi });

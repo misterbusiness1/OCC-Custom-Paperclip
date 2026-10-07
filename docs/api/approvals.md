@@ -79,6 +79,10 @@ POST /api/approvals/{approvalId}/resubmit
 { "payload": { "updated": "config..." } }
 ```
 
+Only a `revision_requested` approval can be resubmitted (`422` otherwise). An agent can resubmit only an approval it requested. `payload` is optional; without it the stored payload is kept.
+
+The approval returns to `pending` with `decidedAt` and `decidedByUserId` cleared. `decisionNote` is kept: on a `pending` approval it is the board's change request that this revision answers. The next decision overwrites it.
+
 ## Linked Issues
 
 ```

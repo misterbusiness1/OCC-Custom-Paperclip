@@ -26,6 +26,7 @@ import {
 } from "./ApprovalDecisionActions";
 import {
   ApprovalChangesAskedFor,
+  approvalChangesAskedFor,
   ApprovalRevisedNotice,
   ApprovalWaitingOnRequester,
   composeApproveGuards,
@@ -167,9 +168,9 @@ export function ApprovalCard({
    */
   announceError?: boolean;
   /**
-   * The change request the reader sent for this request earlier on this visit. The server deletes
-   * it when the request is resubmitted, so the page hands its own copy to the card that comes back:
-   * the revision can then be read against what was asked. Shown above the summary, as plain text.
+   * The change request the reader sent for this request earlier on this visit. The server keeps
+   * the note on the resubmitted request and the card shows that one. This copy is used only when
+   * the request carries none (an older server deleted it). Shown above the summary, as plain text.
    */
   changesAskedFor?: string | null;
 }) {
@@ -318,7 +319,10 @@ export function ApprovalCard({
     <>
       <ApprovalRevisedNotice guard={revision} className="mt-4" />
 
-      <ApprovalChangesAskedFor note={changesAskedFor} className="mt-4 border-t border-border/60 pt-4" />
+      <ApprovalChangesAskedFor
+        note={approvalChangesAskedFor(approval) ?? changesAskedFor}
+        className="mt-4 border-t border-border/60 pt-4"
+      />
 
       <ApprovalDecisionSummary
         type={approval.type}
@@ -330,7 +334,8 @@ export function ApprovalCard({
         className="mt-4 border-t border-border/60 pt-4"
       />
 
-      {approval.decisionNote && !isSentBack && (
+      {/* On a pending request the note is the change request it answers, shown above the summary. */}
+      {approval.decisionNote && !isSentBack && approval.status !== "pending" && (
         <div
           className="mt-4 whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground"
           data-approval-decision-note

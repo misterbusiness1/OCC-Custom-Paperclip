@@ -262,19 +262,26 @@ export function approvalService(db: Db) {
       }
 
       const now = new Date();
-      return db
+      // decisionNote is left as it is: it holds the board's change request, so the
+      // revision can be read against it. The next decision overwrites it.
+      const updated = await db
         .update(approvals)
         .set({
           status: "pending",
           payload: payload ?? existing.payload,
-          decisionNote: null,
           decidedByUserId: null,
           decidedAt: null,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        // The status is checked again in the write: a request decided or
+        // resubmitted since the read above is not set back to pending.
+        .where(and(eq(approvals.id, id), eq(approvals.status, "revision_requested")))
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0] ?? null);
+      if (!updated) {
+        throw unprocessable("Only revision requested approvals can be resubmitted");
+      }
+      return updated;
     },
 
     listComments: async (approvalId: string) => {

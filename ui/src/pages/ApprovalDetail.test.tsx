@@ -624,6 +624,8 @@ describe("ApprovalDetail", () => {
       const unbroken = "x".repeat(400);
       for (const [status, label] of [
         ["revision_requested", "Changes you asked for"],
+        // Resubmitted: the server kept the change request on the revised request.
+        ["pending", "Changes you asked for"],
         ["approved", "Decision note"],
         ["rejected", "Decision note"],
       ] as const) {
@@ -741,7 +743,8 @@ describe("ApprovalDetail", () => {
       expect(confirm).toHaveBeenCalledExactlyOnceWith(MARK_RESUBMITTED_CONFIRM);
       // The three things the press does, in the board's words.
       expect(MARK_RESUBMITTED_CONFIRM).toContain("returns to the queue unchanged");
-      expect(MARK_RESUBMITTED_CONFIRM).toContain("Your change request is deleted");
+      expect(MARK_RESUBMITTED_CONFIRM).toContain("Your change request stays on it");
+      expect(MARK_RESUBMITTED_CONFIRM).not.toContain("deleted");
       expect(MARK_RESUBMITTED_CONFIRM).toContain("the requester can no longer resubmit");
       expect(apiMocks.resubmit).not.toHaveBeenCalled();
       // The note is still on the page and the button can be pressed again.

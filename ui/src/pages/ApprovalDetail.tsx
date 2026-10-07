@@ -45,10 +45,10 @@ const UNKNOWN_AGENT_NAME = "An agent";
 const BREADCRUMB_SUBJECT_LENGTH = 40;
 /**
  * Asked before "Mark resubmitted" is sent. The server sets the request back to pending as it is,
- * deletes the decision note, and from then on refuses the requester's own resubmission.
+ * keeps the change request on it, and from then on refuses the requester's own resubmission.
  */
 export const MARK_RESUBMITTED_CONFIRM =
-  "Mark this request as resubmitted? It returns to the queue unchanged. Your change request is deleted, " +
+  "Mark this request as resubmitted? It returns to the queue unchanged. Your change request stays on it, " +
   "and the requester can no longer resubmit a revised version.";
 
 export function ApprovalDetail() {
@@ -186,7 +186,7 @@ export function ApprovalDetail() {
     onError: (err) => failDecision(err instanceof Error ? err.message : "Resubmit failed"),
   });
 
-  // One stray press would put the unchanged request back in the queue and erase the board's change request.
+  // One stray press would put the unchanged request back in the queue and lock the requester out of revising it.
   const markResubmitted = () => {
     if (!window.confirm(MARK_RESUBMITTED_CONFIRM)) return;
     resubmitMutation.mutate();
@@ -330,7 +330,10 @@ export function ApprovalDetail() {
           {approval.decisionNote && (
             <div className="border-t border-border/60 pt-4">
               <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                {approval.status === "revision_requested" ? APPROVAL_CHANGES_ASKED_LABEL : "Decision note"}
+                {/* Sent back, or resubmitted since: the note is the board's change request. */}
+                {approval.status === "revision_requested" || approval.status === "pending"
+                  ? APPROVAL_CHANGES_ASKED_LABEL
+                  : "Decision note"}
               </p>
               {/* The board's own words, as typed: a numbered list of changes keeps its lines. */}
               <p

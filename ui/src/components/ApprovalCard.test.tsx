@@ -477,6 +477,55 @@ describe("ApprovalCard", () => {
     });
   });
 
+  describe("a revised request that carries the board's change request", () => {
+    const REVISED = {
+      status: "pending",
+      decisionNote: "Quote the delivery date.\nUse the November price list.",
+      decidedByUserId: null,
+      decidedAt: null,
+    } as const;
+    const asked = () => container.querySelector<HTMLElement>("[data-approval-changes-asked]");
+
+    it("shows the note as the changes asked for, above the summary and the buttons", () => {
+      render({ approval: createApproval(REVISED), onApprove: vi.fn(), onReject: vi.fn() });
+
+      expect(asked()!.textContent).toBe("Changes you asked forQuote the delivery date.\nUse the November price list.");
+      // Never under the label of a decision: nothing has been decided on this version.
+      expect(container.querySelector("[data-approval-decision-note]")).toBeNull();
+      expect(container.textContent).not.toContain("Decision note");
+      const approve = button("Approve")!;
+      expect(approve).toBeDefined();
+      expect(asked()!.compareDocumentPosition(approve) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("prefers the note on the request over the copy the page kept", () => {
+      render({
+        approval: createApproval(REVISED),
+        changesAskedFor: "An older copy",
+        onApprove: vi.fn(),
+        onReject: vi.fn(),
+      });
+      expect(asked()!.textContent).toContain("Quote the delivery date.");
+      expect(container.textContent).not.toContain("An older copy");
+    });
+
+    it("falls back to the page's copy when the request carries no note", () => {
+      render({
+        approval: createApproval({ ...REVISED, decisionNote: null }),
+        changesAskedFor: "Kept by the page",
+        onApprove: vi.fn(),
+        onReject: vi.fn(),
+      });
+      expect(asked()!.textContent).toBe("Changes you asked forKept by the page");
+    });
+
+    it("shows nothing for a blank note", () => {
+      render({ approval: createApproval({ ...REVISED, decisionNote: "  \n " }), onApprove: vi.fn(), onReject: vi.fn() });
+      expect(asked()).toBeNull();
+      expect(container.textContent).not.toContain("Decision note");
+    });
+  });
+
   it("says when a closed request was decided, and never by whom as an id", () => {
     const decided = {
       decidedAt: new Date("2026-10-06T10:00:00.000Z"),

@@ -783,7 +783,7 @@ describe("Approvals", () => {
       await click(button(rows()[0], "Send request"));
       await vi.waitFor(() => expect(rows()[0].textContent).toContain("revision requested"));
 
-      // The requester resubmits. The server has deleted the note; the page still holds it.
+      // The requester resubmits. An older server deletes the note; the page still holds it.
       approvals = approvals.map((approval) =>
         approval.id === "oldest"
           ? { ...approval, status: "pending", decisionNote: null, decidedAt: null, updatedAt: new Date(Date.now() + 1000) }
@@ -814,6 +814,24 @@ describe("Approvals", () => {
       await vi.waitFor(() => expect(rows()[0].textContent).toContain("rejected"));
       expect(asked(rows()[0])).toBeNull();
       expect(container.textContent).not.toContain("Quote the delivery date.");
+    });
+
+    it("shows the change request the server kept on a revised request, also on a later visit", async () => {
+      // Sent back and resubmitted before this visit: the page holds no copy, the request carries the note.
+      approvals = approvals.map((approval) =>
+        approval.id === "oldest" ? { ...approval, decisionNote: "1. Quote the delivery date.\n2. Name the carrier." } : approval,
+      );
+      const asked = (row: HTMLElement) => row.querySelector<HTMLElement>("[data-approval-changes-asked]");
+      await render();
+
+      const note = asked(rows()[0])!;
+      expect(note.textContent).toBe("Changes you asked for1. Quote the delivery date.\n2. Name the carrier.");
+      // It is the request's change request, not a decision: the card says so once, above the buttons.
+      expect(rows()[0].querySelector("[data-approval-decision-note]")).toBeNull();
+      expect(note.compareDocumentPosition(button(rows()[0], "Approve")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(rows().filter((row) => asked(row))).toHaveLength(1);
+      // The request still needs a decision and is counted as one.
+      expect(toDecideTab()).toBe("To decide3");
     });
 
     it("shows them as cards without decision buttons under All decisions", async () => {

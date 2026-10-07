@@ -54,6 +54,7 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
     db: { select, update },
     selectWhere,
     returning,
+    set,
   };
 }
 
@@ -144,6 +145,48 @@ describe("approvalService resolution idempotency", () => {
     await expect(svc.approve("not-a-uuid", "board")).rejects.toMatchObject({ status: 404 });
     await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
     expect(dbStub.db.select).not.toHaveBeenCalled();
+  });
+});
+
+describe("approvalService.resubmit", () => {
+  it("keeps the board's change request on the resubmitted approval", async () => {
+    const sentBack = { ...createApproval("revision_requested"), decisionNote: "Quote the delivery date." };
+    const dbStub = createDbStub([[sentBack]], [{ ...sentBack, status: "pending" }]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.resubmit(APPROVAL_ID, { agentId: "agent-2" });
+
+    expect(result.status).toBe("pending");
+    expect(dbStub.set).toHaveBeenCalledTimes(1);
+    const written = dbStub.set.mock.calls[0]![0] as Record<string, unknown>;
+    // The note is not written at all, so the stored change request stays.
+    expect(Object.keys(written)).not.toContain("decisionNote");
+    expect(written).toMatchObject({
+      status: "pending",
+      payload: { agentId: "agent-2" },
+      decidedByUserId: null,
+      decidedAt: null,
+    });
+    expect(written.updatedAt).toBeInstanceOf(Date);
+  });
+
+  it("refuses an approval that is not sent back, without writing", async () => {
+    const dbStub = createDbStub([[createApproval("pending")]], []);
+
+    const svc = approvalService(dbStub.db as any);
+    await expect(svc.resubmit(APPROVAL_ID)).rejects.toMatchObject({ status: 422 });
+    expect(dbStub.set).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the approval left revision_requested between the read and the write", async () => {
+    // The read sees it sent back; the guarded write then matches no row.
+    const dbStub = createDbStub([[createApproval("revision_requested")]], []);
+
+    const svc = approvalService(dbStub.db as any);
+    await expect(svc.resubmit(APPROVAL_ID)).rejects.toMatchObject({
+      status: 422,
+      message: "Only revision requested approvals can be resubmitted",
+    });
   });
 });
 
