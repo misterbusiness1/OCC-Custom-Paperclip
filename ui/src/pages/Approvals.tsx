@@ -14,6 +14,11 @@ import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { ShieldCheck } from "lucide-react";
 import { ApprovalCard } from "../components/ApprovalCard";
+import {
+  approvalDecisionErrorText,
+  useApprovalDecisionFeedback,
+  type ApprovalDecisionKind,
+} from "../components/ApprovalDecisionActions";
 import { approvalExcerpt, approvalSubject, isEmailReplyPayload, typeLabel } from "../components/ApprovalPayload";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { StatusBadge } from "../components/StatusBadge";
@@ -22,7 +27,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 
 type StatusFilter = "pending" | "all";
 type SortOrder = "oldest" | "newest";
-type Decision = { id: string; note?: string };
+type Decision = { id: string; note?: string; subject: string };
 const PAGE_SIZE = 20;
 const EMAIL_REPLY_KIND = "email_reply";
 
@@ -40,10 +45,22 @@ function kindLabel(kind: string): string {
   return kind === EMAIL_REPLY_KIND ? "Email replies" : (typeLabel[kind] ?? kind);
 }
 
+/** The name a request goes by on its card, in its compact row and in announcements. */
+function approvalDisplaySubject(approval: Approval): string {
+  return (
+    approvalExcerpt(approvalSubject(approval.payload, approval.type), 120) ?? typeLabel[approval.type] ?? approval.type
+  );
+}
+
+const DECISION_LANDED_LEAD: Record<ApprovalDecisionKind, string> = {
+  approve: "Approved",
+  reject: "Rejected",
+  revision: "Changes requested",
+};
+
 /** What is left of a card once it is decided here, so the queue keeps its place. */
 function DecidedApprovalRow({ approval, focusable }: { approval: Approval; focusable: boolean }) {
-  const subject =
-    approvalExcerpt(approvalSubject(approval.payload, approval.type), 120) ?? typeLabel[approval.type] ?? approval.type;
+  const subject = approvalDisplaySubject(approval);
   return (
     <div
       className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border/70 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -76,7 +93,11 @@ export function Approvals() {
   const location = useLocation();
   const pathSegment = location.pathname.split("/").pop() ?? "pending";
   const statusFilter: StatusFilter = pathSegment === "all" ? "all" : "pending";
-  const [actionError, setActionError] = useState<string | null>(null);
+  // In-flight state and the last error are kept per request, so each card answers for its own decision.
+  const decisions = useApprovalDecisionFeedback();
+  const { settle: settleDecision, clearErrors: clearDecisionErrors } = decisions;
+  // Read out by screen readers when a decision lands or fails; a new entry is announced even when its text repeats.
+  const [announcement, setAnnouncement] = useState<{ seq: number; text: string } | null>(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [sortOverride, setSortOverride] = useState<SortOrder | null>(null);
   const [kindFilter, setKindFilter] = useState<string>("all");
@@ -95,7 +116,9 @@ export function Approvals() {
     setVisibleCount(PAGE_SIZE);
     setKindFilter("all");
     setDecidedHere({});
-  }, [statusFilter, selectedCompanyId]);
+    clearDecisionErrors();
+    setAnnouncement(null);
+  }, [statusFilter, selectedCompanyId, clearDecisionErrors]);
 
   useEffect(() => {
     if (!keyboardShortcutsEnabled) return;
@@ -132,39 +155,56 @@ export function Approvals() {
     enabled: !!selectedCompanyId,
   });
 
-  const handleDecided = (approval: Approval) => {
-    setActionError(null);
+  const announce = (text: string) =>
+    setAnnouncement((current) => ({ seq: (current?.seq ?? 0) + 1, text }));
+
+  // These run once for every decision sent, also when several are on their way at once.
+  const handleDecided = (action: ApprovalDecisionKind) => (approval: Approval, { id, subject }: Decision) => {
+    settleDecision(id);
     setDecidedHere((current) => ({ ...current, [approval.id]: approval }));
+    announce(`${DECISION_LANDED_LEAD[action]}: ${subject}`);
     queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(approval.id) });
+  };
+  const handleFailed = (action: ApprovalDecisionKind) => (err: unknown, { id, subject }: Decision) => {
+    settleDecision(id, approvalDecisionErrorText(action, err));
+    announce(approvalDecisionErrorText(action, err, subject));
+    // An error does not prove the decision was not stored: reload, so the card shows the status the server holds.
+    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(id) });
   };
 
   const approveMutation = useMutation({
     mutationFn: ({ id, note }: Decision) => (note ? approvalsApi.approve(id, note) : approvalsApi.approve(id)),
-    onSuccess: handleDecided,
-    onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
-    },
+    onSuccess: handleDecided("approve"),
+    onError: handleFailed("approve"),
   });
 
   const rejectMutation = useMutation({
     mutationFn: ({ id, note }: Decision) => (note ? approvalsApi.reject(id, note) : approvalsApi.reject(id)),
-    onSuccess: handleDecided,
-    onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
-    },
+    onSuccess: handleDecided("reject"),
+    onError: handleFailed("reject"),
   });
 
   const revisionMutation = useMutation({
     mutationFn: ({ id, note }: Decision) => approvalsApi.requestRevision(id, note),
-    onSuccess: handleDecided,
-    onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to request changes");
-    },
+    onSuccess: handleDecided("revision"),
+    onError: handleFailed("revision"),
   });
 
+  const decide = (approval: Approval, action: ApprovalDecisionKind, note?: string) => {
+    // A request whose decision is still on its way is not sent a second one.
+    if (!decisions.start(approval.id, action)) return;
+    const decision: Decision = { id: approval.id, note, subject: approvalDisplaySubject(approval) };
+    if (action === "approve") approveMutation.mutate(decision);
+    else if (action === "reject") rejectMutation.mutate(decision);
+    else revisionMutation.mutate(decision);
+  };
+
+  // A request whose decision came back as an error stays listed with that error, whatever status the reload shows.
   const inTab = (data ?? []).filter(
-    (a) => statusFilter === "all" || isActionable(a) || Boolean(decidedHere[a.id]),
+    (a) =>
+      statusFilter === "all" || isActionable(a) || Boolean(decidedHere[a.id]) || Boolean(decisions.errors[a.id]),
   );
   const kinds = Array.from(new Set(inTab.map(approvalKind)));
   const activeKind = kinds.includes(kindFilter) ? kindFilter : "all";
@@ -251,8 +291,10 @@ export function Approvals() {
         </div>
       )}
 
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
-      {actionError && <p role="alert" className="text-sm text-destructive">{actionError}</p>}
+      {error && <p role="alert" className="text-sm text-destructive">{error.message}</p>}
+      <div aria-live="polite" className="sr-only" data-approval-announcements="">
+        {announcement && <p key={announcement.seq}>{announcement.text}</p>}
+      </div>
 
       {filtered.length === 0 && (
         <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -273,20 +315,20 @@ export function Approvals() {
                   <DecidedApprovalRow key={approval.id} approval={decided} focusable={keyboardShortcutsEnabled} />
                 );
               }
-              const approving = approveMutation.isPending && approveMutation.variables?.id === approval.id;
-              const rejecting = rejectMutation.isPending && rejectMutation.variables?.id === approval.id;
-              const revising = revisionMutation.isPending && revisionMutation.variables?.id === approval.id;
+              const pendingAction = decisions.inFlight[approval.id] ?? null;
               return (
                 <ApprovalCard
                   key={approval.id}
                   approval={approval}
                   requesterAgent={approval.requestedByAgentId ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null : null}
-                  onApprove={(note) => approveMutation.mutate({ id: approval.id, note })}
-                  onReject={(note) => rejectMutation.mutate({ id: approval.id, note })}
-                  onRequestRevision={(note) => revisionMutation.mutate({ id: approval.id, note })}
+                  onApprove={(note) => decide(approval, "approve", note)}
+                  onReject={(note) => decide(approval, "reject", note)}
+                  onRequestRevision={(note) => decide(approval, "revision", note)}
                   detailLink={`/approvals/${approval.id}`}
-                  isPending={approving || rejecting || revising}
-                  pendingAction={approving ? "approve" : rejecting ? "reject" : revising ? "revision" : null}
+                  isPending={pendingAction !== null}
+                  pendingAction={pendingAction}
+                  error={decisions.errors[approval.id] ?? null}
+                  onDismissError={() => decisions.clearError(approval.id)}
                   linkedIssues={linkedIssueQueries[index]?.data}
                   enableShortcuts={keyboardShortcutsEnabled}
                   resolveAgentName={(agentId) =>

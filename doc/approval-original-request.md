@@ -63,4 +63,19 @@ The approval card, the approval detail page, and Board, hire, and strategy appro
 - **Reject** asks for confirmation and accepts an optional reason as the `decisionNote`.
 - **Request changes** and **Reject** are never held back by a cut draft.
 
+The note, change-request, and reject panels work from the keyboard:
+
+- Opening a panel puts the cursor in its field. `Escape` or **Cancel** closes the panel, discards what was typed, and returns focus to the button that opened it.
+- `Ctrl+Enter` or `Cmd+Enter` in the field sends the open confirmation: the change request (only when a note is written) or the rejection. There is no such key for **Approve**.
+- The panel is a group named by its prompt. **Reject this request?** is also read out with the reason field.
+
+Feedback for a decision stays with the request it belongs to:
+
+- While a decision is being sent, only that request's buttons are disabled. The pressed button shows its busy label (**Approving...**, **Sending...**, **Rejecting...**) and the control is marked busy for assistive technology. Other cards and inbox rows stay usable, and a second decision for a request that is still sending is not sent.
+- A decision that comes back as an error is reported on that request, directly above its buttons, as an alert: **Error while approving: _message_** (or **rejecting**, **requesting changes**). The typed note is kept. The error is removed when the board edits the note or sends the decision again. An inbox row with the plain **Approve** / **Reject** buttons shows the same line under them.
+- The error does not say the request is still undecided. The server stores a decision before it runs what follows from it (activating a hire, writing the activity log, waking the requester), so an error can come back for a decision that was stored. The Approvals page and the detail page therefore reload after an error and show the status the server holds; the request stays listed with its error even when it can no longer be decided. The inbox does not reload on an error.
+- The Approvals page has one visually hidden live region that announces each outcome: **Approved: _title_**, **Rejected: _title_**, **Changes requested: _title_**, or **Error while approving _title_: _message_**.
+- The line at the top of the Approvals page is only for a failure to load the list. The line at the top of the inbox is for failures that do not belong to an approval row (join requests, archiving). On the detail page, a comment or delete failure is shown beside its own button.
+- Approval cards on a task page still report a failed decision as a toast.
+
 Board approvals decided on the Approvals page or in the inbox are decided in place. The Approvals page lists the longest-waiting request first, marks requests that have waited seven days or more, shows linked tasks on each card, and filters by kind. With keyboard shortcuts enabled, `J`/`K` move between cards, and `Shift+A`, `Shift+C`, and `Shift+X` approve, request changes, and reject for the focused card.

@@ -99,7 +99,13 @@ import {
   useApprovalDraftGate,
   type ApprovalAgentNameResolver,
 } from "../components/ApprovalDecisionSummary";
-import { ApprovalDecisionActions, useSettlingApprovals } from "../components/ApprovalDecisionActions";
+import {
+  ApprovalDecisionActions,
+  approvalDecisionErrorText,
+  useApprovalDecisionFeedback,
+  useSettlingApprovals,
+  type ApprovalPendingAction,
+} from "../components/ApprovalDecisionActions";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import {
@@ -512,6 +518,9 @@ function ApprovalInboxRow({
   onRequestRevision,
   resolveAgentName,
   isPending,
+  pendingAction = null,
+  error = null,
+  onDismissError,
   unreadState = null,
   onMarkRead,
   onArchive,
@@ -525,7 +534,12 @@ function ApprovalInboxRow({
   onReject: (note?: string) => void;
   onRequestRevision?: (note: string) => void;
   resolveAgentName?: ApprovalAgentNameResolver;
+  /** True only while this row's own decision is on its way or settling. */
   isPending: boolean;
+  pendingAction?: ApprovalPendingAction;
+  /** What went wrong with the last decision sent from this row. */
+  error?: string | null;
+  onDismissError?: () => void;
   unreadState?: NonIssueUnreadState;
   onMarkRead?: () => void;
   onArchive?: () => void;
@@ -618,7 +632,7 @@ function ApprovalInboxRow({
                   onClick={() => onApprove()}
                   disabled={isPending}
                 >
-                  Approve
+                  {pendingAction === "approve" ? "Approving..." : "Approve"}
                 </Button>
                 <Button
                   variant="destructive"
@@ -627,7 +641,7 @@ function ApprovalInboxRow({
                   onClick={() => onReject()}
                   disabled={isPending}
                 >
-                  Reject
+                  {pendingAction === "reject" ? "Rejecting..." : "Reject"}
                 </Button>
               </>
             ) : null}
@@ -653,6 +667,9 @@ function ApprovalInboxRow({
           onReject={onReject}
           onRequestRevision={approval.requestedByAgentId ? onRequestRevision : undefined}
           isPending={isPending}
+          pendingAction={pendingAction}
+          error={error}
+          onDismissError={onDismissError}
           approveGuard={draftGate.approveGuard}
           buttonClassName="h-8 min-w-(--sz-64px) justify-center px-3"
           approveClassName="bg-green-700 text-white hover:bg-green-600"
@@ -665,7 +682,7 @@ function ApprovalInboxRow({
             onClick={() => onApprove()}
             disabled={isPending}
           >
-            Approve
+            {pendingAction === "approve" ? "Approving..." : "Approve"}
           </Button>
           <Button
             variant="destructive"
@@ -674,9 +691,15 @@ function ApprovalInboxRow({
             onClick={() => onReject()}
             disabled={isPending}
           >
-            Reject
+            {pendingAction === "reject" ? "Rejecting..." : "Reject"}
           </Button>
         </div>
+      ) : null}
+      {/* The shared controls above show their own error; every other row shows it here, under its buttons. */}
+      {error && !(showResolutionButtons && showDecisionSummary) ? (
+        <p role="alert" className="mt-2 break-words text-sm font-medium leading-5 text-destructive">
+          {error}
+        </p>
       ) : null}
     </div>
   );
@@ -1782,6 +1805,9 @@ function StreamlinedInbox() {
   }, []);
 
   const { markDecided: markApprovalDecided, isSettling: isApprovalSettling } = useSettlingApprovals();
+  // Kept per approval: a decision on one row neither locks the other rows nor reports its error away from its row.
+  const approvalDecisions = useApprovalDecisionFeedback();
+  const { settle: settleApprovalDecision } = approvalDecisions;
 
   const approveMutation = useMutation({
     mutationFn: ({ id, note }: { id: string; note?: string }) =>
@@ -1789,37 +1815,40 @@ function StreamlinedInbox() {
     onSuccess: (approval, { id }) => {
       setActionError(null);
       markApprovalDecided(approval);
+      settleApprovalDecision(id);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
       // Board requests are decided in place so the rest of the queue stays in view.
       if (approval?.type !== "request_board_approval") navigate(`/approvals/${id}?resolved=approved`);
     },
-    onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
+    onError: (err, { id }) => {
+      settleApprovalDecision(id, approvalDecisionErrorText("approve", err));
     },
   });
 
   const rejectMutation = useMutation({
     mutationFn: ({ id, note }: { id: string; note?: string }) =>
       note ? approvalsApi.reject(id, note) : approvalsApi.reject(id),
-    onSuccess: (approval) => {
+    onSuccess: (approval, { id }) => {
       setActionError(null);
       markApprovalDecided(approval);
+      settleApprovalDecision(id);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
-    onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
+    onError: (err, { id }) => {
+      settleApprovalDecision(id, approvalDecisionErrorText("reject", err));
     },
   });
 
   const requestRevisionMutation = useMutation({
     mutationFn: ({ id, note }: { id: string; note: string }) => approvalsApi.requestRevision(id, note),
-    onSuccess: (approval) => {
+    onSuccess: (approval, { id }) => {
       setActionError(null);
       markApprovalDecided(approval);
+      settleApprovalDecision(id);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
-    onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to request changes");
+    onError: (err, { id }) => {
+      settleApprovalDecision(id, approvalDecisionErrorText("revision", err));
     },
   });
 
@@ -2749,8 +2778,8 @@ function StreamlinedInbox() {
         ) : null}
       />
 
-      {approvalsError && <p className="text-sm text-destructive">{approvalsError.message}</p>}
-      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+      {approvalsError && <p role="alert" className="text-sm text-destructive">{approvalsError.message}</p>}
+      {actionError && <p role="alert" className="text-sm text-destructive">{actionError}</p>}
 
       {tab === "blocked" ? (
         <div className="-mx-2 sm:mx-0">
@@ -3133,15 +3162,27 @@ function StreamlinedInbox() {
                           selected={isSelected}
                           requesterName={agentName(item.approval.requestedByAgentId)}
                           resolveAgentName={(agentId) => (agents ? agentName(agentId) : undefined)}
-                          onApprove={(note) => approveMutation.mutate({ id: item.approval.id, note })}
-                          onReject={(note) => rejectMutation.mutate({ id: item.approval.id, note })}
-                          onRequestRevision={(note) => requestRevisionMutation.mutate({ id: item.approval.id, note })}
+                          onApprove={(note) => {
+                            if (approvalDecisions.start(item.approval.id, "approve")) {
+                              approveMutation.mutate({ id: item.approval.id, note });
+                            }
+                          }}
+                          onReject={(note) => {
+                            if (approvalDecisions.start(item.approval.id, "reject")) {
+                              rejectMutation.mutate({ id: item.approval.id, note });
+                            }
+                          }}
+                          onRequestRevision={(note) => {
+                            if (approvalDecisions.start(item.approval.id, "revision")) {
+                              requestRevisionMutation.mutate({ id: item.approval.id, note });
+                            }
+                          }}
                           isPending={
-                            approveMutation.isPending ||
-                            rejectMutation.isPending ||
-                            requestRevisionMutation.isPending ||
-                            isApprovalSettling(item.approval)
+                            Boolean(approvalDecisions.inFlight[item.approval.id]) || isApprovalSettling(item.approval)
                           }
+                          pendingAction={approvalDecisions.inFlight[item.approval.id] ?? null}
+                          error={approvalDecisions.errors[item.approval.id] ?? null}
+                          onDismissError={() => approvalDecisions.clearError(item.approval.id)}
                           unreadState={nonIssueUnreadState(approvalKey)}
                           onMarkRead={() => handleMarkNonIssueRead(approvalKey)}
                           onArchive={canArchiveFromTab ? () => handleArchiveNonIssue(approvalKey) : undefined}

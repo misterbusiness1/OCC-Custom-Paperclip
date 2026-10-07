@@ -306,4 +306,69 @@ describe("ApprovalDetail", () => {
     expect(text).toContain("Resolve this budget stop in Costs.");
     expect(panel().querySelectorAll("button")).toHaveLength(0);
   });
+
+  describe("when something fails", () => {
+    const alerts = (scope: ParentNode = container) => [...scope.querySelectorAll("[role='alert']")];
+    const typeInto = (field: HTMLTextAreaElement, value: string) =>
+      act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, value);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+
+    it("reports a failed decision inside the decision controls, directly above the buttons, and keeps the note", async () => {
+      apiMocks.reject.mockRejectedValue(new Error("Session expired"));
+      await render(createApproval());
+
+      await act(async () => button(panel(), "Reject").click());
+      await typeInto(panel().querySelector("textarea")!, "Outside this quarter's budget");
+      await act(async () => button(panel(), "Reject request").click());
+      await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+
+      const [alert] = alerts();
+      expect(alert.textContent).toBe("Error while rejecting: Session expired");
+      const approve = button(panel(), "Approve");
+      // The same control holds the error and the buttons, and the button row follows the error.
+      expect(alert.closest("[aria-busy]")).toBe(approve.closest("[aria-busy]"));
+      expect(alert.closest("[aria-busy]")).not.toBeNull();
+      expect(alert.nextElementSibling!.contains(approve)).toBe(true);
+      expect(alert.nextElementSibling!.contains(button(panel(), "Reject"))).toBe(true);
+      expect(panel().querySelector("textarea")!.value).toBe("Outside this quarter's budget");
+      expect(apiMocks.reject).toHaveBeenCalledExactlyOnceWith("approval-1", "Outside this quarter's budget");
+
+      // Editing the note takes the error away until the decision is sent again.
+      await typeInto(panel().querySelector("textarea")!, "Outside this year's budget");
+      expect(alerts()).toHaveLength(0);
+    });
+
+    it("keeps the error on the page when the reload shows the decision was stored anyway", async () => {
+      await render(createApproval());
+      // The server stores an approval before it runs what follows from it.
+      apiMocks.approve.mockImplementation(async () => {
+        apiMocks.get.mockResolvedValue(createApproval({ status: "approved" }));
+        throw new Error("Agent not found");
+      });
+
+      await act(async () => button(panel(), "Approve").click());
+      await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+      await vi.waitFor(() => expect(button(panel(), "Approve")).toBeUndefined());
+
+      expect(alerts(panel()).map((alert) => alert.textContent)).toEqual(["Error while approving: Agent not found"]);
+      expect(routerMock.navigate).not.toHaveBeenCalled();
+    });
+
+    it("reports a comment that could not be posted beside the comment field, not on the decision", async () => {
+      apiMocks.addComment.mockRejectedValue(new Error("Comment too long"));
+      await render(createApproval());
+
+      const comment = container.querySelector<HTMLTextAreaElement>("textarea[id^='approval-comment-']")!;
+      await typeInto(comment, "Please confirm the term.");
+      await act(async () => button(container, "Post comment").click());
+      await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+
+      expect(alerts()[0].textContent).toBe("Comment too long");
+      expect(alerts(panel())).toHaveLength(0);
+      expect(alerts()[0].closest("details")!.contains(comment)).toBe(true);
+      expect(comment.value).toBe("Please confirm the term.");
+    });
+  });
 });
