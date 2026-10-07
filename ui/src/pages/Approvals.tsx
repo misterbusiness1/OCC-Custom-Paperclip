@@ -289,7 +289,9 @@ export function Approvals() {
                   pendingAction={approving ? "approve" : rejecting ? "reject" : revising ? "revision" : null}
                   linkedIssues={linkedIssueQueries[index]?.data}
                   enableShortcuts={keyboardShortcutsEnabled}
-                  resolveAgentName={(agentId) => (agents ?? []).find((a) => a.id === agentId)?.name ?? null}
+                  resolveAgentName={(agentId) =>
+                    agents ? (agents.find((a) => a.id === agentId)?.name ?? null) : undefined
+                  }
                 />
               );
             })}

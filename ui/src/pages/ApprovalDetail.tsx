@@ -255,7 +255,8 @@ export function ApprovalDetail() {
             <ApprovalDecisionSummary
               type={approval.type}
               payload={payload}
-              resolveAgentName={(agentId) => agentNameById.get(agentId) ?? null}
+              status={approval.status}
+              resolveAgentName={(agentId) => (agents ? (agentNameById.get(agentId) ?? null) : undefined)}
               full
             />
           ) : (
@@ -350,7 +351,9 @@ export function ApprovalDetail() {
                 status={approval.status}
                 onApprove={(note) => approveMutation.mutate(note)}
                 onReject={(note) => rejectMutation.mutate(note)}
-                onRequestRevision={(note) => revisionMutation.mutate(note)}
+                onRequestRevision={
+                  approval.requestedByAgentId ? (note) => revisionMutation.mutate(note) : undefined
+                }
                 isPending={decisionPending}
                 pendingAction={
                   approveMutation.isPending

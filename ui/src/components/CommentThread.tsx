@@ -609,6 +609,9 @@ const TimelineList = memo(function TimelineList({
               <ApprovalCard
                 approval={approval}
                 requesterAgent={approval.requestedByAgentId ? agentMap?.get(approval.requestedByAgentId) ?? null : null}
+                resolveAgentName={
+                  agentMap && agentMap.size > 0 ? (agentId) => agentMap.get(agentId)?.name ?? null : undefined
+                }
                 onApprove={onApproveApproval ? (note) => void onApproveApproval(approval.id, note) : undefined}
                 onReject={onRejectApproval ? (note) => void onRejectApproval(approval.id, note) : undefined}
                 detailLink={`/approvals/${approval.id}`}

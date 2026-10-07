@@ -2823,6 +2823,9 @@ function IssueDetailActivityTab({
                   ? (agentMap.get(approval.requestedByAgentId) ?? null)
                   : null
               }
+              resolveAgentName={(agentId) =>
+                agentMap.size > 0 ? (agentMap.get(agentId)?.name ?? null) : undefined
+              }
               onApprove={(note) => onApprovalAction(approval.id, "approve", note)}
               onReject={(note) => onApprovalAction(approval.id, "reject", note)}
               detailLink={`/approvals/${approval.id}`}

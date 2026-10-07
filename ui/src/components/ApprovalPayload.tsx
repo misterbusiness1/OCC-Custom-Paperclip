@@ -210,7 +210,7 @@ function OriginalRequestText({ text, collapsible }: { text: string; collapsible:
       {collapsible && (
         <button
           type="button"
-          className="mt-1 text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          className="mt-1 inline-flex min-h-6 items-center text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
           aria-expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
         >
@@ -245,8 +245,8 @@ export type ApprovalHireFacts = {
   budgetMonthlyCents: number | null;
   capabilities: string | null;
   skills: string[];
-  /** True when a pending agent already exists and a rejection terminates it. */
-  hasPendingAgent: boolean;
+  /** The agent this request acts on: approval activates it and rejection terminates it. Null when approval creates one. */
+  agentId: string | null;
 };
 
 export function approvalHireFacts(payload?: Record<string, unknown> | null): ApprovalHireFacts {
@@ -265,31 +265,73 @@ export function approvalHireFacts(payload?: Record<string, unknown> | null): App
       typeof payload?.budgetMonthlyCents === "number" && Number.isFinite(payload.budgetMonthlyCents)
         ? payload.budgetMonthlyCents
         : null,
-    capabilities: firstNonEmptyString(payload?.capabilities),
+    capabilities: approvalReadableText(firstNonEmptyString(payload?.capabilities)),
     skills: uniqueStrings(payload?.desiredSkills),
-    hasPendingAgent: firstNonEmptyString(payload?.agentId) !== null,
+    agentId: firstNonEmptyString(payload?.agentId),
   };
 }
 
 /**
- * The plan a strategy approval asks the board to accept, as readable plain
- * text. Line breaks, numbering and bullets are the structure of a plan, so
- * they stay; only the markup around them goes.
+ * Agent-written text as readable plain text. Line breaks, numbering, bullets
+ * and indentation are structure, so they stay; only the markup around the
+ * words goes. Identifiers keep their underscores and tildes: the board must
+ * read what the agent wrote. Every pattern is bounded, so a hostile payload
+ * cannot stall the page.
  */
-export function approvalStrategyPlan(payload?: Record<string, unknown> | null): string | null {
-  const raw = firstNonEmptyString(payload?.plan, payload?.description, payload?.strategy, payload?.text);
-  if (!raw) return null;
-  const plain = raw
+export function approvalReadableText(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const plain = value
     .replace(/\r\n?/g, "\n")
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\(([^)]*)\)/g, "$1")
-    .replace(/^[^\S\n]{0,3}#{1,6}[^\S\n]+/gm, "")
-    .replace(/^([^\S\n]*)[-*+][^\S\n]+/gm, "$1\u2022 ")
-    .replace(/\*\*|__|`/g, "")
-    .replace(/[^\S\n]+$/gm, "")
+    .replace(/\t/g, "  ")
+    .replace(/!\[([^\]\n]{0,300})\]\([^)\n]{0,2000}\)/g, "$1")
+    // A link keeps its target: where it points can be what the board is approving.
+    .replace(/\[([^\]\n]{1,300})\]\(([^)\n]{0,2000})\)/g, (_match, text: string, url: string) =>
+      url && url !== text ? `${text} (${url})` : text,
+    )
+    .split("\n")
+    .map((line) => line.trimEnd())
+    // A line that is only a rule (---, ***, ___) carries no words.
+    .filter((line) => !/^ {0,3}([-*_])(?: {0,2}\1){2,}$/.test(line))
+    .map((line) =>
+      line
+        .replace(/^ {0,3}#{1,6} +/, "")
+        .replace(/^( {0,12})[-*+] +/, "$1• ")
+        .replace(/\*\*(?=\S)([^\n*]{0,200}?\S)\*\*/g, "$1")
+        .replace(/`([^`\n]{1,200})`/g, "$1"),
+    )
+    .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return plain || null;
+}
+
+export type ApprovalStrategyPlan =
+  | { kind: "text"; text: string }
+  /** The request carries a plan, but not as text the summary can show. */
+  | { kind: "unreadable" }
+  | { kind: "missing" };
+
+const STRATEGY_PLAN_FIELDS = ["plan", "description", "strategy", "text"] as const;
+
+/** The plan a strategy approval asks the board to accept. */
+export function approvalStrategyPlan(payload?: Record<string, unknown> | null): ApprovalStrategyPlan {
+  const text = approvalReadableText(
+    firstNonEmptyString(...STRATEGY_PLAN_FIELDS.map((field) => payload?.[field])),
+  );
+  if (text) return { kind: "text", text };
+  const plan = payload?.plan;
+  if (Array.isArray(plan) && plan.length > 0 && plan.every((step) => typeof step === "string")) {
+    const joined = approvalReadableText(plan.join("\n"));
+    if (joined) return { kind: "text", text: joined };
+  }
+  return plan !== null && plan !== undefined && typeof plan !== "string" ? { kind: "unreadable" } : { kind: "missing" };
+}
+
+/** The decision brief of a strategy approval, without the plan fields the summary shows as the plan. */
+export function approvalStrategyBrief(payload?: Record<string, unknown> | null) {
+  const rest: Record<string, unknown> = { ...(payload ?? {}) };
+  for (const field of STRATEGY_PLAN_FIELDS) delete rest[field];
+  return approvalDecisionBrief(rest);
 }
 
 /** The first lines of a long text, cut at a line or word boundary. */
@@ -304,17 +346,21 @@ export function approvalTextPreview(
   if (preview.length > maxLength) {
     const clipped = preview.slice(0, maxLength + 1);
     const boundary = Math.max(clipped.lastIndexOf(" "), clipped.lastIndexOf("\n"));
-    preview = preview.slice(0, boundary > maxLength / 2 ? boundary : maxLength);
+    let end = boundary > maxLength / 2 ? boundary : maxLength;
+    // Never cut between the two halves of one character (an emoji, for example).
+    const last = preview.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+    preview = preview.slice(0, end);
     truncated = true;
   }
-  return { preview: truncated ? `${preview.trimEnd()}\u2026` : preview, truncated };
+  return { preview: truncated ? `${preview.trimEnd()}…` : preview, truncated };
 }
 
 export function approvalExcerpt(value: string | null, maxLength = 240): string | null {
   if (!value) return null;
   const plain = value
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/!\[([^\]\n]{0,300})\]\([^)\n]{0,2000}\)/g, "$1")
+    .replace(/\[([^\]\n]{1,300})\]\([^)\n]{0,2000}\)/g, "$1")
     .replace(/^\s{0,3}(?:#{1,6}|>|[-+])\s+/gm, "")
     .replace(/[`*_~]/g, "")
     .replace(/\s+/g, " ")
@@ -331,8 +377,8 @@ export function approvalExcerpt(value: string | null, maxLength = 240): string |
 export function approvalPlainText(value: string | null): string | null {
   if (!value) return null;
   const plain = value
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/!\[([^\]\n]{0,300})\]\([^)\n]{0,2000}\)/g, "$1")
+    .replace(/\[([^\]\n]{1,300})\]\([^)\n]{0,2000}\)/g, "$1")
     .replace(/^\s{0,3}(?:#{1,6}|>|[-+])\s+/gm, "")
     .replace(/[`*_~]/g, "")
     .replace(/[^\S\n]+/g, " ")

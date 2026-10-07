@@ -567,6 +567,7 @@ function ApprovalInboxRow({
         <ApprovalDecisionSummary
           type={approval.type}
           payload={approval.payload}
+          status={approval.status}
           resolveAgentName={resolveAgentName}
           className="mt-3"
         />
@@ -578,7 +579,7 @@ function ApprovalInboxRow({
           status={approval.status}
           onApprove={onApprove}
           onReject={onReject}
-          onRequestRevision={onRequestRevision}
+          onRequestRevision={approval.requestedByAgentId ? onRequestRevision : undefined}
           isPending={isPending}
           buttonClassName="h-8 px-3"
           approveClassName="bg-(--status-task-icon-done) text-white hover:bg-(--status-task-done)"
@@ -2958,7 +2959,7 @@ export function Inbox() {
                           approval={item.approval}
                           selected={isSelected}
                           requesterName={agentName(item.approval.requestedByAgentId)}
-                          resolveAgentName={agentName}
+                          resolveAgentName={(agentId) => (agents ? agentName(agentId) : undefined)}
                           onApprove={(note) => approveMutation.mutate({ id: item.approval.id, note })}
                           onReject={(note) => rejectMutation.mutate({ id: item.approval.id, note })}
                           onRequestRevision={(note) => requestRevisionMutation.mutate({ id: item.approval.id, note })}
