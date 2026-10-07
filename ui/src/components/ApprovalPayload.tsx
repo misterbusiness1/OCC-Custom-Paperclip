@@ -430,6 +430,25 @@ export function approvalEmailDraft(payload?: Record<string, unknown> | null): Ap
   };
 }
 
+/** A compact surface shows an outgoing draft whole up to this many characters. */
+export const APPROVAL_DRAFT_PREVIEW_LENGTH = 1500;
+
+/**
+ * What a compact surface shows of an outgoing draft before it is expanded: the
+ * first characters, cut at a line or word boundary. Null when the whole body is
+ * shown, so a caller can tell a cut draft from a whole one. Trailing blank
+ * space hides no words and does not count towards the limit.
+ */
+export function approvalDraftPreview(body: string): string | null {
+  if (body.trimEnd().length <= APPROVAL_DRAFT_PREVIEW_LENGTH) return null;
+  // The cut depends only on the first characters; a very long body is not scanned whole.
+  return approvalTextPreview(
+    body.slice(0, APPROVAL_DRAFT_PREVIEW_LENGTH + 1),
+    Number.MAX_SAFE_INTEGER,
+    APPROVAL_DRAFT_PREVIEW_LENGTH,
+  ).preview;
+}
+
 /** Build a contextual label for an approval, e.g. "Hire Agent: Designer" */
 export function approvalLabel(type: string, payload?: Record<string, unknown> | null): string {
   const base = typeLabel[type] ?? type;

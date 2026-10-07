@@ -175,7 +175,9 @@ describe("ApprovalDetail", () => {
   });
 
   it("shows the whole email draft and the whole original request above the decision buttons", async () => {
-    const body = `Hi Sam,\n\n${"Our wholesale price list is attached. ".repeat(30)}\n\nLast line of the draft.`;
+    // Longer than the 1,500 characters a card or inbox row shows before "Show full reply".
+    const body = `Hi Sam,\n\n${"Our wholesale price list is attached. ".repeat(60)}\n\nLast line of the draft.`;
+    expect(body.length).toBeGreaterThan(1500);
     const original = `${"Could you send your wholesale price list?\n".repeat(40)}Stop and ask before going any further.`;
     await render(
       createApproval({
