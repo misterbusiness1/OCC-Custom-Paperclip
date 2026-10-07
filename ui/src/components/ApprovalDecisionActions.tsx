@@ -140,6 +140,11 @@ export const ApprovalDecisionActions = forwardRef<
     approveGuard?: () => string | null;
     /** When this value changes, the reason Approve was last held back is dealt with and its message is removed. */
     approveHoldKey?: string | number;
+    /**
+     * What the Approve button says, and is named, while its next press will not send: for example
+     * "Read full reply to approve" while an outgoing draft is still cut. Omit it and the button reads "Approve".
+     */
+    approveLabel?: string;
     /** What went wrong with the last decision sent from here; shown directly above the buttons. */
     error?: string | null;
     /** Called when the board edits the note, so a parent can drop an error that no longer describes the draft. */
@@ -167,6 +172,7 @@ export const ApprovalDecisionActions = forwardRef<
     trailing,
     approveGuard,
     approveHoldKey,
+    approveLabel,
     error = null,
     onDismissError,
     defaultNote,
@@ -384,12 +390,12 @@ export const ApprovalDecisionActions = forwardRef<
             className={cn(buttonClassName, approveClassName)}
             onClick={approve}
             disabled={isPending || confirming}
-            aria-label={`${pendingAction === "approve" ? "Approving" : "Approve"}: ${subject}`}
+            aria-label={`${pendingAction === "approve" ? "Approving" : (approveLabel ?? "Approve")}: ${subject}`}
             aria-describedby={
               [heldBackMessage ? heldBackId : null, error ? errorId : null].filter(Boolean).join(" ") || undefined
             }
           >
-            {pendingAction === "approve" ? "Approving..." : "Approve"}
+            {pendingAction === "approve" ? "Approving..." : (approveLabel ?? "Approve")}
           </Button>
           {canRequestRevision && (
             <Button

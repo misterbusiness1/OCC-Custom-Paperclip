@@ -729,7 +729,9 @@ describe("Inbox toolbar", () => {
         .find((item) => item.textContent?.includes("Historical email approval"))!;
       const text = row.textContent!;
       expect(text).toContain("no original request attached");
-      expect(text).toContain("Older request: no pros or risks were recorded.");
+      // What is missing is stated; the row does not guess that the request is old.
+      expect(text).toContain("No pros or risks were recorded.");
+      expect(text).not.toContain("Older request");
       // The outbound draft is shown as a draft, after the decision brief; it never fills the source slot.
       expect(row.querySelector("pre")).toBeNull();
       expect(text).not.toContain("Original request");
@@ -799,13 +801,27 @@ describe("Inbox toolbar", () => {
       const short = rowFor("Short wholesale reply");
       const draft = long.querySelector<HTMLElement>("[data-approval-draft]")!;
       expect(shownBody(long)).not.toContain(ending);
-      expect(shownBody(long).endsWith("…")).toBe(true);
       expect(shownBody(long).length).toBeGreaterThan(1400);
+      // The body box holds only the email's own words; that it continues is said under it, above the button.
+      expect(longBody.startsWith(shownBody(long))).toBe(true);
+      expect(shownBody(long)).not.toContain("…");
       expect(draft.querySelector("[class*='line-clamp']")).toBeNull();
       const expander = button(long, `Show full reply (${longBody.length.toLocaleString()} characters)`);
       expect(expander.getAttribute("aria-expanded")).toBe("false");
+      const continues = draft.querySelector("[data-approval-draft-continues]")!;
+      expect(continues.textContent).toBe(
+        `The reply continues: ${(longBody.length - shownBody(long).length).toLocaleString()} more characters.`,
+      );
+      expect(continues.nextElementSibling).toBe(expander);
       expect(shownBody(short)).toBe(shortBody);
       expect(short.querySelector("[data-approval-draft] button")).toBeNull();
+      expect(short.querySelector("[data-approval-draft-continues]")).toBeNull();
+      // The button says before the press that it opens the reply; a draft shown whole keeps "Approve".
+      expect(button(long, "Approve")).toBeUndefined();
+      expect(button(long, "Read full reply to approve").getAttribute("aria-label")).toBe(
+        "Read full reply to approve: Board Approval: Long wholesale reply",
+      );
+      expect(button(short, "Read full reply to approve")).toBeUndefined();
       // Under each draft the row says what approval sets in motion: the requesting agent is told; nothing is sent here.
       for (const row of [long, short]) {
         expect(row.querySelector("[data-approval-reply-effect]")!.textContent).toBe(
@@ -813,10 +829,13 @@ describe("Inbox toolbar", () => {
         );
       }
 
-      // The first Approve opens the draft and puts focus on it; nothing is sent.
-      await act(async () => button(long, "Approve").click());
+      // The first press opens the draft and puts focus on it; nothing is sent.
+      await act(async () => button(long, "Read full reply to approve").click());
       expect(apiMocks.approve).not.toHaveBeenCalled();
       expect(shownBody(long)).toBe(longBody);
+      expect(draft.querySelector("[data-approval-draft-continues]")).toBeNull();
+      expect(button(long, "Read full reply to approve")).toBeUndefined();
+      expect(button(long, "Approve").getAttribute("aria-label")).toBe("Approve: Board Approval: Long wholesale reply");
       expect(button(long, "Show less").getAttribute("aria-expanded")).toBe("true");
       expect(heldBack(long)).toBe(true);
       expect(heldBack(short)).toBe(false);

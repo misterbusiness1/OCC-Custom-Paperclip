@@ -692,6 +692,8 @@ function ApprovalInboxRow({
           onDismissError={onDismissError}
           approveGuard={approveGuard}
           approveHoldKey={revision.reviewCount}
+          // A revision to confirm comes first: the button says "Read full reply" only when the press will open it.
+          approveLabel={revision.revised ? undefined : draftGate.approveLabel}
           buttonClassName="h-8 min-w-(--sz-64px) justify-center px-3"
           approveClassName="bg-green-700 text-white hover:bg-green-600"
         />

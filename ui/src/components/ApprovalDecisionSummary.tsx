@@ -111,12 +111,15 @@ function summaryEmailDraft(type: string, payload?: Record<string, unknown> | nul
 
 /** Shown beside the decision buttons when Approve opened a cut draft instead of sending. */
 export const APPROVAL_DRAFT_UNREAD_MESSAGE = "Read the full reply, then approve.";
+/** What the Approve button says while a draft is cut: its first press opens the draft and sends nothing. */
+export const APPROVAL_DRAFT_UNREAD_APPROVE_LABEL = "Read full reply to approve";
 
 /**
  * Keeps an outgoing email from being approved unread. A compact summary cuts a
  * long draft; while it is cut, the first Approve opens it and moves focus to
- * it instead of sending. Pass `draftControl` to the summary and `approveGuard`
- * to the decision buttons rendered beside it.
+ * it instead of sending. Pass `draftControl` to the summary, and `approveGuard`
+ * and `approveLabel` to the decision buttons rendered beside it: the label tells
+ * the reader before the press that it will open the reply, not approve.
  */
 export function useApprovalDraftGate(type: string, payload?: Record<string, unknown> | null) {
   const [expanded, setExpanded] = useState(false);
@@ -144,7 +147,9 @@ export function useApprovalDraftGate(type: string, payload?: Record<string, unkn
   };
 
   const draftControl: ApprovalDraftControl = { expanded, onExpandedChange: setExpanded, ref };
-  return { draftControl, approveGuard };
+  // Undefined once the whole draft is on the page: the button then reads "Approve" again.
+  const approveLabel = isCut && !expanded ? APPROVAL_DRAFT_UNREAD_APPROVE_LABEL : undefined;
+  return { draftControl, approveGuard, approveLabel };
 }
 
 function ApprovalEmailDraftBlock({
@@ -165,6 +170,7 @@ function ApprovalEmailDraftBlock({
   // A long draft is cut on compact surfaces only, and always behind a button that states its size.
   const preview = full ? null : approvalDraftPreview(draft.body);
   const canExpand = preview !== null;
+  const hiddenLength = preview === null ? 0 : draft.body.length - preview.length;
   // "Via" is the payload's free-text channel; "From" appears only when the request names a sender.
   const envelope = [
     ["Via", draft.via],
@@ -203,6 +209,12 @@ function ApprovalEmailDraftBlock({
           </div>
         </div>
       </div>
+      {/* Outside the body box: nothing the interface writes may pass for a part of the email. */}
+      {canExpand && !expanded && (
+        <p className="mt-2 text-xs leading-5 text-muted-foreground" data-approval-draft-continues>
+          The reply continues: {hiddenLength.toLocaleString()} more {hiddenLength === 1 ? "character" : "characters"}.
+        </p>
+      )}
       {canExpand && (
         <button
           type="button"
@@ -530,15 +542,16 @@ export function ApprovalDecisionSummary({
     ) : null;
   }
 
-  // Requests filed before decision fields were required carry no source, pros or risks.
-  // One line says so (the header line already notes the missing source); empty
-  // fields would only bury the recommendation.
-  const isBareLegacyRequest =
+  // A request with no source, no pros and no risks gets one line that says so (the header
+  // line already notes the missing source); empty fields would only bury the recommendation.
+  // The line states what is missing and nothing about why: the interface cannot know the
+  // request's age.
+  const hasNoSourceOrPoints =
     isBoardApproval &&
     !approvalOriginalRequest(payload) &&
     brief.pros.length === 0 &&
     brief.cons.length === 0;
-  const showPoints = !isBareLegacyRequest && (isBoardApproval || brief.pros.length > 0 || brief.cons.length > 0);
+  const showPoints = !hasNoSourceOrPoints && (isBoardApproval || brief.pros.length > 0 || brief.cons.length > 0);
   // In full, a Board approval states the fields its request leaves empty instead of dropping them.
   const emptyText = full && isBoardApproval ? "Not supplied." : undefined;
   // Agents are told to send a summary and may put the cost in it. It leads, unless it is already on the surface.
@@ -576,10 +589,8 @@ export function ApprovalDecisionSummary({
           )}
         </div>
       )}
-      {isBareLegacyRequest && (
-        <p className="text-sm leading-5 text-muted-foreground">
-          Older request: no pros or risks were recorded.
-        </p>
+      {hasNoSourceOrPoints && (
+        <p className="text-sm leading-5 text-muted-foreground">No pros or risks were recorded.</p>
       )}
       {draft && <ApprovalEmailDraftBlock draft={draft} full={full} control={draftControl} />}
       {/*

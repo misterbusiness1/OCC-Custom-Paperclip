@@ -55,6 +55,8 @@ function createApproval(overrides: Partial<Approval> = {}): Approval {
 
 /** The part of an outgoing draft a five-line or 1,500-character cut would hide. */
 const DRAFT_ENDING = "We will ship the same day and split the order at no extra charge.";
+/** What the Approve button says while an outgoing draft is still cut. */
+const READ_TO_APPROVE = "Read full reply to approve";
 
 /** An email body of exactly `length` characters that ends with the commitment above. */
 function emailDraftBody(length: number): string {
@@ -539,6 +541,8 @@ describe("ApprovalCard", () => {
       render({ approval: createApproval({ updatedAt: LATER, payload: emailPayload(revisedBody) }), ...props });
       const shownBody = () => container.querySelector("[data-approval-draft-body]")!.textContent ?? "";
 
+      // While the revision is unconfirmed the press will not open the reply, so the button does not say it will.
+      expect(button(READ_TO_APPROVE)).toBeUndefined();
       click("Approve");
       expect(heldBackMessage()).toBe(HELD_BACK);
       // The first press is about the revision only: the draft stays as it was.
@@ -546,7 +550,8 @@ describe("ApprovalCard", () => {
       expect(onApprove).not.toHaveBeenCalled();
 
       click("I have reviewed it");
-      click("Approve");
+      expect(button("Approve")).toBeUndefined();
+      click(READ_TO_APPROVE);
       expect(heldBackMessage()).toBe("Read the full reply, then approve.");
       expect(shownBody()).toBe(revisedBody);
       expect(onApprove).not.toHaveBeenCalled();
@@ -1084,7 +1089,7 @@ describe("ApprovalCard", () => {
         });
         const approve = () =>
           how === "a click"
-            ? click("Approve")
+            ? click(button(READ_TO_APPROVE) ? READ_TO_APPROVE : "Approve")
             : act(() => {
                 // The shortcut works from wherever focus is inside the card, the opened draft included.
                 const target = container.contains(document.activeElement)
@@ -1095,17 +1100,33 @@ describe("ApprovalCard", () => {
 
         // Cut at a word boundary near 1,500 characters, behind a button that states the size.
         expect(shownBody()).not.toContain(DRAFT_ENDING);
-        expect(shownBody().endsWith("\u2026")).toBe(true);
         expect(shownBody().length).toBeGreaterThan(1400);
-        expect(shownBody().length).toBeLessThanOrEqual(1501);
-        expect(body.startsWith(shownBody().slice(0, -1))).toBe(true);
+        expect(shownBody().length).toBeLessThanOrEqual(1500);
+        // The body box holds the email's own characters and nothing else: no ellipsis to mistake for the email.
+        expect(body.startsWith(shownBody())).toBe(true);
+        expect(shownBody()).not.toContain("\u2026");
+        // The cue sits under the body box, inside the draft block, above the button that opens the rest.
+        const continues = draftBlock().querySelector<HTMLElement>("[data-approval-draft-continues]")!;
+        expect(continues.textContent).toBe(
+          `The reply continues: ${(body.length - shownBody().length).toLocaleString()} more characters.`,
+        );
+        const bodyBox = draftBlock().querySelector("[data-approval-draft-body]")!.parentElement!.parentElement!;
+        expect(bodyBox.contains(continues)).toBe(false);
+        expect(bodyBox.nextElementSibling).toBe(continues);
+        expect(continues.nextElementSibling).toBe(button(showFullLabel(body)));
         expect(button(showFullLabel(body))!.getAttribute("aria-expanded")).toBe("false");
         expect(draftBlock().querySelector("[class*='line-clamp']")).toBeNull();
         expect(heldBackMessage()).toBe("");
+        // The button says, before the press, that the press opens the reply and does not approve.
+        expect(button("Approve")).toBeUndefined();
+        expect(button(READ_TO_APPROVE)!.getAttribute("aria-label")).toBe(`${READ_TO_APPROVE}: Reply to wholesale request`);
 
         approve();
         expect(onApprove).not.toHaveBeenCalled();
         expect(shownBody()).toBe(body);
+        expect(draftBlock().querySelector("[data-approval-draft-continues]")).toBeNull();
+        expect(button(READ_TO_APPROVE)).toBeUndefined();
+        expect(button("Approve")!.getAttribute("aria-label")).toBe("Approve: Reply to wholesale request");
         expect(button("Show less")!.getAttribute("aria-expanded")).toBe("true");
         expect(heldBackMessage()).toBe("Read the full reply, then approve.");
         expect(draftBlock().tabIndex).toBe(-1);
@@ -1128,8 +1149,10 @@ describe("ApprovalCard", () => {
 
       expect(shownBody()).toBe(body);
       expect(draftBlock().querySelector("button")).toBeNull();
+      expect(draftBlock().querySelector("[data-approval-draft-continues]")).toBeNull();
       expect(draftBlock().querySelector("[class*='line-clamp']")).toBeNull();
       expect(draftBlock().hasAttribute("tabindex")).toBe(false);
+      expect(button(READ_TO_APPROVE)).toBeUndefined();
 
       click("Approve");
       expect(onApprove).toHaveBeenCalledExactlyOnceWith(undefined);
@@ -1172,10 +1195,11 @@ describe("ApprovalCard", () => {
       expect(onApprove).toHaveBeenCalledTimes(1);
       expect(heldBackMessage()).toBe("");
 
-      // Approve sends only while the whole draft is on the page.
+      // Approve sends only while the whole draft is on the page, and the button says so again once it is cut.
       click("Show less");
       expect(shownBody()).not.toContain(DRAFT_ENDING);
-      click("Approve");
+      expect(button("Approve")).toBeUndefined();
+      click(READ_TO_APPROVE);
       expect(onApprove).toHaveBeenCalledTimes(1);
       expect(shownBody()).toBe(body);
       expect(heldBackMessage()).toBe("Read the full reply, then approve.");
@@ -1193,7 +1217,7 @@ describe("ApprovalCard", () => {
 
       click("Add a note");
       type("Send it today");
-      click("Approve");
+      click(READ_TO_APPROVE);
       expect(onApprove).not.toHaveBeenCalled();
       click("Approve");
       expect(onApprove).toHaveBeenCalledExactlyOnceWith("Send it today");
@@ -1805,12 +1829,30 @@ describe("ApprovalCard for requests without a source, hires and strategies", () 
     act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={emailPayload(body)} />));
     const shownBody = () => container.querySelector("[data-approval-draft-body]")!.textContent ?? "";
 
+    const continues = () => container.querySelector("[data-approval-draft-continues]")?.textContent ?? null;
+
     expect(shownBody()).not.toContain(DRAFT_ENDING);
+    expect(shownBody()).not.toContain("\u2026");
+    expect(continues()).toBe(
+      `The reply continues: ${(body.length - shownBody().length).toLocaleString()} more characters.`,
+    );
     act(() => button(`Show full reply (${body.length.toLocaleString()} characters)`)!.click());
     expect(shownBody()).toBe(body);
+    expect(continues()).toBeNull();
     act(() => button("Show less")!.click());
     expect(shownBody()).not.toContain(DRAFT_ENDING);
+    expect(continues()).not.toBeNull();
     expect(button(`Show full reply (${body.length.toLocaleString()} characters)`)).toBeDefined();
+  });
+
+  it("counts a single hidden character in the singular", () => {
+    act(() =>
+      root.render(<ApprovalDecisionSummary type="request_board_approval" payload={emailPayload("x".repeat(1501))} />),
+    );
+    expect(container.querySelector("[data-approval-draft-body]")!.textContent).toBe("x".repeat(1500));
+    expect(container.querySelector("[data-approval-draft-continues]")!.textContent).toBe(
+      "The reply continues: 1 more character.",
+    );
   });
 
   it("shows every skill of a hire and every risk of a strategy in full, where the page asks for it", () => {
@@ -2161,10 +2203,12 @@ describe("approval text helpers", () => {
     // Trailing blank space hides no words.
     expect(approvalDraftPreview(`${"x".repeat(1500)}\n\n   \n`)).toBeNull();
 
+    // The preview is the draft's own first characters: nothing is added to mark the cut.
     const words = "word ".repeat(400);
     const cut = approvalDraftPreview(words)!;
-    expect(cut.endsWith("word\u2026")).toBe(true);
-    expect(cut.length).toBeLessThanOrEqual(1501);
+    expect(cut.endsWith("word")).toBe(true);
+    expect(words.startsWith(cut)).toBe(true);
+    expect(cut.length).toBeLessThanOrEqual(1500);
     expect(cut.length).toBeGreaterThan(1490);
 
     // Many short lines are not cut by a line count: only the length counts.
@@ -2172,8 +2216,8 @@ describe("approval text helpers", () => {
     expect(approvalDraftPreview(lines)!.split("\n").length).toBeGreaterThan(240);
 
     // An unbroken run is cut at the limit, never between the halves of one character.
-    expect(approvalDraftPreview("x".repeat(1501))).toBe(`${"x".repeat(1500)}\u2026`);
-    expect(approvalDraftPreview(`x${"\u{1F600}".repeat(800)}`)).toBe(`x${"\u{1F600}".repeat(749)}\u2026`);
+    expect(approvalDraftPreview("x".repeat(1501))).toBe("x".repeat(1500));
+    expect(approvalDraftPreview(`x${"\u{1F600}".repeat(800)}`)).toBe(`x${"\u{1F600}".repeat(749)}`);
   });
 
   it("previews by lines and by length, on whole words, and reports every cut", () => {

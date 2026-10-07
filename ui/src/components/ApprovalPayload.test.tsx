@@ -86,7 +86,7 @@ describe("approvalExcerpt", () => {
 });
 
 describe("ApprovalCard", () => {
-  it("states once that a legacy request carries no source, pros or risks", () => {
+  it("states once that a request carries no source, pros or risks, without guessing its age", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -114,7 +114,9 @@ describe("ApprovalCard", () => {
     });
 
     expect(container.textContent).toContain("No original request attached");
-    expect(container.textContent).toContain("Older request: no pros or risks were recorded.");
+    expect(container.textContent).toContain("No pros or risks were recorded.");
+    // The interface cannot know when a request was filed: it says what is missing and nothing about why.
+    expect(container.textContent).not.toContain("Older request");
     expect(container.textContent).not.toContain("Not supplied.");
     act(() => root.unmount());
     container.remove();
@@ -343,7 +345,14 @@ describe("ApprovalPayloadRenderer", () => {
     expect(container.textContent).not.toContain("**Bold**");
     expect(container.textContent).not.toContain("[a link](https://example.com)");
 
-    // Fork layout order: recommendation, "Risks" list, then "On approval".
+    // "Full request" uses the words of the panel above it: "Recommendation" and "If approved".
+    const fullRequestText = container.textContent ?? "";
+    expect(fullRequestText).toContain("RecommendationApprove the frog reply.");
+    expect(fullRequestText).toContain("If approvedPost the frog comment.");
+    expect(fullRequestText).not.toContain("Recommended action");
+    expect(fullRequestText).not.toContain("On approval");
+
+    // Fork layout order: recommendation, "Risks" list, then "If approved".
     expect(bodies[1].querySelector("strong")?.textContent).toBe("frog");
     expect(bodies[2].querySelector("strong")?.textContent).toBe("frog");
     expect(bodies[3].querySelector("code")?.textContent).toBe("frog");
@@ -552,10 +561,15 @@ describe("ApprovalPayloadRenderer", () => {
     });
 
     const text = container.textContent ?? "";
-    expect(text.indexOf("Recommended action")).toBeLessThan(text.indexOf("Original request"));
+    // The email renderer of "Full request" uses the top panel's words: "Recommendation" and "Draft reply".
+    expect(text).toContain("RecommendationApprove the reply.");
+    expect(text).toContain("Draft replyProposed outgoing reply");
+    expect(text).not.toContain("Recommended action");
+    expect(text).not.toContain("Proposed reply");
+    expect(text.indexOf("Recommendation")).toBeLessThan(text.indexOf("Original request"));
     expect(text.indexOf("Original request")).toBeLessThan(text.indexOf("Why"));
     expect(text.indexOf("Why")).toBeLessThan(text.indexOf("Pros"));
-    expect(text.indexOf("Pros")).toBeLessThan(text.indexOf("Proposed reply"));
+    expect(text.indexOf("Pros")).toBeLessThan(text.indexOf("Draft reply"));
 
     const proseBodies = Array.from(container.querySelectorAll("pre"));
     const originalRequest = proseBodies.find((element) => element.textContent === original);
@@ -672,7 +686,8 @@ describe("ApprovalPayloadRenderer", () => {
     });
 
     expect(container.textContent).toContain("No original request was attached to this approval.");
-    expect(container.textContent).toContain("Proposed replyDraft reply only");
+    expect(container.textContent).toContain("Draft replyDraft reply only");
+    expect(container.textContent).not.toContain("Proposed reply");
     act(() => root.unmount());
   });
 });
