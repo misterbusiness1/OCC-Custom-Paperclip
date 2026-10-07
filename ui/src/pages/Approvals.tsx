@@ -962,10 +962,10 @@ export function Approvals() {
   // time of the last decision; a request that has none (it is pending) keeps its creation time.
   // A request the reader decided in this tab keeps the place its creation time gave it until the
   // tab is changed, and so does one whose decision is on its way (an approval is, from the press
-  // of Approve and through its hold) or failed: the reader stays on the decided row, and no row
-  // moves under their hands.
+  // of Approve and through its hold) or failed, and one whose held approval was not sent because
+  // it was decided elsewhere: the reader stays on the decided row, and no row moves under their hands.
   const keepsPlace = (a: Approval) =>
-    Boolean(decidedHere[a.id] || decisions.inFlight[a.id] || decisions.errors[a.id]);
+    Boolean(decidedHere[a.id] || leftHere[a.id] || decisions.inFlight[a.id] || decisions.errors[a.id]);
   const sortTime = (a: Approval) =>
     statusFilter === "all" && !needsBoard(a) && a.decidedAt && !keepsPlace(a)
       ? timeOf(a.decidedAt)
@@ -1119,16 +1119,24 @@ export function Approvals() {
   // The row also carries a line saying why the approval did not go out.
   // A hold is taken back the same way as soon as the list shows its request sent back for changes:
   // the server would still store the approval, over another board member's change request.
+  // And as soon as the list shows it approved, rejected or cancelled somewhere else: sent all the
+  // same, the approval would be answered as this reader's own decision, or come back as an error.
+  // Such a request has no card to return to; it keeps its place as a "decided elsewhere" row.
   // A layout effect, so that it runs in the same step that draws the reloaded list, before any
   // timer can send the hold; and declared before the reset below, which sends what is still held.
   useLayoutEffect(() => {
     if (!data) return;
-    const takenBack: Array<{ held: HeldApproval; sentBack: boolean }> = [];
+    const takenBack: Array<{ held: HeldApproval; sentBack: boolean; status: string | null }> = [];
     for (const held of Object.values(heldApprovals)) {
       if (held.phase !== "holding") continue;
       const record = data.find((a) => a.id === held.id);
       const sentBackMeanwhile = Boolean(record && isSentBack(record));
-      if (!record || !(sentBackMeanwhile || approvalRevisedSinceShown(revisionMemory, record))) continue;
+      // The status another session's decision gave it, in the words its row shows; null while it is undecided.
+      const decidedStatus =
+        record && !needsBoard(record) && !sentBackMeanwhile ? statusWords(record.status).toLowerCase() : null;
+      if (!record || !(sentBackMeanwhile || decidedStatus || approvalRevisedSinceShown(revisionMemory, record))) {
+        continue;
+      }
       // Focus resting on the held row or on its Undo goes to the card that takes the row's place.
       const heldRow = rowElement(held.id);
       const hadFocus = Boolean(heldRow?.contains(document.activeElement));
@@ -1138,9 +1146,17 @@ export function Approvals() {
       if (!cancelled) continue;
       // Said on the request itself, where a failed decision is said: the line stays until the reader
       // approves again or edits the note, and it keeps the row on the page under any filter.
-      settleDecision(cancelled.id, sentBackMeanwhile ? HOLD_SENT_BACK_TEXT : HOLD_REVISED_TEXT);
-      restoreCard(cancelled);
-      takenBack.push({ held: cancelled, sentBack: sentBackMeanwhile });
+      if (decidedStatus) {
+        // As after an Undo that came too late: the row shows the status and the note the server
+        // holds, and the note typed with the approval is kept as a draft.
+        settleDecision(cancelled.id);
+        if (cancelled.note) storeDraft(cancelled.id, cancelled.note, "note");
+        setLeftHere((current) => ({ ...current, [cancelled.id]: true }));
+      } else {
+        settleDecision(cancelled.id, sentBackMeanwhile ? HOLD_SENT_BACK_TEXT : HOLD_REVISED_TEXT);
+        restoreCard(cancelled);
+      }
+      takenBack.push({ held: cancelled, sentBack: sentBackMeanwhile, status: decidedStatus });
       // A row out of view cannot say it, and the live region is not seen: then it is said where the
       // reader is too. Not otherwise: the toast would lie over the open request's Approve button.
       // It is also said there when the reader sent this request back earlier on this visit: it is
@@ -1148,7 +1164,9 @@ export function Approvals() {
       if (!inView || (sentBackMeanwhile && Boolean(decidedHere[cancelled.id]))) {
         toasts?.pushToast({
           title: `Not approved: ${cancelled.subject}`,
-          body: sentBackMeanwhile
+          body: decidedStatus
+            ? `Its status is now ${decidedStatus}: decided elsewhere. Nothing was sent.`
+            : sentBackMeanwhile
             ? "It was sent back for changes before your approval was sent. Nothing was sent."
             : "The requester revised it before your approval was sent. Nothing was sent.",
           tone: "warn",
@@ -1164,8 +1182,10 @@ export function Approvals() {
     if (takenBack.length === 0) return;
     announce(
       takenBack
-        .map(({ held, sentBack: wasSentBack }) =>
-          wasSentBack
+        .map(({ held, sentBack: wasSentBack, status }) =>
+          status
+            ? `Not approved: ${held.subject}. Nothing was sent. Its status is now ${status}: decided elsewhere.`
+            : wasSentBack
             ? `Not approved: ${held.subject}. It was sent back for changes before your approval was sent. Nothing was sent.`
             : `Not approved: ${held.subject}. The requester revised it before it was sent. Nothing was sent.`,
         )
