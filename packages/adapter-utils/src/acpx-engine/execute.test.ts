@@ -347,6 +347,196 @@ it("isolates rotated runtime-tool capabilities across resumed and concurrent ACP
   expect(companyB.terminalEnvs.at(-1)?.PAPERCLIP_COMPANY_ID).toBe("company-b");
 });
 
+function mcpServerDescriptors(entry: Record<string, unknown> | undefined): Array<{
+  type?: string;
+  name: string;
+  url: string;
+  headers: Array<{ name: string; value: string }>;
+}> {
+  return (entry?.mcpServers ?? []) as Array<{
+    type?: string;
+    name: string;
+    url: string;
+    headers: Array<{ name: string; value: string }>;
+  }>;
+}
+
+function skillSetKeyOf(result: { sessionParams?: Record<string, unknown> | null }): string {
+  const skills = result.sessionParams?.skills;
+  return skills && typeof skills === "object"
+    ? String((skills as Record<string, unknown>).skillSetKey ?? "")
+    : "";
+}
+
+it("materializes selected ACPX Kimi skills with their supporting files and names the bundle in the prompt", async () => {
+  const root = await makeTempRoot();
+  const home = path.join(root, "home");
+  const kimiCodeHome = path.join(root, "kimi-code-home");
+  const skill = await createSkill(path.join(root, "sources"), "typesafe-judge");
+  await fs.writeFile(path.join(skill.source, "pilot.json"), "{\"version\":1}\n", "utf8");
+  const stateDir = path.join(root, "state");
+
+  const { meta, result } = await runExecutor({
+    agent: "kimi",
+    agentCommand: "node ./fake-acp.js",
+    stateDir,
+    env: { HOME: home, KIMI_CODE_HOME: kimiCodeHome },
+    paperclipRuntimeSkills: [skill],
+    paperclipSkillSync: { desiredSkills: [skill.key] },
+  });
+
+  const bundleRoot = await onlyChildDir(path.join(stateDir, "runtime-skills", "kimi"));
+  const skillsHome = path.join(bundleRoot, "skills");
+  const materialized = path.join(skillsHome, skill.runtimeName);
+  expect(await fs.readFile(path.join(materialized, "SKILL.md"), "utf8")).toContain("# typesafe-judge");
+  expect(await fs.readFile(path.join(materialized, "pilot.json"), "utf8")).toContain("\"version\"");
+  const prompt = String(meta[0]?.prompt ?? "");
+  expect(prompt).toContain("Paperclip has materialized selected runtime skills for this ACPX Kimi session.");
+  expect(prompt).toContain(`Skill root: ${skillsHome}`);
+  expect(prompt).toContain(`Selected skills: ${skill.runtimeName}`);
+  expect(result.sessionParams?.skills).toMatchObject({
+    mode: "kimi",
+    selectedSkills: [skill.runtimeName],
+  });
+  // The shared Kimi home and the configured HOME are never written: the bundle
+  // lives only under the run's state directory.
+  expect(await pathExists(path.join(kimiCodeHome, "skills"))).toBe(false);
+  expect(await pathExists(path.join(home, "skills"))).toBe(false);
+});
+
+it("adds no skill instructions or bundle note for an ACPX Kimi run without selected skills", async () => {
+  const root = await makeTempRoot();
+  const { meta } = await runExecutor({
+    agent: "kimi",
+    agentCommand: "node ./fake-acp.js",
+    stateDir: path.join(root, "state"),
+    paperclipRuntimeSkills: [],
+    paperclipSkillSync: { desiredSkills: [] },
+  });
+
+  expect(String(meta[0]?.prompt ?? "")).not.toContain("Skill root:");
+  const notes = ((meta[0]?.commandNotes ?? []) as string[]).join("\n");
+  expect(notes).not.toContain("Materialized");
+  expect(notes).not.toContain("tracked only");
+});
+
+it("changes the ACPX Kimi skill-set key when skill content or the selected set changes", async () => {
+  const root = await makeTempRoot();
+  const skillA = await createSkill(path.join(root, "sources"), "judge-a");
+  const skillB = await createSkill(path.join(root, "sources"), "judge-b");
+  const config = {
+    agent: "kimi",
+    agentCommand: "node ./fake-acp.js",
+    stateDir: path.join(root, "state"),
+    paperclipRuntimeSkills: [skillA, skillB],
+  };
+
+  const selectedA = await runExecutor({ ...config, paperclipSkillSync: { desiredSkills: [skillA.key] } });
+  const keyForA = skillSetKeyOf(selectedA.result);
+
+  await fs.writeFile(path.join(skillA.source, "SKILL.md"), "---\nrequired: false\n---\n# judge-a v2\n", "utf8");
+  const contentChanged = await runExecutor({ ...config, paperclipSkillSync: { desiredSkills: [skillA.key] } });
+  expect(skillSetKeyOf(contentChanged.result)).not.toBe(keyForA);
+
+  const setChanged = await runExecutor({
+    ...config,
+    paperclipSkillSync: { desiredSkills: [skillA.key, skillB.key] },
+  });
+  expect(skillSetKeyOf(setChanged.result)).not.toBe(keyForA);
+});
+
+it("drops a selected ACPX Kimi skill whose materialized copy has no usable SKILL.md", async () => {
+  const root = await makeTempRoot();
+  const brokenDir = path.join(root, "sources", "broken-judge");
+  await fs.mkdir(brokenDir, { recursive: true });
+  await fs.writeFile(path.join(brokenDir, "pilot.json"), "{\"version\":1}\n", "utf8");
+  const broken = {
+    key: "paperclipai/test/broken-judge",
+    runtimeName: "broken-judge",
+    source: brokenDir,
+    required: false,
+  };
+
+  const { logs, meta, result } = await runExecutor({
+    agent: "kimi",
+    agentCommand: "node ./fake-acp.js",
+    stateDir: path.join(root, "state"),
+    paperclipRuntimeSkills: [broken],
+    paperclipSkillSync: { desiredSkills: [broken.key] },
+  });
+
+  expect(String(meta[0]?.prompt ?? "")).not.toContain("broken-judge");
+  expect(result.sessionParams?.skills).toMatchObject({ mode: "kimi", selectedSkills: [] });
+  expect(logs.some((entry) => entry.text.includes("has no usable SKILL.md"))).toBe(true);
+});
+
+it("registers each ACPX Kimi run's own runtime-tools bearer as a native MCP server", async () => {
+  const root = await makeTempRoot();
+  const config = { agent: "kimi", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
+  const runtimeMcp = (token: string): AdapterRuntimeMcpAccess => ({
+    getServers: () => [
+      {
+        name: "Paperclip connections",
+        url: "https://paperclip.test/mcp/runtime-tools",
+        token,
+        connectionId: "paperclip-runtime-tools",
+      },
+    ],
+  });
+
+  const first = await runExecutor(config, { runtimeMcp: runtimeMcp("run-one-token") });
+  expect(mcpServerDescriptors(first.runtimeOptions[0])).toEqual([
+    {
+      type: "http",
+      name: "Paperclip connections",
+      url: "https://paperclip.test/mcp/runtime-tools",
+      headers: [{ name: "Authorization", value: "Bearer run-one-token" }],
+    },
+  ]);
+
+  // A task run never resumes a session (the Kimi adapter clears it), so the
+  // next run builds its runtime from its own options and registers its own
+  // bearer.
+  const rotated = await runExecutor(config, { runId: "run-2", runtimeMcp: runtimeMcp("run-two-token") });
+  expect(mcpServerDescriptors(rotated.runtimeOptions[0])[0]?.headers).toEqual([
+    { name: "Authorization", value: "Bearer run-two-token" },
+  ]);
+
+  // The bearer is a per-run secret: it must not move the session key, or every
+  // run would leave its own persisted session record behind, and it must never
+  // reach the persisted session params.
+  expect(rotated.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
+  expect(rotated.result.sessionParams?.sessionKey).toBe(first.result.sessionParams?.sessionKey);
+  expect(JSON.stringify(first.result.sessionParams)).not.toContain("run-one-token");
+  expect(JSON.stringify(rotated.result.sessionParams)).not.toContain("run-two-token");
+});
+
+it("keeps ACPX grok and custom agents on the tracked-only skill path", async () => {
+  const root = await makeTempRoot();
+  const skill = await createSkill(path.join(root, "sources"), "grok-skill");
+  const baseConfig = {
+    agentCommand: "node ./fake-acp.js",
+    paperclipRuntimeSkills: [skill],
+    paperclipSkillSync: { desiredSkills: [skill.key] },
+  };
+
+  for (const agent of ["grok", "custom"]) {
+    const { meta, result } = await runExecutor({
+      ...baseConfig,
+      agent,
+      stateDir: path.join(root, `state-${agent}`),
+    });
+    expect(result.sessionParams?.skills).toMatchObject({
+      mode: "custom_unsupported",
+      desiredSkillNames: [skill.key],
+    });
+    expect(meta[0]?.commandNotes).toContain(
+      "Selected Paperclip skills are tracked only; ACPX custom commands do not expose a runtime skill contract yet.",
+    );
+    expect(String(meta[0]?.prompt ?? "")).not.toContain("Skill root:");
+  }
+});
+
 // Under `vi.useFakeTimers()`, setup before `ensureSession` still performs real
 // filesystem work. Advancing the fake clock before that work reaches the
 // handshake can leave the guard timer scheduled after the advance and hang the
@@ -1519,6 +1709,10 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(await fs.readFile(path.join(materializedSkill, "SKILL.md"), "utf8")).toContain("# danger");
     expect(await pathExists(path.join(materializedSkill, "leak.txt"))).toBe(false);
     expect(await pathExists(path.join(materializedSkill, "leak-dir"))).toBe(false);
+    // Kimi shares this materialization helper; Claude's wording must not move.
+    expect(String(meta[0]?.prompt ?? "")).toContain(
+      "Paperclip has materialized selected runtime skills for this ACPX Claude session.",
+    );
     expect(String(meta[0]?.prompt ?? "")).toContain(`Skill root: ${skillsHome}`);
   });
 

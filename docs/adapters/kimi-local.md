@@ -3,7 +3,7 @@ title: Kimi Code CLI
 summary: Kimi Code CLI local adapter setup and configuration
 ---
 
-The `kimi_local` adapter runs the Kimi Code CLI (`kimi`) locally. It has two execution engines: the default **ACP engine** (`kimi acp`, streaming transcript with live tool status, matching `claude_local`/`gemini_local`) and a **CLI lane** (`kimi -p --output-format stream-json`) selected explicitly with `engine: cli`. It supports session persistence, per-run skill delivery via `--skills-dir`, thinking-effort control, and structured output parsing.
+The `kimi_local` adapter runs the Kimi Code CLI (`kimi`) locally. It has two execution engines: the default **ACP engine** (`kimi acp`, streaming transcript with live tool status, matching `claude_local`/`gemini_local`) and a **CLI lane** (`kimi -p --output-format stream-json`) selected explicitly with `engine: cli`. It supports session persistence, per-run skill delivery (a prompt-named materialized bundle on the default ACP engine, `--skills-dir` on the CLI lane), thinking-effort control, and structured output parsing.
 
 ## Prerequisites
 
@@ -63,11 +63,36 @@ If resume fails with an unknown/unrecoverable session error, the adapter automat
 
 ## Skills Delivery
 
-Desired Paperclip skills are delivered from a dedicated per-run directory passed via `--skills-dir`, so skills load reliably and in isolation without writing into the shared `~/.kimi-code/skills` home. On remote runs the skills snapshot is synced to the target and `--skills-dir` points at that isolated copy — Paperclip never overwrites `$KIMI_CODE_HOME/skills`, so skills installed by the operator or other agents are left intact. `--skills-dir` is only passed when at least one skill is desired, so unconfigured agents keep Kimi's default skill discovery.
+Skills delivery depends on the execution engine:
+
+- **CLI lane** (`engine: cli`): desired Paperclip skills are delivered from a
+  dedicated per-run directory passed via `--skills-dir`, so skills load reliably
+  and in isolation without writing into the shared `~/.kimi-code/skills` home.
+  On remote runs the skills snapshot is synced to the target and `--skills-dir`
+  points at that isolated copy — Paperclip never overwrites
+  `$KIMI_CODE_HOME/skills`, so skills installed by the operator or other agents
+  are left intact. `--skills-dir` is only passed when at least one skill is
+  desired, so unconfigured agents keep Kimi's default skill discovery.
+- **ACP engine** (default): Kimi's ACP backend accepts no skills directory, so
+  on local runs selected Paperclip skills are materialized into a per-run
+  bundle under the run state directory
+  (`<stateDir>/runtime-skills/kimi/<skillSetKey>/skills/<skillName>/`) and the
+  prompt names that skill root and the selected skills. The agent reads a
+  skill's `SKILL.md` from the bundle; nothing is written into the workspace or
+  the shared Kimi home, and the selected skills do not appear in Kimi's native
+  skill list. On a local task run, the run-scoped runtime-tools capability (for
+  example `typesafe_judge`) is also registered as a native HTTP MCP server
+  ("Paperclip connections") alongside the other MCP servers, authorized with
+  the current run's bearer. A task run starts a fresh ACP session every time,
+  so the registration never carries an earlier run's bearer. A conversation
+  turn resumes its session, so it receives the runtime tools through the
+  `PAPERCLIP_RUNTIME_TOOLS_*` environment variables only. Remote ACP targets keep the tracked-only
+  behavior: no bundle, no prompt skill root, and no native runtime-tools MCP
+  server.
 
 ### Control-plane skill
 
-`paperclipai agent local-cli <agentRef> -C <companyId>` installs the Paperclip control-plane skills into `~/.kimi-code/skills` (honoring `KIMI_CODE_HOME`), alongside the existing `~/.codex/skills` and `~/.claude/skills` targets. Kimi auto-discovers this home on every run, so the agent has the control-plane API reference (issue/comment/interaction routes) from turn one rather than rediscovering endpoints by trial and error. Pass `--no-install-skills` to skip. This is independent of the per-run `--skills-dir` delivery above, which only applies when an agent has explicitly configured skills.
+`paperclipai agent local-cli <agentRef> -C <companyId>` installs the Paperclip control-plane skills into `~/.kimi-code/skills` (honoring `KIMI_CODE_HOME`), alongside the existing `~/.codex/skills` and `~/.claude/skills` targets. Kimi auto-discovers this home on every run, so the agent has the control-plane API reference (issue/comment/interaction routes) from turn one rather than rediscovering endpoints by trial and error. Pass `--no-install-skills` to skip. This is independent of the per-run desired-skills delivery above, which only applies when an agent has explicitly configured skills.
 
 ## Environment Test
 

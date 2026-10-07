@@ -24,7 +24,11 @@ The tool accepts one shared `state`, a model (normally `jev-latest`), and one or
 
 Use [the shared pilot input](../skills/typesafe-judge/pilot.json) for a complete schema-valid example covering all three question types.
 
+The tool's MCP input schema describes the question contract, because an agent can discover the tool without loading the skill. Through MCP, malformed arguments come back as a tool result with `isError: true` and `{"ok":false,"error":{"code":"invalid_input","retryable":false,"issues":[...]}}`, where each issue names a path and a reason. An issue never echoes an input value; its path does name the caller's own question ID. The agent corrects the call; no provider request is made. A Noul `criteria` of `null` is treated as omitted. The REST endpoint keeps HTTP `400` for malformed input. The MCP endpoint is POST only: it answers the stream probe (`GET`) with `405`, answers `ping`, and accepts notifications with `202`.
+
 The invoking agent must have a current company-scoped `TYPESAFE_API_KEY` `secret_ref` binding in its adapter environment. Paperclip resolves it at call time, never exposes it in the tool contract, and rejects configuration changes that race an invocation. `PAPERCLIP_TYPESAFE_TOOL_ENABLED=true` is the kill switch; it is off by default. `PAPERCLIP_TYPESAFE_TIMEOUT_MS` may lower or raise the request timeout within 1–15 seconds. All failures return a code without typed answers, so callers must fall back to their existing authorized reasoning path.
+
+The binding lives in the adapter environment, so Paperclip also resolves it into the agent process environment like any other adapter secret. An agent with a shell can read it there. The rule that agents call TypeSafe only through `typesafe_judge` is therefore a policy the skill states, not a technical barrier. Bind the key only to agents that are trusted with it.
 
 Rate-limit (`429`) and overload (`529`) responses receive at most one retry. The retry honors `retry-after-ms` or `Retry-After` (seconds or an HTTP date). If neither header supplies a valid delay, the first backoff is 500 milliseconds. A delay that reaches the remaining request deadline prevents the retry. Paperclip rechecks live-run authority, the agent configuration, the credential version, and the skill catalog before sending a retry; stale authority or bindings prevent another provider call.
 

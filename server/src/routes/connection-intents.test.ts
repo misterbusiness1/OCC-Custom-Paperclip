@@ -8,6 +8,7 @@ import {
   RUNTIME_CONNECTION_TOOL_DEFINITIONS,
   wakeConnectionIntentAfterResolution,
 } from "./connection-intents.js";
+import { typeSafeJudgeInputSchema } from "../services/typesafe-runtime-tool.js";
 
 describe("runtime connection MCP contract", () => {
   it("advertises the canonical runtime tools with narrow schemas", () => {
@@ -36,6 +37,38 @@ describe("runtime connection MCP contract", () => {
       },
       expect.objectContaining({ name: "typesafe_judge", inputSchema: expect.objectContaining({ required: ["state", "model", "questions"] }) }),
     ]);
+  });
+
+  it("describes the typesafe_judge question contract in the schema agents see", () => {
+    const judge = RUNTIME_CONNECTION_TOOL_DEFINITIONS.find((tool) => tool.name === "typesafe_judge")!;
+    // The tool supplies a judgment to the agent; it never stands in for it.
+    expect(judge.description).toContain("cannot authorize actions or replace the primary reasoning model");
+    const question = (judge.inputSchema.properties.questions as unknown as {
+      additionalProperties: {
+        properties: Record<string, { enum?: readonly string[]; anyOf?: ReadonlyArray<{ type: string; description?: string }> }>;
+        required: readonly string[];
+      };
+    }).additionalProperties;
+    expect(question.properties.type.enum).toEqual(["choice", "noul", "score"]);
+    expect(question.required).toEqual(["type", "instructions"]);
+    // An untyped `criteria` reached the tool as prose text from a real agent,
+    // so its JSON shapes are declared, and each names the types it serves.
+    const criteria = question.properties.criteria.anyOf ?? [];
+    expect(criteria.map((shape) => shape.type)).toEqual(["object", "array", "null"]);
+    expect(criteria[2]?.description).toContain("noul only");
+    expect(criteria[0]?.description).toContain("choice");
+    expect(criteria[0]?.description).toContain("noul");
+    expect(criteria[1]?.description).toContain("score");
+  });
+
+  it("gives an example in the schema that the tool itself accepts", () => {
+    const judge = RUNTIME_CONNECTION_TOOL_DEFINITIONS.find((tool) => tool.name === "typesafe_judge")!;
+    const description = (judge.inputSchema.properties.questions as { description: string }).description;
+    const example = JSON.parse(description.slice(description.indexOf("Example: ") + "Example: ".length));
+    const parsed = typeSafeJudgeInputSchema.safeParse({ state: "synthetic", model: "jev-latest", questions: example });
+    expect(parsed.success).toBe(true);
+    expect(Object.values(example as Record<string, { type: string }>).map((question) => question.type).sort())
+      .toEqual(["choice", "noul", "score"]);
   });
 
   it("does not accept run identity, task identity, users, or credentials from tool input", () => {
