@@ -59,7 +59,7 @@ export const RUNTIME_CONNECTION_TOOL_DEFINITIONS = [
                 anyOf: [
                   {
                     type: "object",
-                    description: "For choice (required): each option ID mapped to its meaning, or to null; 2 to 255 options; add a no-match option when none may fit. For noul (optional): \"true\" and \"false\" mapped to what yes and no mean.",
+                    description: "For choice (required): each option ID (1 to 128 characters) mapped to its meaning, or to null; 2 to 255 options; add a no-match option when none may fit. For noul (optional): \"true\" and \"false\" mapped to what yes and no mean.",
                   },
                   {
                     type: "array",

@@ -34,6 +34,7 @@ function runtimeClaims(req: Request) {
 const TYPESAFE_JUDGE_INPUT_HINT = "criteria is JSON, never text. choice: {\"option_id\":\"meaning\",\"other_id\":\"meaning\"}. score: [\"lowest level\",\"next level\",\"highest level\"]. noul: leave criteria out, or {\"true\":\"what yes means\",\"false\":\"what no means\"}.";
 
 const TYPESAFE_QUESTION_ID_RULE = "A question ID starts with a letter and holds only letters, digits, \"_\" or \"-\", 64 characters at most.";
+const TYPESAFE_OPTION_ID_RULE = "A choice option ID holds 1 to 128 characters.";
 
 /** What a caller must change, one entry per path, without any input value. */
 function typeSafeInputIssues(error: ZodError) {
@@ -47,7 +48,13 @@ function typeSafeInputIssues(error: ZodError) {
     // a path says what to change.
     if (seen.has(path)) continue;
     seen.add(path);
-    issues.push({ path, message: issue.code === "invalid_key" ? TYPESAFE_QUESTION_ID_RULE : issue.message });
+    // Zod reports a rejected record key as "Invalid key in record" for both
+    // records in this input: `questions.<id>` and a Choice's
+    // `questions.<id>.criteria.<option>`. State the rule that was broken.
+    const message = issue.code !== "invalid_key"
+      ? issue.message
+      : issue.path.length === 2 ? TYPESAFE_QUESTION_ID_RULE : TYPESAFE_OPTION_ID_RULE;
+    issues.push({ path, message });
     if (issues.length === 8) break;
   }
   return issues;

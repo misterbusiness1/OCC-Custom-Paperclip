@@ -84,6 +84,10 @@ describe("TypeSafe runtime REST/MCP routes", () => {
     expect(badId).toHaveLength(1);
     expect(badId[0]?.message).toContain("A question ID starts with a letter");
 
+    // A Choice option ID is a record key too. It has its own, looser rule.
+    const badOption = await call({ pick: { type: "choice", instructions: "Which?", criteria: { "": "an empty option ID", other: "the other option" } } });
+    expect(badOption).toEqual([{ path: "questions.pick.criteria.", message: "A choice option ID holds 1 to 128 characters." }]);
+
     const tooMany = await call(Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`q${index}`, { type: "noul", instructions: "Does it apply?" }])));
     expect(tooMany).toEqual([{ path: "questions", message: "Send 1 to 32 questions" }]);
     expect(mocks.judge).not.toHaveBeenCalled();
