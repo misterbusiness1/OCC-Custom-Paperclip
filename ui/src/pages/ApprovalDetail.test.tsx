@@ -11,6 +11,8 @@ const routerMock = vi.hoisted(() => ({
   searchParams: new URLSearchParams(),
 }));
 
+const breadcrumbMock = vi.hoisted(() => ({ setBreadcrumbs: vi.fn() }));
+
 const apiMocks = vi.hoisted(() => ({
   get: vi.fn(),
   listComments: vi.fn(),
@@ -34,7 +36,7 @@ vi.mock("../context/CompanyContext", () => ({
   useOptionalCompany: () => null,
 }));
 vi.mock("../context/BreadcrumbContext", () => ({
-  useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
+  useBreadcrumbs: () => breadcrumbMock,
 }));
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: ComponentProps<"a"> & { to: string }) => (
@@ -85,6 +87,7 @@ describe("ApprovalDetail", () => {
   beforeEach(() => {
     for (const mock of Object.values(apiMocks)) mock.mockReset();
     routerMock.navigate.mockReset();
+    breadcrumbMock.setBreadcrumbs.mockReset();
     apiMocks.listComments.mockResolvedValue([]);
     apiMocks.listIssues.mockResolvedValue([]);
     apiMocks.agentsList.mockResolvedValue([
@@ -105,7 +108,7 @@ describe("ApprovalDetail", () => {
 
   /** The panel the board decides from: everything above "Full request". */
   const panel = () => container.querySelector<HTMLElement>("section[aria-labelledby='approval-title']")!;
-  const render = async (approval: Approval) => {
+  const render = async (approval: Approval, requesterName = "Operations Lead") => {
     apiMocks.get.mockResolvedValue(approval);
     await act(async () => {
       root.render(
@@ -118,7 +121,14 @@ describe("ApprovalDetail", () => {
     });
     await vi.waitFor(() => expect(panel()).not.toBeNull());
     // The agent list resolves names (requester, a hire's manager).
-    await vi.waitFor(() => expect(panel().textContent).toContain("Operations Lead"));
+    await vi.waitFor(() => expect(panel().textContent).toContain(requesterName));
+  };
+  /** The label of the last breadcrumb the page set. */
+  const lastCrumb = () => {
+    const crumbs = breadcrumbMock.setBreadcrumbs.mock.lastCall![0] as Array<{ label: string; href?: string }>;
+    expect(crumbs[0]).toEqual({ label: "Approvals", href: "/approvals" });
+    expect(crumbs).toHaveLength(2);
+    return crumbs[1].label;
   };
   const button = (scope: ParentNode, label: string) =>
     [...scope.querySelectorAll("button")].find((candidate) => candidate.textContent === label)!;
@@ -354,6 +364,133 @@ describe("ApprovalDetail", () => {
     expect(text).toContain("Raise the budget and resume, or keep the scope paused.");
     expect(text).toContain("Resolve this budget stop in Costs.");
     expect(panel().querySelectorAll("button")).toHaveLength(0);
+  });
+
+  describe("names, never ids", () => {
+    const APPROVAL_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+    const UNKNOWN_AGENT_ID = "9f8e7d6c-5b4a-4321-8fed-cba987654321";
+    const ISSUE_ID = "5d4c3b2a-1f0e-4d9c-8b7a-665544332211";
+    /** Everything the page shows, without the one line that is labelled as an id and the technical raw payload. */
+    const shownText = () => {
+      const copy = container.cloneNode(true) as HTMLElement;
+      const requestId = [...copy.querySelectorAll("p")].find((p) => p.textContent?.startsWith("Request ID:"))!;
+      expect(requestId.textContent).toBe(`Request ID: ${APPROVAL_ID}`);
+      requestId.remove();
+      copy.querySelector("pre")!.closest("details")!.remove();
+      return copy.textContent ?? "";
+    };
+
+    it("names the request in the breadcrumb by its subject, cut to about 40 characters", async () => {
+      await render(createApproval({ id: APPROVAL_ID }));
+      expect(lastCrumb()).toBe("Approve staging hosting spend");
+    });
+
+    it("cuts a long subject in the breadcrumb at a word boundary", async () => {
+      const title = "Approve the staging hosting spend for the wholesale portal before Friday";
+      await render(createApproval({ id: APPROVAL_ID, payload: { title, recommendedAction: "Approve." } }));
+
+      const crumb = lastCrumb();
+      expect(crumb).toBe("Approve the staging hosting spend for\u2026");
+      expect(crumb.length).toBeLessThanOrEqual(41);
+      // The heading still carries the whole title.
+      expect(panel().querySelector("h1")?.textContent).toBe(title);
+    });
+
+    it("falls back to the kind of request in the breadcrumb when the request has no subject", async () => {
+      await render(createApproval({ id: APPROVAL_ID, payload: { reasoning: "No title was given." } }));
+      expect(lastCrumb()).toBe("Board Approval");
+    });
+
+    it("names a hire in the breadcrumb by the agent, not by an id", async () => {
+      await render(
+        createApproval({ id: APPROVAL_ID, type: "hire_agent", payload: { name: "Support Clerk", role: "general" } }),
+      );
+      expect(lastCrumb()).toBe("Support Clerk");
+    });
+
+    it("never puts the approval id, or a piece of it, in any breadcrumb it sets", async () => {
+      await render(createApproval({ id: APPROVAL_ID }));
+      const labels = breadcrumbMock.setBreadcrumbs.mock.calls.flatMap(([crumbs]) =>
+        (crumbs as Array<{ label: string }>).map((crumb) => crumb.label),
+      );
+      expect(labels.length).toBeGreaterThan(0);
+      for (const label of labels) {
+        expect(label).not.toContain(APPROVAL_ID.slice(0, 8));
+        // While the request loads, the route's id is not shown either.
+        expect(label).not.toContain("approval-1");
+      }
+    });
+
+    it("shows a requester and comment authors it cannot name as \"An agent\", and a user as \"Board\"", async () => {
+      apiMocks.listComments.mockResolvedValue([
+        { id: "comment-1", authorAgentId: UNKNOWN_AGENT_ID, authorUserId: null, body: "From a removed agent.", createdAt: new Date("2026-10-05T13:00:00.000Z") },
+        { id: "comment-2", authorAgentId: MANAGER_ID, authorUserId: null, body: "From the manager.", createdAt: new Date("2026-10-05T14:00:00.000Z") },
+        { id: "comment-3", authorAgentId: null, authorUserId: "user-42", body: "From a board member.", createdAt: new Date("2026-10-05T15:00:00.000Z") },
+      ]);
+      apiMocks.listIssues.mockResolvedValue([
+        { id: ISSUE_ID, identifier: null, title: "Pick a hosting provider" },
+        { id: "issue-2", identifier: "OPS-7", title: "Renew the domain" },
+      ]);
+      await render(createApproval({ id: APPROVAL_ID, requestedByAgentId: UNKNOWN_AGENT_ID }), "An agent");
+      await vi.waitFor(() => expect(container.textContent).toContain("From a board member."));
+      await vi.waitFor(() => expect(container.textContent).toContain("Pick a hosting provider"));
+      // The agent list has loaded and does not hold the requester.
+      await vi.waitFor(() => expect(container.textContent).toContain("Chief Executive"));
+
+      const header = panel().querySelector("header")!;
+      expect(header.textContent).toContain("Requested by");
+      expect(header.querySelector("[title='An agent']")).not.toBeNull();
+
+      const authors = [...container.querySelectorAll("details")]
+        .find((details) => details.querySelector("summary")?.textContent?.startsWith("Discussion"))!;
+      const names = [...authors.querySelectorAll("[title]")].map((identity) => identity.getAttribute("title"));
+      expect(names).toEqual(["An agent", "Chief Executive", "Board"]);
+      // An unnamed agent's comment still leads to that agent's page.
+      expect(authors.querySelector("a")!.getAttribute("href")).toBe(`/agents/${UNKNOWN_AGENT_ID}`);
+
+      // A task without an identifier is named by its title only.
+      const tasks = [...container.querySelectorAll("a")].filter((link) => link.getAttribute("href")?.startsWith("/issues/"));
+      expect(tasks.map((link) => link.textContent)).toEqual(["Pick a hosting provider", "OPS-7Renew the domain"]);
+
+      const text = shownText();
+      for (const id of [APPROVAL_ID, UNKNOWN_AGENT_ID, MANAGER_ID, ISSUE_ID, "user-42"]) {
+        expect(text).not.toContain(id.slice(0, 8));
+      }
+    });
+
+    it("uses one set of words for the top panel and Full request", async () => {
+      await render(
+        createApproval({
+          id: APPROVAL_ID,
+          payload: {
+            title: "Reply to wholesale request",
+            recommendedAction: "Send the drafted reply.",
+            reasoning: "Nothing in the reply commits to a delivery date.",
+            nextActionOnApproval: "The agent sends the reply.",
+            recipient: "buyer@example.test",
+            subject: "Re: Wholesale price list",
+            body: "Hi Sam, the price list is attached.",
+          },
+        }),
+      );
+
+      const fullRequest = [...container.querySelectorAll("details")]
+        .find((details) => details.querySelector("summary")?.textContent === "Full request")!;
+      for (const scope of [panel(), fullRequest]) {
+        expect(scope.textContent).toContain("RecommendationSend the drafted reply.");
+        expect(scope.textContent).toContain("Draft reply");
+        expect(scope.textContent).not.toContain("Recommended action");
+        expect(scope.textContent).not.toContain("Proposed reply");
+        expect(scope.textContent).not.toContain("On approval");
+      }
+      expect(panel().textContent).toContain("If approvedThe agent sends the reply.");
+    });
+
+    it("says that no pros or risks were recorded, without calling the request old", async () => {
+      await render(createApproval({ id: APPROVAL_ID, payload: { title: "Approve staging hosting spend" } }));
+      expect(panel().textContent).toContain("No pros or risks were recorded.");
+      expect(container.textContent).not.toContain("Older request");
+    });
   });
 
   describe("sent back for changes, and revised while the page is open", () => {

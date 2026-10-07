@@ -35,6 +35,11 @@ import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { timeAgo } from "../lib/timeAgo";
 
+/** Shown where an agent's name is not known. An id, or a piece of one, is never shown as a name. */
+const UNKNOWN_AGENT_NAME = "An agent";
+/** About how much of the request's subject the last breadcrumb holds. */
+const BREADCRUMB_SUBJECT_LENGTH = 40;
+
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
@@ -87,12 +92,18 @@ export function ApprovalDetail() {
     return map;
   }, [agents]);
 
+  // The last crumb names the request by its subject, or by its kind when it has none; never by its id.
+  const breadcrumbLabel = useMemo(() => {
+    if (!approval) return "Approval";
+    const subjectText = approvalSubject(approval.payload as Record<string, unknown>, approval.type);
+    return (
+      approvalExcerpt(subjectText, BREADCRUMB_SUBJECT_LENGTH) ?? typeLabel[approval.type] ?? approval.type
+    );
+  }, [approval]);
+
   useEffect(() => {
-    setBreadcrumbs([
-      { label: "Approvals", href: "/approvals" },
-      { label: approval?.id?.slice(0, 8) ?? approvalId ?? "Approval" },
-    ]);
-  }, [setBreadcrumbs, approval, approvalId]);
+    setBreadcrumbs([{ label: "Approvals", href: "/approvals" }, { label: breadcrumbLabel }]);
+  }, [setBreadcrumbs, breadcrumbLabel]);
 
   const refresh = () => {
     if (!approvalId) return;
@@ -181,6 +192,11 @@ export function ApprovalDetail() {
   // Null when the loaded agent list holds no such agent; undefined while the list is not known.
   const resolveAgentName: ApprovalAgentNameResolver = (agentId) =>
     agents ? (agentNameById.get(agentId) ?? null) : undefined;
+  /** An agent as the page names it: by its name, or as "An agent" (with a neutral avatar) when the name is not known. */
+  const agentIdentity = (agentId: string) => {
+    const name = agentNameById.get(agentId);
+    return name ? <Identity name={name} size="sm" /> : <Identity name={UNKNOWN_AGENT_NAME} initials="?" size="sm" />;
+  };
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
@@ -255,10 +271,7 @@ export function ApprovalDetail() {
               {approval.requestedByAgentId && (
                 <span className="inline-flex items-center gap-1.5">
                   Requested by
-                  <Identity
-                    name={agentNameById.get(approval.requestedByAgentId) ?? approval.requestedByAgentId.slice(0, 8)}
-                    size="sm"
-                  />
+                  {agentIdentity(approval.requestedByAgentId)}
                 </span>
               )}
               <span>Created {timeAgo(approval.createdAt)}</span>
@@ -396,9 +409,10 @@ export function ApprovalDetail() {
                     to={`/issues/${issue.identifier ?? issue.id}`}
                     className="block rounded border border-border/70 px-2 py-1.5 text-xs hover:bg-accent/20"
                   >
-                    <span className="mr-2 font-mono text-muted-foreground">
-                      {issue.identifier ?? issue.id.slice(0, 8)}
-                    </span>
+                    {/* A task is named by its identifier and title; one without an identifier shows its title only. */}
+                    {issue.identifier && (
+                      <span className="mr-2 font-mono text-muted-foreground">{issue.identifier}</span>
+                    )}
                     <span>{issue.title}</span>
                   </Link>
                 ))}
@@ -440,10 +454,7 @@ export function ApprovalDetail() {
                 <div className="mb-1 flex items-center justify-between gap-3">
                   {comment.authorAgentId ? (
                     <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
-                      <Identity
-                        name={agentNameById.get(comment.authorAgentId) ?? comment.authorAgentId.slice(0, 8)}
-                        size="sm"
-                      />
+                      {agentIdentity(comment.authorAgentId)}
                     </Link>
                   ) : (
                     <Identity name="Board" size="sm" />

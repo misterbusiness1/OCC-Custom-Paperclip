@@ -91,11 +91,14 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
       kind: "approval",
       id: "approval-1",
       companyId: "c1",
-      title: "Hire agent: Research Analyst",
+      title: "Budget stop: Research project",
       identifier: null,
       status: "pending",
       href: "/PAP/approvals/approval-1",
-      metadata: {},
+      // A budget stop is the approval type the row still resolves in place, so this item
+      // exercises the row's own verbs and its inline resolver. Board, hire and strategy
+      // approvals are sent to their own page (see "review-first approvals" below).
+      metadata: { type: "budget_override_required" },
     },
     whyNow: "Approval is pending a board decision.",
     decisionVerbs: [],
@@ -362,7 +365,7 @@ describe("AttentionQueueRow", () => {
     );
     const links = Array.from(container?.querySelectorAll("a") ?? []);
     // No anchor should carry the subject title (only the identifier link, absent here).
-    expect(links.some((a) => a.textContent?.includes("Hire agent: Research Analyst"))).toBe(false);
+    expect(links.some((a) => a.textContent?.includes("Budget stop: Research project"))).toBe(false);
   });
 
   // The eyebrow carries the decision kind and the task key only. Project
@@ -563,6 +566,147 @@ describe("AttentionQueueRow", () => {
     expect(approvalsApi.approve).toHaveBeenCalledWith("approval-1");
     expect(onToggleExpand).not.toHaveBeenCalled();
     expect(container?.textContent).toContain("Approval approved");
+  });
+
+  describe("review-first approvals", () => {
+    const allVerbs = [
+      { id: "approve", label: "Approve", description: "Approve the request." },
+      { id: "reject", label: "Reject", description: "Reject the request." },
+      { id: "request_revision", label: "Request revision", description: "Send the request back for changes." },
+    ];
+    /** An approval as the feed sends it: only a Board approval arrives marked as not resolvable in the row. */
+    const approvalItem = (type: string | null, overrides: Partial<AttentionItem> = {}) =>
+      buildItem({
+        subject: {
+          kind: "approval",
+          id: "approval-1",
+          companyId: "c1",
+          title: "Reply to Sam about the late order",
+          identifier: null,
+          status: "pending",
+          href: "/PAP/approvals/approval-1",
+          metadata: type === null ? {} : { type },
+        },
+        decisionVerbs: allVerbs,
+        inlineResolvable: type !== "request_board_approval",
+        ...overrides,
+      });
+    const buttonTexts = () => Array.from(container?.querySelectorAll("button") ?? []).map((b) => b.textContent ?? "");
+    const reviewLink = () => container?.querySelector<HTMLAnchorElement>('a[data-attention-review-link="true"]') ?? null;
+    const decisionTexts = ["Approve", "Reject", "Request revision"];
+
+    for (const type of ["request_board_approval", "hire_agent", "approve_ceo_strategy"]) {
+      it(`offers no decision on a collapsed ${type} row, only a link to its page`, () => {
+        render(
+          <AttentionQueueRow
+            item={approvalItem(type)}
+            companyId="c1"
+            expanded={false}
+            onToggleExpand={noop}
+            onDismiss={noop}
+            onSnooze={noop}
+          />,
+        );
+
+        expect(buttonTexts().filter((text) => decisionTexts.includes(text))).toEqual([]);
+        expect(container?.querySelector('[aria-label="Decision actions"]')).toBeNull();
+
+        const link = reviewLink();
+        expect(link?.textContent).toBe("Review and decide");
+        expect(link?.getAttribute("href")).toBe("/approvals/approval-1");
+        // The link's name says which request it leads to; the visible words stay in it.
+        expect(link?.getAttribute("aria-label")).toBe("Review and decide: Reply to Sam about the late order");
+        // One way to the approval's page, not two.
+        expect(Array.from(container?.querySelectorAll("a") ?? []).map((a) => a.textContent)).toEqual([
+          "Review and decide",
+        ]);
+
+        // Nothing on the row sends a decision.
+        for (const control of Array.from(container?.querySelectorAll<HTMLElement>("button, a") ?? [])) {
+          if (control.getAttribute("aria-label") === "Row actions") continue;
+          control.addEventListener("click", (event) => event.preventDefault());
+          act(() => control.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })));
+        }
+        expect(approvalsApi.approve).not.toHaveBeenCalled();
+        expect(approvalsApi.reject).not.toHaveBeenCalled();
+        expect(approvalsApi.requestRevision).not.toHaveBeenCalled();
+
+        // Snooze and dismiss stay where they were.
+        expect(container?.querySelector('[aria-label="Row actions"]')).toBeTruthy();
+      });
+
+      it(`opens no inline resolver on an expanded ${type} row`, () => {
+        render(
+          <AttentionQueueRow
+            item={approvalItem(type)}
+            companyId="c1"
+            expanded
+            onToggleExpand={noop}
+            onDismiss={noop}
+          />,
+        );
+
+        expect(container?.querySelector("textarea")).toBeNull();
+        expect(buttonTexts().filter((text) => decisionTexts.includes(text))).toEqual([]);
+        expect(reviewLink()?.getAttribute("href")).toBe("/approvals/approval-1");
+      });
+    }
+
+    it("has nothing to expand on a review-first row, so a stray click or key press toggles nothing", () => {
+      const onToggleExpand = vi.fn();
+      render(
+        <AttentionQueueRow
+          item={approvalItem("hire_agent")}
+          companyId="c1"
+          expanded={false}
+          onToggleExpand={onToggleExpand}
+          onDismiss={noop}
+        />,
+      );
+
+      expect(container?.querySelector('[role="button"][aria-expanded]')).toBeNull();
+      expect(container?.querySelector('button[aria-label="Expand decision"]')).toBeNull();
+      expect(container?.textContent).not.toContain("See more");
+      const title = Array.from(container?.querySelectorAll("span") ?? []).find(
+        (span) => span.textContent === "Reply to Sam about the late order",
+      );
+      expect(title).toBeTruthy();
+      act(() => title?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(onToggleExpand).not.toHaveBeenCalled();
+    });
+
+    it("treats an approval whose type the feed does not give as review-first", () => {
+      render(
+        <AttentionQueueRow
+          item={approvalItem(null)}
+          companyId="c1"
+          expanded={false}
+          onToggleExpand={noop}
+          onDismiss={noop}
+        />,
+      );
+
+      expect(buttonTexts().filter((text) => decisionTexts.includes(text))).toEqual([]);
+      expect(reviewLink()?.textContent).toBe("Review and decide");
+    });
+
+    it("keeps Restore and Open on a snoozed approval, with no decision and no second link", () => {
+      render(
+        <AttentionQueueRow
+          item={approvalItem("request_board_approval")}
+          companyId="c1"
+          expanded={false}
+          onToggleExpand={noop}
+          onDismiss={noop}
+          onRestore={noop}
+          variant="hidden"
+        />,
+      );
+
+      expect(buttonTexts()).toEqual(["Restore"]);
+      expect(reviewLink()).toBeNull();
+      expect(Array.from(container?.querySelectorAll("a") ?? []).map((a) => a.textContent)).toEqual(["Open"]);
+    });
   });
 
   it("renders configured confirmation labels and accepts from the compact action area", async () => {

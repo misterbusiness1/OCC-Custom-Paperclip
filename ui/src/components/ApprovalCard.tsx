@@ -269,6 +269,8 @@ export function ApprovalCard({
               trailing={detailsControl}
               approveGuard={approveGuard}
               approveHoldKey={revision.reviewCount}
+              // A revision to confirm comes first: the button says "Read full reply" only when the press will open it.
+              approveLabel={revision.revised ? undefined : draftGate.approveLabel}
               error={error}
               onDismissError={onDismissError}
               defaultNote={defaultNote}

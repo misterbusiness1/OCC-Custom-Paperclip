@@ -61,6 +61,26 @@ const DAY_MS = 24 * HOUR_MS;
 // the row also reflows correctly inside narrow side panels, not just on phones.
 const ACTION_BTN = "h-9 gap-1.5 px-3 text-sm @xl:h-6 @xl:gap-1 @xl:px-2 @xl:text-xs";
 
+/**
+ * Approvals this row never decides in place. The row shows a title and a short
+ * excerpt: not the outgoing email of a Board approval, not what a hire may
+ * spend, not a strategy's plan. Approving or rejecting from here would be a
+ * decision on text the board has not been shown, so the row links to the
+ * approval's own page, where the whole request sits above the buttons.
+ */
+const REVIEW_FIRST_APPROVAL_TYPES: ReadonlySet<string> = new Set([
+  "request_board_approval",
+  "hire_agent",
+  "approve_ceo_strategy",
+]);
+
+/** An approval the feed does not give a type for is not decided blind either. */
+function isReviewFirstApproval(item: AttentionItem): boolean {
+  if (item.sourceKind !== "approval") return false;
+  const type = item.subject.metadata?.type;
+  return typeof type !== "string" || REVIEW_FIRST_APPROVAL_TYPES.has(type);
+}
+
 /** Tomorrow at 9am local time. */
 function tomorrowMorningIso(): string {
   const d = new Date();
@@ -129,7 +149,9 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // The task this row belongs to, whichever field the feed put it in.
   const taskRef = attentionTaskRef(item);
   const isHidden = variant === "hidden";
-  const inline = !isHidden && isInlineResolvable(item);
+  // Decided on the approval's page, not here: no inline resolver, no compact verbs.
+  const reviewFirst = !isHidden && isReviewFirstApproval(item);
+  const inline = !isHidden && !reviewFirst && isInlineResolvable(item);
   const href = item.subject.href;
   const snoozedUntil = item.dismissal?.kind === "snooze" ? item.dismissal.snoozedUntil : null;
   const detailLine = attentionDetailLine(item) ?? item.whyNow;
@@ -158,13 +180,14 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
 
   // Which rows contribute an action bar. Inline rows carry compact decision
   // verbs; deep-link rows carry an Open button; curtain rows carry Restore.
-  const compactActions = !isHidden ? collectCompactActions(item) : [];
+  const compactActions = !isHidden && !reviewFirst ? collectCompactActions(item) : [];
   // Who the server will let resolve this interaction. A collapsed row offers
   // Accept/Reject before anything fetches the interaction, so the audience
   // travels with the feed item; null for every non-interaction source and for a
   // feed built before the metadata existed (PAP-17287).
   const audience = describeAttentionResolverAudience(item);
-  const showOpen = !inline && !!href;
+  // A review-first approval carries "Review and decide" in the place of Open; both lead to the same page.
+  const showOpen = !inline && !reviewFirst && !!href;
   const showRestore = isHidden && !!onRestore;
   // An expanded inline row hands its footer to the resolver, which owns the
   // decision verbs — so the toggle rides alongside them on one row rather than
@@ -197,7 +220,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
    */
   const renderFooter = ({ compact }: { compact: boolean }) => {
     const showCompact = compactActions.length > 0 && (compact || !expanded);
-    if (!toggle && !showCompact && !showOpen && !showRestore) return null;
+    if (!toggle && !showCompact && !showOpen && !showRestore && !reviewFirst) return null;
     return (
       <div className="flex flex-wrap items-center justify-between gap-2" data-attention-actions="true">
         {toggle ?? <span />}
@@ -210,6 +233,18 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               audience={audience}
               onOpen={() => onToggleExpand(item)}
             />
+          )}
+
+          {reviewFirst && (
+            <Button asChild variant="default" size="xs" className={ACTION_BTN}>
+              <Link
+                to={`/approvals/${item.subject.id}`}
+                aria-label={`Review and decide: ${item.subject.title ?? meta.label}`}
+                data-attention-review-link="true"
+              >
+                Review and decide
+              </Link>
+            </Button>
           )}
 
           {showOpen && (

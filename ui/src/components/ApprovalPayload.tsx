@@ -392,12 +392,8 @@ export function approvalStrategyBrief(payload?: Record<string, unknown> | null) 
   return approvalDecisionBrief(rest);
 }
 
-/** The first lines of a long text, cut at a line or word boundary. */
-export function approvalTextPreview(
-  text: string,
-  maxLines = 6,
-  maxLength = 480,
-): { preview: string; truncated: boolean } {
+/** The first lines of a long text, cut at a line or word boundary, with nothing added to mark the cut. */
+function cutTextPreview(text: string, maxLines: number, maxLength: number): { preview: string; truncated: boolean } {
   const lines = text.split("\n");
   let preview = lines.slice(0, maxLines).join("\n");
   let truncated = lines.length > maxLines;
@@ -411,7 +407,17 @@ export function approvalTextPreview(
     preview = preview.slice(0, end);
     truncated = true;
   }
-  return { preview: truncated ? `${preview.trimEnd()}…` : preview, truncated };
+  return { preview: truncated ? preview.trimEnd() : preview, truncated };
+}
+
+/** The first lines of a long text, cut at a line or word boundary; a cut preview ends in an ellipsis. */
+export function approvalTextPreview(
+  text: string,
+  maxLines = 6,
+  maxLength = 480,
+): { preview: string; truncated: boolean } {
+  const { preview, truncated } = cutTextPreview(text, maxLines, maxLength);
+  return { preview: truncated ? `${preview}…` : preview, truncated };
 }
 
 /**
@@ -539,11 +545,15 @@ export const APPROVAL_DRAFT_PREVIEW_LENGTH = 1500;
  * first characters, cut at a line or word boundary. Null when the whole body is
  * shown, so a caller can tell a cut draft from a whole one. Trailing blank
  * space hides no words and does not count towards the limit.
+ *
+ * The preview holds the draft's own characters and nothing else. An ellipsis
+ * here would sit inside the email body, where it could be read as part of the
+ * email; the caller states that the reply continues, outside the body.
  */
 export function approvalDraftPreview(body: string): string | null {
   if (body.trimEnd().length <= APPROVAL_DRAFT_PREVIEW_LENGTH) return null;
   // The cut depends only on the first characters; a very long body is not scanned whole.
-  return approvalTextPreview(
+  return cutTextPreview(
     body.slice(0, APPROVAL_DRAFT_PREVIEW_LENGTH + 1),
     Number.MAX_SAFE_INTEGER,
     APPROVAL_DRAFT_PREVIEW_LENGTH,
@@ -726,7 +736,7 @@ function BoardApprovalPayloadContent({
       {brief.recommendation && (
         <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3.5 py-3">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-amber-700 dark:text-amber-300">
-            Recommended action
+            Recommendation
           </p>
           <MarkdownBody className="mt-1 leading-6 text-foreground">{brief.recommendation}</MarkdownBody>
         </div>
@@ -746,7 +756,7 @@ function BoardApprovalPayloadContent({
       )}
       {brief.nextAction && (
         <div className="rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
-          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">On approval</p>
+          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">If approved</p>
           <MarkdownBody className="mt-1 leading-6 text-foreground">{brief.nextAction}</MarkdownBody>
         </div>
       )}
@@ -847,7 +857,7 @@ export function EmailReplyPayload({
       {brief.recommendation && (
         <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3.5 py-3">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-amber-700 dark:text-amber-300">
-            Recommended action
+            Recommendation
           </p>
           <p className="mt-1 leading-6 text-foreground">{brief.recommendation}</p>
         </div>
@@ -867,7 +877,7 @@ export function EmailReplyPayload({
       )}
       <div className="space-y-1">
         <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-          Proposed reply
+          Draft reply
         </p>
         <pre className="whitespace-pre-wrap wrap-anywhere rounded-md bg-muted/40 p-3 text-sm leading-6 text-foreground">
           {body}
