@@ -132,6 +132,58 @@ describe("buildPaperclipTaskMarkdown", () => {
 });
 
 describe("mergeCoalescedContextSnapshot", () => {
+  it("preserves authoritative timer provenance when continuation recovery coalesces", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        wakeReason: "heartbeat_timer",
+        wakeSource: "timer",
+        source: "scheduler",
+      },
+      {
+        issueId: "issue-1",
+        taskId: "issue-1",
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        retryOfRunId: "run-1",
+        source: "issue.productive_terminal_continuation_recovery",
+      },
+      { existingInvocationSource: "timer" },
+    );
+
+    expect(merged).toMatchObject({
+      issueId: "issue-1",
+      taskId: "issue-1",
+      wakeReason: "heartbeat_timer",
+      retryReason: "issue_continuation_needed",
+      retryOfRunId: "run-1",
+      source: "issue.productive_terminal_continuation_recovery",
+    });
+  });
+
+  it("does not grant timer provenance from context without a matching timer run source", () => {
+    const incoming = {
+      issueId: "issue-1",
+      wakeReason: "issue_continuation_needed",
+      retryReason: "issue_continuation_needed",
+    };
+
+    expect(
+      mergeCoalescedContextSnapshot(
+        { issueId: "issue-1", wakeReason: "heartbeat_timer" },
+        incoming,
+        { existingInvocationSource: "assignment" },
+      ).wakeReason,
+    ).toBe("issue_continuation_needed");
+    expect(
+      mergeCoalescedContextSnapshot(
+        { issueId: "issue-1", wakeReason: "issue_assigned" },
+        incoming,
+        { existingInvocationSource: "timer" },
+      ).wakeReason,
+    ).toBe("issue_continuation_needed");
+  });
+
   it("clears stale accepted-plan interaction state when merging a later ordinary comment wake", () => {
     const merged = mergeCoalescedContextSnapshot(
       {

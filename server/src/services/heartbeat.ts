@@ -4371,12 +4371,26 @@ async function resolveAcceptedPlanWakeRoutingDecision(args: {
 export function mergeCoalescedContextSnapshot(
   existingRaw: unknown,
   incoming: Record<string, unknown>,
+  options?: { existingInvocationSource?: string | null },
 ) {
   const existing = parseObject(existingRaw);
   const merged: Record<string, unknown> = {
     ...existing,
     ...incoming,
   };
+  // The run row is authoritative for how this execution was invoked. When a
+  // continuation recovery coalesces into a genuine scheduler-created timer
+  // run, keep the timer wake reason aligned with invocationSource so runtime
+  // consumers still apply timer-specific behavior (for example, starting a
+  // fresh task session). Requiring both the persisted run source and the
+  // canonical existing reason prevents arbitrary/mismatched context from
+  // upgrading an unrelated run to timer provenance.
+  if (
+    options?.existingInvocationSource === "timer" &&
+    readNonEmptyString(existing.wakeReason) === "heartbeat_timer"
+  ) {
+    merged.wakeReason = "heartbeat_timer";
+  }
   if (existing.forceFreshSession === true || incoming.forceFreshSession === true) {
     merged.forceFreshSession = true;
   }
@@ -16022,6 +16036,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               availableActiveExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
+              { existingInvocationSource: availableActiveExecutionRun.invocationSource },
             );
             const mergedRun = await tx
               .update(heartbeatRuns)
@@ -16364,6 +16379,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
         coalescedTargetRun.contextSnapshot,
         enrichedContextSnapshot,
+        { existingInvocationSource: coalescedTargetRun.invocationSource },
       );
       const mergedRun = await db
         .update(heartbeatRuns)
