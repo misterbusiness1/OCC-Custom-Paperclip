@@ -2419,6 +2419,33 @@ export function recoveryService(
     );
   }
 
+  // Containing a failure to one item is right when the item is the problem.
+  // When the database or another shared dependency is down, every item fails
+  // the same way: stop the pass after a short run of consecutive failures
+  // instead of repeating the failing call for each remaining candidate.
+  const RECONCILE_CONSECUTIVE_FAILURE_LIMIT = 5;
+  function createReconcileFailureBreaker(scope: string) {
+    let index = -1;
+    let lastFailedIndex = -2;
+    let consecutive = 0;
+    return {
+      next() {
+        index += 1;
+      },
+      /** Records a failure for the current item. True when the pass must stop. */
+      tripped(): boolean {
+        consecutive = lastFailedIndex === index - 1 ? consecutive + 1 : 1;
+        lastFailedIndex = index;
+        if (consecutive < RECONCILE_CONSECUTIVE_FAILURE_LIMIT) return false;
+        logger.error(
+          { scope, consecutiveFailures: consecutive },
+          "stranded issue recovery stopped this pass after consecutive failures; a shared dependency is likely failing",
+        );
+        return true;
+      },
+    };
+  }
+
   async function reconcileUnassignedBlockingIssues() {
     const candidates = await db
       .select({
@@ -3718,7 +3745,9 @@ export function recoveryService(
       skipped: 0,
       issueIds: [] as string[],
     };
+    const actionBreaker = createReconcileFailureBreaker("active_recovery_action");
     for (const { action, issue } of rows) {
+      actionBreaker.next();
       // Same containment as the stranded-issue pass. Body not re-indented.
       try {
       const wakePolicy = parseObject(action.wakePolicy);
@@ -3845,6 +3874,7 @@ export function recoveryService(
       } catch (err) {
         noteReconcileFailure("active_recovery_action", issue.id, err);
         result.skipped += 1;
+        if (actionBreaker.tripped()) break;
       }
     }
     return result;
@@ -4626,7 +4656,9 @@ export function recoveryService(
       }
     }
 
+    const issueBreaker = createReconcileFailureBreaker("stranded_assigned_issue");
     for (const issue of candidates) {
+      issueBreaker.next();
       // One issue that cannot be reconciled must not stop the pass for every
       // other issue: a single blocker cycle in the data once failed this sweep,
       // and every step scheduled after it, 181 times in 90 minutes. The body
@@ -5655,6 +5687,7 @@ export function recoveryService(
         // See the note where this `try` opens.
         noteReconcileFailure("stranded_assigned_issue", issue.id, err);
         result.skipped += 1;
+        if (issueBreaker.tripped()) break;
       }
     }
 
