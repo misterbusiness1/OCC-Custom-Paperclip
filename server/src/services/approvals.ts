@@ -5,6 +5,7 @@ import { isUuidLike } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
+import { nextApprovalUpdatedAt } from "./approval-version.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -20,7 +21,8 @@ export function approvalService(db: Db) {
   /**
    * `expectedUpdatedAt` is the `updatedAt` of the approval the caller decided on.
    * When given, the decision is refused with 409 if the approval has changed since.
-   * Every write to an approval sets `updatedAt`, so it works as a version.
+   * Every write to an approval moves `updatedAt` to a later millisecond
+   * (`nextApprovalUpdatedAt`), so it works as a version.
    */
   type DecisionOptions = { expectedUpdatedAt?: Date };
 
@@ -99,7 +101,7 @@ export function approvalService(db: Db) {
         decidedByUserId,
         decisionNote: decisionNote ?? null,
         decidedAt: now,
-        updatedAt: now,
+        updatedAt: nextApprovalUpdatedAt(now),
       })
       .where(
         and(
@@ -177,7 +179,7 @@ export function approvalService(db: Db) {
           status: "cancelled",
           decisionNote: reason ?? null,
           decidedAt: now,
-          updatedAt: now,
+          updatedAt: nextApprovalUpdatedAt(now),
         })
         .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
         .returning()
@@ -307,7 +309,7 @@ export function approvalService(db: Db) {
           decidedByUserId,
           decisionNote: decisionNote ?? null,
           decidedAt: now,
-          updatedAt: now,
+          updatedAt: nextApprovalUpdatedAt(now),
         })
         // The status, and the version when one is given, are checked again in the
         // write: a request decided or resubmitted since the read is not overwritten.
@@ -343,7 +345,7 @@ export function approvalService(db: Db) {
           payload: payload ?? existing.payload,
           decidedByUserId: null,
           decidedAt: null,
-          updatedAt: now,
+          updatedAt: nextApprovalUpdatedAt(now),
         })
         // The status is checked again in the write: a request decided or
         // resubmitted since the read above is not set back to pending.

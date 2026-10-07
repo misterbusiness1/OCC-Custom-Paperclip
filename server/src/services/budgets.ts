@@ -24,6 +24,7 @@ import type {
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import { nextApprovalUpdatedAt } from "./approval-version.js";
 
 type ScopeRecord = {
   companyId: string;
@@ -205,7 +206,7 @@ async function markApprovalStatus(
       decisionNote: decisionNote ?? null,
       decidedByUserId,
       decidedAt: new Date(),
-      updatedAt: new Date(),
+      updatedAt: nextApprovalUpdatedAt(new Date()),
     })
     .where(eq(approvals.id, approvalId));
 }

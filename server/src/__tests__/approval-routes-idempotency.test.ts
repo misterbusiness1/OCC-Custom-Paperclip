@@ -113,7 +113,9 @@ function createRouteDb(contextSnapshot: Record<string, unknown> = {}, runId = "r
   } as any;
 }
 
-async function createAgentApp(options: { runId?: string; contextSnapshot?: Record<string, unknown> } = {}) {
+async function createAgentApp(
+  options: { runId?: string; contextSnapshot?: Record<string, unknown>; actor?: Record<string, unknown> } = {},
+) {
   const { errorHandler, approvalRoutes } = routeModules.value;
   const app = express();
   app.use(express.json());
@@ -125,6 +127,7 @@ async function createAgentApp(options: { runId?: string; contextSnapshot?: Recor
       runId: options.runId ?? "run-1",
       source: "api_key",
       isInstanceAdmin: false,
+      ...options.actor,
     };
     next();
   });
@@ -721,6 +724,121 @@ describe("approval routes idempotent retries", () => {
     expect(res.body.error).toContain("Status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.addComment).not.toHaveBeenCalled();
   });
+  describe("authorization of resubmit and comments", () => {
+    const sentBack = {
+      id: "approval-7",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: {
+        title: "Approve hosting spend",
+        recommendedAction: "Approve the bounded hosting spend.",
+        reasoning: "The selected plan meets the stated capacity requirement.",
+        pros: ["Provisioning can continue."],
+        risks: ["The recurring cost increases."],
+      },
+      requestedByAgentId: "agent-1",
+    };
+    const outsideBoundary = { error: "Approvals are outside this actor's authorization boundary" };
+
+    function revokeCompanyScope() {
+      mockAccessService.decide.mockResolvedValue({
+        allowed: false,
+        action: "company_scope:read",
+        reason: "deny_test",
+        explanation: "Denied by test mock.",
+      });
+    }
+
+    beforeEach(() => {
+      mockApprovalService.getById.mockResolvedValue(sentBack);
+      mockApprovalService.resubmit.mockResolvedValue({ ...sentBack, status: "pending" });
+    });
+
+    it("refuses a resubmit from the requesting agent once its company-scope access is revoked", async () => {
+      revokeCompanyScope();
+
+      const res = await request(await createAgentApp()).post("/api/approvals/approval-7/resubmit").send({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body).toEqual(outsideBoundary);
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("refuses a resubmit when the agent's responsible user has lost write access", async () => {
+      const res = await request(await createAgentApp({
+        actor: {
+          onBehalfOfUserId: "user-9",
+          onBehalfOfMemberships: [{ companyId: "company-1", status: "active", membershipRole: "viewer" }],
+        },
+      })).post("/api/approvals/approval-7/resubmit").send({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+    });
+
+    it("lets the requesting agent with access resubmit, after asking for the company scope", async () => {
+      const res = await request(await createAgentApp()).post("/api/approvals/approval-7/resubmit").send({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.status).toBe("pending");
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        actor: expect.objectContaining({ type: "agent", agentId: "agent-1" }),
+        action: "company_scope:read",
+        resource: { type: "company", companyId: "company-1" },
+      }));
+      expect(mockApprovalService.resubmit).toHaveBeenCalledWith("approval-7", undefined);
+    });
+
+    it("still refuses a resubmit from an agent that did not request the approval", async () => {
+      mockApprovalService.getById.mockResolvedValue({ ...sentBack, requestedByAgentId: "agent-2" });
+
+      const res = await request(await createAgentApp()).post("/api/approvals/approval-7/resubmit").send({});
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("Only requesting agent can resubmit this approval");
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+    });
+
+    it("lets the board resubmit, and refuses a board actor outside the boundary", async () => {
+      const allowed = await request(await createApp()).post("/api/approvals/approval-7/resubmit").send({});
+      expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+      expect(mockApprovalService.resubmit).toHaveBeenCalledTimes(1);
+
+      revokeCompanyScope();
+      const refused = await request(await createApp()).post("/api/approvals/approval-7/resubmit").send({});
+      expect(refused.status).toBe(403);
+      expect(refused.body).toEqual(outsideBoundary);
+      expect(mockApprovalService.resubmit).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses reading and adding approval comments once company-scope access is revoked", async () => {
+      revokeCompanyScope();
+      const app = await createAgentApp();
+
+      const read = await request(app).get("/api/approvals/approval-7/comments");
+      const added = await request(app).post("/api/approvals/approval-7/comments").send({ body: "please approve" });
+
+      expect(read.status).toBe(403);
+      expect(read.body).toEqual(outsideBoundary);
+      expect(added.status).toBe(403);
+      expect(added.body).toEqual(outsideBoundary);
+      expect(mockApprovalService.listComments).not.toHaveBeenCalled();
+      expect(mockApprovalService.addComment).not.toHaveBeenCalled();
+    });
+
+    it("still lets an agent with access read and add approval comments", async () => {
+      mockApprovalService.listComments.mockResolvedValue([]);
+      mockApprovalService.addComment.mockResolvedValue({ id: "comment-1", body: "please approve" });
+      const app = await createAgentApp();
+
+      expect((await request(app).get("/api/approvals/approval-7/comments")).status).toBe(200);
+      const added = await request(app).post("/api/approvals/approval-7/comments").send({ body: "please approve" });
+      expect(added.status, JSON.stringify(added.body)).toBe(201);
+    });
+  });
+
   describe("board decisions resume the requesting agent (OXFA-31274)", () => {
     const decidedAt = new Date("2026-09-10T21:25:22.736Z");
     const parkedIssue = {

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SQL } from "drizzle-orm";
 import { approvalService } from "../services/approvals.ts";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -248,7 +249,9 @@ describe("approvalService.resubmit", () => {
       decidedByUserId: null,
       decidedAt: null,
     });
-    expect(written.updatedAt).toBeInstanceOf(Date);
+    // Not the clock's time as it is: an expression the database evaluates, so the
+    // new version is later than the stored one (see approval-version-guard.test.ts).
+    expect(written.updatedAt).toBeInstanceOf(SQL);
   });
 
   it("refuses an approval that is not sent back, without writing", async () => {

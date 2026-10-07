@@ -140,6 +140,7 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 }));
 const mockApprovalsApi = vi.hoisted(() => ({
   create: vi.fn(),
+  approve: vi.fn(),
 }));
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -376,6 +377,8 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     });
     mockAgentsApi.hire.mockReset();
     mockAgentsApi.hire.mockResolvedValue({ agent: { id: "agent-1" }, approval: null });
+    mockApprovalsApi.approve.mockReset();
+    mockApprovalsApi.approve.mockResolvedValue({ id: "approval-1", status: "approved" });
     mockCompaniesApi.create.mockResolvedValue({
       id: "created",
       name: "Created Co",
@@ -859,6 +862,51 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       expect(mockAgentsApi.hire).toHaveBeenCalled();
 
       await act(async () => root.unmount());
+    });
+
+    describe("a hire that comes back with an approval", () => {
+      const hireApproval = { id: "approval-1", status: "pending", updatedAt: "2026-10-07T09:15:02.417Z" };
+      /** The wizard's saved draft: it holds the step and the agent a finished hire leaves behind. */
+      const readDraft = () =>
+        JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}") as Record<string, unknown>;
+
+      beforeEach(() => {
+        // The mock is typed by its default, a hire that needs no approval.
+        mockAgentsApi.hire.mockResolvedValue({ agent: { id: "agent-1" }, approval: hireApproval as never });
+      });
+
+      it("approves it for the version the hire returned", async () => {
+        const { root, clickByText } = await openConnectStep();
+
+        await clickByText((t) => isArcPrimary(t));
+
+        expect(mockApprovalsApi.approve).toHaveBeenCalledTimes(1);
+        expect(mockApprovalsApi.approve).toHaveBeenCalledWith(
+          "approval-1",
+          "Approved during onboarding first-agent setup.",
+          { expectedUpdatedAt: hireApproval.updatedAt },
+        );
+        expect(readDraft()).toMatchObject({ step: 5, createdAgentId: "agent-1" });
+
+        await act(async () => root.unmount());
+      });
+
+      it("shows the error and does not move on when the approval changed since", async () => {
+        const message = "This request changed after you opened it. Reload it and decide again.";
+        mockApprovalsApi.approve.mockRejectedValue(
+          new ApiError(message, 409, { error: message, code: "approval_version_conflict" }),
+        );
+        const { root, clickByText } = await openConnectStep();
+
+        await clickByText((t) => isArcPrimary(t));
+
+        expect(mockApprovalsApi.approve).toHaveBeenCalledTimes(1);
+        expect(document.body.textContent).toContain(message);
+        expect(readDraft()).not.toMatchObject({ step: 5 });
+        expect(readDraft().createdAgentId ?? null).toBeNull();
+
+        await act(async () => root.unmount());
+      });
     });
 
     // The Connect handler reuses a passing probe instead of re-running it, so the

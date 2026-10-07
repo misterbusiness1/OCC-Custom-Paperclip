@@ -705,6 +705,9 @@ export function approvalRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!existing) return;
+    // The same boundary as reading or creating an approval: holding the id of
+    // a sent-back request is not enough once company-scope access is revoked.
+    if (!(await assertApprovalAccessAllowed(req, res, existing.companyId))) return;
     if (!(await assertApprovalMutationAllowedByRunContext(req, res, existing.companyId))) return;
 
     if (req.actor.type === "agent" && req.actor.agentId !== existing.requestedByAgentId) {
@@ -777,6 +780,7 @@ export function approvalRoutes(
     const id = req.params.id as string;
     const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!approval) return;
+    if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
     const comments = await svc.listComments(id);
     res.json(comments);
   });
@@ -785,6 +789,7 @@ export function approvalRoutes(
     const id = req.params.id as string;
     const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!approval) return;
+    if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
     if (!(await assertApprovalMutationAllowedByRunContext(req, res, approval.companyId))) return;
     const actor = getActorInfo(req);
     const comment = await svc.addComment(id, req.body.body, {

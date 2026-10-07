@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { approvals, companies, createDb } from "@paperclipai/db";
 import { approvalService } from "../services/approvals.js";
@@ -249,6 +249,107 @@ describeEmbeddedPostgres("approval decisions with an expected version", () => {
     expect(applied).toBe(true);
     expect(approval.status).toBe("approved");
     expect(approval.payload).toEqual({ title: "Second version" });
+  });
+
+  describe("transitions within one millisecond", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Stops the service's clock, so every `new Date()` in it gives this one millisecond. */
+    function freezeClock() {
+      const at = new Date(Date.now() + 60_000);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(at);
+      return at;
+    }
+
+    it("gives every transition its own serialized version when the clock does not move", async () => {
+      const svc = approvalService(db);
+      const frozen = freezeClock();
+      const shown = await createPending();
+      expect(shown.updatedAt.getTime()).toBe(frozen.getTime());
+
+      const sentBack = await svc.requestRevision(shown.id, "other-board-user", "Quote the delivery date.");
+      const revised = await svc.resubmit(shown.id, { title: "Second version" });
+      const { approval: decided } = await svc.approve(shown.id, "user-1", "ok");
+      expect(new Date().getTime()).toBe(frozen.getTime());
+
+      const versions = [shown, sentBack, revised, decided].map((row) => row.updatedAt.toISOString());
+      expect(new Set(versions).size).toBe(4);
+      expect(versions).toEqual([...versions].sort());
+      expect((await read(shown.id)).updatedAt.toISOString()).toBe(versions[3]);
+    });
+
+    it("refuses approve, reject and request-revision for a version revised in the same millisecond", async () => {
+      const svc = approvalService(db);
+      for (const decide of [
+        (id: string, expectedUpdatedAt: Date) => svc.approve(id, "user-1", "late", { expectedUpdatedAt }),
+        (id: string, expectedUpdatedAt: Date) => svc.reject(id, "user-1", "late", { expectedUpdatedAt }),
+        (id: string, expectedUpdatedAt: Date) => svc.requestRevision(id, "user-1", "late", { expectedUpdatedAt }),
+      ]) {
+        freezeClock();
+        const shown = await createPending();
+        await svc.requestRevision(shown.id, "other-board-user", "Quote the delivery date.");
+        const revised = await svc.resubmit(shown.id, { title: "Second version" });
+
+        // The version the reader holds is the API's millisecond string.
+        await expect(decide(shown.id, new Date(shown.updatedAt.toISOString()))).rejects.toMatchObject({
+          ...VERSION_CONFLICT,
+          details: { currentStatus: "pending", currentUpdatedAt: revised.updatedAt.toISOString() },
+        });
+
+        const stored = await read(shown.id);
+        expect(stored.status).toBe("pending");
+        expect(stored.payload).toEqual({ title: "Second version" });
+        expect(stored.decisionNote).toBe("Quote the delivery date.");
+        vi.useRealTimers();
+      }
+    });
+
+    it("holds a stale write back in the UPDATE when the row is revised in the same millisecond after the read", async () => {
+      freezeClock();
+      const shown = await createPending();
+      const racing = racingDb(async () => {
+        await approvalService(db).requestRevision(shown.id, "other-board-user", "Quote the delivery date.");
+        await approvalService(db).resubmit(shown.id, { title: "Second version" });
+      });
+
+      await expect(
+        approvalService(racing).approve(shown.id, "user-1", "late", { expectedUpdatedAt: shown.updatedAt }),
+      ).rejects.toMatchObject({ ...VERSION_CONFLICT, details: { currentStatus: "pending" } });
+      expect((await read(shown.id)).status).toBe("pending");
+    });
+
+    it("refuses a decision for a request cancelled in the same millisecond", async () => {
+      const svc = approvalService(db);
+      freezeClock();
+      const shown = await createPending();
+      const cancelled = await svc.cancel(shown.id, "Duplicate hire");
+
+      expect(cancelled!.updatedAt.getTime()).toBeGreaterThan(shown.updatedAt.getTime());
+      await expect(
+        svc.approve(shown.id, "user-1", "late", { expectedUpdatedAt: shown.updatedAt }),
+      ).rejects.toMatchObject({ ...VERSION_CONFLICT, details: { currentStatus: "cancelled" } });
+    });
+
+    it("moves past a stored time that is ahead of the clock and holds microseconds", async () => {
+      const svc = approvalService(db);
+      const shown = await createPending();
+      await db.execute(
+        sql`update approvals set updated_at = date_trunc('milliseconds', now()) + interval '1 hour 789 microseconds' where id = ${shown.id}`,
+      );
+      const ahead = (await read(shown.id)).updatedAt;
+
+      const sentBack = await svc.requestRevision(shown.id, "user-1", "Quote the delivery date.", {
+        expectedUpdatedAt: new Date(ahead.toISOString()),
+      });
+
+      expect(sentBack.updatedAt.getTime()).toBe(ahead.getTime() + 1);
+      await expect(
+        svc.approve(shown.id, "user-1", "late", { expectedUpdatedAt: new Date(ahead.toISOString()) }),
+      ).rejects.toMatchObject(VERSION_CONFLICT);
+    });
   });
 
   it("does not let request-revision overwrite a request that is no longer pending", async () => {
