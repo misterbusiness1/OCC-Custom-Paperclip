@@ -1709,7 +1709,7 @@ export function Inbox() {
   const { markDecided: markApprovalDecided, isSettling: isApprovalSettling } = useSettlingApprovals();
   // Kept per approval: a decision on one row neither locks the other rows nor reports its error away from its row.
   const approvalDecisions = useApprovalDecisionFeedback();
-  const { settle: settleApprovalDecision } = approvalDecisions;
+  const { settle: settleApprovalDecision, hasOthersInFlight: hasOtherApprovalDecisionInFlight } = approvalDecisions;
 
   const approveMutation = useMutation({
     mutationFn: ({ id, note }: { id: string; note?: string }) =>
@@ -1719,8 +1719,13 @@ export function Inbox() {
       markApprovalDecided(approval);
       settleApprovalDecision(id);
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
-      // Board requests are decided in place so the rest of the queue stays in view.
-      if (approval?.type !== "request_board_approval") navigate(`/approvals/${id}?resolved=approved`);
+      // Board requests are decided in place so the rest of the queue stays in view. A hire or a
+      // strategy opens its confirmation page, but not while another row's decision is still on its
+      // way: leaving would unmount the Inbox and that row's error would be shown nowhere. It then
+      // settles in place like a Board request.
+      if (approval?.type !== "request_board_approval" && !hasOtherApprovalDecisionInFlight(id)) {
+        navigate(`/approvals/${id}?resolved=approved`);
+      }
     },
     onError: (err, { id }) => {
       settleApprovalDecision(id, approvalDecisionErrorText("approve", err));

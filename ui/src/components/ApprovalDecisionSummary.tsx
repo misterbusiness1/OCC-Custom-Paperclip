@@ -57,10 +57,14 @@ function decisionPointText(item: string): string | null {
 /** Pros or risks. `full` lists every item; otherwise the first two, with the rest one click away. */
 function DecisionPoints({ label, items, full }: { label: string; items: string[]; full: boolean }) {
   const [expanded, setExpanded] = useState(false);
-  const points = items.flatMap((item) => {
-    const text = decisionPointText(item);
-    return text ? [text] : [];
-  });
+  const points = useMemo(
+    () =>
+      items.flatMap((item) => {
+        const text = decisionPointText(item);
+        return text ? [text] : [];
+      }),
+    [items],
+  );
   const hidden = full ? 0 : points.length - LIST_PREVIEW_COUNT;
   const visible = full || expanded ? points : points.slice(0, LIST_PREVIEW_COUNT);
 
@@ -333,7 +337,7 @@ function HireAgentSummary({
   className?: string;
 }) {
   const [showAllSkills, setShowAllSkills] = useState(false);
-  const hire = approvalHireFacts(payload);
+  const hire = useMemo(() => approvalHireFacts(payload), [payload]);
   const managerName = hire.reportsToAgentId ? resolveAgentName?.(hire.reportsToAgentId) : undefined;
   // A manager the loaded agent list does not hold is said so; a raw id is never shown.
   const manager = hire.reportsToAgentId
@@ -451,9 +455,12 @@ function StrategySummary({
   className?: string;
 }) {
   const plan = useMemo(() => approvalStrategyPlan(payload), [payload]);
-  const brief = approvalStrategyBrief(payload);
+  const brief = useMemo(() => approvalStrategyBrief(payload), [payload]);
   // With no plan field, the request's own rationale is the closest thing to one.
-  const planText = plan.kind === "text" ? plan.text : approvalReadableText(brief.reasoning);
+  const planText = useMemo(
+    () => (plan.kind === "text" ? plan.text : approvalReadableText(brief.reasoning)),
+    [plan, brief.reasoning],
+  );
   const why = plan.kind === "text" ? brief.reasoning : null;
 
   return (
@@ -510,6 +517,17 @@ export function ApprovalDecisionSummary({
    */
   requestedByAgentId?: string | null;
 }) {
+  // The text of a request is converted once per payload, not on every render: these rows are
+  // drawn again on each hover and key press of the lists that hold them. The hooks stand above
+  // the branches below so that every kind of request runs the same ones.
+  const brief = useMemo(() => approvalDecisionBrief(payload), [payload]);
+  // Agents are told to send a summary and may put the cost in it. It leads, unless it is already on the surface.
+  const summary = useMemo(
+    () => (type === "request_board_approval" ? approvalSummaryText(payload, type) : null),
+    [payload, type],
+  );
+  const hasOwnNextAction = useMemo(() => Boolean(approvalReadableText(brief.nextAction)), [brief.nextAction]);
+
   if (type === "hire_agent") {
     return (
       <HireAgentSummary
@@ -525,7 +543,6 @@ export function ApprovalDecisionSummary({
     return <StrategySummary payload={payload} full={full} className={className} />;
   }
 
-  const brief = approvalDecisionBrief(payload);
   const isBoardApproval = type === "request_board_approval";
   const draft = summaryEmailDraft(type, payload);
   const hasBrief =
@@ -554,15 +571,13 @@ export function ApprovalDecisionSummary({
   const showPoints = !hasNoSourceOrPoints && (isBoardApproval || brief.pros.length > 0 || brief.cons.length > 0);
   // In full, a Board approval states the fields its request leaves empty instead of dropping them.
   const emptyText = full && isBoardApproval ? "Not supplied." : undefined;
-  // Agents are told to send a summary and may put the cost in it. It leads, unless it is already on the surface.
-  const summary = isBoardApproval ? approvalSummaryText(payload, type) : null;
   // The agent's own "If approved" line comes first; without one, the summary says what the server does.
   const replyRecipient = draft?.to?.replace(/\s+/g, " ") ?? null;
   const showReplyEffect =
     Boolean(replyRecipient) &&
     status === "pending" &&
     Boolean(requestedByAgentId) &&
-    !approvalReadableText(brief.nextAction);
+    !hasOwnNextAction;
 
   return (
     <div className={cn("space-y-3", className)}>

@@ -15,11 +15,12 @@ import { queryKeys } from "../lib/queryKeys";
 import {
   ATTENTION_AGING_DAYS,
   attentionIsAging,
+  attentionEnterAction,
   buildAttentionFilterOptions,
   defaultAttentionFilterState,
   filterAttentionItems,
   groupAttentionItems,
-  isInlineResolvable,
+  firstInlineResolvable,
   loadAttentionFilters,
   loadAttentionGroupBy,
   loadAttentionSortOrder,
@@ -378,11 +379,13 @@ export function WhatNeedsMe() {
     }
   }, [allItems, deepLinkConsumed, deepLinkDecisionId, setSearchParams]);
 
-  // Auto-expand the topmost inline-capable decision, once.
+  // Auto-expand the topmost inline-capable decision, once. An approval is never one
+  // (isInlineResolvable): it is decided on its own page, so it is not opened here as
+  // if the row could resolve it.
   useEffect(() => {
     if (autoExpandDone || deskItems.length === 0) return;
     const sorted = sortAttentionItems(deskItems, sortOrder);
-    const topInline = sorted.find((item) => isInlineResolvable(item));
+    const topInline = firstInlineResolvable(sorted);
     if (topInline) setExpandedId(topInline.id);
     setAutoExpandDone(true);
   }, [deskItems, autoExpandDone, sortOrder]);
@@ -495,10 +498,14 @@ export function WhatNeedsMe() {
 
       if (action === "dismiss") {
         handleDismiss(selectedItem);
-      } else if (isInlineResolvable(selectedItem)) {
-        setExpandedId((previous) => (previous === selectedItem.id ? null : selectedItem.id));
-      } else if (selectedItem.subject.href) {
-        navigate(selectedItem.subject.href);
+      } else {
+        // Enter on an approval, of any type, opens its page: the row decides nothing.
+        const enter = attentionEnterAction(selectedItem);
+        if (enter?.kind === "toggle") {
+          setExpandedId((previous) => (previous === selectedItem.id ? null : selectedItem.id));
+        } else if (enter?.kind === "navigate") {
+          navigate(enter.href);
+        }
       }
     };
 

@@ -250,7 +250,9 @@ removes a visible card when its deadline arrives.
 
 Show after three seconds when opening or returning to Paperclip, after company
 selection and onboarding. Dialogs and toasts take priority. Phones show it above
-bottom navigation. No automatic timeout, outside-click dismissal or carousel.
+bottom navigation. The card is not drawn on the Approvals pages (the queue,
+All decisions, and an approval's own page), where it would cover the decision
+buttons; it appears on the next page the board opens. No automatic timeout, outside-click dismissal or carousel.
 Tab visibility controls the return check: moving focus to the address bar or
 an adjacent app pane leaves the card visible and does not restart its settling
 period. A hidden tab clears the card; becoming visible fetches fresh dismissal

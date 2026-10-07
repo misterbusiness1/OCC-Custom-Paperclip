@@ -113,8 +113,17 @@ export function useApprovalDecisionFeedback() {
     setErrors((current) => withoutKey(current, id));
   }, []);
   const clearErrors = useCallback(() => setErrors({}), []);
+  /**
+   * True while a decision for another request is still on its way. Read from the set, not the
+   * rendered state, so a response handler gets the answer of that moment. A caller that would
+   * leave the page on success asks this first: leaving would drop the other request's outcome.
+   */
+  const hasOthersInFlight = useCallback((id: string) => {
+    for (const other of sending.current) if (other !== id) return true;
+    return false;
+  }, []);
 
-  return { inFlight, errors, start, settle, clearError, clearErrors };
+  return { inFlight, errors, start, settle, clearError, clearErrors, hasOthersInFlight };
 }
 
 /**
@@ -154,6 +163,12 @@ export const ApprovalDecisionActions = forwardRef<
     approveLabel?: string;
     /** What went wrong with the last decision sent from here; shown directly above the buttons. */
     error?: string | null;
+    /**
+     * Whether that line is an alert (the default). False where the page announces each outcome in
+     * a live region of its own: these controls are drawn again whenever their card is opened, and
+     * an alert would repeat an old failure each time. Approve stays described by the line.
+     */
+    announceError?: boolean;
     /** Called when the board edits the note, so a parent can drop an error that no longer describes the draft. */
     onDismissError?: () => void;
     /**
@@ -190,6 +205,7 @@ export const ApprovalDecisionActions = forwardRef<
     approveHoldKey,
     approveLabel,
     error = null,
+    announceError = true,
     onDismissError,
     defaultNote,
     defaultNoteMode,
@@ -401,18 +417,28 @@ export const ApprovalDecisionActions = forwardRef<
         </div>
       )}
 
-      {/* Always present, so the message is announced when it appears; it takes no room while empty. */}
+      {/*
+        Always present, so the message is announced when it appears. While empty it is visually
+        hidden but not removed (`display: none` would take the region out of the accessibility
+        tree, and text arriving in a region that did not exist is not reliably spoken).
+      */}
       <p
         id={heldBackId}
         role="status"
         aria-live="polite"
-        className="text-sm font-medium leading-5 text-foreground empty:hidden"
+        className="text-sm font-medium leading-5 text-foreground empty:sr-only"
+        data-approval-held-back=""
       >
         {heldBackMessage}
       </p>
 
       {error ? (
-        <p id={errorId} role="alert" className="break-words text-sm font-medium leading-5 text-destructive">
+        <p
+          id={errorId}
+          role={announceError ? "alert" : undefined}
+          className="break-words text-sm font-medium leading-5 text-destructive"
+          data-approval-decision-error=""
+        >
           {error}
         </p>
       ) : null}

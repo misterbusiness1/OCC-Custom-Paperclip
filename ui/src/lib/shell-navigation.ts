@@ -22,6 +22,17 @@ export function getCompanyPathSegments(pathname: string, companyPrefix: string |
   return segments.slice(1);
 }
 
+/**
+ * True on the Approvals pages: the queue (To decide), All decisions, and one
+ * approval's own page. Read from the first path segment after the company
+ * prefix, or the first segment of a path that carries no prefix.
+ */
+export function isApprovalsRoute(pathname: string, companyPrefix: string | undefined): boolean {
+  const companySegments = getCompanyPathSegments(pathname, companyPrefix);
+  const root = companySegments.length > 0 ? companySegments[0] : pathname.split("/").filter(Boolean)[0];
+  return root?.toLowerCase() === "approvals";
+}
+
 export function classifyShellRoute(
   pathname: string,
   companyPrefix: string | undefined,

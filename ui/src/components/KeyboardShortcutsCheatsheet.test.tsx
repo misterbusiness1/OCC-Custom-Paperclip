@@ -32,11 +32,12 @@ describe("KeyboardShortcutsCheatsheet", () => {
       [...row.querySelectorAll("kbd")].map((key) => key.textContent).join("+"),
     ]);
     expect(entries).toEqual([
-      ["Next request", "j"],
-      ["Previous request", "k"],
-      ["Approve the open request", "Shift+A"],
-      ["Request changes to the open request", "Shift+C"],
-      ["Reject the open request (asks to confirm)", "Shift+X"],
+      ["Next request (opens it and moves focus into it)", "j"],
+      ["Previous request (opens it and moves focus into it)", "k"],
+      // The decision keys are handled by the open request, so they need focus inside it; the list says so.
+      ["Approve the open request, with focus inside it", "Shift+A"],
+      ["Request changes to the open request, with focus inside it", "Shift+C"],
+      ["Reject the open request, with focus inside it (asks to confirm)", "Shift+X"],
       ["Undo the last approval (within 5 seconds)", "Shift+Z"],
     ]);
     // A chord reads "Shift + A", not "Shift then A".

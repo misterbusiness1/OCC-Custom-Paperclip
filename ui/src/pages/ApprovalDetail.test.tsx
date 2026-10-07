@@ -538,6 +538,36 @@ describe("ApprovalDetail", () => {
       await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("approval-1"));
     });
 
+    it("shows the board's own note with its line breaks, for a change request and for a decision note", async () => {
+      const note = "1. Quote the delivery date.\n2. Use the November price list.\n\nKeep the tone as it is.";
+      const unbroken = "x".repeat(400);
+      for (const [status, label] of [
+        ["revision_requested", "Changes you asked for"],
+        ["approved", "Decision note"],
+        ["rejected", "Decision note"],
+      ] as const) {
+        await render(
+          createApproval({
+            status,
+            decisionNote: `${note}\n${unbroken}`,
+            decidedAt: new Date("2026-10-06T10:00:00.000Z"),
+            updatedAt: new Date("2026-10-06T10:00:00.000Z"),
+          }),
+        );
+        const shown = panel().querySelector<HTMLElement>("[data-approval-decision-note]")!;
+        // The text node holds the note as typed, and the paragraph keeps its lines and breaks a long run.
+        expect(shown.textContent).toBe(`${note}\n${unbroken}`);
+        expect(shown.classList.contains("whitespace-pre-wrap")).toBe(true);
+        expect(shown.classList.contains("break-words")).toBe(true);
+        expect(shown.previousElementSibling?.textContent).toBe(label);
+        // Plain text: nothing in a note is rendered as markup.
+        expect(shown.children).toHaveLength(0);
+        act(() => root.unmount());
+        root = createRoot(container);
+        queryClient.clear();
+      }
+    });
+
     it("holds Approve back after a revision arrives, until the board confirms it has reviewed it", async () => {
       apiMocks.approve.mockResolvedValue(createApproval({ status: "approved" }));
       await render(createApproval());

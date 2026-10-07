@@ -92,14 +92,22 @@ export function ApprovalDetail() {
     return map;
   }, [agents]);
 
-  // The last crumb names the request by its subject, or by its kind when it has none; never by its id.
-  const breadcrumbLabel = useMemo(() => {
-    if (!approval) return "Approval";
-    const subjectText = approvalSubject(approval.payload as Record<string, unknown>, approval.type);
-    return (
-      approvalExcerpt(subjectText, BREADCRUMB_SUBJECT_LENGTH) ?? typeLabel[approval.type] ?? approval.type
-    );
-  }, [approval]);
+  // The request's names, converted once per payload. The last crumb names the request by its
+  // subject, or by its kind when it has none; never by its id. The heading carries the whole
+  // title; the decision buttons name the request by a shorter form of it.
+  const approvalPayload = approval?.payload as Record<string, unknown> | undefined;
+  const approvalType = approval?.type;
+  const names = useMemo(() => {
+    if (!approvalType) return { breadcrumb: "Approval", title: "Approval", subject: "Approval" };
+    const kind = typeLabel[approvalType] ?? approvalType;
+    const subjectText = approvalSubject(approvalPayload, approvalType);
+    return {
+      breadcrumb: approvalExcerpt(subjectText, BREADCRUMB_SUBJECT_LENGTH) ?? kind,
+      title: approvalExcerpt(subjectText, Number.POSITIVE_INFINITY) ?? kind,
+      subject: approvalExcerpt(subjectText, 160) ?? kind,
+    };
+  }, [approvalPayload, approvalType]);
+  const breadcrumbLabel = names.breadcrumb;
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Approvals", href: "/approvals" }, { label: breadcrumbLabel }]);
@@ -202,10 +210,7 @@ export function ApprovalDetail() {
   const isBudgetApproval = approval.type === "budget_override_required";
   const showDecisionActions = isActionable && !isBudgetApproval;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
-  const subjectText = approvalSubject(payload, approval.type);
-  // The heading carries the whole title; the decision buttons name the request by a shorter form of it.
-  const title = approvalExcerpt(subjectText, Number.POSITIVE_INFINITY) ?? kindLabel;
-  const subject = approvalExcerpt(subjectText, 160) ?? kindLabel;
+  const { title, subject } = names;
   const decisionPending =
     approveMutation.isPending ||
     rejectMutation.isPending ||
@@ -303,7 +308,13 @@ export function ApprovalDetail() {
               <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
                 {approval.status === "revision_requested" ? APPROVAL_CHANGES_ASKED_LABEL : "Decision note"}
               </p>
-              <p className="mt-1 text-sm leading-6 text-foreground">{approval.decisionNote}</p>
+              {/* The board's own words, as typed: a numbered list of changes keeps its lines. */}
+              <p
+                className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-foreground"
+                data-approval-decision-note
+              >
+                {approval.decisionNote}
+              </p>
             </div>
           )}
         </div>

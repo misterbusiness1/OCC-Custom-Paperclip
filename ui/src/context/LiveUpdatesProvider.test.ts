@@ -167,6 +167,30 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     ).toBe(false);
   });
 
+  it("refreshes the approval cards of open task pages for an approval event", () => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(queryKeys.issues.approvals("issue-1"), []);
+    queryClient.setQueryData(queryKeys.issues.approvals("issue-2"), []);
+    queryClient.setQueryData(queryKeys.issues.detail("issue-1"), {});
+    queryClient.setQueryData(queryKeys.issues.comments("issue-1"), []);
+    const isStale = (key: readonly unknown[]) => queryClient.getQueryState(key)?.isInvalidated;
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient,
+      "company-1",
+      { entityType: "approval", entityId: "approval-1", action: "approval.resubmitted", actorType: "agent", actorId: "agent-1" },
+      { userId: "user-1", agentId: null },
+    );
+
+    // The event names the approval, not its tasks, so every task's approval list is refreshed.
+    expect(isStale(queryKeys.issues.approvals("issue-1"))).toBe(true);
+    expect(isStale(queryKeys.issues.approvals("issue-2"))).toBe(true);
+    // Nothing else about the task is reloaded.
+    expect(isStale(queryKeys.issues.detail("issue-1"))).toBe(false);
+    expect(isStale(queryKeys.issues.comments("issue-1"))).toBe(false);
+    queryClient.clear();
+  });
+
   it("still refreshes comments when a comment activity event arrives", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

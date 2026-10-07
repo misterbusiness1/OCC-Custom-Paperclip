@@ -56,7 +56,7 @@ vi.mock("@/lib/router", () => ({
 }));
 
 import { APPROVE_AFTER_ADVANCE_MS, APPROVE_HOLD_MS } from "../components/ApprovalHold";
-import { Approvals } from "./Approvals";
+import { APPROVAL_SHORTCUT_HINT, Approvals } from "./Approvals";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -226,6 +226,36 @@ describe("Approvals", () => {
     expect(button(rows()[1], "Approve")).toBeDefined();
   });
 
+  it("shows a note typed on several lines with its lines, in the held row and in the decided row", async () => {
+    apiMocks.approve.mockImplementation(async (id: string, note?: string) => {
+      const decided = { ...approvals.find((approval) => approval.id === id)!, status: "approved", decisionNote: note ?? null } as Approval;
+      approvals = approvals.map((approval) => (approval.id === id ? decided : approval));
+      return decided;
+    });
+    await render();
+    const typed = "1. Month to month only.\n2. Review in March.";
+
+    const card = rows()[0];
+    await click(button(card, "Add a note"));
+    await act(async () => {
+      const note = card.querySelector("textarea")!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(note, typed);
+      note.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(button(card, "Approve"));
+
+    const rowNote = () => rows()[0].querySelector<HTMLElement>("[data-approval-row-note]")!;
+    expect(heldRows()).toHaveLength(1);
+    expect(rowNote().textContent).toBe(`Your note. ${typed}`);
+    expect(rowNote().classList.contains("whitespace-pre-wrap")).toBe(true);
+    expect(rowNote().classList.contains("break-words")).toBe(true);
+
+    await endHold();
+    await vi.waitFor(() => expect(rows()[0].hasAttribute("data-approval-decided-row")).toBe(true));
+    expect(rowNote().textContent).toBe(`Your note. ${typed}`);
+    expect(rowNote().classList.contains("whitespace-pre-wrap")).toBe(true);
+  });
+
   it("sends a rejection only after it is confirmed", async () => {
     apiMocks.reject.mockImplementation(async (id: string) => (
       { ...approvals.find((approval) => approval.id === id)!, status: "rejected" } as Approval
@@ -256,7 +286,11 @@ describe("Approvals", () => {
         Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(note, value);
         note.dispatchEvent(new Event("input", { bubbles: true }));
       });
-    const alerts = (scope: ParentNode = container) => [...scope.querySelectorAll("[role='alert']")];
+    // Every line that reports an error. On this page a card's own error line is not an alert: the
+    // page's live region announces each outcome once (see "announces a failure once" below).
+    const alerts = (scope: ParentNode = container) => [
+      ...scope.querySelectorAll("[role='alert'], [data-approval-decision-error], [data-approval-row-error]"),
+    ];
     const announced = () => container.querySelector("[data-approval-announcements]")!.textContent;
 
     it("keeps each card's own busy state, error and note when two decisions are sent close together", async () => {
@@ -464,6 +498,10 @@ describe("Approvals", () => {
       expect(row.querySelector("[data-approval-changes-asked]")!.textContent).toBe(
         "Changes you asked forQuote the delivery date.",
       );
+      // A link to this request moves focus to the row, so the row says what it holds.
+      expect(row.tabIndex).toBe(-1);
+      expect(row.getAttribute("aria-label")).toBe("Revision requested: Request sent-back");
+      expect(row.tagName).toBe("LI");
       expect(row.querySelectorAll("button")).toHaveLength(0);
       expect([...row.querySelectorAll("a")].map((anchor) => [anchor.textContent, anchor.getAttribute("href")])).toEqual([
         ["View details", "/approvals/sent-back"],
@@ -856,9 +894,142 @@ describe("Approvals", () => {
       expect(rows()[0].textContent).toContain("Sending your decision...");
       await act(async () => fail());
 
-      await vi.waitFor(() => expect(rows()[0].querySelector("[role='alert']")).not.toBeNull());
-      expect(rows()[0].querySelector("[role='alert']")!.textContent).toBe("Error while rejecting: Session expired");
+      await vi.waitFor(() => expect(rows()[0].querySelector("[data-approval-row-error]")).not.toBeNull());
+      expect(rows()[0].querySelector("[data-approval-row-error]")!.textContent).toBe("Error while rejecting: Session expired");
       expect(openIds()).toEqual(["email"]);
+    });
+
+    it("announces a failure once: the error line is not an alert that speaks again each time its card is opened or closed", async () => {
+      let fail: () => void = () => {};
+      apiMocks.reject.mockImplementation(
+        () => new Promise<Approval>((_resolve, reject) => { fail = () => reject(new Error("Session expired")); }),
+      );
+      await render();
+      const announcements = container.querySelector("[data-approval-announcements]")!;
+      const list = () => container.querySelector<HTMLElement>("[data-approval-card]")!.parentElement!;
+      const errorLines = () => [
+        ...list().querySelectorAll<HTMLElement>("[data-approval-decision-error], [data-approval-row-error]"),
+      ];
+
+      await click(button(rows()[0], "Reject"));
+      await click(button(rows()[0], "Reject request"));
+      await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("oldest"));
+      await act(async () => fail());
+      await vi.waitFor(() => expect(errorLines()).toHaveLength(1));
+
+      // One announcer: the page's polite region. The line on the card is text, not a second alert.
+      expect(announcements.textContent).toBe("Error while rejecting Request oldest: Session expired");
+      expect(announcements.getAttribute("aria-live")).toBe("polite");
+      expect(errorLines()[0].textContent).toBe("Error while rejecting: Session expired");
+      expect(list().querySelectorAll("[role='alert']")).toHaveLength(0);
+      // Approve is still described by the error, for a reader who lands on the button.
+      expect(button(rows()[0], "Approve").getAttribute("aria-describedby")).toContain(errorLines()[0].id);
+
+      // Closing the card, opening another and coming back each draw the line again; none of them is an alert.
+      for (const step of [1, 0, 0, 0]) {
+        await click(header(rows()[step])!);
+        expect(errorLines()).toHaveLength(1);
+        expect(errorLines()[0].textContent).toBe("Error while rejecting: Session expired");
+        expect(list().querySelectorAll("[role='alert']")).toHaveLength(0);
+      }
+      // Nothing was added to the live region by any of it.
+      expect(announcements.textContent).toBe("Error while rejecting Request oldest: Session expired");
+    });
+
+    it("says in the hint line that the decision keys act on the open request while focus is inside it", async () => {
+      // The approval held at the end is sent when the page is left.
+      approveAs();
+      await render();
+      const hint = [...container.querySelectorAll("span")].find((span) => span.textContent === APPROVAL_SHORTCUT_HINT)!;
+      expect(hint).toBeDefined();
+      expect(APPROVAL_SHORTCUT_HINT).toBe(
+        "J / K move to a request and open it · With focus in the open request: Shift+A approve, Shift+C request changes, Shift+X reject · Shift+Z undo approve",
+      );
+
+      // The words match the handlers: the first card is open, but focus is on the page, and Shift+A does nothing.
+      expect(openIds()).toEqual(["oldest"]);
+      expect(document.activeElement).toBe(document.body);
+      await press("A", document.body, { shiftKey: true });
+      expect(heldRows()).toHaveLength(0);
+      // J puts focus in the open request; the same key now approves it.
+      await press("j");
+      expect(document.activeElement).toBe(rows()[0]);
+      await press("A", rows()[0], { shiftKey: true });
+      expect(heldRows().map((row) => row.dataset.approvalCard)).toEqual(["oldest"]);
+    });
+
+    it("works with Caps Lock on: J, K, Shift+A and Shift+Z arrive in the other case", async () => {
+      approveAs();
+      await render();
+
+      // Caps Lock turns a plain j into "J" (no Shift) and a Shift+A into "a" (with Shift).
+      await press("J");
+      expect(document.activeElement).toBe(rows()[0]);
+      await press("J");
+      expect(document.activeElement).toBe(rows()[1]);
+      expect(openIds()).toEqual(["email"]);
+      await press("K");
+      expect(document.activeElement).toBe(rows()[0]);
+      expect(openIds()).toEqual(["oldest"]);
+
+      // A plain letter decides nothing, in either case, and neither does a plain z undo.
+      await press("a", rows()[0]);
+      await press("A", rows()[0]);
+      expect(heldRows()).toHaveLength(0);
+
+      const approveKey = new KeyboardEvent("keydown", { key: "a", shiftKey: true, bubbles: true, cancelable: true });
+      await act(async () => {
+        rows()[0].dispatchEvent(approveKey);
+      });
+      expect(heldRows().map((row) => row.dataset.approvalCard)).toEqual(["oldest"]);
+      // The key is claimed, so the app-wide shortcuts leave it alone.
+      expect(approveKey.defaultPrevented).toBe(true);
+
+      await press("z");
+      await press("Z");
+      expect(heldRows()).toHaveLength(1);
+      await press("z", document, { shiftKey: true });
+      expect(heldRows()).toHaveLength(0);
+      expect(openIds()).toEqual(["oldest"]);
+      expect(apiMocks.approve).not.toHaveBeenCalled();
+
+      // Shift+J and Shift+K stay unused, with or without Caps Lock.
+      await press("J", document, { shiftKey: true });
+      await press("j", document, { shiftKey: true });
+      expect(document.activeElement).toBe(rows()[0]);
+      expect(openIds()).toEqual(["oldest"]);
+    });
+
+    it("names every row the page moves focus to: the card, the held row and the decided row", async () => {
+      approveAs();
+      await render();
+
+      // The card: a group named by its title, whose header button is described by its status line.
+      const card = rows()[0];
+      expect(card.getAttribute("role")).toBe("group");
+      expect(document.getElementById(card.getAttribute("aria-labelledby")!)!.textContent).toBe("Request oldest");
+      const described = document.getElementById(header(card)!.getAttribute("aria-describedby")!)!;
+      expect(described.textContent).toContain("pending");
+      expect(described.textContent).toContain("Waiting");
+      // A closed row is named the same way.
+      expect(document.getElementById(rows()[1].getAttribute("aria-labelledby")!)!.textContent).toBe("Request email");
+
+      // Held: the name says what the row is and does not count down.
+      await press("j");
+      await press("A", rows()[0], { shiftKey: true });
+      const held = rows()[0];
+      expect(held.dataset.approvalHeldRow).toBe("holding");
+      expect(held.getAttribute("role")).toBe("group");
+      expect(held.getAttribute("aria-label")).toBe("Approval held: Request oldest");
+      // Focus went to the next card, which has a name.
+      expect(document.activeElement).toBe(rows()[1]);
+      expect(rows()[1].getAttribute("role")).toBe("group");
+
+      // Decided: named by its status.
+      await endHold();
+      await vi.waitFor(() => expect(rows()[0].hasAttribute("data-approval-decided-row")).toBe(true));
+      expect(rows()[0].getAttribute("role")).toBe("group");
+      expect(rows()[0].getAttribute("aria-label")).toBe("Approved: Request oldest");
     });
 
     it("brings the next request into view, and the decided row to the top first when its card began above the screen", async () => {
@@ -1163,7 +1334,11 @@ describe("Approvals", () => {
       });
     const holdStatus = (row: HTMLElement) => row.querySelector("[data-approval-hold-status]")?.textContent ?? null;
     const undoButton = (row: HTMLElement) => row.querySelector<HTMLButtonElement>("[data-approval-undo]");
-    const alerts = (scope: ParentNode = container) => [...scope.querySelectorAll("[role='alert']")];
+    // Every line that reports an error. On this page a card's own error line is not an alert: the
+    // page's live region announces each outcome once (see "announces a failure once" below).
+    const alerts = (scope: ParentNode = container) => [
+      ...scope.querySelectorAll("[role='alert'], [data-approval-decision-error], [data-approval-row-error]"),
+    ];
     const announced = () => container.querySelector("[data-approval-announcements]")!.textContent;
     const progress = () => container.querySelector("[data-approval-progress]")?.textContent ?? null;
     const rerender = () =>
@@ -1697,7 +1872,11 @@ describe("Approvals", () => {
     const unsentNote = (id: string) => row(id).querySelector("[data-approval-unsent-note]")?.textContent ?? null;
     const undoButton = (scope: HTMLElement) => scope.querySelector<HTMLButtonElement>("[data-approval-undo]");
     const holdStatus = (scope: HTMLElement) => scope.querySelector("[data-approval-hold-status]")?.textContent ?? null;
-    const alerts = (scope: ParentNode = container) => [...scope.querySelectorAll("[role='alert']")];
+    // Every line that reports an error. On this page a card's own error line is not an alert: the
+    // page's live region announces each outcome once (see "announces a failure once" below).
+    const alerts = (scope: ParentNode = container) => [
+      ...scope.querySelectorAll("[role='alert'], [data-approval-decision-error], [data-approval-row-error]"),
+    ];
     const announced = () => container.querySelector("[data-approval-announcements]")!.textContent;
     const progress = () => container.querySelector("[data-approval-progress]")?.textContent ?? null;
     const approveButtons = () => [...container.querySelectorAll("button")].filter((b) => b.textContent === "Approve");

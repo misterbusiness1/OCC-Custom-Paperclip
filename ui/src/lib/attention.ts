@@ -24,9 +24,11 @@ export type AttentionListOptions = AttentionFeedQuery;
  * `inlineResolvable` on for exactly those rows (`isInlineResolvable` still ANDs
  * that flag). A *covered* review keeps deep-linking, since its real action
  * lives on the issue (the pending card, a monitor, a live run).
+ *
+ * `approval` is deliberately absent, whatever the server's `inlineResolvable`
+ * flag says for it: see `isReviewFirstApproval`.
  */
 export const INLINE_RESOLVABLE_SOURCE_KINDS: ReadonlySet<AttentionSourceKind> = new Set<AttentionSourceKind>([
-  "approval",
   "decision",
   "issue_thread_interaction",
   "join_request",
@@ -35,6 +37,54 @@ export const INLINE_RESOLVABLE_SOURCE_KINDS: ReadonlySet<AttentionSourceKind> = 
 
 export function isInlineResolvable(item: AttentionItem): boolean {
   return item.inlineResolvable && INLINE_RESOLVABLE_SOURCE_KINDS.has(item.sourceKind);
+}
+
+/**
+ * Every approval is decided on its own page, never in a Decisions row: by button,
+ * by keyboard, or by being opened as if it could be resolved in place.
+ *
+ * The row shows a title and a short excerpt: not the outgoing email of a Board
+ * approval, not what a hire may spend, not a strategy's plan. Approving from
+ * there would be a decision on text the board has not been shown. A budget stop
+ * (`budget_override_required`) is included for a second reason: the generic
+ * approve route only changes the approval's status and does not lift the stop,
+ * so the row would say "approved" while the agent or project stayed paused. Its
+ * page sends the board to Costs, where the stop is really resolved. The rule is
+ * by source kind, not by a list of types, so a type added later is covered too.
+ */
+export function isReviewFirstApproval(item: AttentionItem): boolean {
+  return item.sourceKind === "approval";
+}
+
+/**
+ * Where Enter takes a row that is not resolved in place. An approval always has
+ * somewhere to go, also when the feed sent no link for it.
+ */
+export function attentionOpenHref(item: AttentionItem): string | null {
+  if (item.subject.href) return item.subject.href;
+  return isReviewFirstApproval(item) ? `/approvals/${item.subject.id}` : null;
+}
+
+/**
+ * What Enter does on a selected Decisions row: open or close the row when it
+ * is resolved in place, otherwise go to the item's own page. An approval is
+ * never resolved in place, so Enter always leads to its page.
+ */
+export function attentionEnterAction(
+  item: AttentionItem,
+): { kind: "toggle" } | { kind: "navigate"; href: string } | null {
+  if (isInlineResolvable(item)) return { kind: "toggle" };
+  const href = attentionOpenHref(item);
+  return href ? { kind: "navigate", href } : null;
+}
+
+/**
+ * The row the Decisions page opens by itself on arrival: the first one that
+ * can be resolved in place. Approvals are passed over; opening one would show
+ * only the triage strip, as if there were something to decide in the row.
+ */
+export function firstInlineResolvable(items: readonly AttentionItem[]): AttentionItem | null {
+  return items.find((item) => isInlineResolvable(item)) ?? null;
 }
 
 /**

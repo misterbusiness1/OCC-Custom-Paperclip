@@ -369,6 +369,36 @@ describe("Layout", () => {
     });
   });
 
+  it("does not draw the announcement card over the decision buttons on the Approvals pages", async () => {
+    const renderAt = async (pathname: string) => {
+      currentPathname = pathname;
+      const root = createRoot(container);
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Layout />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      const wells = container.querySelectorAll("[data-announcement-well]").length;
+      expect(container.textContent).toContain("Outlet content");
+      await act(async () => {
+        root.unmount();
+      });
+      return wells;
+    };
+
+    for (const pathname of ["/PAP/approvals/pending", "/PAP/approvals/all", "/PAP/approvals/9b2d7c1e-approval"]) {
+      expect(await renderAt(pathname)).toBe(0);
+    }
+    // It appears on the next page the board opens.
+    for (const pathname of ["/PAP/inbox", "/PAP/decisions", "/PAP/dashboard"]) {
+      expect(await renderAt(pathname)).toBe(1);
+    }
+  });
+
   it("redirects an obsolete company prefix to its unique surviving extension", async () => {
     currentPathname = "/OXF/issues";
     mockCompanyState.companies = [
