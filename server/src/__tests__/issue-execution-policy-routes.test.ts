@@ -258,6 +258,158 @@ describe("issue execution policy routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("allows an agent-authored in_review transition with a persisted live blocker", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1008",
+      title: "Persisted live blocker",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [{ id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", status: "in_progress" }],
+      blocks: [],
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issue.id,
+      expect.objectContaining({ status: "in_review" }),
+    );
+  });
+
+  it("allows an agent-authored in_review transition with a same-patch live blocker", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1009",
+      title: "Same-patch live blocker",
+      executionPolicy: null,
+      executionState: null,
+    };
+    const blocker = {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      companyId: "company-1",
+      status: "blocked",
+    };
+    mockIssueService.getById.mockImplementation(async (id: string) => id === issue.id ? issue : blocker);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", blockedByIssueIds: [blocker.id] });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issue.id,
+      expect.objectContaining({ status: "in_review", blockedByIssueIds: [blocker.id] }),
+    );
+  });
+
+  it.each([
+    ["empty blocker set", [], []],
+    ["done-only persisted blockers", undefined, [{ id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", status: "done" }]],
+    ["cancelled-only persisted blockers", undefined, [{ id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", status: "cancelled" }]],
+  ])("rejects an agent-authored in_review transition with %s", async (_label, blockedByIssueIds, persistedBlockers) => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1010",
+      title: "Terminal blocker set",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: persistedBlockers, blocks: [] });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", ...(blockedByIssueIds ? { blockedByIssueIds } : {}) });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "invalid_issue_disposition" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it.each(["done", "cancelled"])(
+    "rejects an agent-authored in_review transition with a same-patch %s blocker",
+    async (blockerStatus) => {
+      const issue = {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "todo",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        assigneeUserId: null,
+        createdByUserId: "local-board",
+        identifier: "PAP-1011",
+        title: "Same-patch terminal blocker",
+        executionPolicy: null,
+        executionState: null,
+      };
+      const blocker = {
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        companyId: "company-1",
+        status: blockerStatus,
+      };
+      mockIssueService.getById.mockImplementation(async (id: string) => id === issue.id ? issue : blocker);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        runId: "run-1",
+      }))
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "in_review", blockedByIssueIds: [blocker.id] });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details).toMatchObject({ code: "invalid_issue_disposition" });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    },
+  );
+
   it("allows an agent-authored in_review transition with a pending confirmation interaction", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

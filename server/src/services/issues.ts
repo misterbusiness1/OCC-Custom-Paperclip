@@ -1230,6 +1230,30 @@ async function assertValidUnresolvedBlockerIssueIds(
   }
   return true;
 }
+
+async function assertHasLiveBlockerIssueIds(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  blockerIssueIds: string[],
+) {
+  const uniqueBlockerIssueIds = [...new Set(blockerIssueIds)];
+  if (uniqueBlockerIssueIds.length === 0 || uniqueBlockerIssueIds.some((id) => !id)) {
+    throw unprocessable("in_review issues require at least one live unresolved blocker");
+  }
+  const rows = await dbOrTx
+    .select({ id: issues.id, status: issues.status })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, uniqueBlockerIssueIds)))
+    .orderBy(asc(issues.id))
+    .for("update");
+  if (
+    rows.length !== uniqueBlockerIssueIds.length
+    || !rows.some((row) => row.status !== "done" && row.status !== "cancelled")
+  ) {
+    throw unprocessable("in_review issues require at least one same-company live unresolved blocker");
+  }
+  return true;
+}
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
   companyId: string,
@@ -6858,6 +6882,13 @@ export function issueService(db: Db) {
             },
             tx,
           );
+        }
+        if (actorAgentId && nextStatus === "in_review" && blockedByIssueIds !== undefined) {
+          // syncBlockedByIssueIds locks blocker rows before writing the relation.
+          // Recheck liveness while those locks remain held so a concurrent terminal
+          // transition either wins first and rolls this update back, or observes the
+          // committed edge and emits the normal resolved-dependency wake.
+          await assertHasLiveBlockerIssueIds(tx, existing.companyId, blockedByIssueIds);
         }
         if (nextAssigneeAgent?.status === "paused" && nextStatus === "blocked") {
           const effectiveBlockerIssueIds = blockedByIssueIds !== undefined

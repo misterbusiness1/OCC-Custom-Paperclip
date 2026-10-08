@@ -400,7 +400,19 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   }
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
-    return Boolean(issue.assigneeUserId) ||
+    const hasLiveBlockerRelation = (blockersByBlockedIssueId.get(issue.id) ?? []).some((relation) => {
+      if (relation.companyId !== issue.companyId || relation.blockedIssueId !== issue.id) return false;
+      const blocker = issuesById.get(relation.blockerIssueId);
+      return Boolean(
+        blocker &&
+        blocker.companyId === issue.companyId &&
+        blocker.status !== "done" &&
+        blocker.status !== "cancelled"
+      );
+    });
+
+    return hasLiveBlockerRelation ||
+      Boolean(issue.assigneeUserId) ||
       hasScheduledMonitor(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||

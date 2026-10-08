@@ -1534,7 +1534,7 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
   "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
   "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
-  "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
+  "retain a live unresolved blocker, or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
@@ -3255,6 +3255,21 @@ export function issueRoutes(
       executionPolicy: nextExecutionPolicy,
     })) return;
 
+    const patchedBlockedByIssueIds = Array.isArray(input.updateFields.blockedByIssueIds)
+      ? input.updateFields.blockedByIssueIds.filter((id): id is string => typeof id === "string")
+      : null;
+    if (patchedBlockedByIssueIds) {
+      const blockerIssues = await Promise.all(patchedBlockedByIssueIds.map((id) => svc.getById(id)));
+      if (blockerIssues.some((blocker) =>
+        blocker?.companyId === input.existing.companyId &&
+        blocker.status !== "done" &&
+        blocker.status !== "cancelled"
+      )) return;
+    } else {
+      const relations = await svc.getRelationSummaries(input.existing.id);
+      if (relations.blockedBy.some((blocker) => blocker.status !== "done" && blocker.status !== "cancelled")) return;
+    }
+
     const interactions = await issueThreadInteractionService(db).listForIssue(input.existing.id);
     if (interactions.some((interaction) => interaction.status === "pending")) return;
 
@@ -3269,6 +3284,7 @@ export function issueRoutes(
         "linked_pending_approval",
         "human_assignee_user_id",
         "typed_execution_state_current_participant",
+        "live_unresolved_blocker",
         "scheduled_issue_monitor",
       ],
     });
