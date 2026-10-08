@@ -528,6 +528,24 @@ describe("paperclip skill utils", () => {
     expect(skillBody).not.toContain("When approved, Paperclip wakes the requester");
   });
 
+  it("asks for nextActionOnApproval, the field the approval card shows as \"If approved\"", async () => {
+    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const section = skillBody.match(
+      /## Requesting Board Approval(?<body>[\s\S]*?)\n## Issue-Thread Interactions/,
+    )?.groups?.body;
+
+    expect(section).toBeTruthy();
+    // The example payload carries the field, under the exact name the interface reads.
+    const example = JSON.parse(section!.match(/```json\nPOST [^\n]+\n(?<json>[\s\S]*?)\n```/)!.groups!.json!);
+    expect(typeof example.payload.nextActionOnApproval).toBe("string");
+    expect(example.payload.nextActionOnApproval.trim().length).toBeGreaterThan(0);
+    expect(section).toContain("Always set `nextActionOnApproval`");
+    expect(section).toContain("**If approved**");
+
+    const reader = await fs.readFile(path.resolve("ui/src/components/ApprovalPayload.tsx"), "utf8");
+    expect(reader).toContain("payload?.nextActionOnApproval");
+  });
+
   it("uses the authoritative PATCH response to confirm monitor scheduling", async () => {
     const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
 
