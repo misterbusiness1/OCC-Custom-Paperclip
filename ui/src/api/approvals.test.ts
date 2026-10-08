@@ -140,16 +140,29 @@ describe("approvalsApi.listLinkedIssues", () => {
       });
     });
 
-    it("keeps the other approvals' tasks when one approval cannot be read", async () => {
+    it("keeps the other approvals' tasks when one approval is gone", async () => {
       fetchMock.mockImplementation(async (url: string) => {
         if (url.includes("/linked-issues")) return notFound();
-        if (url === "/api/approvals/a1/issues") return jsonResponse({ error: "boom" }, 500);
+        if (url === "/api/approvals/a1/issues") return jsonResponse({ error: "Approval not found" }, 404);
         return jsonResponse([issue("i2")]);
       });
 
       expect(await approvalsApi.listLinkedIssues("co-1", ["a1", "a2"])).toEqual({
         a2: [{ id: "i2", identifier: "OPS-i2", title: "Task i2", status: "todo" }],
       });
+    });
+
+    it("fails when one approval's read fails, so a failed lookup is not shown as no linked tasks", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/linked-issues")) return notFound();
+        if (url === "/api/approvals/a1/issues") return jsonResponse({ error: "boom" }, 500);
+        return jsonResponse([issue("i2")]);
+      });
+
+      const error = await approvalsApi.listLinkedIssues("co-1", ["a1", "a2"]).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).status).toBe(500);
     });
 
     it("fails with the batch route's 404 when no approval can be read either", async () => {

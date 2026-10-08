@@ -23,8 +23,9 @@ function decisionBody(decisionNote: string | undefined, options?: ApprovalDecisi
 
 /**
  * The linked tasks of a batch of approvals, read one approval at a time. Only for a server that
- * does not have the batch route yet. One approval that cannot be read does not blank the others;
- * when none can be read, `batchError` (the batch route's own 404) is thrown.
+ * does not have the batch route yet. An approval that is gone (404) has no tasks. Any other failed
+ * read is thrown, so a failed lookup is never shown as "no linked tasks"; when every read answers
+ * 404, `batchError` (the batch route's own 404) is thrown.
  */
 async function listLinkedIssuesPerApproval(
   approvalIds: string[],
@@ -33,6 +34,11 @@ async function listLinkedIssuesPerApproval(
   const reads = await Promise.allSettled(
     approvalIds.map((id) => api.get<Issue[]>(`/approvals/${encodeURIComponent(id)}/issues`)),
   );
+  for (const read of reads) {
+    if (read.status === "rejected" && !(read.reason instanceof ApiError && read.reason.status === 404)) {
+      throw read.reason;
+    }
+  }
   if (reads.every((read) => read.status === "rejected")) throw batchError;
   const byApproval: ApprovalLinkedIssuesByApproval = {};
   reads.forEach((read, index) => {
