@@ -6705,6 +6705,68 @@ describeEmbeddedPostgres("issueService mutation guardrails", () => {
     expect(unchanged?.assigneeAgentId).not.toBe(pausedAgentId);
   });
 
+  it("rejects an agent-authored in_review update when its same-patch blocker completes before relation synchronization", async () => {
+    const { issueId, activeAgentId, blockerId } = await seedMutationGuardFixture();
+    const blockerLocked = deferred<void>();
+    const completionCanCommit = deferred<void>();
+
+    const concurrentCompletion = db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${blockerId} for update`);
+      blockerLocked.resolve();
+      await completionCanCommit.promise;
+      await tx.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, blockerId));
+    });
+
+    await blockerLocked.promise;
+    const updatePromise = svc.update(issueId, {
+      status: "in_review",
+      blockedByIssueIds: [blockerId],
+      actorAgentId: activeAgentId,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    completionCanCommit.resolve();
+    await concurrentCompletion;
+
+    await expect(updatePromise).rejects.toThrow(/live unresolved blocker/);
+    const unchanged = await db.select({ status: issues.status }).from(issues)
+      .where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(unchanged?.status).toBe("todo");
+    const relations = await svc.getRelationSummaries(issueId);
+    expect(relations.blockedBy).toEqual([]);
+  });
+
+  it("makes a dependent wakeable when its same-patch in_review relation commits before blocker completion", async () => {
+    const { issueId, activeAgentId, blockerId } = await seedMutationGuardFixture();
+    const relationWritten = deferred<void>();
+    const handoffCanCommit = deferred<void>();
+
+    const handoff = db.transaction(async (tx) => {
+      const updated = await svc.update(issueId, {
+        status: "in_review",
+        blockedByIssueIds: [blockerId],
+        actorAgentId: activeAgentId,
+      }, tx);
+      relationWritten.resolve();
+      await handoffCanCommit.promise;
+      return updated;
+    });
+
+    await relationWritten.promise;
+    const concurrentCompletion = db.transaction(async (tx) => {
+      await tx.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, blockerId));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    handoffCanCommit.resolve();
+
+    const updated = await handoff;
+    await concurrentCompletion;
+
+    expect(updated?.status).toBe("in_review");
+    await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([
+      expect.objectContaining({ id: issueId, assigneeAgentId: activeAgentId }),
+    ]);
+  });
+
   it("rejects a blocked update with an existing relation when its blocker completes concurrently", async () => {
     const { issueId, pausedAgentId, blockerId } = await seedMutationGuardFixture();
     await svc.update(issueId, { blockedByIssueIds: [blockerId] });
