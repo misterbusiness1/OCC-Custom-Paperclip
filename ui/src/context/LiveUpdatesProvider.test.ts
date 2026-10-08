@@ -167,6 +167,63 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     ).toBe(false);
   });
 
+  it("refreshes the approval queue's linked-task chips when a task is linked or unlinked, and for an approval event", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+    const send = (payload: Record<string, unknown>) => {
+      invalidations.length = 0;
+      __liveUpdatesTestUtils.invalidateActivityQueries(
+        queryClient as never,
+        "company-1",
+        { actorType: "agent", actorId: "agent-1", ...payload },
+        { userId: "user-1", agentId: null },
+      );
+    };
+    const chips = { queryKey: ["approvals", "linked-issues", "company-1"] };
+
+    for (const action of ["issue.approval_linked", "issue.approval_unlinked"]) {
+      send({ entityType: "issue", entityId: "issue-1", action, details: { approvalId: "approval-1" } });
+      expect(invalidations).toContainEqual(chips);
+      // An open approval page reads its own linked tasks; it follows too.
+      expect(invalidations).toContainEqual({ queryKey: queryKeys.approvals.issues("approval-1") });
+    }
+
+    send({ entityType: "approval", entityId: "approval-1", action: "approval.comment_added" });
+    expect(invalidations).toContainEqual(chips);
+    send({ entityType: "approval", action: "approval.created" });
+    expect(invalidations).toContainEqual(chips);
+
+    // Another task event leaves the chips alone.
+    send({ entityType: "issue", entityId: "issue-1", action: "issue.comment_added", details: {} });
+    expect(invalidations).not.toContainEqual(chips);
+    send({ entityType: "issue", entityId: "issue-1", action: "issue.updated", details: {} });
+    expect(invalidations).not.toContainEqual(chips);
+  });
+
+  it("marks every linked-task read of the company stale, whatever rows it was read for, and no other company's", () => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(queryKeys.approvals.linkedIssues("company-1", "a1,a2"), {});
+    queryClient.setQueryData(queryKeys.approvals.linkedIssues("company-1", "a3"), {});
+    queryClient.setQueryData(queryKeys.approvals.linkedIssues("company-2", "a9"), {});
+    const isStale = (queryKey: readonly unknown[]) => queryClient.getQueryState(queryKey)?.isInvalidated;
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient,
+      "company-1",
+      { entityType: "issue", entityId: "issue-1", action: "issue.approval_linked", actorType: "agent", actorId: "agent-1", details: { approvalId: "a1" } },
+      { userId: "user-1", agentId: null },
+    );
+
+    expect(isStale(queryKeys.approvals.linkedIssues("company-1", "a1,a2"))).toBe(true);
+    expect(isStale(queryKeys.approvals.linkedIssues("company-1", "a3"))).toBe(true);
+    expect(isStale(queryKeys.approvals.linkedIssues("company-2", "a9"))).toBe(false);
+  });
+
   it("refreshes the approval cards of open task pages for an approval event", () => {
     const queryClient = new QueryClient();
     queryClient.setQueryData(queryKeys.issues.approvals("issue-1"), []);

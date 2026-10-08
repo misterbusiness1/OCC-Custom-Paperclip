@@ -2,10 +2,11 @@ import {
   APPROVAL_LINKED_ISSUES_MAX_IDS,
   type Approval,
   type ApprovalComment,
+  type ApprovalLinkedIssue,
   type ApprovalLinkedIssuesByApproval,
   type Issue,
 } from "@paperclipai/shared";
-import { api, type RequestOptions } from "./client";
+import { ApiError, api, type RequestOptions } from "./client";
 import { expectedUpdatedAtField, type ApprovalVersion } from "../lib/approval-version";
 
 /**
@@ -18,6 +19,32 @@ export type ApprovalDecisionOptions = { expectedUpdatedAt?: ApprovalVersion | nu
 function decisionBody(decisionNote: string | undefined, options?: ApprovalDecisionOptions) {
   const expectedUpdatedAt = expectedUpdatedAtField(options?.expectedUpdatedAt);
   return expectedUpdatedAt === undefined ? { decisionNote } : { decisionNote, expectedUpdatedAt };
+}
+
+/**
+ * The linked tasks of a batch of approvals, read one approval at a time. Only for a server that
+ * does not have the batch route yet. One approval that cannot be read does not blank the others;
+ * when none can be read, `batchError` (the batch route's own 404) is thrown.
+ */
+async function listLinkedIssuesPerApproval(
+  approvalIds: string[],
+  batchError: unknown,
+): Promise<ApprovalLinkedIssuesByApproval> {
+  const reads = await Promise.allSettled(
+    approvalIds.map((id) => api.get<Issue[]>(`/approvals/${encodeURIComponent(id)}/issues`)),
+  );
+  if (reads.every((read) => read.status === "rejected")) throw batchError;
+  const byApproval: ApprovalLinkedIssuesByApproval = {};
+  reads.forEach((read, index) => {
+    if (read.status !== "fulfilled" || read.value.length === 0) return;
+    byApproval[approvalIds[index]!] = read.value.map((issue): ApprovalLinkedIssue => ({
+      id: issue.id,
+      identifier: issue.identifier ?? null,
+      title: issue.title,
+      status: issue.status,
+    }));
+  });
+  return byApproval;
 }
 
 export const approvalsApi = {
@@ -52,7 +79,8 @@ export const approvalsApi = {
   /**
    * The linked tasks of several approvals of one company, as slim rows keyed by approval id. One
    * request for up to the server's cap of ids; a longer list is read in as few requests as it takes.
-   * An approval without linked tasks has no key.
+   * An approval without linked tasks has no key. A server without this route (an older one, which
+   * answers 404) is read per approval with `/approvals/:id/issues` instead; any other error is thrown.
    */
   listLinkedIssues: async (companyId: string, approvalIds: string[]): Promise<ApprovalLinkedIssuesByApproval> => {
     const ids = Array.from(new Set(approvalIds.filter((id) => id.length > 0)));
@@ -64,7 +92,10 @@ export const approvalsApi = {
       batches.map((batch) =>
         api.get<ApprovalLinkedIssuesByApproval>(
           `/companies/${companyId}/approvals/linked-issues?ids=${batch.map(encodeURIComponent).join(",")}`,
-        )),
+        ).catch((error: unknown) => {
+          if (error instanceof ApiError && error.status === 404) return listLinkedIssuesPerApproval(batch, error);
+          throw error;
+        })),
     );
     return Object.assign({}, ...results);
   },

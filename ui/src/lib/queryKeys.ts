@@ -580,6 +580,9 @@ export const queryKeys = {
     /** One batch read of the linked tasks of a list's rows; `approvalIdsKey` is the sorted ids, joined. */
     linkedIssues: (companyId: string, approvalIdsKey: string) =>
       ["approvals", "linked-issues", companyId, approvalIdsKey] as const,
+    /** Prefix of every `linkedIssues` key of one company. */
+    linkedIssuesOfCompany: (companyId: string) =>
+      ["approvals", "linked-issues", companyId] as const,
   },
   access: {
     invites: (companyId: string, state: string = "all", limit: number = 20) =>

@@ -111,4 +111,64 @@ describe("approvalsApi.listLinkedIssues", () => {
     expect(fetchMock.mock.calls[1]![0]).toBe("/api/companies/co-1/approvals/linked-issues?ids=a100");
     expect(result).toEqual({ a0: [row("i0")], a100: [row("i100")] });
   });
+
+  describe("against a server without the batch route", () => {
+    const notFound = () => jsonResponse({ error: "API route not found" }, 404);
+    const issue = (id: string) => ({
+      id, identifier: `OPS-${id}`, title: `Task ${id}`, status: "todo", description: "long text", companyId: "co-1",
+    });
+
+    it("reads each approval's linked tasks instead, as the same slim rows, with no key for an approval without tasks", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/linked-issues")) return notFound();
+        if (url === "/api/approvals/a1/issues") return jsonResponse([issue("i1"), { ...issue("i2"), identifier: null }]);
+        return jsonResponse([]);
+      });
+
+      const result = await approvalsApi.listLinkedIssues("co-1", ["a1", "a2"]);
+
+      expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+        "/api/companies/co-1/approvals/linked-issues?ids=a1,a2",
+        "/api/approvals/a1/issues",
+        "/api/approvals/a2/issues",
+      ]);
+      expect(result).toEqual({
+        a1: [
+          { id: "i1", identifier: "OPS-i1", title: "Task i1", status: "todo" },
+          { id: "i2", identifier: null, title: "Task i2", status: "todo" },
+        ],
+      });
+    });
+
+    it("keeps the other approvals' tasks when one approval cannot be read", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/linked-issues")) return notFound();
+        if (url === "/api/approvals/a1/issues") return jsonResponse({ error: "boom" }, 500);
+        return jsonResponse([issue("i2")]);
+      });
+
+      expect(await approvalsApi.listLinkedIssues("co-1", ["a1", "a2"])).toEqual({
+        a2: [{ id: "i2", identifier: "OPS-i2", title: "Task i2", status: "todo" }],
+      });
+    });
+
+    it("fails with the batch route's 404 when no approval can be read either", async () => {
+      fetchMock.mockResolvedValue(notFound());
+
+      const error = await approvalsApi.listLinkedIssues("co-1", ["a1", "a2"]).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).status).toBe(404);
+    });
+  });
+
+  it("fails on any other error of the batch route, without reading per approval", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: "boom" }, 500));
+
+    const error = await approvalsApi.listLinkedIssues("co-1", ["a1", "a2"]).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(500);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
