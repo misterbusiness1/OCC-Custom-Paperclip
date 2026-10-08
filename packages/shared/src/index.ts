@@ -1700,6 +1700,7 @@ export {
   type CreateGoal,
   type UpdateGoal,
   createApprovalSchema,
+  requestBoardApprovalPayloadSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
   resolveApprovalSchema,

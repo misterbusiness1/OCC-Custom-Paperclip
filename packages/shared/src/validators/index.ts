@@ -544,6 +544,7 @@ export {
 
 export {
   createApprovalSchema,
+  requestBoardApprovalPayloadSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,

@@ -170,11 +170,51 @@ describe("GET /api/approvals/:id v2 hydrated contract", () => {
     expect(res.body.version).toBe(2);
     expect(res.body.reply).toEqual({
       recipient: "customer@example.com",
+      ccRecipient: null,
       channel: "email",
       subject: "Your order update",
       proposedMessage: "Here is the proposed reply.",
       originalMessage: "Hi, where is my order?",
     });
     expect(res.body.refund).toBeNull();
+  });
+
+  it("returns a hydrated v2 reply preserving one CC recipient", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-4",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {
+        gate: "gate_b",
+        recipient: "carrier@example.com",
+        ccRecipient: "customer@example.com",
+        channel: "email",
+        subject: "Whereabouts enquiry",
+        body: "Please locate this parcel.",
+        threadOrOrderRef: "order-1002",
+      },
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    const res = await request(await createApp()).get("/api/approvals/approval-4?v=2");
+
+    expect(res.status).toBe(200);
+    expect(res.body.reply).toMatchObject({
+      recipient: "carrier@example.com",
+      ccRecipient: "customer@example.com",
+      channel: "email",
+    });
+    expect(res.body.sideEffects).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ detail: expect.stringContaining("customer@example.com CC'd") }),
+      ]),
+    );
   });
 });
