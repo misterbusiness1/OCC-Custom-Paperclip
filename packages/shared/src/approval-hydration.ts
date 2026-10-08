@@ -52,11 +52,12 @@ function buildRefundSideEffects(payload: Record<string, unknown>): HydratedAppro
 
 function buildReplySideEffects(payload: Record<string, unknown>): HydratedApprovalSideEffect[] {
   const recipient = asString(payload.recipient) ?? "the customer";
+  const ccRecipient = asString(payload.ccRecipient);
   const channel = asString(payload.channel) ?? "email";
   return [
     {
       label: "Customer reply will be sent",
-      detail: `Message will be sent to ${recipient} via ${channel}`,
+      detail: `Message will be sent to ${recipient}${ccRecipient ? ` with ${ccRecipient} CC'd` : ""} via ${channel}`,
     },
   ];
 }
@@ -87,6 +88,7 @@ function buildReplyDetail(payload: Record<string, unknown>): ApprovalDetailV2["r
   if (!recipient || !channel || !subject || !proposedMessage) return null;
   return {
     recipient,
+    ccRecipient: asString(payload.ccRecipient),
     channel,
     subject,
     proposedMessage,

@@ -75,6 +75,7 @@ describe("buildHydratedApprovalDetail", () => {
       payload: {
         gate: "gate_b",
         recipient: "customer@example.com",
+        ccRecipient: "customer-record@example.com",
         channel: "email",
         subject: "Your order update",
         body: "Here is the proposed reply to send.",
@@ -89,6 +90,7 @@ describe("buildHydratedApprovalDetail", () => {
     expect(detail.refund).toBeNull();
     expect(detail.reply).toEqual({
       recipient: "customer@example.com",
+      ccRecipient: "customer-record@example.com",
       channel: "email",
       subject: "Your order update",
       proposedMessage: "Here is the proposed reply to send.",
@@ -112,6 +114,7 @@ describe("buildHydratedApprovalDetail", () => {
     });
 
     const detail = buildHydratedApprovalDetail(approval);
+    expect(detail.reply?.ccRecipient).toBeNull();
     expect(detail.reply?.originalMessage).toBeNull();
   });
 

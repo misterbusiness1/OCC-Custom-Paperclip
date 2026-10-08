@@ -43,6 +43,7 @@ export interface HydratedApprovalRefundDetail {
 
 export interface HydratedApprovalReplyDetail {
   recipient: string;
+  ccRecipient: string | null;
   channel: string;
   subject: string;
   proposedMessage: string;

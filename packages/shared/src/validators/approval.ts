@@ -52,6 +52,7 @@ export const gateABoardApprovalPayloadSchema = requestedByAgentPayloadField.exte
 export const gateBBoardApprovalPayloadSchema = requestedByAgentPayloadField.extend({
   gate: z.literal("gate_b"),
   recipient: z.string().trim().min(1),
+  ccRecipient: z.string().trim().email().optional(),
   channel: z.enum(gateBBoardApprovalChannels),
   subject: z.string().trim().min(1),
   body: multilineTextSchema.pipe(z.string().min(1)),
@@ -99,7 +100,24 @@ export const requestBoardApprovalPayloadSchema = z.preprocess(
     gateABoardApprovalPayloadSchema.strict(),
     gateBBoardApprovalPayloadSchema,
     genericBoardApprovalPayloadWithDiscriminatorSchema,
-  ]).transform((payload) => {
+  ]).superRefine((payload, ctx) => {
+    if (payload.gate !== "gate_b" || !payload.ccRecipient) return;
+    if (payload.channel !== "email") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "ccRecipient is supported only for email Gate B approvals",
+        path: ["ccRecipient"],
+      });
+    }
+
+    if (payload.ccRecipient.toLowerCase() === payload.recipient.toLowerCase()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "ccRecipient must differ from recipient",
+        path: ["ccRecipient"],
+      });
+    }
+  }).transform((payload) => {
     if (payload.gate !== "generic") return payload;
     const { gate: _gate, ...genericPayload } = payload;
     return genericPayload;
@@ -170,6 +188,7 @@ export const hydratedApprovalRefundDetailSchema = z.object({
 
 export const hydratedApprovalReplyDetailSchema = z.object({
   recipient: z.string().trim().min(1),
+  ccRecipient: z.string().trim().email().nullable(),
   channel: z.string().trim().min(1),
   subject: z.string().trim().min(1),
   proposedMessage: z.string().trim().min(1),

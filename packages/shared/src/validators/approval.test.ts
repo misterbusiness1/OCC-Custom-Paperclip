@@ -124,6 +124,42 @@ describe("approval validators", () => {
     expect(parsed.payload).toMatchObject({ gate: "gate_b" });
   });
 
+  it("accepts exactly one distinct email CC on an email Gate B approval", () => {
+    const parsed = createApprovalSchema.parse({
+      type: "request_board_approval",
+      payload: {
+        ...validGateBPayload,
+        recipient: "info@goglobalpost.com",
+        ccRecipient: "customer@example.com",
+      },
+    });
+
+    expect(parsed.payload).toMatchObject({
+      gate: "gate_b",
+      recipient: "info@goglobalpost.com",
+      ccRecipient: "customer@example.com",
+    });
+  });
+
+  it("rejects multiple, non-email, or primary-duplicate Gate B CC recipients", () => {
+    const cases = [
+      { ccRecipient: ["one@example.com", "two@example.com"] },
+      { ccRecipient: "customer@example.com", channel: "sms" },
+      { ccRecipient: "CUSTOMER@example.com", recipient: "customer@example.com" },
+    ];
+
+    for (const overrides of cases) {
+      const result = createApprovalSchema.safeParse({
+        type: "request_board_approval",
+        payload: { ...validGateBPayload, ...overrides },
+      });
+      expect(result.success).toBe(false);
+      expect(result.success ? [] : result.error.issues).toEqual(
+        expect.arrayContaining([expect.objectContaining({ path: ["payload", "ccRecipient"] })]),
+      );
+    }
+  });
+
   it("rejects email Gate B payloads without the exact required subject", () => {
     const { subject: _subject, ...payload } = validGateBPayload;
     const result = createApprovalSchema.safeParse({ type: "request_board_approval", payload });
