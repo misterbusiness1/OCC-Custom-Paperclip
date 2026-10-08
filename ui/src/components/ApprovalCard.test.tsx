@@ -156,6 +156,8 @@ describe("ApprovalCard", () => {
     });
 
     const details = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "View details")!;
+    // Every request has such a link: its accessible name says which request it opens.
+    expect(details.getAttribute("aria-label")).toBe("View details: Approve staging hosting spend");
     // 16px of text and 14px above and below it, no wider than the link. jsdom cannot evaluate
     // the media query, so the classes are checked.
     for (const name of [
@@ -613,7 +615,7 @@ describe("ApprovalCard", () => {
       expect(container.textContent).toContain("Approve provider Y at twice the quoted price.");
       expect(notice()!.dataset.approvalRevised).toBe("unreviewed");
       expect(notice()!.querySelector("[role='alert']")!.textContent).toBe(NOTICE);
-      const summary = [...container.querySelectorAll("p")].find((p) => p.textContent === "Recommendation")!;
+      const summary = [...container.querySelectorAll("h4")].find((p) => p.textContent === "Recommendation")!;
       expect(notice()!.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(container.querySelector("textarea")!.value).toBe("Month to month only");
 
@@ -786,13 +788,18 @@ describe("ApprovalCard", () => {
     });
 
     expect(container.textContent).not.toContain("Final sentence.");
+    // What is shown stays "Show more"; the name a screen reader gets says which section it opens.
+    expect(button("Show more")!.getAttribute("aria-label")).toBe("Show more: Why");
     click("Show more");
     expect(container.textContent).toContain("Final sentence.");
+    expect(button("Show less")!.getAttribute("aria-label")).toBe("Show less: Why");
     click("Show less");
     expect(container.textContent).not.toContain("Final sentence.");
 
     expect(container.textContent).not.toContain("Third pro.");
+    expect(button("+1 more")!.getAttribute("aria-label")).toBe("+1 more: Pros");
     click("+1 more");
+    expect(button("Show fewer")!.getAttribute("aria-label")).toBe("Show fewer: Pros");
     expect(container.textContent).toContain("Third pro.");
   });
 
@@ -1539,7 +1546,10 @@ describe("ApprovalCard as a collapsible queue row", () => {
     expect(button("Approve")).toBeDefined();
     expect(button("Reject")).toBeDefined();
     expect(card().className).toContain("ring-1");
-    expect(card().className).toContain("border-ring");
+    // The mark of the open card uses the strong token: the usual ring colour is under 3:1 in the light theme.
+    expect(card().className).toContain("border-primary");
+    expect(card().className).toContain("ring-primary");
+    expect(card().className).not.toContain("border-ring");
     // The one-line preview gives way to the full recommendation.
     expect(ask()).toBeNull();
     expect(header().querySelector("span")!.className).not.toContain("truncate");
@@ -1758,6 +1768,10 @@ describe("ApprovalCard as a collapsible queue row", () => {
     render({ ...props, open: true });
     expect(card().getAttribute("role")).toBe("group");
     expect(name()).toBe("Approve staging hosting spend");
+
+    // Under the h3 title, the labels of the open card's sections are h4 headings.
+    expect(card().querySelector("h3")!.textContent).toBe("Approve staging hosting spend");
+    expect([...card().querySelectorAll("h4")].map((heading) => heading.textContent)).toContain("Recommendation");
 
     act(() => root.render(<ApprovalCard requesterAgent={null} {...props} />));
     expect(card().getAttribute("role")).toBe("group");
@@ -2308,7 +2322,7 @@ describe("ApprovalCard for requests without a source, hires and strategies", () 
     expect(container.querySelector("button")).toBeNull();
   });
 
-  const labels = () => [...container.querySelectorAll("p, dt")].map((element) => element.textContent);
+  const labels = () => [...container.querySelectorAll("h4, p, dt")].map((element) => element.textContent);
   const summaryOf = (payload: Record<string, unknown>, type = "request_board_approval") =>
     act(() => root.render(<ApprovalDecisionSummary type={type} payload={payload} />));
 
@@ -2473,7 +2487,7 @@ describe("ApprovalCard for requests without a source, hires and strategies", () 
     const UNKNOWN_ID = "55555555-5555-4555-8555-555555555555";
     const SENT_AT = "2026-10-07T01:23:48.000Z";
     const provenance = () =>
-      [...container.querySelectorAll("p")].find((p) => p.textContent === "Original request")!.nextElementSibling!
+      [...container.querySelectorAll("h4")].find((p) => p.textContent === "Original request")!.nextElementSibling!
         .textContent ?? "";
     const withSource = (source: Record<string, unknown>) => ({
       title: "Approve staging hosting spend",

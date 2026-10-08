@@ -2,7 +2,7 @@
 
 import { act, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import type { Approval } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -21,6 +21,7 @@ const apiMocks = vi.hoisted(() => ({
   reject: vi.fn(),
   requestRevision: vi.fn(),
   listIssues: vi.fn(),
+  listLinkedIssues: vi.fn(),
   agentsList: vi.fn(),
 }));
 
@@ -173,8 +174,9 @@ describe("Approvals", () => {
     ];
     apiMocks.list.mockImplementation(async () => approvals);
     apiMocks.agentsList.mockResolvedValue([]);
-    apiMocks.listIssues.mockImplementation(async (id: string) =>
-      id === "oldest" ? [{ id: "issue-1", identifier: "DEMO-7", title: "Linked task" }] : []);
+    apiMocks.listLinkedIssues.mockImplementation(async () => ({
+      oldest: [{ id: "issue-1", identifier: "DEMO-7", title: "Linked task", status: "in_review" }],
+    }));
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -292,7 +294,82 @@ describe("Approvals", () => {
   it("shows each request's linked task on its card", async () => {
     await render();
     await vi.waitFor(() => expect(rows()[0].textContent).toContain("DEMO-7"));
-    expect(apiMocks.listIssues).toHaveBeenCalledWith("oldest");
+    const chip = rows()[0].querySelector<HTMLAnchorElement>("a[href='/issues/DEMO-7']")!;
+    expect(chip.textContent).toBe("DEMO-7");
+    expect(chip.getAttribute("title")).toBe("Linked task");
+    // A link of its own, at least 24px tall.
+    expect(chip.className).toContain("min-h-6");
+    expect(rows()[1].querySelector("a[href^='/issues/']")).toBeNull();
+  });
+
+  describe("linked tasks are read once for the page, not once per card", () => {
+    it("reads the rows on the page in one request", async () => {
+      await render();
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("DEMO-7"));
+
+      expect(apiMocks.listLinkedIssues).toHaveBeenCalledTimes(1);
+      expect(apiMocks.listLinkedIssues).toHaveBeenCalledWith("company-1", ["email", "newest", "oldest"]);
+      expect(apiMocks.listIssues).not.toHaveBeenCalled();
+    });
+
+    it("does not read again when the reader returns to the browser tab", async () => {
+      await render();
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("DEMO-7"));
+      // Long enough for the rows to count as stale.
+      const realNow = Date.now();
+      const now = vi.spyOn(Date, "now").mockReturnValue(realNow + 10 * 60_000);
+      try {
+        await act(async () => {
+          focusManager.setFocused(false);
+          focusManager.setFocused(true);
+          await Promise.resolve();
+        });
+      } finally {
+        now.mockRestore();
+        focusManager.setFocused(undefined);
+      }
+
+      expect(apiMocks.listLinkedIssues).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not read again when the same rows are sorted or opened", async () => {
+      await render();
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("DEMO-7"));
+
+      await click(button(container, "Sort: Oldest first"));
+      await click(header(rows()[1])!);
+
+      expect(order()).toEqual(["newest", "email", "oldest"]);
+      expect(rows()[2].textContent).toContain("DEMO-7");
+      expect(apiMocks.listLinkedIssues).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the chips of the rows already shown while a new row is read with them", async () => {
+      await render();
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("DEMO-7"));
+      let answer!: (value: Record<string, unknown[]>) => void;
+      apiMocks.listLinkedIssues.mockImplementation(
+        () => new Promise((resolve) => { answer = resolve; }),
+      );
+      approvals = [...approvals, createApproval("later", "2026-10-06T00:00:00.000Z")];
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list("company-1") });
+      });
+      await vi.waitFor(() => expect(order()).toContain("later"));
+
+      // One more read, for all rows; the chip already shown stays while it is on its way.
+      await vi.waitFor(() => expect(apiMocks.listLinkedIssues).toHaveBeenCalledTimes(2));
+      expect(apiMocks.listLinkedIssues).toHaveBeenLastCalledWith("company-1", ["email", "later", "newest", "oldest"]);
+      expect(rows()[0].textContent).toContain("DEMO-7");
+
+      await act(async () => answer({
+        oldest: [{ id: "issue-1", identifier: "DEMO-7", title: "Linked task", status: "in_review" }],
+        later: [{ id: "issue-2", identifier: "DEMO-9", title: "Another task", status: "todo" }],
+      }));
+      const later = rows().find((row) => row.dataset.approvalCard === "later")!;
+      await vi.waitFor(() => expect(later.textContent).toContain("DEMO-9"));
+      expect(rows()[0].textContent).toContain("DEMO-7");
+    });
   });
 
   it("keeps the board in the queue after a decision and leaves a compact record of it", async () => {
@@ -358,6 +435,8 @@ describe("Approvals", () => {
     // The decided row's link to the request is as easy to tap as the open card's.
     const rowLink = rows()[0].querySelector<HTMLAnchorElement>("a")!;
     expect(rowLink.textContent).toBe("View details");
+    // Each decided row has one: the name read out says which request it opens.
+    expect(rowLink.getAttribute("aria-label")).toMatch(/^View details: \S/);
     expectTouchArea(rowLink);
     const openCardLink = [...rows()[1].querySelectorAll("a")].find((anchor) => anchor.textContent === "View details")!;
     expectTouchArea(openCardLink);

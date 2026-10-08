@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
-import { isUuidLike } from "@paperclipai/shared";
+import { approvalChangeRequestCommentBody, isUuidLike } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
@@ -301,27 +301,53 @@ export function approvalService(db: Db) {
         throw unprocessable("Only pending approvals can request revision");
       }
 
+      // The change request is also kept as a comment: `decisionNote` is
+      // overwritten by the next decision, the discussion is not. The body is
+      // redacted like any other approval comment.
+      const note = typeof decisionNote === "string" && decisionNote.trim().length > 0 ? decisionNote : null;
+      const commentBody = note
+        ? redactCurrentUserText(approvalChangeRequestCommentBody(note), {
+            enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+          })
+        : null;
+
       const now = new Date();
-      const updated = await db
-        .update(approvals)
-        .set({
-          status: "revision_requested",
-          decidedByUserId,
-          decisionNote: decisionNote ?? null,
-          decidedAt: now,
-          updatedAt: nextApprovalUpdatedAt(now),
-        })
-        // The status, and the version when one is given, are checked again in the
-        // write: a request decided or resubmitted since the read is not overwritten.
-        .where(
-          and(
-            eq(approvals.id, id),
-            eq(approvals.status, "pending"),
-            ...(expected ? [versionIs(expected)] : []),
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      // One transaction: the comment exists only when this call sent the request
+      // back. A refused call (409, 422) and a retry of a stored one write nothing.
+      const updated = await db.transaction(async (tx) => {
+        const row = await tx
+          .update(approvals)
+          .set({
+            status: "revision_requested",
+            decidedByUserId,
+            decisionNote: decisionNote ?? null,
+            decidedAt: now,
+            updatedAt: nextApprovalUpdatedAt(now),
+          })
+          // The status, and the version when one is given, are checked again in the
+          // write: a request decided or resubmitted since the read is not overwritten.
+          .where(
+            and(
+              eq(approvals.id, id),
+              eq(approvals.status, "pending"),
+              ...(expected ? [versionIs(expected)] : []),
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (row && commentBody) {
+          await tx.insert(approvalComments).values({
+            companyId: row.companyId,
+            approvalId: row.id,
+            authorAgentId: null,
+            authorUserId: decidedByUserId,
+            body: commentBody,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+        return row;
+      });
       if (updated) return updated;
 
       const latest = await getExistingApproval(id);
@@ -337,7 +363,8 @@ export function approvalService(db: Db) {
 
       const now = new Date();
       // decisionNote is left as it is: it holds the board's change request, so the
-      // revision can be read against it. The next decision overwrites it.
+      // revision can be read against it. The next decision overwrites it; the
+      // comment requestRevision wrote keeps it.
       const updated = await db
         .update(approvals)
         .set({

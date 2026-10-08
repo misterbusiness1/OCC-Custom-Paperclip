@@ -99,6 +99,7 @@ import {
   createUserSecretValueSchema,
   updateUserSecretValueSchema,
   // Approval
+  APPROVAL_LINKED_ISSUES_MAX_IDS,
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
@@ -4832,6 +4833,41 @@ registry.registerPath({
     body: jsonBody(createApprovalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/approvals/linked-issues",
+  tags: ["approvals"],
+  summary: "List the issues linked to several approvals of a company",
+  description:
+    "Returns an object keyed by approval id. Each value lists that approval's linked issues as slim rows (id, identifier, title, status). An approval without linked issues, and an id that is not an approval of this company, has no key.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      ids: z.string().optional().describe(
+        `Comma-separated approval ids, at most ${APPROVAL_LINKED_ISSUES_MAX_IDS}.`,
+      ),
+    }),
+  },
+  responses: {
+    200: r.ok(
+      z.record(
+        z.string(),
+        z.array(
+          z.object({
+            id: z.string(),
+            identifier: z.string().nullable(),
+            title: z.string(),
+            status: z.string(),
+          }),
+        ),
+      ),
+    ),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
 });
 
 registry.registerPath({

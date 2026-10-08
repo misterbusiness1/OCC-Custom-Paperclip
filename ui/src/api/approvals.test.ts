@@ -79,3 +79,109 @@ describe("approvalsApi decisions", () => {
     expect(approvalVersionConflict(error)).toEqual({ currentStatus: "approved", currentUpdatedAt: VERSION });
   });
 });
+
+describe("approvalsApi.listLinkedIssues", () => {
+  const row = (id: string) => ({ id, identifier: null, title: id, status: "todo" });
+
+  it("reads the linked tasks of several approvals in one request", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ a1: [row("i1")] }));
+
+    const result = await approvalsApi.listLinkedIssues("co 1", ["a1", "a2", "a1", ""]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/companies/co 1/approvals/linked-issues?ids=a1,a2");
+    expect(result).toEqual({ a1: [row("i1")] });
+  });
+
+  it("sends nothing for an empty list", async () => {
+    expect(await approvalsApi.listLinkedIssues("co-1", [])).toEqual({});
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reads a list longer than the server's cap in as few requests as it takes, and joins the answers", async () => {
+    const ids = Array.from({ length: 101 }, (_, index) => `a${index}`);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ a0: [row("i0")] }))
+      .mockResolvedValueOnce(jsonResponse({ a100: [row("i100")] }));
+
+    const result = await approvalsApi.listLinkedIssues("co-1", ids);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect((fetchMock.mock.calls[0]![0] as string).split("ids=")[1]!.split(",")).toHaveLength(100);
+    expect(fetchMock.mock.calls[1]![0]).toBe("/api/companies/co-1/approvals/linked-issues?ids=a100");
+    expect(result).toEqual({ a0: [row("i0")], a100: [row("i100")] });
+  });
+
+  describe("against a server without the batch route", () => {
+    const notFound = () => jsonResponse({ error: "API route not found" }, 404);
+    const issue = (id: string) => ({
+      id, identifier: `OPS-${id}`, title: `Task ${id}`, status: "todo", description: "long text", companyId: "co-1",
+    });
+
+    it("reads each approval's linked tasks instead, as the same slim rows, with no key for an approval without tasks", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/linked-issues")) return notFound();
+        if (url === "/api/approvals/a1/issues") return jsonResponse([issue("i1"), { ...issue("i2"), identifier: null }]);
+        return jsonResponse([]);
+      });
+
+      const result = await approvalsApi.listLinkedIssues("co-1", ["a1", "a2"]);
+
+      expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+        "/api/companies/co-1/approvals/linked-issues?ids=a1,a2",
+        "/api/approvals/a1/issues",
+        "/api/approvals/a2/issues",
+      ]);
+      expect(result).toEqual({
+        a1: [
+          { id: "i1", identifier: "OPS-i1", title: "Task i1", status: "todo" },
+          { id: "i2", identifier: null, title: "Task i2", status: "todo" },
+        ],
+      });
+    });
+
+    it("keeps the other approvals' tasks when one approval is gone", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/linked-issues")) return notFound();
+        if (url === "/api/approvals/a1/issues") return jsonResponse({ error: "Approval not found" }, 404);
+        return jsonResponse([issue("i2")]);
+      });
+
+      expect(await approvalsApi.listLinkedIssues("co-1", ["a1", "a2"])).toEqual({
+        a2: [{ id: "i2", identifier: "OPS-i2", title: "Task i2", status: "todo" }],
+      });
+    });
+
+    it("fails when one approval's read fails, so a failed lookup is not shown as no linked tasks", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/linked-issues")) return notFound();
+        if (url === "/api/approvals/a1/issues") return jsonResponse({ error: "boom" }, 500);
+        return jsonResponse([issue("i2")]);
+      });
+
+      const error = await approvalsApi.listLinkedIssues("co-1", ["a1", "a2"]).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).status).toBe(500);
+    });
+
+    it("fails with the batch route's 404 when no approval can be read either", async () => {
+      fetchMock.mockResolvedValue(notFound());
+
+      const error = await approvalsApi.listLinkedIssues("co-1", ["a1", "a2"]).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).status).toBe(404);
+    });
+  });
+
+  it("fails on any other error of the batch route, without reading per approval", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: "boom" }, 500));
+
+    const error = await approvalsApi.listLinkedIssues("co-1", ["a1", "a2"]).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(500);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

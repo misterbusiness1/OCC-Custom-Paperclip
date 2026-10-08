@@ -22,6 +22,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 
 const mockIssueApprovalService = vi.hoisted(() => ({
   listIssuesForApproval: vi.fn(),
+  listLinkedIssuesForApprovals: vi.fn(),
   linkManyForApproval: vi.fn(),
 }));
 
@@ -152,6 +153,8 @@ describe("approval routes idempotent retries", () => {
     mockHeartbeatService.describeUnqueuedWakeup.mockReset();
     mockIssueApprovalService.listIssuesForApproval.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
+    mockIssueApprovalService.listLinkedIssuesForApprovals.mockReset();
+    mockIssueApprovalService.listLinkedIssuesForApprovals.mockResolvedValue({});
     mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
     mockLogActivity.mockReset();
     mockIssueService.update.mockReset();
@@ -262,6 +265,88 @@ describe("approval routes idempotent retries", () => {
     expect(res.status).toBe(404);
     expect(res.body.error).toBe("Approval not found");
     expect(mockApprovalService.requestRevision).not.toHaveBeenCalled();
+  });
+
+  describe("linked issues of several approvals", () => {
+    const FIRST = "11111111-1111-4111-8111-111111111111";
+    const SECOND = "22222222-2222-4222-8222-222222222222";
+    const ROUTE = "/api/companies/company-1/approvals/linked-issues";
+
+    it("reads the requested approvals of the company in one call and returns the rows by approval", async () => {
+      const rows = { [FIRST]: [{ id: "issue-1", identifier: "OPS-7", title: "Renew the domain", status: "in_review" }] };
+      mockIssueApprovalService.listLinkedIssuesForApprovals.mockResolvedValue(rows);
+
+      const res = await request(await createApp()).get(`${ROUTE}?ids=${FIRST},${SECOND}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(rows);
+      expect(mockIssueApprovalService.listLinkedIssuesForApprovals).toHaveBeenCalledTimes(1);
+      expect(mockIssueApprovalService.listLinkedIssuesForApprovals).toHaveBeenCalledWith("company-1", [FIRST, SECOND]);
+      expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
+    });
+
+    it("drops repeats, blanks and ids that are not UUIDs, and accepts a repeated parameter", async () => {
+      const res = await request(await createApp())
+        .get(`${ROUTE}?ids=${FIRST},,%20${FIRST}%20,not-an-id&ids=${SECOND}`);
+
+      expect(res.status).toBe(200);
+      expect(mockIssueApprovalService.listLinkedIssuesForApprovals).toHaveBeenCalledWith("company-1", [FIRST, SECOND]);
+    });
+
+    it("answers an empty object when no id is given", async () => {
+      const res = await request(await createApp()).get(ROUTE);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({});
+      expect(mockIssueApprovalService.listLinkedIssuesForApprovals).toHaveBeenCalledWith("company-1", []);
+    });
+
+    it("refuses more ids than the cap", async () => {
+      const ids = Array.from({ length: 101 }, (_, index) =>
+        `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
+
+      const atCap = await request(await createApp()).get(`${ROUTE}?ids=${ids.slice(0, 100).join(",")}`);
+      expect(atCap.status).toBe(200);
+
+      const overCap = await request(await createApp()).get(`${ROUTE}?ids=${ids.join(",")}`);
+      expect(overCap.status).toBe(400);
+      expect(overCap.body.error).toBe("At most 100 approval ids can be read at once");
+      expect(mockIssueApprovalService.listLinkedIssuesForApprovals).toHaveBeenCalledTimes(1);
+    });
+
+    it("counts only real ids against the cap: repeats and values that are not ids are dropped first", async () => {
+      const ids = Array.from({ length: 100 }, (_, index) =>
+        `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
+
+      const res = await request(await createApp()).get(`${ROUTE}?ids=${ids.join(",")},not-an-id,${ids[0]}`);
+
+      expect(res.status).toBe(200);
+      expect(mockIssueApprovalService.listLinkedIssuesForApprovals).toHaveBeenCalledWith("company-1", ids);
+    });
+
+    it("refuses a company outside the caller scope", async () => {
+      const res = await request(await createApp())
+        .get(`/api/companies/company-2/approvals/linked-issues?ids=${FIRST}`);
+
+      expect(res.status).toBe(403);
+      expect(mockIssueApprovalService.listLinkedIssuesForApprovals).not.toHaveBeenCalled();
+    });
+
+    it("refuses an actor whose authorization boundary excludes approvals, as the list does", async () => {
+      mockAccessService.decide.mockResolvedValue({ allowed: false });
+
+      const res = await request(await createApp()).get(`${ROUTE}?ids=${FIRST}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("Approvals are outside this actor's authorization boundary");
+      expect(mockIssueApprovalService.listLinkedIssuesForApprovals).not.toHaveBeenCalled();
+    });
+
+    it("is not taken for an approval id by the single-approval route", async () => {
+      await request(await createApp()).get(`${ROUTE}?ids=${FIRST}`);
+
+      expect(mockApprovalService.getById).not.toHaveBeenCalled();
+    });
   });
 
   it("derives approval attribution from the authenticated actor on approve", async () => {

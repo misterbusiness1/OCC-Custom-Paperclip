@@ -1293,6 +1293,15 @@ function invalidateActivityQueries(
       // An ancestor hold or reparenting changes descendants' effective pause.
       queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state"] });
     }
+    if (action === "issue.approval_linked" || action === "issue.approval_unlinked") {
+      // The approval queue shows each request's linked tasks; a task linked or unlinked changes them.
+      // Only a mounted queue refetches, as one batch read.
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.linkedIssuesOfCompany(companyId) });
+      const linkedApprovalId = readString(details?.approvalId);
+      if (linkedApprovalId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.issues(linkedApprovalId) });
+      }
+    }
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.list(companyId),
     });
@@ -1473,6 +1482,10 @@ function invalidateActivityQueries(
     // guard never sees the change. Only mounted task pages refetch.
     queryClient.invalidateQueries({
       queryKey: ISSUE_APPROVALS_QUERY_KEY_FAMILY,
+    });
+    // The queue's linked-task chips are read for the rows shown, in one batch; they follow too.
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.approvals.linkedIssuesOfCompany(companyId),
     });
     // An open approval page follows a resubmission, another member's decision and new comments too.
     if (entityId) {

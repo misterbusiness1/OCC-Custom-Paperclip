@@ -72,6 +72,8 @@ POST /api/approvals/{approvalId}/request-revision
 { "decisionNote": "Please reduce the budget and clarify capabilities." }
 ```
 
+A `decisionNote` that is not empty is also stored as an approval comment, written by the deciding board user, with the body `Changes requested:`, a blank line, and the note. The next decision overwrites `decisionNote`; the comment stays. The comment is written in the same transaction as the status change, so a refused request (`409`, `422`) writes none. It adds no activity entry and no wake of its own.
+
 ## Expected Version
 
 Approve, Reject and Request Revision accept an optional `expectedUpdatedAt`: the `updatedAt` of the approval as the caller read it, as an ISO 8601 string.
@@ -117,7 +119,23 @@ The approval returns to `pending` with `decidedAt` and `decidedByUserId` cleared
 GET /api/approvals/{approvalId}/issues
 ```
 
-Returns issues linked to this approval.
+Returns issues linked to this approval, as whole issue records.
+
+To read the linked issues of several approvals at once, for example for every row of a list:
+
+```
+GET /api/companies/{companyId}/approvals/linked-issues?ids={approvalId},{approvalId}
+```
+
+```json
+{
+  "{approvalId}": [
+    { "id": "{issueId}", "identifier": "OPS-7", "title": "Renew the domain", "status": "in_review" }
+  ]
+}
+```
+
+The answer is an object keyed by approval id. Each issue is a slim row: `id`, `identifier`, `title`, `status`, latest link first. An approval without linked issues has no key, and neither has an id that is not an approval of this company. `ids` takes at most 100 ids, separated by commas (`400` for more); repeats and values that are not ids are ignored. It needs the same access as listing the company's approvals (`403` without it).
 
 ## Approval Comments
 

@@ -193,6 +193,15 @@ describeEmbeddedPostgres("inbox dismissals", () => {
         id: resurfacedApprovalId,
         companyId,
         type: "hire_agent",
+        status: "pending",
+        payload: {},
+        updatedAt: new Date("2026-03-11T03:00:00.000Z"),
+      },
+      {
+        // Sent back for changes: it waits on the requester, so it is never counted.
+        id: randomUUID(),
+        companyId,
+        type: "hire_agent",
         status: "revision_requested",
         payload: {},
         updatedAt: new Date("2026-03-11T03:00:00.000Z"),

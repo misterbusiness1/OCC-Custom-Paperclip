@@ -69,6 +69,7 @@ const sections: ShortcutSection[] = [
         label: `Undo the last approval (within ${APPROVE_HOLD_MS / 1000} seconds)`,
         combo: true,
       },
+      { keys: ["/"], label: "Search the requests (moves focus to the search field)" },
     ],
   },
   {

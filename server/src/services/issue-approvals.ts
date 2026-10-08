@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvals, issueApprovals, issues } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -103,6 +103,45 @@ export function issueApprovalService(db: Db) {
         .innerJoin(issues, eq(issueApprovals.issueId, issues.id))
         .where(eq(issueApprovals.approvalId, approvalId))
         .orderBy(desc(issueApprovals.createdAt));
+    },
+
+    /**
+     * The linked tasks of several approvals of one company in one read, slim
+     * rows only. Both the approval and the task must belong to `companyId`: an
+     * approval id of another company yields nothing. Each approval's tasks come
+     * in the order of `listIssuesForApproval` (latest link first).
+     */
+    listLinkedIssuesForApprovals: async (companyId: string, approvalIds: string[]) => {
+      const byApproval: Record<
+        string,
+        Array<{ id: string; identifier: string | null; title: string; status: string }>
+      > = {};
+      if (approvalIds.length === 0) return byApproval;
+
+      const rows = await db
+        .select({
+          approvalId: issueApprovals.approvalId,
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+        })
+        .from(issueApprovals)
+        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+        .innerJoin(issues, eq(issueApprovals.issueId, issues.id))
+        .where(
+          and(
+            eq(approvals.companyId, companyId),
+            eq(issues.companyId, companyId),
+            inArray(issueApprovals.approvalId, approvalIds),
+          ),
+        )
+        .orderBy(desc(issueApprovals.createdAt), asc(issues.id));
+
+      for (const { approvalId, ...issue } of rows) {
+        (byApproval[approvalId] ??= []).push(issue);
+      }
+      return byApproval;
     },
 
     link: async (issueId: string, approvalId: string, actor?: LinkActor) => {

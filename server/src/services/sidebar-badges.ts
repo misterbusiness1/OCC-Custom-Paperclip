@@ -3,7 +3,10 @@ import type { Db } from "@paperclipai/db";
 import { agents, approvals, heartbeatRuns } from "@paperclipai/db";
 import type { SidebarBadges } from "@paperclipai/shared";
 
-const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
+// Approvals that wait on the board. A request sent back for changes
+// (`revision_requested`) waits on its requester, so it is not counted. The
+// client counts the same way: APPROVAL_STATUSES_NEEDING_BOARD in ui/src/lib/inbox.ts.
+const APPROVAL_STATUSES_NEEDING_BOARD = ["pending"];
 const FAILED_HEARTBEAT_STATUSES = ["failed", "timed_out"];
 
 function normalizeTimestamp(value: Date | string | null | undefined): number {
@@ -38,7 +41,7 @@ export function sidebarBadgeService(db: Db) {
         .where(
           and(
             eq(approvals.companyId, companyId),
-            inArray(approvals.status, ACTIONABLE_APPROVAL_STATUSES),
+            inArray(approvals.status, APPROVAL_STATUSES_NEEDING_BOARD),
           ),
         )
         .then((rows) =>

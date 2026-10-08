@@ -14,6 +14,12 @@ vi.mock("../services/agents.js", () => ({
   agentService: vi.fn(() => mockAgentService),
 }));
 
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: vi.fn(() => ({
+    getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
+  })),
+}));
+
 vi.mock("../services/hire-hook.js", () => ({
   notifyHireApproved: mockNotifyHireApproved,
 }));
@@ -51,11 +57,18 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
   const set = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set }));
 
+  const insertValues = vi.fn(async () => undefined);
+  const insert = vi.fn(() => ({ values: insertValues }));
+  const db: Record<string, unknown> = { select, update, insert };
+  // The stub has one connection: a transaction runs its callback on it.
+  db.transaction = vi.fn(async (run: (tx: unknown) => unknown) => run(db));
+
   return {
-    db: { select, update },
+    db,
     selectWhere,
     returning,
     set,
+    insertValues,
   };
 }
 
@@ -227,6 +240,49 @@ describe("approvalService expected version", () => {
       status: 422,
       message: "Only pending approvals can request revision",
     });
+  });
+});
+
+describe("approvalService.requestRevision change-request comment", () => {
+  const sentBack = { ...createApproval("revision_requested"), type: "request_board_approval" };
+
+  it("writes the note as a board comment in the transaction that sends the request back", async () => {
+    const dbStub = createDbStub([[createApproval("pending")]], [sentBack]);
+    const svc = approvalService(dbStub.db as any);
+
+    await svc.requestRevision(APPROVAL_ID, "board-user-1", "1. Quote the date.\n2. Name the price.");
+
+    expect(dbStub.db.transaction).toHaveBeenCalledTimes(1);
+    expect(dbStub.insertValues).toHaveBeenCalledTimes(1);
+    expect(dbStub.insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      approvalId: APPROVAL_ID,
+      authorAgentId: null,
+      authorUserId: "board-user-1",
+      body: "Changes requested:\n\n1. Quote the date.\n2. Name the price.",
+    }));
+  });
+
+  it("writes no comment when there is no note", async () => {
+    for (const note of [undefined, null, "", "  \n "]) {
+      const dbStub = createDbStub([[createApproval("pending")]], [sentBack]);
+      await approvalService(dbStub.db as any).requestRevision(APPROVAL_ID, "board-user-1", note);
+      expect(dbStub.insertValues).not.toHaveBeenCalled();
+    }
+  });
+
+  it("writes no comment when the request is refused", async () => {
+    // Not pending at the read.
+    const refusedAtRead = createDbStub([[sentBack]], []);
+    await expect(approvalService(refusedAtRead.db as any).requestRevision(APPROVAL_ID, "board-user-1", "again"))
+      .rejects.toMatchObject({ status: 422 });
+    expect(refusedAtRead.insertValues).not.toHaveBeenCalled();
+
+    // Pending at the read, changed before the write.
+    const refusedAtWrite = createDbStub([[createApproval("pending")], [sentBack]], []);
+    await expect(approvalService(refusedAtWrite.db as any).requestRevision(APPROVAL_ID, "board-user-1", "again"))
+      .rejects.toMatchObject({ status: 422 });
+    expect(refusedAtWrite.insertValues).not.toHaveBeenCalled();
   });
 });
 

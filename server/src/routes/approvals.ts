@@ -2,12 +2,14 @@ import { Router, type Request } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import { heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
 import {
+  APPROVAL_LINKED_ISSUES_MAX_IDS,
   addApprovalCommentSchema,
   createApprovalSchema,
   decisionReadyApprovalPayloadSchema,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
+  isUuidLike,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
@@ -24,7 +26,7 @@ import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
-import { unprocessable } from "../errors.js";
+import { badRequest, unprocessable } from "../errors.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -513,6 +515,27 @@ export function approvalRoutes(
     const status = req.query.status as string | undefined;
     const result = await svc.list(companyId, status);
     res.json(result.map((approval) => redactApprovalPayload(approval)));
+  });
+
+  // The linked tasks of several approvals in one read, for a list that shows
+  // them on every row. Slim rows; the per-approval route below returns whole tasks.
+  router.get("/companies/:companyId/approvals/linked-issues", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertApprovalAccessAllowed(req, res, companyId))) return;
+    const rawIds = Array.isArray(req.query.ids) ? req.query.ids : [req.query.ids];
+    const approvalIds = Array.from(new Set(
+      rawIds
+        .flatMap((value) => (typeof value === "string" ? value.split(",") : []))
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+        // An id that is not a UUID cannot be an approval; it is left out, like an unknown id.
+        .filter((value) => isUuidLike(value)),
+    ));
+    if (approvalIds.length > APPROVAL_LINKED_ISSUES_MAX_IDS) {
+      throw badRequest(`At most ${APPROVAL_LINKED_ISSUES_MAX_IDS} approval ids can be read at once`);
+    }
+    res.json(await issueApprovalsSvc.listLinkedIssuesForApprovals(companyId, approvalIds));
   });
 
   router.get("/approvals/:id", async (req, res) => {

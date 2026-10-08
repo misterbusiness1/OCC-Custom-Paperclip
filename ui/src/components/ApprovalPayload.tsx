@@ -3,6 +3,7 @@ import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { MarkdownBody } from "./MarkdownBody";
+import { ApprovalSectionLabel } from "./ApprovalSectionLabel";
 import { formatCents } from "../lib/utils";
 import { approvalReadableText } from "../lib/approval-readable-text";
 
@@ -233,9 +234,9 @@ export function OriginalRequestBlock({
 
   return (
     <div>
-      <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+      <ApprovalSectionLabel className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
         Original request
-      </p>
+      </ApprovalSectionLabel>
       {provenance.length > 0 && (
         <p className="mt-1 break-words text-xs text-muted-foreground">
           {provenance.map((part, index) => (
@@ -288,6 +289,7 @@ function OriginalRequestText({ text, collapsible }: { text: string; collapsible:
           type="button"
           className="mt-1 inline-flex min-h-6 items-center text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
           aria-expanded={expanded}
+          aria-label={expanded ? "Show less: Original request" : undefined}
           onClick={() => setExpanded((value) => !value)}
         >
           {expanded ? "Show less" : `Show full request (${text.length.toLocaleString()} characters)`}
