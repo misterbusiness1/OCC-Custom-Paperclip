@@ -119,7 +119,23 @@ The approval returns to `pending` with `decidedAt` and `decidedByUserId` cleared
 GET /api/approvals/{approvalId}/issues
 ```
 
-Returns issues linked to this approval.
+Returns issues linked to this approval, as whole issue records.
+
+To read the linked issues of several approvals at once, for example for every row of a list:
+
+```
+GET /api/companies/{companyId}/approvals/linked-issues?ids={approvalId},{approvalId}
+```
+
+```json
+{
+  "{approvalId}": [
+    { "id": "{issueId}", "identifier": "OPS-7", "title": "Renew the domain", "status": "in_review" }
+  ]
+}
+```
+
+The answer is an object keyed by approval id. Each issue is a slim row: `id`, `identifier`, `title`, `status`, latest link first. An approval without linked issues has no key, and neither has an id that is not an approval of this company. `ids` takes at most 100 ids, separated by commas (`400` for more); repeats and values that are not ids are ignored. It needs the same access as listing the company's approvals (`403` without it).
 
 ## Approval Comments
 

@@ -1,4 +1,10 @@
-import type { Approval, ApprovalComment, Issue } from "@paperclipai/shared";
+import {
+  APPROVAL_LINKED_ISSUES_MAX_IDS,
+  type Approval,
+  type ApprovalComment,
+  type ApprovalLinkedIssuesByApproval,
+  type Issue,
+} from "@paperclipai/shared";
 import { api, type RequestOptions } from "./client";
 import { expectedUpdatedAtField, type ApprovalVersion } from "../lib/approval-version";
 
@@ -43,4 +49,23 @@ export const approvalsApi = {
   addComment: (id: string, body: string) =>
     api.post<ApprovalComment>(`/approvals/${id}/comments`, { body }),
   listIssues: (id: string) => api.get<Issue[]>(`/approvals/${id}/issues`),
+  /**
+   * The linked tasks of several approvals of one company, as slim rows keyed by approval id. One
+   * request for up to the server's cap of ids; a longer list is read in as few requests as it takes.
+   * An approval without linked tasks has no key.
+   */
+  listLinkedIssues: async (companyId: string, approvalIds: string[]): Promise<ApprovalLinkedIssuesByApproval> => {
+    const ids = Array.from(new Set(approvalIds.filter((id) => id.length > 0)));
+    const batches: string[][] = [];
+    for (let start = 0; start < ids.length; start += APPROVAL_LINKED_ISSUES_MAX_IDS) {
+      batches.push(ids.slice(start, start + APPROVAL_LINKED_ISSUES_MAX_IDS));
+    }
+    const results = await Promise.all(
+      batches.map((batch) =>
+        api.get<ApprovalLinkedIssuesByApproval>(
+          `/companies/${companyId}/approvals/linked-issues?ids=${batch.map(encodeURIComponent).join(",")}`,
+        )),
+    );
+    return Object.assign({}, ...results);
+  },
 };

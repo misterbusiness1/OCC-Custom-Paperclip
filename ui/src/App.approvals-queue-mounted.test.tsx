@@ -46,6 +46,7 @@ const apiMocks = vi.hoisted(() => ({
   reject: vi.fn(),
   requestRevision: vi.fn(),
   listIssues: vi.fn(),
+  listLinkedIssues: vi.fn(),
   agentsList: vi.fn(),
 }));
 
@@ -193,6 +194,7 @@ describe("the Approvals queue stays mounted when a link to /approvals is followe
     ]);
     apiMocks.agentsList.mockResolvedValue([]);
     apiMocks.listIssues.mockResolvedValue([]);
+    apiMocks.listLinkedIssues.mockResolvedValue({});
     // A sent approval stays on its way: what matters here is whether and when it is sent.
     apiMocks.approve.mockImplementation(() => new Promise(() => {}));
     container = document.createElement("div");

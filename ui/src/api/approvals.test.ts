@@ -79,3 +79,36 @@ describe("approvalsApi decisions", () => {
     expect(approvalVersionConflict(error)).toEqual({ currentStatus: "approved", currentUpdatedAt: VERSION });
   });
 });
+
+describe("approvalsApi.listLinkedIssues", () => {
+  const row = (id: string) => ({ id, identifier: null, title: id, status: "todo" });
+
+  it("reads the linked tasks of several approvals in one request", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ a1: [row("i1")] }));
+
+    const result = await approvalsApi.listLinkedIssues("co 1", ["a1", "a2", "a1", ""]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/companies/co 1/approvals/linked-issues?ids=a1,a2");
+    expect(result).toEqual({ a1: [row("i1")] });
+  });
+
+  it("sends nothing for an empty list", async () => {
+    expect(await approvalsApi.listLinkedIssues("co-1", [])).toEqual({});
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reads a list longer than the server's cap in as few requests as it takes, and joins the answers", async () => {
+    const ids = Array.from({ length: 101 }, (_, index) => `a${index}`);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ a0: [row("i0")] }))
+      .mockResolvedValueOnce(jsonResponse({ a100: [row("i100")] }));
+
+    const result = await approvalsApi.listLinkedIssues("co-1", ids);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect((fetchMock.mock.calls[0]![0] as string).split("ids=")[1]!.split(",")).toHaveLength(100);
+    expect(fetchMock.mock.calls[1]![0]).toBe("/api/companies/co-1/approvals/linked-issues?ids=a100");
+    expect(result).toEqual({ a0: [row("i0")], a100: [row("i100")] });
+  });
+});

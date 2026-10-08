@@ -703,6 +703,9 @@ export const APPROVAL_STATUSES = [
 ] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
+/** The most approval ids one linked-issues batch read accepts (`?ids=`). */
+export const APPROVAL_LINKED_ISSUES_MAX_IDS = 100;
+
 /**
  * First line of the approval comment that keeps the board's change request.
  * The request-revision route writes that comment, so the request stays in the

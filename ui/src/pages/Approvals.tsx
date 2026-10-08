@@ -11,7 +11,7 @@ import {
   type PointerEvent,
 } from "react";
 import { Link, useNavigate, useLocation, useSearchParams } from "@/lib/router";
-import { useQueries, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Approval } from "@paperclipai/shared";
 import { approvalsApi } from "../api/approvals";
 import { agentsApi } from "../api/agents";
@@ -1529,12 +1529,17 @@ export function Approvals() {
     }
   };
 
-  const linkedIssueQueries = useQueries({
-    queries: visible.map((approval) => ({
-      queryKey: queryKeys.approvals.issues(approval.id),
-      queryFn: () => approvalsApi.listIssues(approval.id),
-      staleTime: 60_000,
-    })),
+  // The linked-task chips of every row on the page come from one read, not one per card. The key is
+  // the set of rows shown, so a row the page brings in is read with the others; the rows already
+  // shown keep their chips while that read is on its way. Returning to the browser tab reads nothing.
+  const linkedIssueIdsKey = visible.map((approval) => approval.id).sort().join(",");
+  const { data: linkedIssuesByApproval } = useQuery({
+    queryKey: queryKeys.approvals.linkedIssues(selectedCompanyId ?? "", linkedIssueIdsKey),
+    queryFn: () => approvalsApi.listLinkedIssues(selectedCompanyId!, linkedIssueIdsKey.split(",")),
+    enabled: !!selectedCompanyId && linkedIssueIdsKey.length > 0,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
   });
 
   if (!selectedCompanyId) {
@@ -1676,7 +1681,7 @@ export function Approvals() {
       {filtered.length > 0 && (
         <>
           <div className="grid grid-cols-1 gap-3" ref={listRef} onFocus={rememberFocusedRow}>
-            {visible.map((approval, index) => {
+            {visible.map((approval) => {
               const held = heldApprovals[approval.id] ?? null;
               const compact = compactRowFor(approval);
               if (held || compact) {
@@ -1723,7 +1728,7 @@ export function Approvals() {
                   // A decision on its way carries the text with it; the row says that instead.
                   unsentNote={pendingAction ? null : (draftModes[approval.id] ?? null)}
                   revisionMemory={revisionMemory}
-                  linkedIssues={linkedIssueQueries[index]?.data}
+                  linkedIssues={linkedIssuesByApproval?.[approval.id]}
                   enableShortcuts={keyboardShortcutsEnabled}
                   focusable
                   collapsible={collapsibleList}

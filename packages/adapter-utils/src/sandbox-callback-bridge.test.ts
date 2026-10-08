@@ -1489,6 +1489,8 @@ describe("sandbox callback bridge", () => {
       { method: "POST", path: "/api/approvals/ap-1/request-revision" },
       { method: "POST", path: "/api/approvals/ap-1/resubmit/extra" },
       { method: "GET", path: "/api/approvals/ap-1/resubmit" },
+      // The board's batch read of linked tasks: agents read one approval's tasks instead.
+      { method: "GET", path: "/api/companies/co-1/approvals/linked-issues" },
       { method: "POST", path: "/api/companies/co-1/logo" },
       { method: "GET", path: "/api/companies/co-1/secrets" },
       { method: "PATCH", path: "/api/secrets/secret-1" },
