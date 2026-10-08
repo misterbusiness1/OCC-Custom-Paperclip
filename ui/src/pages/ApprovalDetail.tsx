@@ -36,7 +36,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { CheckCircle2 } from "lucide-react";
-import type { ApprovalComment } from "@paperclipai/shared";
+import { approvalChangeRequestFromCommentBody, type ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { timeAgo } from "../lib/timeAgo";
 
@@ -499,7 +499,14 @@ export function ApprovalDetail() {
         </summary>
         <div className="space-y-3 border-t border-border/60 p-4">
           <div className="space-y-2">
-            {(comments ?? []).map((comment: ApprovalComment) => (
+            {(comments ?? []).map((comment: ApprovalComment) => {
+              // The board's change request, kept by the server as a comment. It is
+              // a note: plain text as typed, never Markdown. An agent's comment
+              // that starts with the same words is an ordinary comment.
+              const changeRequest = comment.authorAgentId
+                ? null
+                : approvalChangeRequestFromCommentBody(comment.body);
+              return (
               <div key={comment.id} className="rounded-md border border-border/60 p-3">
                 <div className="mb-1 flex items-center justify-between gap-3">
                   {comment.authorAgentId ? (
@@ -513,9 +520,19 @@ export function ApprovalDetail() {
                     {new Date(comment.createdAt).toLocaleString()}
                   </span>
                 </div>
-                <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+                {changeRequest !== null ? (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground">Changes requested</p>
+                    <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-foreground">
+                      {changeRequest}
+                    </p>
+                  </div>
+                ) : (
+                  <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
           <div className="space-y-1.5">
             <label htmlFor={`approval-comment-${approval.id}`} className="text-xs font-medium text-foreground">

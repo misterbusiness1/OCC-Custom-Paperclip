@@ -703,6 +703,24 @@ export const APPROVAL_STATUSES = [
 ] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
+/**
+ * First line of the approval comment that keeps the board's change request.
+ * The request-revision route writes that comment, so the request stays in the
+ * approval's discussion after a later decision overwrites `decisionNote`.
+ */
+export const APPROVAL_CHANGE_REQUEST_COMMENT_PREFIX = "Changes requested:";
+
+/** The stored body of that comment: the prefix, a blank line, and the note as typed. */
+export function approvalChangeRequestCommentBody(note: string): string {
+  return `${APPROVAL_CHANGE_REQUEST_COMMENT_PREFIX}\n\n${note}`;
+}
+
+/** The note of such a comment, or null when the body is not a change request. */
+export function approvalChangeRequestFromCommentBody(body: string): string | null {
+  if (!body.startsWith(APPROVAL_CHANGE_REQUEST_COMMENT_PREFIX)) return null;
+  return body.slice(APPROVAL_CHANGE_REQUEST_COMMENT_PREFIX.length).replace(/^[ \t]*(\r?\n)*/, "");
+}
+
 export const SECRET_PROVIDERS = [
   "local_encrypted",
   "aws_secrets_manager",

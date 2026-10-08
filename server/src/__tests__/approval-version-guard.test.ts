@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { approvals, companies, createDb } from "@paperclipai/db";
+import { approvalComments, approvals, companies, createDb } from "@paperclipai/db";
 import { approvalService } from "../services/approvals.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -349,6 +349,105 @@ describeEmbeddedPostgres("approval decisions with an expected version", () => {
       await expect(
         svc.approve(shown.id, "user-1", "late", { expectedUpdatedAt: new Date(ahead.toISOString()) }),
       ).rejects.toMatchObject(VERSION_CONFLICT);
+    });
+  });
+
+  describe("the change request kept as a comment", () => {
+    const commentsOf = (id: string) =>
+      db.select().from(approvalComments).where(eq(approvalComments.approvalId, id));
+
+    it("keeps the board's change request in the discussion after the final decision", async () => {
+      const svc = approvalService(db);
+      const shown = await createPending();
+
+      await svc.requestRevision(shown.id, "board-user-1", "1. Quote the delivery date.\n2. Name the price.");
+      await svc.resubmit(shown.id, { title: "Second version" });
+      const { approval } = await svc.approve(shown.id, "board-user-2", "Good now");
+
+      // The decision overwrote the note on the approval; the comment still holds it.
+      expect(approval.decisionNote).toBe("Good now");
+      const comments = await svc.listComments(shown.id);
+      expect(comments).toHaveLength(1);
+      expect(comments[0]).toMatchObject({
+        companyId,
+        approvalId: shown.id,
+        authorAgentId: null,
+        authorUserId: "board-user-1",
+        body: "Changes requested:\n\n1. Quote the delivery date.\n2. Name the price.",
+      });
+    });
+
+    it("keeps one comment per send-back, in order", async () => {
+      const svc = approvalService(db);
+      const shown = await createPending();
+
+      await svc.requestRevision(shown.id, "board-user-1", "First change");
+      await svc.resubmit(shown.id, { title: "Second version" });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await svc.requestRevision(shown.id, "board-user-2", "Second change");
+
+      const comments = await svc.listComments(shown.id);
+      expect(comments.map((comment) => [comment.authorUserId, comment.body])).toEqual([
+        ["board-user-1", "Changes requested:\n\nFirst change"],
+        ["board-user-2", "Changes requested:\n\nSecond change"],
+      ]);
+    });
+
+    it("writes no second comment when the same request is sent again or refused for its version", async () => {
+      const svc = approvalService(db);
+      const shown = await createPending();
+
+      await svc.requestRevision(shown.id, "board-user-1", "Quote the delivery date.", {
+        expectedUpdatedAt: shown.updatedAt,
+      });
+      // The retry of the same send, with and without the version it named.
+      await expect(
+        svc.requestRevision(shown.id, "board-user-1", "Quote the delivery date.", { expectedUpdatedAt: shown.updatedAt }),
+      ).rejects.toMatchObject(VERSION_CONFLICT);
+      await expect(svc.requestRevision(shown.id, "board-user-1", "Quote the delivery date."))
+        .rejects.toMatchObject({ status: 422 });
+
+      expect(await commentsOf(shown.id)).toHaveLength(1);
+    });
+
+    it("writes no comment when the write is held back because the request changed after the read", async () => {
+      const shown = await createPending();
+      const racing = racingDb(() => approvalService(db).approve(shown.id, "other-board-user", "Fine by me"));
+
+      await expect(approvalService(racing).requestRevision(shown.id, "user-1", "late")).rejects.toMatchObject({
+        status: 422,
+      });
+
+      expect(await commentsOf(shown.id)).toHaveLength(0);
+    });
+
+    it("writes no comment without a note", async () => {
+      const svc = approvalService(db);
+      const shown = await createPending();
+
+      await svc.requestRevision(shown.id, "board-user-1", null);
+
+      expect(await commentsOf(shown.id)).toHaveLength(0);
+    });
+
+    it("does not send the request back when the comment cannot be written", async () => {
+      const shown = await createPending();
+      const failing = Object.create(db) as typeof db;
+      failing.transaction = ((run: Parameters<typeof db.transaction>[0]) =>
+        db.transaction(async (tx) => {
+          const guarded = Object.create(tx) as typeof tx;
+          guarded.insert = (() => {
+            throw new Error("comment insert failed");
+          }) as typeof tx.insert;
+          return run(guarded);
+        })) as typeof db.transaction;
+
+      await expect(approvalService(failing).requestRevision(shown.id, "user-1", "Quote the date."))
+        .rejects.toThrow("comment insert failed");
+
+      const stored = await read(shown.id);
+      expect(stored.status).toBe("pending");
+      expect(stored.decisionNote).toBeNull();
     });
   });
 

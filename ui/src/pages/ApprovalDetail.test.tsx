@@ -514,6 +514,26 @@ describe("ApprovalDetail", () => {
       }
     });
 
+    it("shows the board's kept change request in the discussion as plain text, as typed", async () => {
+      apiMocks.listComments.mockResolvedValue([
+        { id: "comment-1", authorAgentId: null, authorUserId: "user-42", body: "Changes requested:\n\n1. Quote the **date**.\n2. Name the price.", createdAt: new Date("2026-10-05T13:00:00.000Z") },
+        { id: "comment-2", authorAgentId: MANAGER_ID, authorUserId: null, body: "Changes requested: none, says the agent.", createdAt: new Date("2026-10-05T14:00:00.000Z") },
+      ]);
+      await render(createApproval({ id: APPROVAL_ID }));
+      await vi.waitFor(() => expect(container.textContent).toContain("Name the price."));
+
+      const discussion = [...container.querySelectorAll("details")]
+        .find((details) => details.querySelector("summary")?.textContent?.startsWith("Discussion"))!;
+      const note = [...discussion.querySelectorAll("p")]
+        .find((paragraph) => paragraph.textContent?.includes("Name the price."))!;
+      // The note keeps its line breaks and its characters: it is not Markdown.
+      expect(note.textContent).toBe("1. Quote the **date**.\n2. Name the price.");
+      expect(note.className).toContain("whitespace-pre-wrap");
+      expect(note.previousElementSibling?.textContent).toBe("Changes requested");
+      // An agent's comment with the same first words is an ordinary comment.
+      expect(discussion.textContent).toContain("Changes requested: none, says the agent.");
+    });
+
     it("uses one set of words for the top panel and Full request", async () => {
       await render(
         createApproval({

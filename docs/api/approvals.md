@@ -72,6 +72,8 @@ POST /api/approvals/{approvalId}/request-revision
 { "decisionNote": "Please reduce the budget and clarify capabilities." }
 ```
 
+A `decisionNote` that is not empty is also stored as an approval comment, written by the deciding board user, with the body `Changes requested:`, a blank line, and the note. The next decision overwrites `decisionNote`; the comment stays. The comment is written in the same transaction as the status change, so a refused request (`409`, `422`) writes none. It adds no activity entry and no wake of its own.
+
 ## Expected Version
 
 Approve, Reject and Request Revision accept an optional `expectedUpdatedAt`: the `updatedAt` of the approval as the caller read it, as an ISO 8601 string.
