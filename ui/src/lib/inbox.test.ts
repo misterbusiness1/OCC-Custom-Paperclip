@@ -18,6 +18,7 @@ import {
   buildInboxKeyboardNavEntries,
   buildInboxDismissedAtByKey,
   computeInboxBadgeData,
+  isApprovalVisibleInMine,
   filterInboxIssues,
   getArchivedInboxSearchIssues,
   getAvailableInboxIssueColumns,
@@ -485,6 +486,41 @@ describe("inbox helpers", () => {
     });
 
     expect(result.approvals).toBe(1);
+  });
+
+  it("lists a request sent back for changes, but does not count it in the badge", () => {
+    const approvals = [
+      makeApprovalWithTimestamps("approval-pending", "pending", "2026-03-11T01:00:00.000Z"),
+      makeApprovalWithTimestamps("approval-sent-back", "revision_requested", "2026-03-11T03:00:00.000Z"),
+    ];
+
+    const result = computeInboxBadgeData({
+      approvals,
+      joinRequests: [],
+      dashboard,
+      heartbeatRuns: [],
+      mineIssues: [],
+      dismissedAlerts: new Set<string>(),
+      dismissedAtByKey: new Map(),
+      currentUserId: "user-1",
+    });
+
+    // The same number as the Approvals sidebar item: pending only.
+    expect(result.approvals).toBe(1);
+    expect(result.inbox).toBe(1);
+    expect(approvals.filter((approval) => approval.status === "pending")).toHaveLength(result.approvals);
+    // Still listed in the inbox, on every tab that lists open requests.
+    for (const tab of ["mine", "recent", "unread"] as const) {
+      expect(getApprovalsForTab(approvals, tab, "all", "user-1").map((approval) => approval.id)).toEqual([
+        "approval-sent-back",
+        "approval-pending",
+      ]);
+    }
+    expect(getApprovalsForTab(approvals, "all", "actionable").map((approval) => approval.id)).toEqual([
+      "approval-sent-back",
+      "approval-pending",
+    ]);
+    expect(isApprovalVisibleInMine(approvals[1]!, "user-1")).toBe(true);
   });
 
   it("does not count company-wide alerts in the personal inbox badge", () => {

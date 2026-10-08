@@ -17,7 +17,18 @@ import { formatAssigneeUserLabel } from "./assignees";
 
 export const RECENT_ISSUES_LIMIT = 100;
 export const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
+/**
+ * Approvals that are still open: the inbox lists them (under Mine, Unread, and
+ * "Needs action"). It includes requests sent back for changes, which wait on
+ * the requester. It is for listing only; counts use the set below.
+ */
 export const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
+/**
+ * Approvals that wait on the board, and so count in the inbox badge. The same
+ * rule as the Approvals sidebar item (usePendingApprovalCount) and the server's
+ * badge (server/src/services/sidebar-badges.ts).
+ */
+export const APPROVAL_STATUSES_NEEDING_BOARD = new Set(["pending"]);
 export const DISMISSED_KEY = "paperclip:inbox:dismissed";
 export const READ_ITEMS_KEY = "paperclip:inbox:read-items";
 export const INBOX_LAST_TAB_KEY = "paperclip:inbox:last-tab";
@@ -1283,7 +1294,7 @@ export function computeInboxBadgeData({
   const actionableApprovals = approvals.filter(
     (approval) =>
       isApprovalVisibleInMine(approval, currentUserId) &&
-      ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
+      APPROVAL_STATUSES_NEEDING_BOARD.has(approval.status) &&
       !isInboxEntityDismissed(dismissedAtByKey, `approval:${approval.id}`, approval.updatedAt),
   ).length;
   const failedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
