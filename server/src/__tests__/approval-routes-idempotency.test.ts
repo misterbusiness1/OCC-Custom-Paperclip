@@ -314,6 +314,16 @@ describe("approval routes idempotent retries", () => {
       expect(mockIssueApprovalService.listLinkedIssuesForApprovals).toHaveBeenCalledTimes(1);
     });
 
+    it("counts only real ids against the cap: repeats and values that are not ids are dropped first", async () => {
+      const ids = Array.from({ length: 100 }, (_, index) =>
+        `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
+
+      const res = await request(await createApp()).get(`${ROUTE}?ids=${ids.join(",")},not-an-id,${ids[0]}`);
+
+      expect(res.status).toBe(200);
+      expect(mockIssueApprovalService.listLinkedIssuesForApprovals).toHaveBeenCalledWith("company-1", ids);
+    });
+
     it("refuses a company outside the caller scope", async () => {
       const res = await request(await createApp())
         .get(`/api/companies/company-2/approvals/linked-issues?ids=${FIRST}`);

@@ -524,17 +524,17 @@ export function approvalRoutes(
     assertCompanyAccess(req, companyId);
     if (!(await assertApprovalAccessAllowed(req, res, companyId))) return;
     const rawIds = Array.isArray(req.query.ids) ? req.query.ids : [req.query.ids];
-    const requested = Array.from(new Set(
+    const approvalIds = Array.from(new Set(
       rawIds
         .flatMap((value) => (typeof value === "string" ? value.split(",") : []))
         .map((value) => value.trim())
-        .filter((value) => value.length > 0),
+        .filter((value) => value.length > 0)
+        // An id that is not a UUID cannot be an approval; it is left out, like an unknown id.
+        .filter((value) => isUuidLike(value)),
     ));
-    if (requested.length > APPROVAL_LINKED_ISSUES_MAX_IDS) {
+    if (approvalIds.length > APPROVAL_LINKED_ISSUES_MAX_IDS) {
       throw badRequest(`At most ${APPROVAL_LINKED_ISSUES_MAX_IDS} approval ids can be read at once`);
     }
-    // An id that is not a UUID cannot be an approval; it is left out, like an unknown id.
-    const approvalIds = requested.filter((value) => isUuidLike(value));
     res.json(await issueApprovalsSvc.listLinkedIssuesForApprovals(companyId, approvalIds));
   });
 
