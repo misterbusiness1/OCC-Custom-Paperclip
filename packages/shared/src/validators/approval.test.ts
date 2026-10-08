@@ -21,6 +21,21 @@ describe("approval validators", () => {
     expect(requestApprovalRevisionSchema.parse({}).decisionNote).toBeUndefined();
   });
 
+  it("accepts an optional expected version on a decision and refuses a malformed one", () => {
+    for (const schema of [resolveApprovalSchema, requestApprovalRevisionSchema]) {
+      // Omitted: the body parses as before.
+      expect(schema.parse({ decisionNote: "ok" })).toEqual({ decisionNote: "ok" });
+      expect(schema.parse({}).expectedUpdatedAt).toBeUndefined();
+      // The value the API returns, and the same instant with an offset.
+      expect(schema.parse({ expectedUpdatedAt: "2026-10-07T12:34:56.789Z" }).expectedUpdatedAt)
+        .toBe("2026-10-07T12:34:56.789Z");
+      expect(schema.safeParse({ expectedUpdatedAt: "2026-10-07T14:34:56.789+02:00" }).success).toBe(true);
+      for (const bad of ["yesterday", "2026-10-07", "", 1759840496789, null]) {
+        expect(schema.safeParse({ expectedUpdatedAt: bad }).success).toBe(false);
+      }
+    }
+  });
+
   it("normalizes escaped line breaks in approval comments and decision notes", () => {
     expect(addApprovalCommentSchema.parse({ body: "Looks good\\n\\nApproved." }).body)
       .toBe("Looks good\n\nApproved.");

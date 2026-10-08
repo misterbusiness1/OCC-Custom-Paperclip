@@ -2185,7 +2185,10 @@ function OnboardingWizardInner({
       if (hire.approval) {
         await approvalsApi.approve(
           hire.approval.id,
-          "Approved during onboarding first-agent setup."
+          "Approved during onboarding first-agent setup.",
+          // A hire approval that changed since it was returned is refused
+          // (409); the catch below then shows the error instead of step 5.
+          { expectedUpdatedAt: hire.approval.updatedAt }
         );
         queryClient.invalidateQueries({
           queryKey: queryKeys.approvals.list(createdCompanyId)

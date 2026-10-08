@@ -33,6 +33,15 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
   };
 }
 
+/**
+ * The optional version a decision was made for, as the trailing argument of the
+ * service call. Nothing is passed when the caller sent none, so such a call is
+ * exactly what it was before the field existed.
+ */
+function expectedVersionArgs(body: { expectedUpdatedAt?: string }): [] | [{ expectedUpdatedAt: Date }] {
+  return body.expectedUpdatedAt ? [{ expectedUpdatedAt: new Date(body.expectedUpdatedAt) }] : [];
+}
+
 function isStatusOnlyRecoveryContext(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;
   const context = contextSnapshot as Record<string, unknown>;
@@ -590,7 +599,12 @@ export function approvalRoutes(
       return;
     }
     const decidedByUserId = req.actor.userId ?? "board";
-    const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
+    const { approval, applied } = await svc.approve(
+      id,
+      decidedByUserId,
+      req.body.decisionNote,
+      ...expectedVersionArgs(req.body),
+    );
 
     if (applied) {
       const linkedIssueIds = (await issueApprovalsSvc.listIssuesForApproval(approval.id)).map((issue) => issue.id);
@@ -621,7 +635,12 @@ export function approvalRoutes(
       return;
     }
     const decidedByUserId = req.actor.userId ?? "board";
-    const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
+    const { approval, applied } = await svc.reject(
+      id,
+      decidedByUserId,
+      req.body.decisionNote,
+      ...expectedVersionArgs(req.body),
+    );
 
     if (applied) {
       const linkedIssueIds = (await issueApprovalsSvc.listIssuesForApproval(approval.id)).map((issue) => issue.id);
@@ -655,7 +674,12 @@ export function approvalRoutes(
         return;
       }
       const decidedByUserId = req.actor.userId ?? "board";
-      const approval = await svc.requestRevision(id, decidedByUserId, req.body.decisionNote);
+      const approval = await svc.requestRevision(
+        id,
+        decidedByUserId,
+        req.body.decisionNote,
+        ...expectedVersionArgs(req.body),
+      );
       const linkedIssueIds = (await issueApprovalsSvc.listIssuesForApproval(approval.id)).map((issue) => issue.id);
 
       await logActivity(db, {
@@ -681,6 +705,9 @@ export function approvalRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!existing) return;
+    // The same boundary as reading or creating an approval: holding the id of
+    // a sent-back request is not enough once company-scope access is revoked.
+    if (!(await assertApprovalAccessAllowed(req, res, existing.companyId))) return;
     if (!(await assertApprovalMutationAllowedByRunContext(req, res, existing.companyId))) return;
 
     if (req.actor.type === "agent" && req.actor.agentId !== existing.requestedByAgentId) {
@@ -753,6 +780,7 @@ export function approvalRoutes(
     const id = req.params.id as string;
     const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!approval) return;
+    if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
     const comments = await svc.listComments(id);
     res.json(comments);
   });
@@ -761,6 +789,7 @@ export function approvalRoutes(
     const id = req.params.id as string;
     const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!approval) return;
+    if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
     if (!(await assertApprovalMutationAllowedByRunContext(req, res, approval.companyId))) return;
     const actor = getActorInfo(req);
     const comment = await svc.addComment(id, req.body.body, {

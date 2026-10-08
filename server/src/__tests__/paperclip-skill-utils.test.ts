@@ -518,6 +518,16 @@ describe("paperclip skill utils", () => {
     }
   });
 
+  it("tells an agent to resubmit the same approval when the board sends it back", async () => {
+    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+
+    expect(skillBody).toContain("`PAPERCLIP_APPROVAL_STATUS` is `revision_requested`");
+    expect(skillBody).toContain("`POST /api/approvals/{approvalId}/resubmit`");
+    expect(skillBody).toContain("Read `decisionNote` on `GET /api/approvals/{approvalId}`");
+    expect(skillBody).toContain("Never create a new approval for a request the board sent back.");
+    expect(skillBody).not.toContain("When approved, Paperclip wakes the requester");
+  });
+
   it("uses the authoritative PATCH response to confirm monitor scheduling", async () => {
     const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
 

@@ -222,7 +222,16 @@ describe("Approvals", () => {
     act(async () => {
       await vi.advanceTimersByTimeAsync(APPROVE_AFTER_ADVANCE_MS);
     });
-  const KEEPALIVE = { keepalive: true };
+  /** The `updatedAt` each request of the default list is first shown with: the version a decision on it names. */
+  const FIRST_SHOWN: Record<string, Date> = {
+    newest: new Date("2026-10-05T00:00:00.000Z"),
+    oldest: new Date("2026-09-20T00:00:00.000Z"),
+    email: new Date("2026-10-01T00:00:00.000Z"),
+  };
+  /** What a rejection or a change request is sent with: the version of the request as its card showed it. */
+  const versionOf = (id: string, updatedAt: Date = FIRST_SHOWN[id]) => ({ expectedUpdatedAt: updatedAt });
+  /** What a held approval is sent with: marked to outlive the page, for the version the hold began with. */
+  const heldFor = (id: string, updatedAt: Date = FIRST_SHOWN[id]) => ({ keepalive: true, expectedUpdatedAt: updatedAt });
   /** The compact rows of approvals that are held for undo or on their way. */
   const heldRows = () => [...container.querySelectorAll<HTMLElement>("[data-approval-held-row]")];
 
@@ -305,7 +314,7 @@ describe("Approvals", () => {
     await endHold();
 
     await vi.waitFor(() =>
-      expect(apiMocks.approve).toHaveBeenCalledWith("oldest", "Month to month only", KEEPALIVE));
+      expect(apiMocks.approve).toHaveBeenCalledWith("oldest", "Month to month only", heldFor("oldest")));
     await vi.waitFor(() => expect(rows()[0].textContent).toContain("approved"));
     expect(routerMock.navigate).not.toHaveBeenCalled();
     // The decided request holds its place as one line; the others are untouched.
@@ -363,7 +372,7 @@ describe("Approvals", () => {
     await click(button(rows()[0], "Reject"));
     expect(apiMocks.reject).not.toHaveBeenCalled();
     await click(button(rows()[0], "Reject request"));
-    await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("oldest"));
+    await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("oldest", undefined, versionOf("oldest")));
   });
 
   describe("decision feedback", () => {
@@ -452,7 +461,7 @@ describe("Approvals", () => {
 
       await click(button(rows()[0], "Reject request"));
       await vi.waitFor(() => expect(alerts(rows()[0])).toHaveLength(1));
-      expect(apiMocks.reject).toHaveBeenLastCalledWith("oldest", "Too expensive this quarter");
+      expect(apiMocks.reject).toHaveBeenLastCalledWith("oldest", "Too expensive this quarter", versionOf("oldest"));
 
       // A retry removes the old error for as long as the new request is on its way.
       const sent = holdOpen(apiMocks.reject);
@@ -719,6 +728,12 @@ describe("Approvals", () => {
       });
       await click(button(rows()[0], "Send request"));
       await vi.waitFor(() => expect(toDecideTab()).toBe("To decide2"));
+      // Sent for the version its card showed, so the server can refuse it for a later one.
+      expect(apiMocks.requestRevision).toHaveBeenCalledExactlyOnceWith(
+        "oldest",
+        "Quote the delivery date.",
+        versionOf("oldest"),
+      );
 
       expect(order()).toEqual(["oldest", "email", "newest"]);
       expect(rows()[0].textContent).toContain("revision requested");
@@ -783,7 +798,7 @@ describe("Approvals", () => {
       await click(button(rows()[0], "Send request"));
       await vi.waitFor(() => expect(rows()[0].textContent).toContain("revision requested"));
 
-      // The requester resubmits. The server has deleted the note; the page still holds it.
+      // The requester resubmits. An older server deletes the note; the page still holds it.
       approvals = approvals.map((approval) =>
         approval.id === "oldest"
           ? { ...approval, status: "pending", decisionNote: null, decidedAt: null, updatedAt: new Date(Date.now() + 1000) }
@@ -814,6 +829,24 @@ describe("Approvals", () => {
       await vi.waitFor(() => expect(rows()[0].textContent).toContain("rejected"));
       expect(asked(rows()[0])).toBeNull();
       expect(container.textContent).not.toContain("Quote the delivery date.");
+    });
+
+    it("shows the change request the server kept on a revised request, also on a later visit", async () => {
+      // Sent back and resubmitted before this visit: the page holds no copy, the request carries the note.
+      approvals = approvals.map((approval) =>
+        approval.id === "oldest" ? { ...approval, decisionNote: "1. Quote the delivery date.\n2. Name the carrier." } : approval,
+      );
+      const asked = (row: HTMLElement) => row.querySelector<HTMLElement>("[data-approval-changes-asked]");
+      await render();
+
+      const note = asked(rows()[0])!;
+      expect(note.textContent).toBe("Changes you asked for1. Quote the delivery date.\n2. Name the carrier.");
+      // It is the request's change request, not a decision: the card says so once, above the buttons.
+      expect(rows()[0].querySelector("[data-approval-decision-note]")).toBeNull();
+      expect(note.compareDocumentPosition(button(rows()[0], "Approve")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(rows().filter((row) => asked(row))).toHaveLength(1);
+      // The request still needs a decision and is counted as one.
+      expect(toDecideTab()).toBe("To decide3");
     });
 
     it("shows them as cards without decision buttons under All decisions", async () => {
@@ -966,7 +999,7 @@ describe("Approvals", () => {
       await pastDoubleClick();
       await press("A", rows()[1], { shiftKey: true });
       await endHold();
-      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("email", undefined, KEEPALIVE));
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("email", undefined, heldFor("email")));
     });
 
     it("opens the next undecided request after a decision and moves focus to it", async () => {
@@ -1048,7 +1081,7 @@ describe("Approvals", () => {
 
       await click(button(rows()[0], "Approve"));
       await endHold();
-      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("oldest", undefined, KEEPALIVE));
+      await vi.waitFor(() => expect(apiMocks.approve).toHaveBeenCalledWith("oldest", undefined, heldFor("oldest")));
       // The reader opens the last request while the first is still sending.
       await click(header(rows()[2])!);
       await act(async () => button(rows()[2], "Add a note").focus());
@@ -1069,7 +1102,7 @@ describe("Approvals", () => {
 
       await click(button(rows()[0], "Reject"));
       await click(button(rows()[0], "Reject request"));
-      await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("oldest"));
+      await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("oldest", undefined, versionOf("oldest")));
       await click(header(rows()[1])!);
       expect(rows()[0].textContent).toContain("Sending your decision...");
       await act(async () => fail());
@@ -1093,7 +1126,7 @@ describe("Approvals", () => {
 
       await click(button(rows()[0], "Reject"));
       await click(button(rows()[0], "Reject request"));
-      await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("oldest"));
+      await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("oldest", undefined, versionOf("oldest")));
       await act(async () => fail());
       await vi.waitFor(() => expect(errorLines()).toHaveLength(1));
 
@@ -1567,7 +1600,7 @@ describe("Approvals", () => {
 
       await advance(1);
       expect(apiMocks.approve).toHaveBeenCalledTimes(1);
-      expect(apiMocks.approve).toHaveBeenCalledWith("oldest", "Month to month only", KEEPALIVE);
+      expect(apiMocks.approve).toHaveBeenCalledWith("oldest", "Month to month only", heldFor("oldest"));
       // On its way: the row stays, and there is nothing left to undo.
       expect(rows()[0].dataset.approvalHeldRow).toBe("sending");
       expect(holdStatus(rows()[0])).toBe("Approving...");
@@ -1621,7 +1654,7 @@ describe("Approvals", () => {
       await click(button(rows()[0], "Approve"));
       await advance(APPROVE_HOLD_MS);
       expect(apiMocks.approve).toHaveBeenCalledTimes(1);
-      expect(apiMocks.approve).toHaveBeenCalledWith("oldest", "Month to month only", KEEPALIVE);
+      expect(apiMocks.approve).toHaveBeenCalledWith("oldest", "Month to month only", heldFor("oldest"));
     });
 
     it("hands a note back only until it is edited, so a removed note does not return", async () => {
@@ -1641,7 +1674,7 @@ describe("Approvals", () => {
       expect(rows()[0].querySelector("textarea")).toBeNull();
       await click(button(rows()[0], "Approve"));
       await advance(APPROVE_HOLD_MS);
-      expect(apiMocks.approve).toHaveBeenCalledWith("oldest", undefined, KEEPALIVE);
+      expect(apiMocks.approve).toHaveBeenCalledWith("oldest", undefined, heldFor("oldest"));
     });
 
     it("sends a held approval at once when the page is left", async () => {
@@ -1655,7 +1688,7 @@ describe("Approvals", () => {
       act(() => root.unmount());
       root = createRoot(container);
       expect(apiMocks.approve).toHaveBeenCalledTimes(1);
-      expect(apiMocks.approve).toHaveBeenCalledWith("oldest", undefined, KEEPALIVE);
+      expect(apiMocks.approve).toHaveBeenCalledWith("oldest", undefined, heldFor("oldest"));
 
       await advance(APPROVE_HOLD_MS * 3);
       expect(apiMocks.approve).toHaveBeenCalledTimes(1);
@@ -1677,7 +1710,7 @@ describe("Approvals", () => {
 
         await setVisibility("hidden");
         expect(apiMocks.approve).toHaveBeenCalledTimes(1);
-        expect(apiMocks.approve).toHaveBeenLastCalledWith("oldest", undefined, KEEPALIVE);
+        expect(apiMocks.approve).toHaveBeenLastCalledWith("oldest", undefined, heldFor("oldest"));
         expect(rows()[0].dataset.approvalHeldRow).toBe("sending");
         expect(undoButton(rows()[0])).toBeNull();
 
@@ -1688,7 +1721,7 @@ describe("Approvals", () => {
           window.dispatchEvent(new Event("pagehide"));
         });
         expect(apiMocks.approve).toHaveBeenCalledTimes(2);
-        expect(apiMocks.approve).toHaveBeenLastCalledWith("email", undefined, KEEPALIVE);
+        expect(apiMocks.approve).toHaveBeenLastCalledWith("email", undefined, heldFor("email"));
 
         // Neither is sent again when its time would have been up, or on a second pagehide.
         await act(async () => {
@@ -1759,7 +1792,201 @@ describe("Approvals", () => {
       expect(apiMocks.approve).toHaveBeenCalledTimes(1);
       await advance(APPROVE_HOLD_MS);
       expect(apiMocks.approve).toHaveBeenCalledTimes(2);
-      expect(apiMocks.approve).toHaveBeenLastCalledWith("oldest", "Month to month only", KEEPALIVE);
+      expect(apiMocks.approve).toHaveBeenLastCalledWith("oldest", "Month to month only", heldFor("oldest"));
+    });
+
+    describe("an approval the server refuses because the request changed after Approve was pressed", () => {
+      const CHANGED = "This request changed after you opened it. Reload it and decide again.";
+      // What the page says in place of the server's words: it has reloaded the request by itself.
+      const CHANGED_SHOWN = "This request changed after it was shown. It has been reloaded: check it and decide again.";
+      const CHANGED_AT = new Date("2026-10-06T09:00:00.000Z");
+      const refusal = (currentStatus: string) =>
+        Object.assign(new Error(CHANGED), {
+          status: 409,
+          body: {
+            error: CHANGED,
+            code: "approval_version_conflict",
+            details: {
+              code: "approval_version_conflict",
+              currentStatus,
+              currentUpdatedAt: CHANGED_AT.toISOString(),
+              expectedUpdatedAt: FIRST_SHOWN.oldest.toISOString(),
+            },
+          },
+        });
+      /**
+       * The request changes on the server and no reload reaches the page before the hold ends: the
+       * server refuses the approval, stores nothing, and the list shows the change from then on.
+       */
+      const changedOnServer = (id: string, change: Partial<Approval>) =>
+        apiMocks.approve.mockImplementation(async (sentId: string, _note?: string, options?: { expectedUpdatedAt?: Date }) => {
+          const stored = approvals.find((approval) => approval.id === sentId)!;
+          if (sentId !== id || new Date(options!.expectedUpdatedAt!).getTime() === new Date(stored.updatedAt).getTime()) {
+            const decided = { ...stored, status: "approved", decidedAt: new Date() } as Approval;
+            approvals = approvals.map((approval) => (approval.id === sentId ? decided : approval));
+            return decided;
+          }
+          throw refusal(stored.status);
+        }) &&
+        (() => {
+          approvals = approvals.map((approval) =>
+            approval.id === id ? ({ ...approval, ...change, updatedAt: CHANGED_AT } as Approval) : approval,
+          );
+        });
+      const rowError = (row: HTMLElement) => row.querySelector("[data-approval-row-error]")?.textContent ?? null;
+
+      it("is not approved in a revised version: the card returns, says so, and Approve waits for the revision to be read", async () => {
+        const revise = changedOnServer("oldest", {
+          payload: {
+            title: "Request oldest",
+            recommendedAction: "Order ten times the standing quantity.",
+            reasoning: "It fits the request.",
+            pros: ["A pro."],
+            risks: ["A risk."],
+          },
+        });
+        await render();
+
+        await addNote(rows()[0], "Month to month only");
+        await click(button(rows()[0], "Approve"));
+        // The requester resubmits during the hold, and the page has not reloaded.
+        revise();
+        await advance(APPROVE_HOLD_MS);
+
+        // Sent once, for the version the hold began with, and refused.
+        expect(apiMocks.approve.mock.calls).toEqual([["oldest", "Month to month only", heldFor("oldest")]]);
+        expect(heldRows()).toHaveLength(0);
+        expect(rowError(rows()[0])).toBe("Not approved. The requester revised this request before your approval was sent.");
+        expect(rows()[0].querySelector("[data-approval-unsent-note]")!.textContent).toBe("Note not sent");
+        expect(announced()).toBe(
+          "Not approved: Request oldest. The requester revised it before it was sent. Nothing was sent.",
+        );
+        // Never a success, and nothing is counted as decided.
+        expect(container.textContent).not.toContain("Approved:");
+        expect(rows()[0].hasAttribute("data-approval-decided-row")).toBe(false);
+        // The reader stays at the request they moved on to; the row is in view, so no toast covers it.
+        expect(openIds()).toEqual(["email"]);
+        expect(toastMock.pushToast).not.toHaveBeenCalled();
+
+        // It is not sent again by itself, with or without the version.
+        await advance(APPROVE_HOLD_MS * 4);
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+
+        // The reload brought the revision: Approve waits for "I have reviewed it", then names the new version.
+        await click(header(rows()[0])!);
+        await pastDoubleClick();
+        expect(rows()[0].textContent).toContain("Order ten times the standing quantity.");
+        expect(rows()[0].querySelector("textarea")!.value).toBe("Month to month only");
+        await click(button(rows()[0], "Approve"));
+        expect(heldRows()).toHaveLength(0);
+        await click(button(rows()[0], "I have reviewed it"));
+        await click(button(rows()[0], "Approve"));
+        await advance(APPROVE_HOLD_MS);
+        expect(apiMocks.approve).toHaveBeenCalledTimes(2);
+        expect(apiMocks.approve).toHaveBeenLastCalledWith("oldest", "Month to month only", heldFor("oldest", CHANGED_AT));
+        expect(announced()).toBe("Approved: Request oldest");
+      });
+
+      it("is not approved over a colleague's change request: the request shows as sent back, without buttons", async () => {
+        const sendBack = changedOnServer("oldest", {
+          status: "revision_requested",
+          decisionNote: "Quote the delivery date.",
+          decidedAt: CHANGED_AT,
+        });
+        await render();
+
+        await click(button(rows()[0], "Approve"));
+        sendBack();
+        await advance(APPROVE_HOLD_MS);
+
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+        expect(heldRows()).toHaveLength(0);
+        expect(rowError(rows()[0])).toBe(
+          "Not approved. This request was sent back for changes before your approval was sent.",
+        );
+        expect(announced()).toBe(
+          "Not approved: Request oldest. It was sent back for changes before your approval was sent. Nothing was sent.",
+        );
+        expect(rows()[0].textContent).toContain("revision requested");
+        await click(header(rows()[0])!);
+        expect(button(rows()[0], "Approve")).toBeUndefined();
+        expect(rows()[0].textContent).toContain("Changes you asked forQuote the delivery date.");
+        await advance(APPROVE_HOLD_MS * 4);
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+      });
+
+      it("is not shown as the reader's approval when someone else decided first: the row says decided elsewhere", async () => {
+        const rejectElsewhere = changedOnServer("oldest", {
+          status: "rejected",
+          decisionNote: "No longer needed",
+          decidedAt: CHANGED_AT,
+        });
+        await render();
+
+        await addNote(rows()[0], "Month to month only");
+        await click(button(rows()[0], "Approve"));
+        rejectElsewhere();
+        await advance(APPROVE_HOLD_MS);
+
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+        expect(heldRows()).toHaveLength(0);
+        expect(announced()).toBe(
+          "Not approved: Request oldest. Nothing was sent. Its status is now rejected: decided elsewhere.",
+        );
+        // The row keeps its place with the status and the note the server holds, as someone else's decision.
+        expect(order()[0]).toBe("oldest");
+        expect(rows()[0].textContent).toContain("rejected");
+        expect(rows()[0].textContent).toContain("Decided elsewhere");
+        expect(rows()[0].textContent).toContain("No longer needed");
+        expect(rows()[0].textContent).not.toContain("Your note.");
+        expect(alerts()).toHaveLength(0);
+        expect(container.textContent).not.toContain("Approved:");
+        expect(openIds()).toEqual(["email"]);
+      });
+
+      it("says so where the reader is when the approval was sent because the page was left, and sends nothing again", async () => {
+        const revise = changedOnServer("oldest", { payload: { title: "Request oldest", recommendedAction: "Another plan." } });
+        await render();
+
+        await click(button(rows()[0], "Approve"));
+        revise();
+        // The reader leaves the queue: the hold is sent at once, with its version, and is refused.
+        act(() => root.unmount());
+        root = createRoot(container);
+        await advance(0);
+
+        expect(apiMocks.approve.mock.calls).toEqual([["oldest", undefined, heldFor("oldest")]]);
+        expect(toastMock.pushToast).toHaveBeenCalledTimes(1);
+        const toast = toastMock.pushToast.mock.calls[0][0];
+        expect(toast).toMatchObject({
+          title: "Not approved: Request oldest",
+          body: "The requester revised it before your approval was sent. Nothing was sent.",
+          tone: "warn",
+        });
+        // The queue is gone: the action opens the request's own page.
+        expect(toast.action.label).toBe("View request");
+        act(() => toast.action.onClick());
+        expect(routerMock.navigate).toHaveBeenCalledWith("/approvals/oldest");
+
+        await advance(APPROVE_HOLD_MS * 4);
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+      });
+
+      it("reports a refused rejection on its card and reloads it, and never as rejected", async () => {
+        apiMocks.reject.mockRejectedValue(refusal("pending"));
+        await render();
+        const loads = apiMocks.list.mock.calls.length;
+
+        await click(button(rows()[0], "Reject"));
+        await click(button(rows()[0], "Reject request"));
+        await advance(0);
+
+        expect(apiMocks.reject).toHaveBeenCalledExactlyOnceWith("oldest", undefined, versionOf("oldest"));
+        expect(alerts(rows()[0])[0].textContent).toBe(`Error while rejecting: ${CHANGED_SHOWN}`);
+        expect(announced()).toBe(`Error while rejecting Request oldest: ${CHANGED_SHOWN}`);
+        expect(rows()[0].hasAttribute("data-approval-decided-row")).toBe(false);
+        expect(apiMocks.list.mock.calls.length).toBeGreaterThan(loads);
+      });
     });
 
     it("does not close the request being read when an approval fails and focus rests on the page", async () => {
@@ -2075,6 +2302,28 @@ describe("Approvals", () => {
       act(async () => {
         await queryClient.invalidateQueries({ queryKey: ["approvals", "company-1"] });
       });
+    /** The server's answer to a decision made for a version the request no longer has. */
+    const refusal = (currentStatus: string, currentUpdatedAt: Date) => {
+      const message = "This request changed after you opened it. Reload it and decide again.";
+      return Object.assign(new Error(message), {
+        status: 409,
+        body: {
+          error: message,
+          code: "approval_version_conflict",
+          details: { code: "approval_version_conflict", currentStatus, currentUpdatedAt: currentUpdatedAt.toISOString() },
+        },
+      });
+    };
+    /** Holds every reload of the list open from now on; the returned function lets them all answer. */
+    const holdReloads = () => {
+      const answers: Array<() => void> = [];
+      apiMocks.list.mockImplementation(() => new Promise((resolve) => answers.push(() => resolve(approvals))));
+      return async () => {
+        apiMocks.list.mockImplementation(async () => approvals);
+        await act(async () => answers.forEach((answer) => answer()));
+        await advance(1);
+      };
+    };
     /** Approves on the server at once, as the real route does. */
     const approveAtOnce = () =>
       apiMocks.approve.mockImplementation(async (id: string, note?: string) => {
@@ -2552,7 +2801,7 @@ describe("Approvals", () => {
           { ...approvals.find((approval) => approval.id === id)!, status: "rejected" } as Approval
         ));
         await click(button(row("oldest"), "Reject request"));
-        await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("oldest", "No. Too expensive."));
+        await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalledWith("oldest", "No. Too expensive.", versionOf("oldest")));
         expect(apiMocks.approve).not.toHaveBeenCalled();
       });
 
@@ -2573,7 +2822,7 @@ describe("Approvals", () => {
 
         await click(button(row("oldest"), "Approve"));
         await advance(APPROVE_HOLD_MS);
-        expect(apiMocks.approve).toHaveBeenCalledWith("oldest", "Month to month only", KEEPALIVE);
+        expect(apiMocks.approve).toHaveBeenCalledWith("oldest", "Month to month only", heldFor("oldest"));
         // Sent: nothing is left to hand back.
         expect(row("oldest").hasAttribute("data-approval-decided-row")).toBe(true);
       });
@@ -2875,7 +3124,7 @@ describe("Approvals", () => {
         expect(apiMocks.approve).not.toHaveBeenCalled();
         await advance(1);
         expect(apiMocks.approve).toHaveBeenCalledTimes(1);
-        expect(apiMocks.approve).toHaveBeenCalledWith("oldest", undefined, KEEPALIVE);
+        expect(apiMocks.approve).toHaveBeenCalledWith("oldest", undefined, heldFor("oldest"));
 
         await pointer("pointerout", row("oldest"));
         await advance(APPROVE_PAUSE_LIMIT_MS * 2);
@@ -2906,7 +3155,7 @@ describe("Approvals", () => {
         expect(holdStatus(row("oldest"))).toBe("Pause over, sending in 5s");
         act(() => root.unmount());
         root = createRoot(container);
-        expect(apiMocks.approve.mock.calls).toEqual([["oldest", undefined, KEEPALIVE]]);
+        expect(apiMocks.approve.mock.calls).toEqual([["oldest", undefined, heldFor("oldest")]]);
         await advance(APPROVE_PAUSE_LIMIT_MS * 2);
         expect(apiMocks.approve).toHaveBeenCalledTimes(1);
       });
@@ -2931,7 +3180,7 @@ describe("Approvals", () => {
         await advance(APPROVE_AFTER_PAUSE_LIMIT_MS - 1);
         expect(apiMocks.approve).not.toHaveBeenCalled();
         await advance(1);
-        expect(apiMocks.approve.mock.calls).toEqual([["oldest", undefined, KEEPALIVE]]);
+        expect(apiMocks.approve.mock.calls).toEqual([["oldest", undefined, heldFor("oldest")]]);
         await advance(APPROVE_PAUSE_LIMIT_MS * 2);
         expect(apiMocks.approve).toHaveBeenCalledTimes(1);
       });
@@ -3038,7 +3287,7 @@ describe("Approvals", () => {
         expect(apiMocks.approve).not.toHaveBeenCalled();
         await advance(1);
         expect(apiMocks.approve).toHaveBeenCalledTimes(1);
-        expect(apiMocks.approve).toHaveBeenCalledWith("oldest", undefined, KEEPALIVE);
+        expect(apiMocks.approve).toHaveBeenCalledWith("oldest", undefined, heldFor("oldest"));
       });
 
       it("are never sent after Undo, also when the hold was paused", async () => {
@@ -3107,7 +3356,7 @@ describe("Approvals", () => {
             Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
             document.dispatchEvent(new Event("visibilitychange"));
           });
-          expect(apiMocks.approve.mock.calls).toEqual([["oldest", undefined, KEEPALIVE]]);
+          expect(apiMocks.approve.mock.calls).toEqual([["oldest", undefined, heldFor("oldest")]]);
           // Focus that rested on Undo is on the row; nothing is left to undo.
           expect(undoButton(row("oldest"))).toBeNull();
           expect(document.activeElement).toBe(row("oldest"));
@@ -3138,7 +3387,7 @@ describe("Approvals", () => {
 
         companyMock.selectedCompanyId = "company-2";
         await rerender();
-        expect(apiMocks.approve.mock.calls).toEqual([["oldest", "Month to month only", KEEPALIVE]]);
+        expect(apiMocks.approve.mock.calls).toEqual([["oldest", "Month to month only", heldFor("oldest")]]);
         await vi.waitFor(() => expect(container.textContent).toContain("Nothing needs a decision."));
         // The other company's queue starts afresh: no row of the first company, nothing counted as decided.
         expect(order()).toEqual([]);
@@ -3448,7 +3697,8 @@ describe("Approvals", () => {
         expect(alerts()).toHaveLength(0);
         await advance(APPROVE_HOLD_MS);
         expect(apiMocks.approve).toHaveBeenCalledTimes(1);
-        expect(apiMocks.approve).toHaveBeenCalledWith("newest", "Month to month only", KEEPALIVE);
+        // The new hold names the revision the reader confirmed, not the version first held.
+        expect(apiMocks.approve).toHaveBeenCalledWith("newest", "Month to month only", heldFor("newest", LATER_STILL));
       });
 
       it("is not approved by an approval still held when the list shows it was sent back for changes", async () => {
@@ -3588,7 +3838,7 @@ describe("Approvals", () => {
           expect(apiMocks.approve).not.toHaveBeenCalled();
           await advance(1000);
           expect(apiMocks.approve).toHaveBeenCalledTimes(1);
-          expect(apiMocks.approve).toHaveBeenCalledWith("oldest", "Month to month only", KEEPALIVE);
+          expect(apiMocks.approve).toHaveBeenCalledWith("oldest", "Month to month only", heldFor("oldest"));
           await vi.waitFor(() => expect(row("oldest").textContent).toContain("Your note. Month to month only"));
           expect(row("oldest").textContent).not.toContain("Decided elsewhere");
         });
@@ -4186,6 +4436,133 @@ describe("Approvals", () => {
         expect(row("oldest").textContent).toContain("rejected");
         expect(row("oldest").textContent).not.toContain("Decided elsewhere");
       });
+
+      it("is said in a toast, row in view or not, when the server refuses their approval because a colleague sent the request back", async () => {
+        apiMocks.requestRevision.mockImplementationOnce(firstSendBack);
+        // A colleague sends the resubmitted version back, and no reload reaches the page before the hold ends.
+        apiMocks.approve.mockImplementation(async (id: string) => {
+          changeElsewhere(id, { status: "revision_requested", decisionNote: "Wrong price", decidedAt: AGAIN, updatedAt: AGAIN });
+          throw refusal("revision_requested", AGAIN);
+        });
+        await render();
+        await sendBackAndResubmit();
+        await pastDoubleClick();
+        await click(button(row("oldest"), "Approve"));
+        expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["oldest"]);
+        await advance(APPROVE_HOLD_MS);
+
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+        expect(heldRows()).toHaveLength(0);
+        // The row is drawn as one decided elsewhere, which has no line for the approval that was not
+        // sent: the toast says it, though the row is in view.
+        expect(row("oldest").textContent).toContain("Decided elsewhere");
+        expect(alerts(row("oldest"))).toHaveLength(0);
+        expect(toastMock.pushToast).toHaveBeenCalledTimes(1);
+        expect(toastMock.pushToast.mock.calls[0][0]).toMatchObject({
+          title: "Not approved: Request oldest",
+          body: "It was sent back for changes before your approval was sent. Nothing was sent.",
+          tone: "warn",
+        });
+      });
+    });
+
+    describe("a held approval the server refuses because no reload showed the change in time", () => {
+      it("is the reader's own approval when their first send was stored and answered with an error", async () => {
+        // The first send is stored and its answer is lost; the second is refused for the stored one.
+        apiMocks.approve.mockImplementationOnce(async (id: string) => {
+          changeElsewhere(id, { status: "approved", decidedAt: LATER, updatedAt: LATER });
+          throw new Error("Network down");
+        });
+        apiMocks.approve.mockImplementation(async () => {
+          throw refusal("approved", LATER);
+        });
+        await render();
+        await click(button(row("oldest"), "Approve"));
+        // No reload answers before the second hold ends.
+        const answerReloads = holdReloads();
+        await advance(APPROVE_HOLD_MS);
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+        await vi.waitFor(() => expect(header(row("oldest"))).not.toBeNull());
+        if (!openIds().includes("oldest")) await click(header(row("oldest"))!);
+        await pastDoubleClick();
+        await click(button(row("oldest"), "Approve"));
+        expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["oldest"]);
+        await advance(APPROVE_HOLD_MS);
+        expect(apiMocks.approve).toHaveBeenCalledTimes(2);
+
+        // Their own decision: counted, and nothing is said about another session or "nothing was sent".
+        const own = () => {
+          expect(heldRows()).toHaveLength(0);
+          expect(row("oldest").hasAttribute("data-approval-decided-row")).toBe(true);
+          expect(row("oldest").textContent).toContain("approved");
+          expect(row("oldest").textContent).not.toContain("Decided elsewhere");
+          expect(announced()).toBe("Approved: Request oldest");
+          expect(progress()).toContain("1 decided this visit");
+        };
+        own();
+        expect(toastMock.pushToast).not.toHaveBeenCalledWith(expect.objectContaining({ tone: "warn" }));
+        await answerReloads();
+        own();
+        await advance(APPROVE_HOLD_MS * 4);
+        expect(apiMocks.approve).toHaveBeenCalledTimes(2);
+      });
+
+      it("moves focus from the held row to the card that returns in its place", async () => {
+        apiMocks.approve.mockImplementation(async (id: string) => {
+          changeElsewhere(id, {
+            updatedAt: LATER,
+            payload: { title: "Request oldest", recommendedAction: "Another plan." },
+          });
+          throw refusal("pending", LATER);
+        });
+        await render();
+        await click(button(row("oldest"), "Approve"));
+        // Focus on Undo holds the clock for thirty seconds at most; then the approval is sent.
+        await act(async () => undoButton(row("oldest"))!.focus());
+        await advance(APPROVE_PAUSE_LIMIT_MS + APPROVE_HOLD_MS);
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+        await advance(1);
+
+        expect(heldRows()).toHaveLength(0);
+        expect(alerts(row("oldest"))[0].textContent).toBe(
+          "Not approved. The requester revised this request before your approval was sent.",
+        );
+        // Not dropped to the page, and not opened under the reader either.
+        expect(document.activeElement).toBe(row("oldest"));
+        expect(header(row("oldest"))!.getAttribute("aria-expanded")).toBe("false");
+      });
+
+      it("shows the status the server named before the reload answers, and keeps the typed note", async () => {
+        apiMocks.approve.mockImplementation(async (id: string) => {
+          changeElsewhere(id, { status: "rejected", decisionNote: "No longer needed", decidedAt: LATER, updatedAt: LATER });
+          throw refusal("rejected", LATER);
+        });
+        await render();
+        await click(button(row("oldest"), "Add a note"));
+        await typeText(row("oldest"), "Month to month only");
+        await click(button(row("oldest"), "Approve"));
+        const answerReloads = holdReloads();
+        await advance(APPROVE_HOLD_MS);
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+
+        // The reload has not answered: the row already has the status of the refusal, as someone else's decision.
+        expect(heldRows()).toHaveLength(0);
+        expect(row("oldest").textContent).toContain("rejected");
+        expect(row("oldest").textContent).toContain("Decided elsewhere");
+        expect(row("oldest").textContent).not.toContain("Your note.");
+        expect(button(row("oldest"), "Approve")).toBeUndefined();
+
+        await answerReloads();
+        expect(row("oldest").textContent).toContain("Decision note. No longer needed");
+
+        // Pending again later: its card returns with the note that was typed with the approval.
+        changeElsewhere("oldest", { status: "pending", decidedAt: null, decisionNote: null, updatedAt: LATER_STILL });
+        await reload();
+        await advance(1);
+        if (!openIds().includes("oldest")) await click(header(row("oldest"))!);
+        expect(field("oldest")!.value).toBe("Month to month only");
+        expect(apiMocks.approve).toHaveBeenCalledTimes(1);
+      });
     });
 
     describe("a held approval that is undone after its request was decided somewhere else", () => {
@@ -4451,7 +4828,7 @@ describe("Approvals", () => {
         await click(button(row("email"), "Approve"));
         expect(heldRows().map((held) => held.dataset.approvalCard)).toEqual(["email"]);
         await advance(APPROVE_HOLD_MS);
-        expect(apiMocks.approve.mock.calls).toEqual([["email", undefined, KEEPALIVE]]);
+        expect(apiMocks.approve.mock.calls).toEqual([["email", undefined, heldFor("email")]]);
       });
     });
 
@@ -4686,7 +5063,7 @@ describe("Approvals", () => {
 
           expect(apiMocks.approve).not.toHaveBeenCalled();
           await advance(APPROVE_HOLD_MS);
-          expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("oldest", undefined, KEEPALIVE);
+          expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("oldest", undefined, heldFor("oldest"));
         });
 
         it("keeps a request whose approval failed on the page, with its error, whatever the term", async () => {
@@ -5147,7 +5524,7 @@ describe("Approvals", () => {
           expect(progress()).toBe("1 decided this visit · 2 left to decide");
 
           await advance(APPROVE_HOLD_MS);
-          expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("oldest", undefined, KEEPALIVE);
+          expect(apiMocks.approve).toHaveBeenCalledExactlyOnceWith("oldest", undefined, heldFor("oldest"));
         });
 
         it("starts the page size again when the kind is changed", async () => {

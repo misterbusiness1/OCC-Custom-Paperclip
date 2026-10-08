@@ -608,6 +608,10 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       reason: "Project cannot start work because its budget hard-stop is still exceeded.",
     });
 
+    // The approval's version is ahead of the clock here, so "now" would not move it.
+    const versionBefore = new Date(Math.floor(Date.now() / 1000) * 1000 + 3_600_000);
+    await db.update(approvals).set({ updatedAt: versionBefore }).where(eq(approvals.id, hardIncident.approvalId!));
+
     const resolved = await service.resolveIncident(
       companyId,
       hardIncident.id,
@@ -615,6 +619,10 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       "board-user",
     );
     expect(resolved).toMatchObject({ status: "resolved", approvalStatus: "approved" });
+    // Marking the approval decided gives it a new version, as a board decision does.
+    const [markedApproval] = await db.select().from(approvals).where(eq(approvals.id, hardIncident.approvalId!));
+    expect(markedApproval!.status).toBe("approved");
+    expect(markedApproval!.updatedAt.getTime()).toBe(versionBefore.getTime() + 1);
 
     const [projectAfterResume] = await db
       .select({ pauseReason: projects.pauseReason, pausedAt: projects.pausedAt })

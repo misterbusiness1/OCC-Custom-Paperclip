@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SQL } from "drizzle-orm";
 import { approvalService } from "../services/approvals.ts";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -54,6 +55,7 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
     db: { select, update },
     selectWhere,
     returning,
+    set,
   };
 }
 
@@ -144,6 +146,131 @@ describe("approvalService resolution idempotency", () => {
     await expect(svc.approve("not-a-uuid", "board")).rejects.toMatchObject({ status: 404 });
     await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
     expect(dbStub.db.select).not.toHaveBeenCalled();
+  });
+});
+
+describe("approvalService expected version", () => {
+  const SHOWN = new Date("2026-10-07T12:34:56.789Z");
+  const LATER = new Date("2026-10-07T12:40:00.000Z");
+  const at = (status: string, updatedAt: Date) => ({ ...createApproval(status), type: "request_board_approval", updatedAt });
+  const conflictWith = (currentStatus: string) => ({
+    status: 409,
+    message: "This request changed after you opened it. Reload it and decide again.",
+    details: {
+      code: "approval_version_conflict",
+      currentStatus,
+      currentUpdatedAt: LATER.toISOString(),
+      expectedUpdatedAt: SHOWN.toISOString(),
+    },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("refuses approve, reject and request-revision without writing when the approval changed", async () => {
+    for (const decide of ["approve", "reject", "requestRevision"] as const) {
+      const dbStub = createDbStub([[at("pending", LATER)]], []);
+      const svc = approvalService(dbStub.db as any);
+
+      await expect(svc[decide](APPROVAL_ID, "board", "note", { expectedUpdatedAt: SHOWN }))
+        .rejects.toMatchObject(conflictWith("pending"));
+      expect(dbStub.set).not.toHaveBeenCalled();
+    }
+  });
+
+  it("answers the conflict, not the idempotent no-op, for an approval decided elsewhere", async () => {
+    const dbStub = createDbStub([[at("approved", LATER)]], []);
+    const svc = approvalService(dbStub.db as any);
+
+    await expect(svc.approve(APPROVAL_ID, "board", "note", { expectedUpdatedAt: SHOWN }))
+      .rejects.toMatchObject(conflictWith("approved"));
+    expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
+  });
+
+  it("answers the conflict when the guarded write matches no row because the approval changed in between", async () => {
+    for (const decide of ["approve", "reject", "requestRevision"] as const) {
+      // Read: the version shown. Write: no row. Read again: changed.
+      const dbStub = createDbStub([[at("pending", SHOWN)], [at("pending", LATER)]], []);
+      const svc = approvalService(dbStub.db as any);
+
+      await expect(svc[decide](APPROVAL_ID, "board", "note", { expectedUpdatedAt: SHOWN }))
+        .rejects.toMatchObject(conflictWith("pending"));
+    }
+  });
+
+  it("stores the decision when the version is the one shown", async () => {
+    const dbStub = createDbStub([[at("pending", SHOWN)]], [at("approved", LATER)]);
+    const svc = approvalService(dbStub.db as any);
+
+    const result = await svc.approve(APPROVAL_ID, "board", "note", { expectedUpdatedAt: new Date(SHOWN.getTime()) });
+
+    expect(result.applied).toBe(true);
+    expect(dbStub.set).toHaveBeenCalledTimes(1);
+  });
+
+  it("decides as before when no version is given, whatever the approval's updatedAt", async () => {
+    const dbStub = createDbStub([[at("pending", LATER)]], [at("approved", LATER)]);
+    const svc = approvalService(dbStub.db as any);
+
+    await expect(svc.approve(APPROVAL_ID, "board", "note")).resolves.toMatchObject({ applied: true });
+    // And the old no-op for a request already in the target status.
+    const decided = createDbStub([[at("approved", LATER)]], []);
+    await expect(approvalService(decided.db as any).approve(APPROVAL_ID, "board")).resolves.toMatchObject({ applied: false });
+  });
+
+  it("refuses request-revision with 422 when the write matches no row and no version was given", async () => {
+    const dbStub = createDbStub([[at("pending", SHOWN)], [at("approved", LATER)]], []);
+    const svc = approvalService(dbStub.db as any);
+
+    await expect(svc.requestRevision(APPROVAL_ID, "board", "note")).rejects.toMatchObject({
+      status: 422,
+      message: "Only pending approvals can request revision",
+    });
+  });
+});
+
+describe("approvalService.resubmit", () => {
+  it("keeps the board's change request on the resubmitted approval", async () => {
+    const sentBack = { ...createApproval("revision_requested"), decisionNote: "Quote the delivery date." };
+    const dbStub = createDbStub([[sentBack]], [{ ...sentBack, status: "pending" }]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.resubmit(APPROVAL_ID, { agentId: "agent-2" });
+
+    expect(result.status).toBe("pending");
+    expect(dbStub.set).toHaveBeenCalledTimes(1);
+    const written = dbStub.set.mock.calls[0]![0] as Record<string, unknown>;
+    // The note is not written at all, so the stored change request stays.
+    expect(Object.keys(written)).not.toContain("decisionNote");
+    expect(written).toMatchObject({
+      status: "pending",
+      payload: { agentId: "agent-2" },
+      decidedByUserId: null,
+      decidedAt: null,
+    });
+    // Not the clock's time as it is: an expression the database evaluates, so the
+    // new version is later than the stored one (see approval-version-guard.test.ts).
+    expect(written.updatedAt).toBeInstanceOf(SQL);
+  });
+
+  it("refuses an approval that is not sent back, without writing", async () => {
+    const dbStub = createDbStub([[createApproval("pending")]], []);
+
+    const svc = approvalService(dbStub.db as any);
+    await expect(svc.resubmit(APPROVAL_ID)).rejects.toMatchObject({ status: 422 });
+    expect(dbStub.set).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the approval left revision_requested between the read and the write", async () => {
+    // The read sees it sent back; the guarded write then matches no row.
+    const dbStub = createDbStub([[createApproval("revision_requested")]], []);
+
+    const svc = approvalService(dbStub.db as any);
+    await expect(svc.resubmit(APPROVAL_ID)).rejects.toMatchObject({
+      status: 422,
+      message: "Only revision requested approvals can be resubmitted",
+    });
   });
 });
 

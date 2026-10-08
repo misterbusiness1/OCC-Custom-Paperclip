@@ -64,6 +64,7 @@ import {
   createApprovalRevisionMemory,
 } from "../components/ApprovalRevision";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { approvalVersionConflict, type ApprovalVersion, type ApprovalVersionConflict } from "../lib/approval-version";
 import { StatusBadge } from "../components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -72,7 +73,14 @@ import { Input } from "@/components/ui/input";
 type StatusFilter = "pending" | "all";
 type SortOrder = "oldest" | "newest";
 /** A decision as it is sent. `companyId` is the request's own company: the reader may have changed company by the time it lands. */
-type Decision = { id: string; note?: string; subject: string; companyId: string };
+type Decision = {
+  id: string;
+  note?: string;
+  subject: string;
+  companyId: string;
+  /** The `updatedAt` of the request as drawn when the button was pressed: the version the decision is for. */
+  expectedUpdatedAt: ApprovalVersion;
+};
 type ViewMode = "compact" | "full";
 /**
  * A move of the reader's place in the queue, carried out once the list has drawn:
@@ -682,6 +690,118 @@ export function Approvals() {
   };
 
   /**
+   * The server refused a held approval because its request changed after Approve was pressed: the
+   * reload that would have taken the hold back had not arrived, or the hold was sent at once
+   * because the page was left. Nothing was stored. The hold ends as a take-back does: the same
+   * line on the request, the same announcement, never an approval. It is not sent again.
+   */
+  const takeBackRefusedHold = (
+    held: HeldApproval,
+    conflict: ApprovalVersionConflict,
+    at: { heldRow: HTMLElement | null; onPage: boolean; inView: boolean },
+  ) => {
+    const status = conflict.currentStatus;
+    const sentBack = status === "revision_requested";
+    // Approved, rejected or cancelled by someone else. Anything else is a request that is pending in another version.
+    const decided = status !== null && status !== "pending" && !sentBack;
+    const hadFocus = Boolean(at.heldRow?.contains(document.activeElement));
+    releaseHeldApproval(held.id);
+    if (status === "approved" && ownApproveFailed.current.has(held.id)) {
+      // The reader's first approval was stored though it was answered with an error, and this
+      // second one was refused for it: the row and the count show the approval as their own
+      // decision, as when a reload shows it, and nothing is said about another session.
+      const listed = queryClient
+        .getQueryData<Approval[]>(queryKeys.approvals.list(held.companyId))
+        ?.find((candidate) => candidate.id === held.id);
+      settleDecision(held.id);
+      if (listed) {
+        // The note is the one typed with this press, until the reload brings the stored one.
+        const own = {
+          ...listed,
+          status: "approved",
+          decisionNote: held.note ?? null,
+          updatedAt: conflict.currentUpdatedAt ? new Date(conflict.currentUpdatedAt) : listed.updatedAt,
+        } as Approval;
+        setDecidedHere((current) => ({ ...current, [held.id]: own }));
+      }
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(held.companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(held.id) });
+      announce(`${DECISION_LANDED_LEAD.approve}: ${held.subject}`);
+      return;
+    }
+    // Otherwise not marked as an approval of the reader's own that may have been stored: the
+    // refusal proves this one was not. An approval that shows up later is someone else's.
+    if (decided || sentBack) {
+      // The list says so at once, before its reload answers: the row then shows the status the
+      // server named. The note of that decision is not known yet; the reload brings it.
+      queryClient.setQueryData<Approval[]>(queryKeys.approvals.list(held.companyId), (list) =>
+        list?.map((listed) =>
+          listed.id === held.id && needsBoard(listed)
+            ? ({
+                ...listed,
+                status: status as Approval["status"],
+                decisionNote: null,
+                updatedAt: conflict.currentUpdatedAt ? new Date(conflict.currentUpdatedAt) : listed.updatedAt,
+              } as Approval)
+            : listed,
+        ),
+      );
+    }
+    if (decided) {
+      // As when a reload shows it decided elsewhere: a row with its status, and the note kept as a draft.
+      settleDecision(held.id);
+      if (held.note) storeDraft(held.id, held.note, "note");
+      setLeftHere((current) => ({ ...current, [held.id]: true }));
+    } else {
+      settleDecision(held.id, sentBack ? HOLD_SENT_BACK_TEXT : HOLD_REVISED_TEXT);
+      restoreCard(held);
+    }
+    // The reload brings the version the server holds; Approve on a revised request then waits for "I have reviewed it".
+    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(held.companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(held.id) });
+    const statusText = decided ? statusWords(status).toLowerCase() : null;
+    announce(
+      statusText
+        ? `Not approved: ${held.subject}. Nothing was sent. Its status is now ${statusText}: decided elsewhere.`
+        : sentBack
+        ? `Not approved: ${held.subject}. It was sent back for changes before your approval was sent. Nothing was sent.`
+        : `Not approved: ${held.subject}. The requester revised it before it was sent. Nothing was sent.`,
+    );
+    // A row out of view, or a page that no longer shows the request, cannot say it: then it is said
+    // where the reader is. So it is when the reader sent this request back earlier on this visit:
+    // it is drawn as a "decided elsewhere" row, which has no place for the line.
+    if (!at.inView || (sentBack && Boolean(decidedHere[held.id]))) {
+      toasts?.pushToast({
+        title: `Not approved: ${held.subject}`,
+        body: statusText
+          ? `Its status is now ${statusText}: decided elsewhere. Nothing was sent.`
+          : sentBack
+          ? "It was sent back for changes before your approval was sent. Nothing was sent."
+          : "The requester revised it before your approval was sent. Nothing was sent.",
+        tone: "warn",
+        ttlMs: 15_000,
+        dedupeKey: `approval-hold-revised:${held.id}`,
+        action: {
+          label: "View request",
+          // Asked when it is pressed: the queue row while the queue shows the request, its own page otherwise.
+          onClick: () => {
+            const now = shownRef.current;
+            if (now.mounted && now.companyId === held.companyId && rowElement(held.id)) {
+              requestMove({ targetId: held.id, focus: true });
+            } else {
+              navigate(`/approvals/${held.id}`);
+            }
+          },
+        },
+      });
+    }
+    if (at.onPage && hadFocus) {
+      lastFocusedId.current = held.id;
+      requestMove({ targetId: held.id, focus: true });
+    }
+  };
+
+  /**
    * The undo window of a held approval is over, or the page is about to stop showing it: the
    * request goes out, marked to outlive the page. Called once for a hold, by `useApprovalHolds`.
    */
@@ -692,7 +812,12 @@ export function Approvals() {
     if (row && active instanceof HTMLElement && active.hasAttribute("data-approval-undo") && row.contains(active)) {
       row.focus({ preventScroll: true });
     }
-    new Promise<Approval>((resolve) => resolve(approvalsApi.approve(held.id, held.note, { keepalive: true }))).then(
+    new Promise<Approval>((resolve) =>
+      resolve(
+        // With the version the hold began with: the server refuses the approval of any later one.
+        approvalsApi.approve(held.id, held.note, { keepalive: true, expectedUpdatedAt: held.expectedUpdatedAt }),
+      ),
+    ).then(
       (approval) => {
         releaseHeldApproval(held.id);
         // The reader was moved on when the hold began, so nothing moves now.
@@ -706,6 +831,11 @@ export function Approvals() {
         const onPage = shown.mounted && shown.companyId === held.companyId && Boolean(heldRow);
         // Measured now, while the request is still its compact row: the card that returns takes that place.
         const inView = onPage && isRowInView(heldRow);
+        const versionConflict = approvalVersionConflict(err);
+        if (versionConflict) {
+          takeBackRefusedHold(held, versionConflict, { heldRow, onPage, inView });
+          return;
+        }
         releaseHeldApproval(held.id);
         ownApproveFailed.current.add(held.id);
         recordFailed("approve", err, held.id, held.subject, held.companyId);
@@ -827,13 +957,15 @@ export function Approvals() {
   };
 
   const rejectMutation = useMutation({
-    mutationFn: ({ id, note }: Decision) => (note ? approvalsApi.reject(id, note) : approvalsApi.reject(id)),
+    mutationFn: ({ id, note, expectedUpdatedAt }: Decision) =>
+      approvalsApi.reject(id, note || undefined, { expectedUpdatedAt }),
     onSuccess: handleDecided("reject"),
     onError: handleFailed("reject"),
   });
 
   const revisionMutation = useMutation({
-    mutationFn: ({ id, note }: Decision) => approvalsApi.requestRevision(id, note),
+    mutationFn: ({ id, note, expectedUpdatedAt }: Decision) =>
+      approvalsApi.requestRevision(id, note, { expectedUpdatedAt }),
     onSuccess: handleDecided("revision"),
     onError: handleFailed("revision"),
   });
@@ -895,6 +1027,8 @@ export function Approvals() {
       note,
       subject: approvalDisplaySubject(approval),
       companyId: approval.companyId,
+      // The request as this card draws it now. A hold keeps this value until it is sent.
+      expectedUpdatedAt: approval.updatedAt,
     };
     if (action === "reject") rejectMutation.mutate(decision);
     else if (action === "revision") revisionMutation.mutate(decision);
@@ -1123,10 +1257,10 @@ export function Approvals() {
   // back before anything is sent. Its card returns as a closed row that says it was revised, and
   // Approve there waits for the confirmation like any revision that arrived under the reader.
   // The row also carries a line saying why the approval did not go out.
-  // A hold is taken back the same way as soon as the list shows its request sent back for changes:
-  // the server would still store the approval, over another board member's change request.
-  // And as soon as the list shows it approved, rejected or cancelled somewhere else: sent all the
-  // same, the approval would be answered as this reader's own decision, or come back as an error.
+  // A hold is taken back the same way as soon as the list shows its request sent back for changes,
+  // and as soon as the list shows it approved, rejected or cancelled somewhere else. The server
+  // refuses such an approval too (it carries the version the hold began with, see
+  // takeBackRefusedHold); taking it back here says so sooner, and sends nothing.
   // Such a request has no card to return to; it keeps its place as a "decided elsewhere" row.
   // A layout effect, so that it runs in the same step that draws the reloaded list, before any
   // timer can send the hold; and declared before the reset below, which sends what is still held.
@@ -1562,8 +1696,9 @@ export function Approvals() {
               const pendingAction = decisions.inFlight[approval.id] ?? null;
               // Read when the card is drawn: its controls start from this copy each time they are drawn again.
               const draft = drafts.current.get(approval.id);
-              // Sent back on this visit and resubmitted since: the card is back, and the server has
-              // deleted the change request. The copy kept here lasts until a new decision or a tab change.
+              // Sent back on this visit and resubmitted since: the card is back. The server keeps the
+              // change request on it and the card shows that. The copy kept here covers an older
+              // server that deleted the note; it lasts until a new decision or a tab change.
               const sentBackHere = decidedHere[approval.id];
               return (
                 <ApprovalCard

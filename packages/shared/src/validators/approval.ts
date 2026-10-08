@@ -65,14 +65,22 @@ export const createApprovalSchema = createApprovalInputSchema.superRefine((value
 
 export type CreateApproval = z.infer<typeof createApprovalSchema>;
 
+/**
+ * The `updatedAt` of the approval the caller decided on, as the API returned it.
+ * Optional. When sent, the server answers 409 if the approval has changed since.
+ */
+const expectedApprovalUpdatedAtSchema = z.string().datetime({ offset: true }).optional();
+
 export const resolveApprovalSchema = z.object({
   decisionNote: multilineTextSchema.optional().nullable(),
+  expectedUpdatedAt: expectedApprovalUpdatedAtSchema,
 });
 
 export type ResolveApproval = z.infer<typeof resolveApprovalSchema>;
 
 export const requestApprovalRevisionSchema = z.object({
   decisionNote: multilineTextSchema.optional().nullable(),
+  expectedUpdatedAt: expectedApprovalUpdatedAtSchema,
 });
 
 export type RequestApprovalRevision = z.infer<typeof requestApprovalRevisionSchema>;

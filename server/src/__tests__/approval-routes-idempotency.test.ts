@@ -56,7 +56,8 @@ function registerModuleMocks() {
 const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
   const { errorHandler } = await import("../middleware/index.js");
   const { approvalRoutes } = await import("../routes/approvals.js");
-  return { errorHandler, approvalRoutes };
+  const { conflict } = await import("../errors.js");
+  return { errorHandler, approvalRoutes, conflict };
 });
 
 async function createApp(actorOverrides: Record<string, unknown> = {}) {
@@ -112,7 +113,9 @@ function createRouteDb(contextSnapshot: Record<string, unknown> = {}, runId = "r
   } as any;
 }
 
-async function createAgentApp(options: { runId?: string; contextSnapshot?: Record<string, unknown> } = {}) {
+async function createAgentApp(
+  options: { runId?: string; contextSnapshot?: Record<string, unknown>; actor?: Record<string, unknown> } = {},
+) {
   const { errorHandler, approvalRoutes } = routeModules.value;
   const app = express();
   app.use(express.json());
@@ -124,6 +127,7 @@ async function createAgentApp(options: { runId?: string; contextSnapshot?: Recor
       runId: options.runId ?? "run-1",
       source: "api_key",
       isInstanceAdmin: false,
+      ...options.actor,
     };
     next();
   });
@@ -342,6 +346,111 @@ describe("approval routes idempotent retries", () => {
       "user-1",
       "Need changes",
     );
+  });
+
+  describe("expected version of a decision", () => {
+    const VERSION = "2026-10-07T12:34:56.789Z";
+    const pending = {
+      id: "approval-7",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: null,
+    };
+
+    beforeEach(() => {
+      mockApprovalService.getById.mockResolvedValue(pending);
+      mockApprovalService.approve.mockResolvedValue({ approval: { ...pending, status: "approved" }, applied: true });
+      mockApprovalService.reject.mockResolvedValue({ approval: { ...pending, status: "rejected" }, applied: true });
+      mockApprovalService.requestRevision.mockResolvedValue({ ...pending, status: "revision_requested" });
+    });
+
+    it.each([
+      ["approve", () => mockApprovalService.approve],
+      ["reject", () => mockApprovalService.reject],
+      ["request-revision", () => mockApprovalService.requestRevision],
+    ] as const)("passes the version to the service on %s only when the caller sent one", async (route, service) => {
+      const app = await createApp();
+
+      const without = await request(app).post(`/api/approvals/approval-7/${route}`).send({ decisionNote: "ok" });
+      expect(without.status).toBe(200);
+      // Exactly the call made before the field existed: three arguments, no trailing undefined.
+      expect(service().mock.calls[0]).toEqual(["approval-7", "user-1", "ok"]);
+
+      const withVersion = await request(app)
+        .post(`/api/approvals/approval-7/${route}`)
+        .send({ decisionNote: "ok", expectedUpdatedAt: VERSION });
+      expect(withVersion.status).toBe(200);
+      expect(service().mock.calls[1]).toEqual(["approval-7", "user-1", "ok", { expectedUpdatedAt: new Date(VERSION) }]);
+    });
+
+    it.each(["approve", "reject", "request-revision"] as const)(
+      "answers 409 with the conflict and runs nothing that follows a decision on %s",
+      async (route) => {
+        const stale = routeModules.value.conflict(
+          "This request changed after you opened it. Reload it and decide again.",
+          {
+            code: "approval_version_conflict",
+            currentStatus: "pending",
+            currentUpdatedAt: "2026-10-07T12:40:00.000Z",
+            expectedUpdatedAt: VERSION,
+          },
+        );
+        mockApprovalService.approve.mockRejectedValue(stale);
+        mockApprovalService.reject.mockRejectedValue(stale);
+        mockApprovalService.requestRevision.mockRejectedValue(stale);
+
+        const res = await request(await createApp())
+          .post(`/api/approvals/approval-7/${route}`)
+          .send({ decisionNote: "ok", expectedUpdatedAt: VERSION });
+
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({
+          error: "This request changed after you opened it. Reload it and decide again.",
+          code: "approval_version_conflict",
+          details: {
+            code: "approval_version_conflict",
+            currentStatus: "pending",
+            currentUpdatedAt: "2026-10-07T12:40:00.000Z",
+            expectedUpdatedAt: VERSION,
+          },
+        });
+        expect(mockLogActivity).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["approve", "reject", "request-revision"] as const)(
+      "refuses a malformed version with 400 before the service on %s",
+      async (route) => {
+        const res = await request(await createApp())
+          .post(`/api/approvals/approval-7/${route}`)
+          .send({ decisionNote: "ok", expectedUpdatedAt: "yesterday" });
+
+        expect(res.status).toBe(400);
+        expect(mockApprovalService.approve).not.toHaveBeenCalled();
+        expect(mockApprovalService.reject).not.toHaveBeenCalled();
+        expect(mockApprovalService.requestRevision).not.toHaveBeenCalled();
+      },
+    );
+
+    it("keeps the version check behind the board and company checks", async () => {
+      // An agent is refused before anything is read, with or without a version.
+      const agent = await request(await createAgentApp())
+        .post("/api/approvals/approval-7/approve")
+        .send({ expectedUpdatedAt: VERSION });
+      expect(agent.status).toBe(403);
+
+      // A board user of another company gets 404, not the 409 that would confirm the approval exists.
+      mockApprovalService.getById.mockResolvedValue({ ...pending, companyId: "company-2" });
+      const outsider = await request(await createApp())
+        .post("/api/approvals/approval-7/approve")
+        .send({ expectedUpdatedAt: VERSION });
+      expect(outsider.status).toBe(404);
+      expect(mockApprovalService.approve).not.toHaveBeenCalled();
+    });
   });
 
   it("lets agents create generic issue-linked board approval requests", async () => {
@@ -615,6 +724,121 @@ describe("approval routes idempotent retries", () => {
     expect(res.body.error).toContain("Status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.addComment).not.toHaveBeenCalled();
   });
+  describe("authorization of resubmit and comments", () => {
+    const sentBack = {
+      id: "approval-7",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: {
+        title: "Approve hosting spend",
+        recommendedAction: "Approve the bounded hosting spend.",
+        reasoning: "The selected plan meets the stated capacity requirement.",
+        pros: ["Provisioning can continue."],
+        risks: ["The recurring cost increases."],
+      },
+      requestedByAgentId: "agent-1",
+    };
+    const outsideBoundary = { error: "Approvals are outside this actor's authorization boundary" };
+
+    function revokeCompanyScope() {
+      mockAccessService.decide.mockResolvedValue({
+        allowed: false,
+        action: "company_scope:read",
+        reason: "deny_test",
+        explanation: "Denied by test mock.",
+      });
+    }
+
+    beforeEach(() => {
+      mockApprovalService.getById.mockResolvedValue(sentBack);
+      mockApprovalService.resubmit.mockResolvedValue({ ...sentBack, status: "pending" });
+    });
+
+    it("refuses a resubmit from the requesting agent once its company-scope access is revoked", async () => {
+      revokeCompanyScope();
+
+      const res = await request(await createAgentApp()).post("/api/approvals/approval-7/resubmit").send({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body).toEqual(outsideBoundary);
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("refuses a resubmit when the agent's responsible user has lost write access", async () => {
+      const res = await request(await createAgentApp({
+        actor: {
+          onBehalfOfUserId: "user-9",
+          onBehalfOfMemberships: [{ companyId: "company-1", status: "active", membershipRole: "viewer" }],
+        },
+      })).post("/api/approvals/approval-7/resubmit").send({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+    });
+
+    it("lets the requesting agent with access resubmit, after asking for the company scope", async () => {
+      const res = await request(await createAgentApp()).post("/api/approvals/approval-7/resubmit").send({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.status).toBe("pending");
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        actor: expect.objectContaining({ type: "agent", agentId: "agent-1" }),
+        action: "company_scope:read",
+        resource: { type: "company", companyId: "company-1" },
+      }));
+      expect(mockApprovalService.resubmit).toHaveBeenCalledWith("approval-7", undefined);
+    });
+
+    it("still refuses a resubmit from an agent that did not request the approval", async () => {
+      mockApprovalService.getById.mockResolvedValue({ ...sentBack, requestedByAgentId: "agent-2" });
+
+      const res = await request(await createAgentApp()).post("/api/approvals/approval-7/resubmit").send({});
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("Only requesting agent can resubmit this approval");
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+    });
+
+    it("lets the board resubmit, and refuses a board actor outside the boundary", async () => {
+      const allowed = await request(await createApp()).post("/api/approvals/approval-7/resubmit").send({});
+      expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+      expect(mockApprovalService.resubmit).toHaveBeenCalledTimes(1);
+
+      revokeCompanyScope();
+      const refused = await request(await createApp()).post("/api/approvals/approval-7/resubmit").send({});
+      expect(refused.status).toBe(403);
+      expect(refused.body).toEqual(outsideBoundary);
+      expect(mockApprovalService.resubmit).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses reading and adding approval comments once company-scope access is revoked", async () => {
+      revokeCompanyScope();
+      const app = await createAgentApp();
+
+      const read = await request(app).get("/api/approvals/approval-7/comments");
+      const added = await request(app).post("/api/approvals/approval-7/comments").send({ body: "please approve" });
+
+      expect(read.status).toBe(403);
+      expect(read.body).toEqual(outsideBoundary);
+      expect(added.status).toBe(403);
+      expect(added.body).toEqual(outsideBoundary);
+      expect(mockApprovalService.listComments).not.toHaveBeenCalled();
+      expect(mockApprovalService.addComment).not.toHaveBeenCalled();
+    });
+
+    it("still lets an agent with access read and add approval comments", async () => {
+      mockApprovalService.listComments.mockResolvedValue([]);
+      mockApprovalService.addComment.mockResolvedValue({ id: "comment-1", body: "please approve" });
+      const app = await createAgentApp();
+
+      expect((await request(app).get("/api/approvals/approval-7/comments")).status).toBe(200);
+      const added = await request(app).post("/api/approvals/approval-7/comments").send({ body: "please approve" });
+      expect(added.status, JSON.stringify(added.body)).toBe(201);
+    });
+  });
+
   describe("board decisions resume the requesting agent (OXFA-31274)", () => {
     const decidedAt = new Date("2026-09-10T21:25:22.736Z");
     const parkedIssue = {

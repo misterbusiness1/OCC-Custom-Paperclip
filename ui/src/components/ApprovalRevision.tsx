@@ -31,6 +31,17 @@ export function ApprovalSentBackTime({
   );
 }
 
+/**
+ * The change request a revised request answers, or null. The server keeps the board's note on a
+ * request that was sent back and resubmitted, so a pending request with a note is such a revision.
+ * No other pending request has a note.
+ */
+export function approvalChangesAskedFor(approval: Pick<Approval, "status" | "decisionNote">): string | null {
+  if (approval.status !== "pending") return null;
+  const note = approval.decisionNote;
+  return note?.trim() ? note : null;
+}
+
 /** The board's own change request, as plain text with its line breaks. Renders nothing without a note. */
 export function ApprovalChangesAskedFor({ note, className }: { note: string | null | undefined; className?: string }) {
   if (!note?.trim()) return null;

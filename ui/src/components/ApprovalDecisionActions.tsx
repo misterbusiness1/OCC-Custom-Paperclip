@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { isApprovalVersionConflict } from "../lib/approval-version";
 
 export type ApprovalDecisionKind = "approve" | "reject" | "revision";
 export type ApprovalPendingAction = ApprovalDecisionKind | null;
@@ -58,6 +59,10 @@ export function useSettlingApprovals() {
   return { markDecided, isSettling };
 }
 
+/** Shown for a decision the server refused because the request changed after its card, row or page was drawn. */
+export const APPROVAL_VERSION_CONFLICT_TEXT =
+  "This request changed after it was shown. It has been reloaded: check it and decide again.";
+
 const DECISION_ERROR_LEAD: Record<ApprovalDecisionKind, string> = {
   approve: "Error while approving",
   reject: "Error while rejecting",
@@ -72,7 +77,13 @@ const DECISION_ERROR_LEAD: Record<ApprovalDecisionKind, string> = {
  * request is still undecided.
  */
 export function approvalDecisionErrorText(action: ApprovalDecisionKind, error: unknown, subject?: string | null) {
-  const detail = error instanceof Error && error.message.trim() ? error.message.trim() : "the request did not complete";
+  // The server's words for a version conflict tell an API caller to reload; every page that shows
+  // this line has reloaded the request by itself.
+  const detail = isApprovalVersionConflict(error)
+    ? APPROVAL_VERSION_CONFLICT_TEXT
+    : error instanceof Error && error.message.trim()
+    ? error.message.trim()
+    : "the request did not complete";
   return `${DECISION_ERROR_LEAD[action]}${subject ? ` ${subject}` : ""}: ${detail}`;
 }
 

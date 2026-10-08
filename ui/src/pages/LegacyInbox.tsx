@@ -106,14 +106,18 @@ import {
   approvalDecisionErrorText,
   useApprovalDecisionFeedback,
   useSettlingApprovals,
+  type ApprovalDecisionKind,
   type ApprovalPendingAction,
 } from "../components/ApprovalDecisionActions";
 import {
+  ApprovalChangesAskedFor,
   ApprovalRevisedNotice,
   ApprovalWaitingOnRequester,
+  approvalChangesAskedFor,
   composeApproveGuards,
   useApprovalRevisionGuard,
 } from "../components/ApprovalRevision";
+import { approvalVersionConflict, type ApprovalVersion } from "../lib/approval-version";
 import { APPROVE_AFTER_ADVANCE_MS, useRowMovedAt } from "../components/ApprovalHold";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
@@ -248,6 +252,13 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
 function runFailureMessage(run: HeartbeatRun): string {
   return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "Run exited with an error.";
 }
+
+/** The title of the toast for a decision the server refused because someone else had decided the request. */
+const VERSION_CONFLICT_TOAST_LEAD: Record<ApprovalDecisionKind, string> = {
+  approve: "Not approved",
+  reject: "Not rejected",
+  revision: "Changes not requested",
+};
 
 function approvalStatusLabel(status: Approval["status"]): string {
   return status.replaceAll("_", " ");
@@ -523,6 +534,10 @@ function ApprovalInboxRow({
   if (isOpenRequest) lastOpenStatus.current = approval.status;
   const summaryStatus = lastOpenStatus.current;
   const showSummary = showDecisionSummary && summaryStatus !== null;
+  // The change request a revised request answers. Kept like the summary once the request is
+  // decided from this row, so the lines below it do not move.
+  const changesAskedFor = useRef<string | null>(null);
+  if (isOpenRequest) changesAskedFor.current = approvalChangesAskedFor(approval);
   // A new request above this row, a row gone, a re-sort: this row's Approve may now lie where the
   // pointer was resting on another row's. A pointer press on it then waits, as on the approval's page.
   const movedAt = useRowMovedAt(listPosition);
@@ -626,6 +641,8 @@ function ApprovalInboxRow({
         ) : null}
       </div>
       <ApprovalRevisedNotice guard={revision} className="mt-3" />
+      {/* A revised request: the change request it answers, above the summary. */}
+      {showSummary && <ApprovalChangesAskedFor note={changesAskedFor.current} className="mt-3" />}
       {showSummary && (
         <ApprovalDecisionSummary
           type={approval.type}
@@ -1761,9 +1778,37 @@ export function Inbox() {
     shownApprovalIdsRef.current = shown;
   }, [filteredWorkItems]);
 
+  // The server refused a decision because the request changed after its row was drawn. The row
+  // shows the error; the list is reloaded so the row shows the version the server holds, and the
+  // next decision is made for that one. A request someone else has decided since leaves the Mine
+  // and Unread tabs with that reload, and its error with it: a toast then says that nothing was
+  // stored and what the status is now.
+  const reloadAfterVersionConflict = (action: ApprovalDecisionKind, id: string, err: unknown) => {
+    const conflict = approvalVersionConflict(err);
+    if (!conflict || !selectedCompanyId) return;
+    const status = conflict.currentStatus;
+    if (status && status !== "pending" && status !== "revision_requested") {
+      const listed = queryClient
+        .getQueryData<Approval[]>(queryKeys.approvals.list(selectedCompanyId))
+        ?.find((approval) => approval.id === id);
+      const subject = listed
+        ? `: ${approvalLabel(listed.type, listed.payload as Record<string, unknown> | null)}`
+        : "";
+      pushToast({
+        title: `${VERSION_CONFLICT_TOAST_LEAD[action]}${subject}`,
+        body: `Its status is now ${status.replace(/_/g, " ")}: decided elsewhere. Nothing was stored.`,
+        tone: "warn",
+        ttlMs: 15_000,
+        dedupeKey: `approval-version-conflict:${id}`,
+        action: { label: "View request", href: `/approvals/${id}` },
+      });
+    }
+    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId) });
+  };
+
   const approveMutation = useMutation({
-    mutationFn: ({ id, note }: { id: string; note?: string }) =>
-      note ? approvalsApi.approve(id, note) : approvalsApi.approve(id),
+    mutationFn: ({ id, note, expectedUpdatedAt }: { id: string; note?: string; expectedUpdatedAt: ApprovalVersion }) =>
+      approvalsApi.approve(id, note || undefined, { expectedUpdatedAt }),
     onSuccess: (approval, { id }) => {
       setActionError(null);
       markApprovalDecided(approval);
@@ -1783,12 +1828,13 @@ export function Inbox() {
     },
     onError: (err, { id }) => {
       settleApprovalDecision(id, approvalDecisionErrorText("approve", err));
+      reloadAfterVersionConflict("approve", id, err);
     },
   });
 
   const rejectMutation = useMutation({
-    mutationFn: ({ id, note }: { id: string; note?: string }) =>
-      note ? approvalsApi.reject(id, note) : approvalsApi.reject(id),
+    mutationFn: ({ id, note, expectedUpdatedAt }: { id: string; note?: string; expectedUpdatedAt: ApprovalVersion }) =>
+      approvalsApi.reject(id, note || undefined, { expectedUpdatedAt }),
     onSuccess: (approval, { id }) => {
       setActionError(null);
       markApprovalDecided(approval);
@@ -1797,11 +1843,13 @@ export function Inbox() {
     },
     onError: (err, { id }) => {
       settleApprovalDecision(id, approvalDecisionErrorText("reject", err));
+      reloadAfterVersionConflict("reject", id, err);
     },
   });
 
   const requestRevisionMutation = useMutation({
-    mutationFn: ({ id, note }: { id: string; note: string }) => approvalsApi.requestRevision(id, note),
+    mutationFn: ({ id, note, expectedUpdatedAt }: { id: string; note: string; expectedUpdatedAt: ApprovalVersion }) =>
+      approvalsApi.requestRevision(id, note, { expectedUpdatedAt }),
     onSuccess: (approval, { id }) => {
       setActionError(null);
       markApprovalDecided(approval);
@@ -1810,6 +1858,7 @@ export function Inbox() {
     },
     onError: (err, { id }) => {
       settleApprovalDecision(id, approvalDecisionErrorText("revision", err));
+      reloadAfterVersionConflict("revision", id, err);
     },
   });
 
@@ -3099,17 +3148,17 @@ export function Inbox() {
                           resolveAgentName={(agentId) => (agents ? agentName(agentId) : undefined)}
                           onApprove={(note) => {
                             if (approvalDecisions.start(item.approval.id, "approve")) {
-                              approveMutation.mutate({ id: item.approval.id, note });
+                              approveMutation.mutate({ id: item.approval.id, note, expectedUpdatedAt: item.approval.updatedAt });
                             }
                           }}
                           onReject={(note) => {
                             if (approvalDecisions.start(item.approval.id, "reject")) {
-                              rejectMutation.mutate({ id: item.approval.id, note });
+                              rejectMutation.mutate({ id: item.approval.id, note, expectedUpdatedAt: item.approval.updatedAt });
                             }
                           }}
                           onRequestRevision={(note) => {
                             if (approvalDecisions.start(item.approval.id, "revision")) {
-                              requestRevisionMutation.mutate({ id: item.approval.id, note });
+                              requestRevisionMutation.mutate({ id: item.approval.id, note, expectedUpdatedAt: item.approval.updatedAt });
                             }
                           }}
                           isPending={
