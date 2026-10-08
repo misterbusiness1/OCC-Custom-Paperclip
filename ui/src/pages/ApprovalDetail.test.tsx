@@ -689,7 +689,7 @@ describe("ApprovalDetail", () => {
       await vi.waitFor(() => expect(panel().textContent).toContain("Approve provider Y at twice the quoted price."));
 
       expect(notice()!.querySelector("[role='alert']")!.textContent).toBe(NOTICE);
-      const recommendation = [...panel().querySelectorAll("p")].find((p) => p.textContent === "Recommendation")!;
+      const recommendation = [...panel().querySelectorAll("h2")].find((p) => p.textContent === "Recommendation")!;
       expect(isBefore(notice()!, recommendation)).toBe(true);
       expect(panel().querySelector("textarea")!.value).toBe("Month to month only");
 

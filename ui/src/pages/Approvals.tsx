@@ -347,6 +347,7 @@ function DecidedApprovalRow({
           to={`/approvals/${approval.id}`}
           state={detailsState}
           className={APPROVAL_DETAILS_LINK_CLASS}
+          aria-label={`View details: ${subject}`}
         >
           View details
         </Link>
@@ -386,6 +387,7 @@ function SentBackApprovalRow({ approval, detailsState }: { approval: Approval; d
         to={`/approvals/${approval.id}`}
         state={detailsState}
         className={APPROVAL_DETAILS_LINK_CLASS}
+        aria-label={`View details: ${approvalDisplaySubject(approval)}`}
       >
         View details
       </Link>

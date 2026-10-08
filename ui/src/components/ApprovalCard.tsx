@@ -39,6 +39,7 @@ import type { Approval, Agent } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 import { StatusBadge } from "./StatusBadge";
+import { ApprovalSectionHeadingLevel } from "./ApprovalSectionLabel";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -234,11 +235,19 @@ export function ApprovalCard({
       to={detailLink}
       state={detailLinkState}
       className={APPROVAL_DETAILS_LINK_CLASS}
+      // A list has one such link per request: its name says which request it opens.
+      aria-label={`View details: ${title}`}
     >
       View details
     </Link>
   ) : onOpen ? (
-    <Button variant="ghost" size="sm" className="h-auto px-2 text-xs text-muted-foreground" onClick={onOpen}>
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-auto px-2 text-xs text-muted-foreground"
+      aria-label={`View details: ${title}`}
+      onClick={onOpen}
+    >
       View details
     </Button>
   ) : null;
@@ -316,7 +325,8 @@ export function ApprovalCard({
   );
 
   const body = (
-    <>
+    // The card's title is an h3, so the labels of its sections are headings one level below it.
+    <ApprovalSectionHeadingLevel.Provider value={4}>
       <ApprovalRevisedNotice guard={revision} className="mt-4" />
 
       <ApprovalChangesAskedFor
@@ -393,7 +403,7 @@ export function ApprovalCard({
           )}
         </div>
       ) : null}
-    </>
+    </ApprovalSectionHeadingLevel.Provider>
   );
 
   if (collapsible) {
@@ -404,7 +414,8 @@ export function ApprovalCard({
           "block min-w-0 scroll-mt-16 border-border/70 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:scroll-mt-2",
           // The open card is marked whether or not it holds focus. Shift+A, Shift+C and Shift+X act
           // on it only while focus is inside it: J, K, a click or Tab puts it there.
-          isOpen && "border-ring ring-1 ring-ring",
+          // The strong token: the usual ring colour is under 3:1 against the page in the light theme.
+          isOpen && "border-primary ring-1 ring-primary focus-visible:ring-primary",
         )}
         // The page moves focus to the card itself; a group named by the title says where that is.
         role="group"
@@ -481,7 +492,8 @@ export function ApprovalCard({
       className={cn(
         "block min-w-0 scroll-mt-16 border-border/70 p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:scroll-mt-2",
         // With shortcuts on, the card that holds focus is the one they act on: mark it for mouse focus too.
-        enableShortcuts && "focus-within:border-ring focus-within:ring-1 focus-within:ring-ring",
+        enableShortcuts &&
+          "focus-within:border-primary focus-within:ring-1 focus-within:ring-primary focus-visible:ring-primary",
       )}
       role="group"
       aria-labelledby={titleId}

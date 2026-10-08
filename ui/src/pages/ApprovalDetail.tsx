@@ -25,6 +25,7 @@ import {
 } from "../components/ApprovalDecisionActions";
 import type { ApprovalVersion } from "../lib/approval-version";
 import { ApprovalDecisionSummary, type ApprovalAgentNameResolver } from "../components/ApprovalDecisionSummary";
+import { ApprovalSectionHeadingLevel } from "../components/ApprovalSectionLabel";
 import { APPROVE_AFTER_ADVANCE_MS } from "../components/ApprovalHold";
 import {
   APPROVAL_CHANGES_ASKED_LABEL,
@@ -324,14 +325,17 @@ export function ApprovalDetail() {
               <BudgetOverridePayload payload={payload} />
             </div>
           ) : (
-            <ApprovalDecisionSummary
-              type={approval.type}
-              payload={payload}
-              status={approval.status}
-              requestedByAgentId={approval.requestedByAgentId}
-              resolveAgentName={resolveAgentName}
-              full
-            />
+            // The page's title is its h1, so the labels of the request's sections are h2.
+            <ApprovalSectionHeadingLevel.Provider value={2}>
+              <ApprovalDecisionSummary
+                type={approval.type}
+                payload={payload}
+                status={approval.status}
+                requestedByAgentId={approval.requestedByAgentId}
+                resolveAgentName={resolveAgentName}
+                full
+              />
+            </ApprovalSectionHeadingLevel.Provider>
           )}
 
           {approval.decisionNote && (

@@ -435,6 +435,8 @@ describe("Approvals", () => {
     // The decided row's link to the request is as easy to tap as the open card's.
     const rowLink = rows()[0].querySelector<HTMLAnchorElement>("a")!;
     expect(rowLink.textContent).toBe("View details");
+    // Each decided row has one: the name read out says which request it opens.
+    expect(rowLink.getAttribute("aria-label")).toMatch(/^View details: \S/);
     expectTouchArea(rowLink);
     const openCardLink = [...rows()[1].querySelectorAll("a")].find((anchor) => anchor.textContent === "View details")!;
     expectTouchArea(openCardLink);

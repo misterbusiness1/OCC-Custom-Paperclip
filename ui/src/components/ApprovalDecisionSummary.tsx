@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type Ref } from "react";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 import { cn, formatCents } from "@/lib/utils";
+import { ApprovalSectionLabel } from "./ApprovalSectionLabel";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import {
   approvalDecisionBrief,
@@ -70,7 +71,7 @@ function DecisionPoints({ label, items, full }: { label: string; items: string[]
 
   return (
     <div className="min-w-0">
-      <p className={labelClass}>{label}</p>
+      <ApprovalSectionLabel className={labelClass}>{label}</ApprovalSectionLabel>
       {points.length === 0 ? (
         <p className={emptyClass}>Not supplied.</p>
       ) : (
@@ -88,6 +89,8 @@ function DecisionPoints({ label, items, full }: { label: string; items: string[]
           type="button"
           className={moreClass}
           aria-expanded={expanded}
+          // The section's name is part of the button's name: "+1 more" is under Pros and under Risks.
+          aria-label={`${expanded ? "Show fewer" : `+${hidden} more`}: ${label}`}
           onClick={() => setExpanded((current) => !current)}
         >
           {expanded ? "Show fewer" : `+${hidden} more`}
@@ -193,9 +196,9 @@ function ApprovalEmailDraftBlock({
       // Focusable so a held-back Approve can put the reader on the draft it opened.
       tabIndex={canExpand ? -1 : undefined}
     >
-      <p id={labelId} className={labelClass}>
+      <ApprovalSectionLabel id={labelId} className={labelClass}>
         Draft reply
-      </p>
+      </ApprovalSectionLabel>
       <div className="mt-2 overflow-hidden rounded-lg border border-border/60">
         {envelope.length > 0 && (
           <dl className="space-y-1 border-b border-border/60 bg-muted/30 px-3.5 py-2.5 text-sm">
@@ -224,6 +227,7 @@ function ApprovalEmailDraftBlock({
           type="button"
           className={moreClass}
           aria-expanded={expanded}
+          aria-label={expanded ? "Show less: Draft reply" : undefined}
           onClick={() => setExpanded(!expanded)}
         >
           {expanded ? "Show less" : `Show full reply (${draft.body.length.toLocaleString()} characters)`}
@@ -244,12 +248,15 @@ function ReadableText({
   maxLength,
   full = false,
   moreLabel = "Show more",
+  section,
 }: {
   text: string;
   maxLines: number;
   maxLength: number;
   full?: boolean;
   moreLabel?: string;
+  /** The label of the field this text is under. It is added to the button's accessible name, not to what is shown. */
+  section?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const { preview, truncated } = useMemo(() => {
@@ -271,6 +278,12 @@ function ReadableText({
           type="button"
           className={moreClass}
           aria-expanded={expanded}
+          // One card has several of these. A label written for one field ("Show full plan") already says which.
+          aria-label={
+            section && (expanded || moreLabel === "Show more")
+              ? `${expanded ? "Show less" : moreLabel}: ${section}`
+              : undefined
+          }
           onClick={() => setExpanded((current) => !current)}
         >
           {expanded ? "Show less" : moreLabel}
@@ -305,9 +318,9 @@ function DecisionField({
 
   return (
     <div className="min-w-0">
-      <p className={labelClass}>{label}</p>
+      <ApprovalSectionLabel className={labelClass}>{label}</ApprovalSectionLabel>
       {text ? (
-        <ReadableText text={text} maxLines={maxLines} maxLength={maxLength} full={full} />
+        <ReadableText text={text} maxLines={maxLines} maxLength={maxLength} full={full} section={label} />
       ) : (
         <p className={emptyClass}>{emptyText}</p>
       )}
@@ -381,16 +394,16 @@ function HireAgentSummary({
         ))}
       </dl>
       <div className="min-w-0">
-        <p className={labelClass}>What it will do</p>
+        <ApprovalSectionLabel className={labelClass}>What it will do</ApprovalSectionLabel>
         {hire.capabilities ? (
-          <ReadableText text={hire.capabilities} maxLines={4} maxLength={220} full={full} />
+          <ReadableText text={hire.capabilities} maxLines={4} maxLength={220} full={full} section="What it will do" />
         ) : (
           <p className={emptyClass}>The request does not describe the agent's work.</p>
         )}
       </div>
       {hire.skills.length > 0 && (
         <div className="min-w-0">
-          <p className={labelClass}>{hire.agentId ? "Skills" : "Requested skills (not applied on approval)"}</p>
+          <ApprovalSectionLabel className={labelClass}>{hire.agentId ? "Skills" : "Requested skills (not applied on approval)"}</ApprovalSectionLabel>
           <ul className="mt-1.5 flex flex-wrap gap-1.5">
             {skills.map((skill) => (
               <li
@@ -406,6 +419,7 @@ function HireAgentSummary({
               type="button"
               className={moreClass}
               aria-expanded={showAllSkills}
+              aria-label={`${showAllSkills ? "Show fewer" : `+${hiddenSkills} more`}: skills`}
               onClick={() => setShowAllSkills((current) => !current)}
             >
               {showAllSkills ? "Show fewer" : `+${hiddenSkills} more`}
@@ -422,7 +436,7 @@ function HireAgentSummary({
         ) : (
           <div className={cn("grid gap-3", hire.agentId && "sm:grid-cols-2")}>
             <div className="min-w-0">
-              <p className={labelClass}>If approved</p>
+              <ApprovalSectionLabel className={labelClass}>If approved</ApprovalSectionLabel>
               <p className="mt-1 text-sm leading-5 text-foreground">
                 {agentName} is {hire.agentId ? "activated" : "created"}.
                 {hasBudget ? ` Its monthly budget is set to ${formatCents(hire.budgetMonthlyCents!)}.` : ""}
@@ -430,7 +444,7 @@ function HireAgentSummary({
             </div>
             {hire.agentId && (
               <div className="min-w-0">
-                <p className={labelClass}>If rejected</p>
+                <ApprovalSectionLabel className={labelClass}>If rejected</ApprovalSectionLabel>
                 <p className="mt-1 text-sm leading-5 text-foreground">The pending agent is terminated.</p>
               </div>
             )}
@@ -467,9 +481,9 @@ function StrategySummary({
     <div className={cn("space-y-3", className)}>
       <DecisionField label="Recommendation" value={brief.recommendation} {...RECOMMENDATION_PREVIEW} full={full} />
       <div className="min-w-0" data-approval-plan>
-        <p className={labelClass}>Plan</p>
+        <ApprovalSectionLabel className={labelClass}>Plan</ApprovalSectionLabel>
         {planText ? (
-          <ReadableText text={planText} maxLines={6} maxLength={480} full={full} moreLabel="Show full plan" />
+          <ReadableText text={planText} maxLines={6} maxLength={480} full={full} moreLabel="Show full plan" section="Plan" />
         ) : (
           <p className={emptyClass}>
             {plan.kind === "unreadable"

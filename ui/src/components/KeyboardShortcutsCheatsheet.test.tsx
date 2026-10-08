@@ -39,6 +39,7 @@ describe("KeyboardShortcutsCheatsheet", () => {
       ["Request changes to the open request, with focus inside it", "Shift+C"],
       ["Reject the open request, with focus inside it (asks to confirm)", "Shift+X"],
       ["Undo the last approval (within 5 seconds)", "Shift+Z"],
+      ["Search the requests (moves focus to the search field)", "/"],
     ]);
     // A chord reads "Shift + A", not "Shift then A".
     expect(section!.textContent).not.toContain("then");
