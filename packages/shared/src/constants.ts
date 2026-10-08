@@ -713,15 +713,23 @@ export const APPROVAL_LINKED_ISSUES_MAX_IDS = 100;
  */
 export const APPROVAL_CHANGE_REQUEST_COMMENT_PREFIX = "Changes requested:";
 
+/** The start of the stored body: the prefix and a blank line. Written and read with this one value. */
+const APPROVAL_CHANGE_REQUEST_COMMENT_HEAD = `${APPROVAL_CHANGE_REQUEST_COMMENT_PREFIX}\n\n`;
+
 /** The stored body of that comment: the prefix, a blank line, and the note as typed. */
 export function approvalChangeRequestCommentBody(note: string): string {
-  return `${APPROVAL_CHANGE_REQUEST_COMMENT_PREFIX}\n\n${note}`;
+  return `${APPROVAL_CHANGE_REQUEST_COMMENT_HEAD}${note}`;
 }
 
-/** The note of such a comment, or null when the body is not a change request. */
+/**
+ * The note of such a comment, or null when the body is not a change request.
+ * Only the exact stored shape counts: the prefix, a blank line, then a note.
+ * A comment that only begins with the same words on one line is not one.
+ */
 export function approvalChangeRequestFromCommentBody(body: string): string | null {
-  if (!body.startsWith(APPROVAL_CHANGE_REQUEST_COMMENT_PREFIX)) return null;
-  return body.slice(APPROVAL_CHANGE_REQUEST_COMMENT_PREFIX.length).replace(/^[ \t]*(\r?\n)*/, "");
+  if (!body.startsWith(APPROVAL_CHANGE_REQUEST_COMMENT_HEAD)) return null;
+  const note = body.slice(APPROVAL_CHANGE_REQUEST_COMMENT_HEAD.length);
+  return note.trim().length > 0 ? note : null;
 }
 
 export const SECRET_PROVIDERS = [

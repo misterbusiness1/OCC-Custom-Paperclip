@@ -518,6 +518,7 @@ describe("ApprovalDetail", () => {
       apiMocks.listComments.mockResolvedValue([
         { id: "comment-1", authorAgentId: null, authorUserId: "user-42", body: "Changes requested:\n\n1. Quote the **date**.\n2. Name the price.", createdAt: new Date("2026-10-05T13:00:00.000Z") },
         { id: "comment-2", authorAgentId: MANAGER_ID, authorUserId: null, body: "Changes requested: none, says the agent.", createdAt: new Date("2026-10-05T14:00:00.000Z") },
+        { id: "comment-3", authorAgentId: null, authorUserId: "user-42", body: "Changes requested: none, **ship it** - see [the doc](https://example.com)", createdAt: new Date("2026-10-05T15:00:00.000Z") },
       ]);
       await render(createApproval({ id: APPROVAL_ID }));
       await vi.waitFor(() => expect(container.textContent).toContain("Name the price."));
@@ -532,6 +533,14 @@ describe("ApprovalDetail", () => {
       expect(note.previousElementSibling?.textContent).toBe("Changes requested");
       // An agent's comment with the same first words is an ordinary comment.
       expect(discussion.textContent).toContain("Changes requested: none, says the agent.");
+      // So is a board user's comment that only begins with the same words: it was never sent back.
+      const headings = [...discussion.querySelectorAll("p")].filter((paragraph) => paragraph.textContent === "Changes requested");
+      expect(headings).toHaveLength(1);
+      // It is drawn as Markdown, like any comment: the link is a link, and the words are all there.
+      const link = [...discussion.querySelectorAll("a")].find((anchor) => anchor.getAttribute("href") === "https://example.com")!;
+      expect(link.textContent).toBe("the doc");
+      expect(discussion.querySelector("strong")?.textContent).toBe("ship it");
+      expect(discussion.textContent).toContain("Changes requested: none, ship it - see the doc");
     });
 
     it("uses one set of words for the top panel and Full request", async () => {
