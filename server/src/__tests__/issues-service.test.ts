@@ -4730,6 +4730,117 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 
+  it("accepts an agent-authored in_review handoff only with a same-company live blocker", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const blockerId = randomUUID();
+    const dependentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "medium" },
+      {
+        id: dependentId,
+        companyId,
+        title: "Dependent",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+
+    const updated = await svc.update(dependentId, {
+      status: "in_review",
+      blockedByIssueIds: [blockerId],
+      actorAgentId: assigneeAgentId,
+    });
+    expect(updated?.status).toBe("in_review");
+
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: dependentId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Review?" },
+    });
+    const cleared = await svc.update(dependentId, {
+      blockedByIssueIds: [],
+      actorAgentId: assigneeAgentId,
+    });
+    expect(cleared?.blockedByIssueIds).toEqual([]);
+
+    await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
+
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, blockerId));
+    await expect(svc.update(dependentId, {
+      status: "in_review",
+      blockedByIssueIds: [blockerId],
+      actorAgentId: assigneeAgentId,
+    })).rejects.toThrow(/live unresolved blocker/);
+  });
+
+  it("rejects clearing the only maintained path from an agent-owned in_review issue", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const blockerId = randomUUID();
+    const dependentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "medium" },
+      {
+        id: dependentId,
+        companyId,
+        title: "Dependent",
+        status: "in_review",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+    await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
+
+    await expect(
+      svc.update(dependentId, {
+        blockedByIssueIds: [],
+        actorAgentId: assigneeAgentId,
+      }),
+    ).rejects.toThrow(/maintained review path/);
+    await expect(svc.getRelationSummaries(dependentId)).resolves.toMatchObject({
+      blockedBy: [expect.objectContaining({ id: blockerId })],
+    });
+  });
+
   it("rejects execution when unresolved blockers remain", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();

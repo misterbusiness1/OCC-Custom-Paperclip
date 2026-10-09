@@ -9,6 +9,7 @@ import {
   heartbeatRuns,
   issueApprovals,
   issueRecoveryActions,
+  issueRelations,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -133,6 +134,38 @@ describeEmbeddedPostgres("issue review attention", () => {
       state: "covered",
       paths: [expect.objectContaining({ kind: "queued_wake", responder: "Review Agent" })],
     });
+  });
+
+  it("reports a same-company live blocker as a covered review path in list and detail reads", async () => {
+    const { companyId, agentId } = await seed();
+    const issueId = await insertReview({ companyId, agentId, identifier: "RVA-BLOCKED" });
+    const blockerId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      identifier: "RVA-BLOCKER",
+      title: "Live blocker",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+
+    const listed = (await svc.list(companyId, { status: "in_review" }))
+      .find((issue) => issue.id === issueId);
+    const detailed = await svc.getById(issueId);
+
+    for (const row of [listed, detailed]) {
+      expect(row?.reviewAttention).toMatchObject({
+        state: "covered",
+        paths: [expect.objectContaining({ kind: "blocker", ref: blockerId })],
+      });
+    }
   });
 
   it("reports every healthy review path as covered", async () => {

@@ -226,6 +226,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     workspaceState?: "none" | "not_finalized" | "finalized";
     assignee?: "agent" | null;
     blockedIssueId?: string;
+    dependentStatus?: "blocked" | "in_review";
   } = {}) {
     const workspaceState = opts.workspaceState ?? "none";
     const companyId = randomUUID();
@@ -295,7 +296,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
         companyId,
         projectId: workspaceState === "none" ? null : projectId,
         title: "Synthetic blocked dependent",
-        status: "blocked",
+        status: opts.dependentStatus ?? "blocked",
         priority: "medium",
         assigneeAgentId: opts.assignee === null ? null : agentId,
         issueNumber: 1,
@@ -472,6 +473,24 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       entityId: blockedIssueId,
       details: expect.objectContaining({ source: "issue_graph_liveness.backstop" }),
     });
+  });
+
+  it("heals an in_review dependent after its blocker workspace finalizes", async () => {
+    const { agentId, blockedIssueId } = await seedResolvedDependencyBackstopFixture({
+      workspaceState: "finalized",
+      dependentStatus: "in_review",
+    });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+    expect(result.healed).toBe(1);
+    expect(result.issueIds).toEqual([blockedIssueId]);
+    const wake = await db
+      .select({ reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wake?.reason).toBe("issue_blockers_resolved");
   });
 
   it("heals a blocked dependent whose done blocker has no workspace finalize obligation", async () => {
