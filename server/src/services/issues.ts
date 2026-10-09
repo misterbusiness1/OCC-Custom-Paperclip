@@ -11149,14 +11149,37 @@ export function issueService(db: Db) {
         if (
           actorAgentId &&
           updated.status === "in_review" &&
-          blockedByIssueIds !== undefined &&
-          blockedByIssueIds.length > 0
+          blockedByIssueIds !== undefined
         ) {
-          // syncBlockedByIssueIds locks blocker rows before writing the relation.
-          // Recheck liveness while those locks remain held so a concurrent terminal
-          // transition either wins first and rolls this update back, or observes the
-          // committed edge and emits the normal resolved-dependency wake.
-          await assertHasLiveBlockerIssueIds(tx, existing.companyId, blockedByIssueIds);
+          if (blockedByIssueIds.length > 0) {
+            // syncBlockedByIssueIds locks blocker rows before writing the relation.
+            // Recheck liveness while those locks remain held so a concurrent terminal
+            // transition either wins first and rolls this update back, or observes the
+            // committed edge and emits the normal resolved-dependency wake.
+            await assertHasLiveBlockerIssueIds(
+              tx,
+              existing.companyId,
+              blockedByIssueIds,
+            );
+          } else {
+            const reviewAttention = await listIssueReviewAttentionMap(
+              tx,
+              existing.companyId,
+              [updated],
+            );
+            const hasDurableAlternatePath =
+              reviewAttention
+                .get(updated.id)
+                ?.paths.some(
+                  (path) =>
+                    path.kind !== "blocker" && path.kind !== "active_run",
+                ) === true;
+            if (!hasDurableAlternatePath) {
+              throw unprocessable(
+                "in_review issues require a maintained review path after clearing blockers",
+              );
+            }
+          }
         }
         if (
           issueData.executionWorkspaceSettings !== undefined &&
