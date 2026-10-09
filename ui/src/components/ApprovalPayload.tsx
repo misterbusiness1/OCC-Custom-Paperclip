@@ -372,6 +372,7 @@ function EmailHeaderRow({ label, value }: { label: string; value: string }) {
 export function EmailReplyPayload({ payload }: { payload: Record<string, unknown> }) {
   const channel = firstNonEmptyString(payload.channel);
   const recipient = firstNonEmptyString(payload.recipient);
+  const ccRecipient = firstNonEmptyString(payload.ccRecipient);
   const subject = firstNonEmptyString(payload.subject);
   const orderRef = firstNonEmptyString(payload.threadOrOrderRef);
   const gate = firstNonEmptyString(payload.gate);
@@ -391,6 +392,7 @@ export function EmailReplyPayload({ payload }: { payload: Record<string, unknown
         <div className="space-y-1 border-b border-border/60 bg-muted/30 px-3.5 py-2.5">
           {channel && <EmailHeaderRow label="From" value={channel} />}
           {recipient && <EmailHeaderRow label="To" value={recipient} />}
+          {ccRecipient && <EmailHeaderRow label="CC" value={ccRecipient} />}
           {subject && <EmailHeaderRow label="Subject" value={subject} />}
           {orderRef && <EmailHeaderRow label="Ref" value={orderRef} />}
           {gate && (

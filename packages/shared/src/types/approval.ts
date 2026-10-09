@@ -49,6 +49,10 @@ export interface HydratedApprovalReplyDetail {
   originalMessage: string | null;
 }
 
+export interface HydratedApprovalReplyDetailV3 extends HydratedApprovalReplyDetail {
+  ccRecipient: string | null;
+}
+
 /**
  * Opt-in `?v=2` detail contract: replaces the raw `payload` with curated,
  * type-specific fields so consumers never depend on gate-specific payload shape directly.
@@ -60,4 +64,10 @@ export interface ApprovalDetailV2 extends Omit<Approval, "payload"> {
   refund: HydratedApprovalRefundDetail | null;
   reply: HydratedApprovalReplyDetail | null;
   rawPayload?: Record<string, unknown>;
+}
+
+/** Opt-in `?v=3` detail contract, adding a single CC recipient to reply details. */
+export interface ApprovalDetailV3 extends Omit<ApprovalDetailV2, "version" | "reply"> {
+  version: 3;
+  reply: HydratedApprovalReplyDetailV3 | null;
 }

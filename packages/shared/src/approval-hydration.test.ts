@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildHydratedApprovalDetail } from "./approval-hydration.js";
-import { approvalDetailV2Schema } from "./validators/approval.js";
+import { buildHydratedApprovalDetail, buildHydratedApprovalDetailV3 } from "./approval-hydration.js";
+import { approvalDetailV2Schema, approvalDetailV3Schema } from "./validators/approval.js";
 import type { Approval } from "./types/approval.js";
 
 function baseApproval(overrides: Partial<Approval>): Approval {
@@ -75,6 +75,7 @@ describe("buildHydratedApprovalDetail", () => {
       payload: {
         gate: "gate_b",
         recipient: "customer@example.com",
+        ccRecipient: "customer-record@example.com",
         channel: "email",
         subject: "Your order update",
         body: "Here is the proposed reply to send.",
@@ -99,6 +100,31 @@ describe("buildHydratedApprovalDetail", () => {
     expect(() => approvalDetailV2Schema.parse(detail)).not.toThrow();
   });
 
+  it("preserves the v2 wire shape and exposes CC only in the v3 envelope", () => {
+    const approval = baseApproval({
+      payload: {
+        gate: "gate_b",
+        recipient: "carrier@example.com",
+        ccRecipient: "customer@example.com",
+        channel: "email",
+        subject: "Whereabouts enquiry",
+        body: "Please locate this parcel.",
+        threadOrOrderRef: "order-1002",
+      },
+    });
+
+    const v2 = buildHydratedApprovalDetail(approval);
+    const v3 = buildHydratedApprovalDetailV3(approval);
+
+    expect(v2.reply).not.toHaveProperty("ccRecipient");
+    expect(v2.sideEffects[0]?.detail).not.toContain("customer@example.com");
+    expect(v3.version).toBe(3);
+    expect(v3.reply?.ccRecipient).toBe("customer@example.com");
+    expect(v3.sideEffects[0]?.detail).toContain("customer@example.com CC'd");
+    expect(() => approvalDetailV2Schema.parse(v2)).not.toThrow();
+    expect(() => approvalDetailV3Schema.parse(v3)).not.toThrow();
+  });
+
   it("defaults originalMessage to null when the reply payload omits it", () => {
     const approval = baseApproval({
       payload: {
@@ -112,6 +138,7 @@ describe("buildHydratedApprovalDetail", () => {
     });
 
     const detail = buildHydratedApprovalDetail(approval);
+    expect(detail.reply).not.toHaveProperty("ccRecipient");
     expect(detail.reply?.originalMessage).toBeNull();
   });
 

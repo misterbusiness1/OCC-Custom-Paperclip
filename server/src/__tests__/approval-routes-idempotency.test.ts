@@ -493,6 +493,117 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["multiple CC recipients", ["one@example.com", "two@example.com"], "email", "carrier@example.com"],
+    ["CC on a non-email channel", "customer@example.com", "sms", "carrier@example.com"],
+    ["the same To and CC address regardless of case", "CARRIER@example.com", "email", "carrier@example.com"],
+  ])("rejects Gate B resubmission with %s", async (_case, ccRecipient, channel, recipient) => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-gate-b-revision",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-gate-b-revision/resubmit")
+      .send({
+        payload: {
+          gate: "gate_b",
+          recipient,
+          ccRecipient,
+          channel,
+          subject: "Whereabouts enquiry",
+          body: "Please locate this parcel.",
+          threadOrOrderRef: "order-1002",
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.details).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: ["payload", "ccRecipient"] })]),
+    );
+    expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+  });
+
+  it("rejects Gate B resubmission when bodyHash does not match the revised body", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-gate-b-revision",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-gate-b-revision/resubmit")
+      .send({
+        payload: {
+          gate: "gate_b",
+          recipient: "carrier@example.com",
+          ccRecipient: "customer@example.com",
+          channel: "email",
+          subject: "Whereabouts enquiry",
+          body: "Revised body.",
+          bodyHash: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          threadOrOrderRef: "order-1002",
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.details).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: ["payload", "bodyHash"] })]),
+    );
+    expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["with one CC recipient", "customer@example.com"],
+    ["without a CC recipient", undefined],
+  ])("accepts a valid Gate B resubmission %s", async (_case, ccRecipient) => {
+    const body = "Please locate this parcel.";
+    const bodyHash = `sha256:${createHash("sha256").update(body, "utf8").digest("hex")}`;
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-gate-b-revision",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockApprovalService.resubmit.mockImplementation(async (id, payload) => ({
+      id,
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      requestedByAgentId: "agent-1",
+      payload,
+    }));
+
+    const payload = {
+      gate: "gate_b",
+      recipient: "carrier@example.com",
+      ...(ccRecipient ? { ccRecipient } : {}),
+      channel: "email",
+      subject: "Whereabouts enquiry",
+      body,
+      bodyHash,
+      threadOrOrderRef: "order-1002",
+    };
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-gate-b-revision/resubmit")
+      .send({ payload });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockApprovalService.resubmit).toHaveBeenCalledWith(
+      "approval-gate-b-revision",
+      payload,
+    );
+  });
+
   it("blocks status-only recovery runs from commenting on approvals", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-8",

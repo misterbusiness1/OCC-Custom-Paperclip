@@ -5,7 +5,9 @@ import { heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   buildHydratedApprovalDetail,
+  buildHydratedApprovalDetailV3,
   createApprovalSchema,
+  requestBoardApprovalPayloadSchema,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
@@ -56,6 +58,20 @@ function verifyGateBBodyHash(payload: Record<string, unknown>) {
       },
     ]);
   }
+}
+
+function validateRequestBoardApprovalPayload(payload: unknown): Record<string, unknown> {
+  const result = requestBoardApprovalPayloadSchema.safeParse(payload);
+  if (!result.success) {
+    throw badRequest(
+      "Validation error",
+      result.error.issues.map((issue) => ({
+        ...issue,
+        path: ["payload", ...issue.path],
+      })),
+    );
+  }
+  return result.data;
 }
 
 export function approvalRoutes(
@@ -138,6 +154,10 @@ export function approvalRoutes(
     if (!approval) return;
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
     const redacted = redactApprovalPayload(approval);
+    if (req.query.v === "3") {
+      res.json(buildHydratedApprovalDetailV3(redacted));
+      return;
+    }
     if (req.query.v === "2") {
       res.json(buildHydratedApprovalDetail(redacted));
       return;
@@ -387,15 +407,21 @@ export function approvalRoutes(
       return;
     }
 
-    const normalizedPayload = req.body.payload
-      ? existing.type === "hire_agent"
-        ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
-            existing.companyId,
-            req.body.payload,
-            { strictMode: strictSecretsMode },
-          )
-        : req.body.payload
-      : undefined;
+    let normalizedPayload: Record<string, unknown> | undefined;
+    if (req.body.payload) {
+      if (existing.type === "hire_agent") {
+        normalizedPayload = await secretsSvc.normalizeHireApprovalPayloadForPersistence(
+          existing.companyId,
+          req.body.payload,
+          { strictMode: strictSecretsMode },
+        );
+      } else if (existing.type === "request_board_approval") {
+        normalizedPayload = validateRequestBoardApprovalPayload(req.body.payload);
+        verifyGateBBodyHash(normalizedPayload);
+      } else {
+        normalizedPayload = req.body.payload;
+      }
+    }
     const approval = await svc.resubmit(id, normalizedPayload);
     const actor = getActorInfo(req);
     await logActivity(db, {

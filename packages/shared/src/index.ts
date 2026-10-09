@@ -1,5 +1,5 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
-export { buildHydratedApprovalDetail } from "./approval-hydration.js";
+export { buildHydratedApprovalDetail, buildHydratedApprovalDetailV3 } from "./approval-hydration.js";
 export {
   getAgentOrgChainHealth,
   getAgentWorkEligibility,
@@ -1700,12 +1700,19 @@ export {
   type CreateGoal,
   type UpdateGoal,
   createApprovalSchema,
+  requestBoardApprovalPayloadSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
+  approvalDetailV2Schema,
+  approvalDetailV3Schema,
+  hydratedApprovalSideEffectSchema,
+  hydratedApprovalRefundDetailSchema,
+  hydratedApprovalReplyDetailSchema,
+  hydratedApprovalReplyDetailV3Schema,
   type CreateApproval,
   type UpsertBudgetPolicy,
   type ResolveBudgetIncident,
@@ -1713,6 +1720,8 @@ export {
   type RequestApprovalRevision,
   type ResubmitApproval,
   type AddApprovalComment,
+  type ApprovalDetailV2Shape,
+  type ApprovalDetailV3Shape,
   envBindingPlainSchema,
   envBindingSecretRefSchema,
   envBindingUserSecretRefSchema,

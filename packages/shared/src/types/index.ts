@@ -668,8 +668,10 @@ export type {
   Approval,
   ApprovalComment,
   ApprovalDetailV2,
+  ApprovalDetailV3,
   HydratedApprovalRefundDetail,
   HydratedApprovalReplyDetail,
+  HydratedApprovalReplyDetailV3,
   HydratedApprovalSideEffect,
 } from "./approval.js";
 export type {

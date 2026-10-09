@@ -52,6 +52,7 @@ export const gateABoardApprovalPayloadSchema = requestedByAgentPayloadField.exte
 export const gateBBoardApprovalPayloadSchema = requestedByAgentPayloadField.extend({
   gate: z.literal("gate_b"),
   recipient: z.string().trim().min(1),
+  ccRecipient: z.string().trim().email().optional(),
   channel: z.enum(gateBBoardApprovalChannels),
   subject: z.string().trim().min(1),
   body: multilineTextSchema.pipe(z.string().min(1)),
@@ -99,7 +100,24 @@ export const requestBoardApprovalPayloadSchema = z.preprocess(
     gateABoardApprovalPayloadSchema.strict(),
     gateBBoardApprovalPayloadSchema,
     genericBoardApprovalPayloadWithDiscriminatorSchema,
-  ]).transform((payload) => {
+  ]).superRefine((payload, ctx) => {
+    if (payload.gate !== "gate_b" || !payload.ccRecipient) return;
+    if (payload.channel !== "email") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "ccRecipient is supported only for email Gate B approvals",
+        path: ["ccRecipient"],
+      });
+    }
+
+    if (payload.ccRecipient.toLowerCase() === payload.recipient.toLowerCase()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "ccRecipient must differ from recipient",
+        path: ["ccRecipient"],
+      });
+    }
+  }).transform((payload) => {
     if (payload.gate !== "generic") return payload;
     const { gate: _gate, ...genericPayload } = payload;
     return genericPayload;
@@ -176,6 +194,10 @@ export const hydratedApprovalReplyDetailSchema = z.object({
   originalMessage: z.string().nullable(),
 }).strict();
 
+export const hydratedApprovalReplyDetailV3Schema = hydratedApprovalReplyDetailSchema.extend({
+  ccRecipient: z.string().trim().email().nullable(),
+}).strict();
+
 /**
  * Contract-checks the delta the `?v=2` envelope adds over the legacy approval
  * object; the inherited base fields (id, companyId, status, ...) are accepted
@@ -190,4 +212,10 @@ export const approvalDetailV2Schema = z.object({
   rawPayload: z.record(z.string(), z.unknown()).optional(),
 }).passthrough();
 
+export const approvalDetailV3Schema = approvalDetailV2Schema.extend({
+  version: z.literal(3),
+  reply: hydratedApprovalReplyDetailV3Schema.nullable(),
+});
+
 export type ApprovalDetailV2Shape = z.infer<typeof approvalDetailV2Schema>;
+export type ApprovalDetailV3Shape = z.infer<typeof approvalDetailV3Schema>;
