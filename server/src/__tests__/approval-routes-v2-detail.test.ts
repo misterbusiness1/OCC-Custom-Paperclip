@@ -170,7 +170,6 @@ describe("GET /api/approvals/:id v2 hydrated contract", () => {
     expect(res.body.version).toBe(2);
     expect(res.body.reply).toEqual({
       recipient: "customer@example.com",
-      ccRecipient: null,
       channel: "email",
       subject: "Your order update",
       proposedMessage: "Here is the proposed reply.",
@@ -179,7 +178,7 @@ describe("GET /api/approvals/:id v2 hydrated contract", () => {
     expect(res.body.refund).toBeNull();
   });
 
-  it("returns a hydrated v2 reply preserving one CC recipient", async () => {
+  it("preserves the hydrated v2 reply shape and exposes one CC recipient in v3", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-4",
       companyId: "company-1",
@@ -203,15 +202,21 @@ describe("GET /api/approvals/:id v2 hydrated contract", () => {
       updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     });
 
-    const res = await request(await createApp()).get("/api/approvals/approval-4?v=2");
+    const app = await createApp();
+    const v2 = await request(app).get("/api/approvals/approval-4?v=2");
+    const v3 = await request(app).get("/api/approvals/approval-4?v=3");
 
-    expect(res.status).toBe(200);
-    expect(res.body.reply).toMatchObject({
+    expect(v2.status).toBe(200);
+    expect(v2.body.version).toBe(2);
+    expect(v2.body.reply).not.toHaveProperty("ccRecipient");
+    expect(v3.status).toBe(200);
+    expect(v3.body.version).toBe(3);
+    expect(v3.body.reply).toMatchObject({
       recipient: "carrier@example.com",
       ccRecipient: "customer@example.com",
       channel: "email",
     });
-    expect(res.body.sideEffects).toEqual(
+    expect(v3.body.sideEffects).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ detail: expect.stringContaining("customer@example.com CC'd") }),
       ]),

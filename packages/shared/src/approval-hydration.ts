@@ -1,4 +1,11 @@
-import type { Approval, ApprovalDetailV2, HydratedApprovalSideEffect } from "./types/approval.js";
+import type {
+  Approval,
+  ApprovalDetailV2,
+  ApprovalDetailV3,
+  HydratedApprovalReplyDetail,
+  HydratedApprovalReplyDetailV3,
+  HydratedApprovalSideEffect,
+} from "./types/approval.js";
 
 const REFUND_ACTION_LABELS: Record<string, string> = {
   refund_full: "Refund issued",
@@ -50,14 +57,17 @@ function buildRefundSideEffects(payload: Record<string, unknown>): HydratedAppro
   ];
 }
 
-function buildReplySideEffects(payload: Record<string, unknown>): HydratedApprovalSideEffect[] {
+function buildReplySideEffects(
+  payload: Record<string, unknown>,
+  includeCc: boolean,
+): HydratedApprovalSideEffect[] {
   const recipient = asString(payload.recipient) ?? "the customer";
   const ccRecipient = asString(payload.ccRecipient);
   const channel = asString(payload.channel) ?? "email";
   return [
     {
       label: "Customer reply will be sent",
-      detail: `Message will be sent to ${recipient}${ccRecipient ? ` with ${ccRecipient} CC'd` : ""} via ${channel}`,
+      detail: `Message will be sent to ${recipient}${includeCc && ccRecipient ? ` with ${ccRecipient} CC'd` : ""} via ${channel}`,
     },
   ];
 }
@@ -80,7 +90,7 @@ function buildRefundDetail(payload: Record<string, unknown>): ApprovalDetailV2["
   };
 }
 
-function buildReplyDetail(payload: Record<string, unknown>): ApprovalDetailV2["reply"] {
+function buildReplyDetail(payload: Record<string, unknown>): HydratedApprovalReplyDetail | null {
   const recipient = asString(payload.recipient);
   const channel = asString(payload.channel);
   const subject = asString(payload.subject);
@@ -88,12 +98,16 @@ function buildReplyDetail(payload: Record<string, unknown>): ApprovalDetailV2["r
   if (!recipient || !channel || !subject || !proposedMessage) return null;
   return {
     recipient,
-    ccRecipient: asString(payload.ccRecipient),
     channel,
     subject,
     proposedMessage,
     originalMessage: asString(payload.originalMessage),
   };
+}
+
+function buildReplyDetailV3(payload: Record<string, unknown>): HydratedApprovalReplyDetailV3 | null {
+  const detail = buildReplyDetail(payload);
+  return detail ? { ...detail, ccRecipient: asString(payload.ccRecipient) } : null;
 }
 
 function summarize(
@@ -139,7 +153,7 @@ export function buildHydratedApprovalDetail<T extends HydratableApproval>(
     sideEffects = buildRefundSideEffects(payload);
   } else if (approval.type === "request_board_approval" && gate === "gate_b") {
     reply = buildReplyDetail(payload);
-    sideEffects = buildReplySideEffects(payload);
+    sideEffects = buildReplySideEffects(payload, false);
   }
 
   const { payload: _payload, ...base } = approval;
@@ -154,5 +168,23 @@ export function buildHydratedApprovalDetail<T extends HydratableApproval>(
     refund,
     reply,
     ...(options.includeRawPayload ? { rawPayload: payload } : {}),
+  };
+}
+
+/** Builds the opt-in `?v=3` envelope with single-recipient CC detail. */
+export function buildHydratedApprovalDetailV3<T extends HydratableApproval>(
+  approval: T,
+  options: { includeRawPayload?: boolean } = {},
+): ApprovalDetailV3 {
+  const v2 = buildHydratedApprovalDetail(approval, options);
+  const payload = approval.payload as Record<string, unknown>;
+  const isGateB = approval.type === "request_board_approval" && asString(payload.gate) === "gate_b";
+  const reply = isGateB ? buildReplyDetailV3(payload) : null;
+  return {
+    ...v2,
+    version: 3,
+    reply,
+    sideEffects: isGateB ? buildReplySideEffects(payload, true) : v2.sideEffects,
+    summary: summarize(approval, v2.refund, reply),
   };
 }

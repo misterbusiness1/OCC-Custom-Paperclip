@@ -550,15 +550,18 @@ export {
   resubmitApprovalSchema,
   addApprovalCommentSchema,
   approvalDetailV2Schema,
+  approvalDetailV3Schema,
   hydratedApprovalSideEffectSchema,
   hydratedApprovalRefundDetailSchema,
   hydratedApprovalReplyDetailSchema,
+  hydratedApprovalReplyDetailV3Schema,
   type CreateApproval,
   type ResolveApproval,
   type RequestApprovalRevision,
   type ResubmitApproval,
   type AddApprovalComment,
   type ApprovalDetailV2Shape,
+  type ApprovalDetailV3Shape,
 } from "./approval.js";
 
 export {

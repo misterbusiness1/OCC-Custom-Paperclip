@@ -43,11 +43,14 @@ export interface HydratedApprovalRefundDetail {
 
 export interface HydratedApprovalReplyDetail {
   recipient: string;
-  ccRecipient: string | null;
   channel: string;
   subject: string;
   proposedMessage: string;
   originalMessage: string | null;
+}
+
+export interface HydratedApprovalReplyDetailV3 extends HydratedApprovalReplyDetail {
+  ccRecipient: string | null;
 }
 
 /**
@@ -61,4 +64,10 @@ export interface ApprovalDetailV2 extends Omit<Approval, "payload"> {
   refund: HydratedApprovalRefundDetail | null;
   reply: HydratedApprovalReplyDetail | null;
   rawPayload?: Record<string, unknown>;
+}
+
+/** Opt-in `?v=3` detail contract, adding a single CC recipient to reply details. */
+export interface ApprovalDetailV3 extends Omit<ApprovalDetailV2, "version" | "reply"> {
+  version: 3;
+  reply: HydratedApprovalReplyDetailV3 | null;
 }

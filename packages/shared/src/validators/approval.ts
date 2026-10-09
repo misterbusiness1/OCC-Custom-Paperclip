@@ -188,11 +188,14 @@ export const hydratedApprovalRefundDetailSchema = z.object({
 
 export const hydratedApprovalReplyDetailSchema = z.object({
   recipient: z.string().trim().min(1),
-  ccRecipient: z.string().trim().email().nullable(),
   channel: z.string().trim().min(1),
   subject: z.string().trim().min(1),
   proposedMessage: z.string().trim().min(1),
   originalMessage: z.string().nullable(),
+}).strict();
+
+export const hydratedApprovalReplyDetailV3Schema = hydratedApprovalReplyDetailSchema.extend({
+  ccRecipient: z.string().trim().email().nullable(),
 }).strict();
 
 /**
@@ -209,4 +212,10 @@ export const approvalDetailV2Schema = z.object({
   rawPayload: z.record(z.string(), z.unknown()).optional(),
 }).passthrough();
 
+export const approvalDetailV3Schema = approvalDetailV2Schema.extend({
+  version: z.literal(3),
+  reply: hydratedApprovalReplyDetailV3Schema.nullable(),
+});
+
 export type ApprovalDetailV2Shape = z.infer<typeof approvalDetailV2Schema>;
+export type ApprovalDetailV3Shape = z.infer<typeof approvalDetailV3Schema>;

@@ -86,6 +86,33 @@ describe("ApprovalPayloadRenderer", () => {
     container.remove();
   });
 
+  it("shows the single CC recipient in the email approval envelope", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ApprovalPayloadRenderer
+          type="request_board_approval"
+          payload={{
+            gate: "gate_b",
+            recipient: "carrier@example.com",
+            ccRecipient: "customer@example.com",
+            channel: "email",
+            subject: "Whereabouts enquiry",
+            body: "Please locate this parcel.",
+          }}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("CC");
+    expect(container.textContent).toContain("customer@example.com");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders request_board_approval payload fields without falling back to raw JSON", () => {
     const root = createRoot(container);
 

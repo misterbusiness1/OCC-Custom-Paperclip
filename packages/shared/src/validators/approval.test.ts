@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addApprovalCommentSchema,
   approvalDetailV2Schema,
+  approvalDetailV3Schema,
   createApprovalSchema,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
@@ -245,6 +246,26 @@ describe("approval validators", () => {
     });
 
     expect(result.success).toBe(false);
+  });
+
+  it("keeps v2 reply strict while accepting ccRecipient in v3", () => {
+    const reply = {
+      recipient: "carrier@example.com",
+      ccRecipient: "customer@example.com",
+      channel: "email",
+      subject: "Whereabouts enquiry",
+      proposedMessage: "Please locate this parcel.",
+      originalMessage: null,
+    };
+    const envelope = {
+      summary: "Reply request",
+      sideEffects: [],
+      refund: null,
+      reply,
+    };
+
+    expect(approvalDetailV2Schema.safeParse({ version: 2, ...envelope }).success).toBe(false);
+    expect(approvalDetailV3Schema.safeParse({ version: 3, ...envelope }).success).toBe(true);
   });
 
   it("rejects unknown fields on generic board-decision payloads", () => {

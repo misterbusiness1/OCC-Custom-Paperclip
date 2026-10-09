@@ -5,6 +5,7 @@ import { heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   buildHydratedApprovalDetail,
+  buildHydratedApprovalDetailV3,
   createApprovalSchema,
   requestBoardApprovalPayloadSchema,
   requestApprovalRevisionSchema,
@@ -153,6 +154,10 @@ export function approvalRoutes(
     if (!approval) return;
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
     const redacted = redactApprovalPayload(approval);
+    if (req.query.v === "3") {
+      res.json(buildHydratedApprovalDetailV3(redacted));
+      return;
+    }
     if (req.query.v === "2") {
       res.json(buildHydratedApprovalDetail(redacted));
       return;
