@@ -4771,6 +4771,22 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
     expect(updated?.status).toBe("in_review");
 
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: dependentId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Review?" },
+    });
+    const cleared = await svc.update(dependentId, {
+      blockedByIssueIds: [],
+      actorAgentId: assigneeAgentId,
+    });
+    expect(cleared?.blockedByIssueIds).toEqual([]);
+
+    await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
+
     await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, blockerId));
     await expect(svc.update(dependentId, {
       status: "in_review",

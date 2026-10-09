@@ -429,6 +429,7 @@ export interface IssueBlockerAttention {
 export type IssueReviewAttentionState = "none" | "covered" | "stalled";
 
 export type IssueReviewAttentionPathKind =
+  | "blocker"
   | "execution_participant"
   | "interaction"
   | "approval"
