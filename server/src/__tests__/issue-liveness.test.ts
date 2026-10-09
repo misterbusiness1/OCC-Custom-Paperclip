@@ -566,7 +566,7 @@ describe("issue graph liveness classifier", () => {
     });
   });
 
-  it("still flags a stalled in_review issue when its blocker has an active run", () => {
+  it("treats a same-company live blocker relation as an explicit in_review waiting path", () => {
     const reviewIssueId = "review-1";
     const activeBlockerId = "active-blocker-1";
 
@@ -593,11 +593,73 @@ describe("issue graph liveness classifier", () => {
       activeRuns: [{ companyId, issueId: activeBlockerId, agentId: coderId, status: "running" }],
     });
 
+    expect(findings).toEqual([]);
+  });
+
+  it.each([
+    ["done", "in_review_without_action_path"],
+    ["cancelled", "blocked_by_cancelled_issue"],
+  ])("does not treat a same-company %s blocker as an in_review waiting path", (blockerStatus, expectedState) => {
+    const reviewIssueId = "review-1";
+    const terminalBlockerId = "terminal-blocker-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-2279",
+          title: "Screenshot acceptance review",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+        }),
+        issue({
+          id: terminalBlockerId,
+          identifier: "PAP-2280",
+          title: "Terminal blocker",
+          status: blockerStatus,
+          assigneeAgentId: coderId,
+        }),
+      ],
+      relations: [{ companyId, blockerIssueId: terminalBlockerId, blockedIssueId: reviewIssueId }],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ issueId: reviewIssueId, state: expectedState });
+  });
+
+  it("does not treat a cross-company blocker relation as an in_review waiting path", () => {
+    const reviewIssueId = "review-1";
+    const foreignBlockerId = "foreign-blocker-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-2279",
+          title: "Screenshot acceptance review",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+        }),
+        issue({
+          id: foreignBlockerId,
+          companyId: "other-company",
+          identifier: "OTHER-1",
+          title: "Foreign blocker",
+          status: "in_progress",
+          assigneeAgentId: coderId,
+        }),
+      ],
+      relations: [{ companyId: "other-company", blockerIssueId: foreignBlockerId, blockedIssueId: reviewIssueId }],
+      agents: [agent(), manager],
+    });
+
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({
       issueId: reviewIssueId,
       state: "in_review_without_action_path",
-      recoveryIssueId: reviewIssueId,
     });
   });
 
