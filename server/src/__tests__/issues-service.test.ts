@@ -4734,13 +4734,23 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
     const blockerId = randomUUID();
+    const foreignCompanyId = randomUUID();
+    const foreignBlockerId = randomUUID();
     const dependentId = randomUUID();
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: foreignCompanyId,
+        name: "Foreign company",
+        issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
     await db.insert(agents).values({
       id: assigneeAgentId,
       companyId,
@@ -4755,6 +4765,13 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.insert(issues).values([
       { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "medium" },
       {
+        id: foreignBlockerId,
+        companyId: foreignCompanyId,
+        title: "Foreign blocker",
+        status: "todo",
+        priority: "medium",
+      },
+      {
         id: dependentId,
         companyId,
         title: "Dependent",
@@ -4763,6 +4780,16 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         assigneeAgentId,
       },
     ]);
+
+    await expect(
+      svc.hasLiveBlockerReviewPath(companyId, [blockerId]),
+    ).resolves.toBe(true);
+    await expect(
+      svc.hasLiveBlockerReviewPath(companyId, [randomUUID()]),
+    ).resolves.toBe(false);
+    await expect(
+      svc.hasLiveBlockerReviewPath(companyId, [foreignBlockerId]),
+    ).resolves.toBe(false);
 
     const updated = await svc.update(dependentId, {
       status: "in_review",
@@ -4788,6 +4815,9 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
 
     await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, blockerId));
+    await expect(
+      svc.hasLiveBlockerReviewPath(companyId, [blockerId]),
+    ).resolves.toBe(false);
     await expect(svc.update(dependentId, {
       status: "in_review",
       blockedByIssueIds: [blockerId],

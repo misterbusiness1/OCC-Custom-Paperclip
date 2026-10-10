@@ -2037,7 +2037,7 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
   "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
   "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
-  "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
+  "schedule an issue monitor for an external review/check, or provide a same-company live blocker. After creating one of those review paths, retry the status update.";
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
@@ -4851,6 +4851,20 @@ export function issueRoutes(
     )
       return null;
 
+    const nextBlockedByIssueIds = input.updateFields.blockedByIssueIds;
+    if (
+      Array.isArray(nextBlockedByIssueIds) &&
+      nextBlockedByIssueIds.every(
+        (id): id is string => typeof id === "string",
+      ) &&
+      (await svc.hasLiveBlockerReviewPath(
+        input.existing.companyId,
+        nextBlockedByIssueIds,
+      ))
+    ) {
+      return null;
+    }
+
     if (pendingInteractions.length > 0) return null;
 
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(
@@ -4872,6 +4886,7 @@ export function issueRoutes(
         "human_assignee_user_id",
         "typed_execution_state_current_participant",
         "scheduled_issue_monitor",
+        "same_company_live_blocker",
       ],
     });
   }

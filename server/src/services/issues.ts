@@ -4459,6 +4459,7 @@ async function listIssueReviewAttentionMap(
     dbOrTx
       .select({
         blockedIssueId: issueRelations.relatedIssueId,
+        id: issues.id,
         blockerIssueId: issues.id,
         companyId: issues.companyId,
         identifier: issues.identifier,
@@ -7869,6 +7870,33 @@ export function issueService(db: Db) {
   }
 
   const service = {
+    async hasLiveBlockerReviewPath(
+      companyId: string,
+      blockerIssueIds: string[],
+    ) {
+      const uniqueBlockerIssueIds = [...new Set(blockerIssueIds)];
+      if (
+        uniqueBlockerIssueIds.length === 0 ||
+        uniqueBlockerIssueIds.some((id) => !id)
+      ) {
+        return false;
+      }
+      const rows = await db
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.id, uniqueBlockerIssueIds),
+          ),
+        );
+      return (
+        rows.length === uniqueBlockerIssueIds.length &&
+        rows.some(
+          (row) => row.status !== "done" && row.status !== "cancelled",
+        )
+      );
+    },
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
     addStopRelayCommentIfNeeded,
