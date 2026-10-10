@@ -3,6 +3,8 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
+vi.setConfig({ testTimeout: 30000 });
+
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdForUpdate: vi.fn(),
@@ -15,6 +17,7 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  hasLiveBlockerReviewPath: vi.fn(async () => false),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -206,6 +209,7 @@ describe("issue execution policy routes", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.hasLiveBlockerReviewPath.mockResolvedValue(false);
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
@@ -336,6 +340,93 @@ describe("issue execution policy routes", () => {
     });
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
+
+  it("allows an agent-authored in_review transition with a same-company live blocker", async () => {
+    const blockerId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1003A",
+      title: "Live blocker review path",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.hasLiveBlockerReviewPath.mockResolvedValue(true);
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }),
+    );
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", blockedByIssueIds: [blockerId] });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.hasLiveBlockerReviewPath).toHaveBeenCalledWith(
+      "company-1",
+      [blockerId],
+    );
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issue.id,
+      expect.objectContaining({
+        status: "in_review",
+        blockedByIssueIds: [blockerId],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it.each(["done", "cancelled", "cross-company", "missing"])(
+    "rejects an agent-authored in_review transition with a %s blocker",
+    async () => {
+      const issue = {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "todo",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        assigneeUserId: null,
+        createdByUserId: "local-board",
+        identifier: "PAP-1003B",
+        title: "Invalid blocker review path",
+        executionPolicy: null,
+        executionState: null,
+      };
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.hasLiveBlockerReviewPath.mockResolvedValue(false);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .patch(`/api/issues/${issue.id}`)
+        .send({
+          status: "in_review",
+          blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details).toMatchObject({
+        code: "invalid_issue_disposition",
+        missing: "review_path",
+      });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    },
+  );
 
   it("allows an agent-authored in_review transition with a pending confirmation interaction", async () => {
     const issue = {

@@ -185,7 +185,7 @@ describe("issue dependency wakeups in issue routes", () => {
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
   });
 
-  it("wakes dependents when the final blocker transitions to done", async () => {
+  it("wakes an in_review dependent with the correct identifiers when its final blocker transitions to done", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
@@ -223,6 +223,7 @@ describe("issue dependency wakeups in issue routes", () => {
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
       {
         id: "issue-2",
+        status: "in_review",
         assigneeAgentId: "agent-2",
         blockerIssueIds: ["issue-1", "issue-3"],
       },
