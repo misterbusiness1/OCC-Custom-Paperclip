@@ -13,6 +13,7 @@
   "misterbusiness1/occ-child-theme",
   "misterbusiness1/occ-cogs-backfill",
   "misterbusiness1/occ-distributor-sync",
+  "misterbusiness1/occ-email-delivery-guard",
   "misterbusiness1/occ-email-suppression",
   "misterbusiness1/occ-fraud-checker",
   "misterbusiness1/occ-ga4-ecommerce",
@@ -41,6 +42,7 @@
   "misterbusiness1/Paperclip-Charles-Schawb-Trading-Api-Platfrom",
   "misterbusiness1/OCC-Custom-Paperclip",
   "misterbusiness1/paperclip-minimax-local",
+  "misterbusiness1/Remote-LLM-Qwen-Splash",
   "misterbusiness1/seadoo-cloud",
   "misterbusiness1/seadoo-health",
   "misterbusiness1/Tobacco-Vault-App"
