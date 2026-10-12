@@ -12,9 +12,14 @@ function fixture(name) {
     .map((repository) => ({ owner: repository.split("/")[0], repository }));
 }
 
-test("accepts the governed pinned 45-repository installation inventory", () => {
-  assert.equal(EXPECTED_REPOSITORY_COUNT, 45);
-  assert.doesNotThrow(() => validateInstallationInventory(fixture("inventory-45.json"), "misterbusiness1"));
+test("accepts the governed pinned 47-repository installation inventory", () => {
+  assert.equal(EXPECTED_REPOSITORY_COUNT, 47);
+  assert.doesNotThrow(() => validateInstallationInventory(fixture("inventory-47.json"), "misterbusiness1"));
+});
+
+test("pins the deliberately reviewed installation additions", () => {
+  assert.ok(EXPECTED_REPOSITORIES.includes("misterbusiness1/Remote-LLM-Qwen-Splash"));
+  assert.ok(EXPECTED_REPOSITORIES.includes("misterbusiness1/occ-email-delivery-guard"));
 });
 
 test("pins the renamed OCC Custom Paperclip repository without retaining its former name", () => {
@@ -23,7 +28,7 @@ test("pins the renamed OCC Custom Paperclip repository without retaining its for
 });
 
 test("reports the named missing repository delta", () => {
-  const installed = fixture("inventory-45.json").slice(1);
+  const installed = fixture("inventory-47.json").slice(1);
   assert.throws(
     () => validateInstallationInventory(installed, "misterbusiness1"),
     /added \[\]; missing \[misterbusiness1\/aficionado-trackerchain\]/,
@@ -32,7 +37,7 @@ test("reports the named missing repository delta", () => {
 
 test("reports the named unexpected-added repository delta", () => {
   const installed = [
-    ...fixture("inventory-45.json"),
+    ...fixture("inventory-47.json"),
     ...fixture("inventory-unexpected-added.json"),
   ];
   assert.throws(
@@ -42,8 +47,8 @@ test("reports the named unexpected-added repository delta", () => {
 });
 
 test("continues to reject duplicate repositories", () => {
-  const installed = fixture("inventory-45.json");
-  installed[44] = { ...installed[0] };
+  const installed = fixture("inventory-47.json");
+  installed[46] = { ...installed[0] };
   assert.throws(
     () => validateInstallationInventory(installed, "misterbusiness1"),
     /duplicate repositories returned by installation inventory/,
@@ -51,8 +56,8 @@ test("continues to reject duplicate repositories", () => {
 });
 
 test("continues to reject repositories outside the governed owner", () => {
-  const installed = fixture("inventory-45.json");
-  installed[44] = { owner: "unexpected-owner", repository: "unexpected-owner/repository-45" };
+  const installed = fixture("inventory-47.json");
+  installed[46] = { owner: "unexpected-owner", repository: "unexpected-owner/repository-47" };
   assert.throws(
     () => validateInstallationInventory(installed, "misterbusiness1"),
     /installation inventory contains repositories outside misterbusiness1/,
