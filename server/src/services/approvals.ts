@@ -193,8 +193,9 @@ export function approvalService(db: Db) {
           .orderBy(asc(issues.id)).for("update");
         if (linkedIssues.length !== links.length || linkedIssues.some((issue) =>
           issue.companyId !== companyId || !["done", "cancelled"].includes(issue.status)
-          || issue.executionRunId !== null || issue.checkoutRunId !== null)) {
-          throw conflict("Retirement requires same-company closed linked tasks without live execution");
+          || issue.executionRunId !== null || issue.checkoutRunId !== null
+          || issue.executionAgentNameKey !== null || issue.executionLockedAt !== null)) {
+          throw conflict("Retirement requires same-company closed linked tasks without execution ownership");
         }
         const now = new Date();
         const [approval] = await tx.update(approvals).set({
@@ -205,6 +206,7 @@ export function approvalService(db: Db) {
         if (!approval) throw versionConflict(current, options.expectedUpdatedAt);
         const details = {
           type: approval.type, approvalStatus: "rejected", requestedByAgentId: approval.requestedByAgentId,
+          // Approval cards read requestedByAgentId; wake audit consumers read requesterAgentId.
           requesterAgentId: approval.requestedByAgentId,
           linkedIssueIds: linkedIssues.map((issue) => issue.id),
           linkedIssueStatuses: linkedIssues.map((issue) => ({ id: issue.id, status: issue.status })),
@@ -213,6 +215,8 @@ export function approvalService(db: Db) {
         };
         // Neither action maps to approval.decided/plugin execution. Persist
         // both before commit; publish only the committed, non-executable audit.
+        // The skipped wake record explicitly distinguishes this intentional
+        // no-execution disposition from a missing or failed decision delivery.
         for (const action of ["approval.retired_closed_request", "approval.requester_wakeup_skipped"]) {
           await logActivity(tx as unknown as Db, { companyId, actorType: "user", actorId: decidedByUserId,
             action, entityType: "approval", entityId: id, details }, publications);

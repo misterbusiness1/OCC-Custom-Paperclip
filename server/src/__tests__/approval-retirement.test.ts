@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, approvals, companies, createDb, heartbeatRuns, issueApprovals, issues } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, approvals, companies, createDb, heartbeatRuns, issueApprovals, issues } from "@paperclipai/db";
 import { approvalService } from "../services/approvals.js";
 import { approvalRoutes } from "../routes/approvals.js";
 import { errorHandler } from "../middleware/index.js";
@@ -77,8 +77,12 @@ describePostgres("explicit closed-request retirement", () => {
     return { promise, resolve };
   }
 
-  it("retires both terminal statuses and publishes only committed non-plugin audit", async () => {
+  it.each(["pending", "revision_requested"])("retires a %s request on both terminal statuses with only committed non-plugin audit", async status => {
     const f = await seed(["done", "cancelled"]); emit.mockClear();
+    if (status !== "pending") {
+      const [revision] = await db.update(approvals).set({ status }).where(eq(approvals.id, f.approval.id)).returning();
+      f.approval = revision!;
+    }
     const publications: Promise<unknown>[] = [];
     const unsubscribe = subscribeCompanyLiveEvents(f.companyId, event => {
       if (event.type === "activity.logged") publications.push(audit(f));
@@ -90,6 +94,8 @@ describePostgres("explicit closed-request retirement", () => {
       expect(rows.map(row => row.action).sort()).toEqual(["approval.requester_wakeup_skipped", "approval.retired_closed_request"]);
       expect(rows.every(row => row.details?.executionSuppressed === true)).toBe(true);
       expect(await db.select().from(issues).where(eq(issues.companyId, f.companyId))).toEqual(f.linked);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toEqual([]);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
       expect(await Promise.all(publications)).toEqual([rows, rows]);
       expect(emit).not.toHaveBeenCalled();
     } finally { unsubscribe(); }
@@ -121,6 +127,14 @@ describePostgres("explicit closed-request retirement", () => {
     const f = await seed();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running" }).returning();
     await db.update(issues).set({ [field]: run!.id }).where(eq(issues.id, f.linked[0]!.id));
+    await expect(retire(f)).rejects.toMatchObject({ status: 409 });
+    expect(await read(f)).toEqual(f.approval); expect(await audit(f)).toEqual([]);
+  });
+
+  it.each(["executionAgentNameKey", "executionLockedAt"] as const)("preserves residual execution ownership in %s", async field => {
+    const f = await seed();
+    await db.update(issues).set({ [field]: field === "executionLockedAt" ? new Date() : "requester" })
+      .where(eq(issues.id, f.linked[0]!.id));
     await expect(retire(f)).rejects.toMatchObject({ status: 409 });
     expect(await read(f)).toEqual(f.approval); expect(await audit(f)).toEqual([]);
   });

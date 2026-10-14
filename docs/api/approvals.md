@@ -81,6 +81,9 @@ tasks are all `done` or `cancelled`, in the same company, with no checkout or
 execution owner. At least one linked task is required. This is separate from
 ordinary rejection, which continues to notify the requester.
 
+This operation is exposed through the API and typed client. There is no UI
+retirement control; the resulting retirement decision is visible in activity.
+
 ```
 POST /api/approvals/{approvalId}/retire
 {
