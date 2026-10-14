@@ -210,6 +210,8 @@ Use it for:
 
 Blocked issues should stay idle while blockers remain unresolved. Paperclip should not create a queued heartbeat run for that issue until the final blocker is done and the `issue_blockers_resolved` wake can start real work.
 
+Checkout may temporarily execute an issue that is waiting on an external owner/action. If execution reasserts the same structured owner/action, it retains the existing blocked wait cycle and its owner-notification receipt. An already-delivered dependency wake must not repeat merely because the issue was checked out and blocked again. A changed blocker set or a blocker completing in a new generation still permits a fresh dependency wake. Changing the owner/action, including a descriptor-only edit while blocked, starts a new wait cycle. Explicitly leaving the wait through a lifecycle transition also starts a new wait when the issue is blocked again.
+
 `cancelled` is terminal for the blocker issue itself, but it does not satisfy the dependency. A cancelled blocker edge remains unresolved until the edge is removed or replaced, and Paperclip must surface blocker attention on the dependent regardless of whether that dependent is currently displayed as `blocked`, `todo`, `backlog`, or another non-terminal agent-owned status.
 
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.

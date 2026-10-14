@@ -8,6 +8,7 @@ import {
   agentRuntimeState,
   budgetPolicies,
   companies,
+  completionContracts,
   companyMemberships,
   companySkills,
   costEvents,
@@ -21,6 +22,11 @@ import {
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
+  nativeRunFinalizations,
+  nativeRunResults,
+  statusDecisionEffects,
+  statusDecisions,
+  workAssessments,
   projects,
   projectWorkspaces,
   workspaceOperations,
@@ -70,6 +76,8 @@ vi.mock("../adapters/index.ts", async () => {
 import { heartbeatService } from "../services/heartbeat.ts";
 import { attentionService } from "../services/attention.ts";
 import { issueService } from "../services/issues.ts";
+import { commitNativeStatusDecision } from "../services/native-runtime/status-decision-committer.ts";
+import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "../services/native-runtime/status-arbiter.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import {
   buildIssueBlockersResolvedWakeStateKey,
@@ -115,6 +123,14 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
     await db.delete(issueRecoveryActions);
+    await db.delete(nativeRunFinalizations);
+    await db.delete(statusDecisionEffects);
+    await db.update(issues).set({ lastStatusDecisionId: null });
+    await db.delete(statusDecisions);
+    await db.delete(workAssessments);
+    await db.delete(nativeRunResults);
+    await db.update(heartbeatRuns).set({ completionContractId: null });
+    await db.delete(completionContracts);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -977,6 +993,308 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       .from(agentWakeupRequests)
       .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.idempotencyKey, stateKey)));
     expect(stateKeyWakes).toHaveLength(1);
+  });
+
+  async function seedDeliveredExternalWait() {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const blockedTransitionAt = new Date("2026-08-01T12:00:00.000Z");
+    const blockerCompletedAt = new Date("2026-07-31T12:00:00.000Z");
+    const deliveredAt = new Date("2026-08-01T12:00:01.000Z");
+    // An external action can be described with the executing agent as its
+    // structured owner; do not rely on owner != assignee to recognize the wait.
+    const unblockDescriptor = {
+      owner: { agentId: fixture.agentId },
+      action: "Wait for the board to authorize the external purchase test.",
+    };
+    await db.update(issues).set({
+      unblockDescriptor,
+      blockedTransitionAt,
+      blockedOwnerNotifiedAt: blockedTransitionAt,
+    }).where(eq(issues.id, fixture.blockedIssueId));
+    await db.update(issues).set({ completedAt: blockerCompletedAt })
+      .where(eq(issues.id, fixture.blockerIssueId));
+    const deliveredKey = buildIssueBlockersResolvedWakeStateKey({
+      dependentIssueId: fixture.blockedIssueId,
+      blockerIssueIds: [fixture.blockerIssueId],
+      blockerGenerations: [{ issueId: fixture.blockerIssueId, completedAt: blockerCompletedAt }],
+      blockedTransitionAt,
+    });
+    await db.insert(agentWakeupRequests).values({
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_promoted",
+      payload: {
+        issueId: fixture.blockedIssueId,
+        resolvedBlockerIssueId: fixture.blockerIssueId,
+        blockerIssueIds: [fixture.blockerIssueId],
+      },
+      status: "completed",
+      requestedAt: deliveredAt,
+      finishedAt: deliveredAt,
+      idempotencyKey: deliveredKey,
+    });
+    return { ...fixture, unblockDescriptor, blockedTransitionAt, blockerCompletedAt, deliveredKey };
+  }
+
+  async function seedNativeExternalWait() {
+    const fixture = await seedDeliveredExternalWait();
+    const contractId = randomUUID();
+    await db.insert(completionContracts).values({
+      id: contractId, companyId: fixture.companyId, issueId: fixture.blockedIssueId,
+      revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "phase6-v1",
+      risk: "standard", completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: { criteria: [] }, canonicalSha256: `w2-contract:${contractId}`,
+      createdByActorType: "system", createdByActorId: "w2-regression",
+    });
+    const commitWait = async (descriptor = fixture.unblockDescriptor) => {
+      const current = await issueService(db).checkout(fixture.blockedIssueId, fixture.agentId, ["blocked", "in_progress"], null);
+      const runId = randomUUID();
+      const resultId = randomUUID();
+      const assessmentId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId, companyId: fixture.companyId, agentId: fixture.agentId, status: "succeeded",
+        runtimeMode: "native", nativeIssueId: fixture.blockedIssueId,
+        contextSnapshot: { issueId: fixture.blockedIssueId }, completionContractId: contractId,
+      });
+      await db.insert(nativeRunResults).values({
+        id: resultId, companyId: fixture.companyId, issueId: fixture.blockedIssueId, runId,
+        completionContractId: contractId, serverFingerprint: `w2-result:${resultId}`,
+        schemaStatus: "accepted", resultJson: {}, canonicalSha256: `w2-result:${resultId}`,
+      });
+      await db.insert(workAssessments).values({
+        id: assessmentId, companyId: fixture.companyId, issueId: fixture.blockedIssueId, runId,
+        contractId, resultId, triggerKind: "native_result", triggerActorCompanyId: fixture.companyId,
+        priorIssueStatus: current.status, priorStatusVersion: current.statusVersion,
+        priorDecisionId: current.lastStatusDecisionId, policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        assessmentJson: {}, inputDigest: `w2-assessment:${assessmentId}`,
+      });
+      await db.insert(nativeRunFinalizations).values({
+        runId, companyId: fixture.companyId, issueId: fixture.blockedIssueId,
+        phase: "assessing", resultId, assessmentId,
+      });
+      return commitNativeStatusDecision({
+        db, companyId: fixture.companyId, issueId: fixture.blockedIssueId, runId, assessmentId,
+        priorStatus: current.status, priorStatusVersion: current.statusVersion,
+        priorDecisionId: current.lastStatusDecisionId,
+        decision: {
+          policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+          statusAction: "blocked", toStatus: "blocked", reasonCode: "task_wide_blocker_bound",
+          unblockDescriptor: descriptor,
+          effects: [
+            { kind: "bind_blocker", owner: descriptor.owner, action: descriptor.action },
+            { kind: "notify_owner", agentId: fixture.agentId, reason: "task_wide_blocker_bound" },
+          ],
+        },
+      });
+    };
+    return { ...fixture, commitWait };
+  }
+
+  it("W2 native blocker notifications cannot bypass continuation provenance", async () => {
+    const fixture = await seedNativeExternalWait();
+    const heartbeat = heartbeatService(db);
+    for (const action of [
+      fixture.unblockDescriptor.action,
+      fixture.unblockDescriptor.action,
+      "Approve the newly required renewal.",
+    ]) {
+      await fixture.commitWait({ ...fixture.unblockDescriptor, action });
+      const result = await heartbeat.dispatchPendingNativeStatusWakeups({ companyId: fixture.companyId });
+      expect(result.scanned).toBeGreaterThan(0);
+      expect(result.dispatched).toBe(0);
+      await heartbeat.drainActiveRunExecutions();
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+    }
+    // These effects are notifications, not authorized continuations. Their
+    // queued intent rows must not be mistaken for a second provider-run loop.
+    const proofRejections = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, fixture.companyId),
+      eq(agentWakeupRequests.reason, "chat_control_recovery_proof_unresolved"),
+    ));
+    expect(proofRejections.length).toBeGreaterThan(0);
+    expect(proofRejections.every((wake) => wake.status === "skipped" && wake.runId === null)).toBe(true);
+  });
+
+  it("W2 keeps an already-delivered external wait quiet after checkout and the same owner/action reblock", async () => {
+    const fixture = await seedDeliveredExternalWait();
+    const svc = issueService(db);
+    const heartbeat = heartbeatService(db);
+
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      const checkedOut = await svc.checkout(fixture.blockedIssueId, fixture.agentId, ["blocked"], null);
+      expect(checkedOut.status).toBe("in_progress");
+      const reblocked = await svc.update(fixture.blockedIssueId, {
+        status: "blocked",
+        unblockDescriptor: fixture.unblockDescriptor,
+        actorAgentId: fixture.agentId,
+      });
+
+      const result = await heartbeat.reconcileResolvedDependencyWakes();
+      expect(result.healed).toBe(0);
+      expect(result.existingWakeSkipped).toBe(1);
+      expect(reblocked?.blockedTransitionAt).toEqual(fixture.blockedTransitionAt);
+      expect(reblocked?.blockedOwnerNotifiedAt).toEqual(fixture.blockedTransitionAt);
+      expect(reblocked?.unblockDescriptor).toEqual(fixture.unblockDescriptor);
+      const dependencyWakes = await db.select({ idempotencyKey: agentWakeupRequests.idempotencyKey })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, fixture.companyId));
+      expect(dependencyWakes.filter((wake) => wake.idempotencyKey?.startsWith("issue_blockers_resolved:")))
+        .toEqual([{ idempotencyKey: fixture.deliveredKey }]);
+    }
+  });
+
+  it("W2 still wakes the same external wait once when its blocker genuinely completes again", async () => {
+    const fixture = await seedDeliveredExternalWait();
+    const svc = issueService(db);
+    const heartbeat = heartbeatService(db);
+
+    await svc.update(fixture.blockerIssueId, {
+      status: "in_progress",
+      assigneeAgentId: fixture.agentId,
+    });
+    const whileUnresolved = await heartbeat.reconcileResolvedDependencyWakes();
+    expect(whileUnresolved.healed).toBe(0);
+
+    const completedBlocker = await svc.update(fixture.blockerIssueId, { status: "done" });
+    expect(completedBlocker?.completedAt?.getTime()).toBeGreaterThan(fixture.blockerCompletedAt.getTime());
+    const result = await heartbeat.reconcileResolvedDependencyWakes();
+    expect(result.healed).toBe(1);
+    expect(result.issueIds).toEqual([fixture.blockedIssueId]);
+    expect(result.existingWakeSkipped).toBe(0);
+
+    const newKey = buildIssueBlockersResolvedWakeStateKey({
+      dependentIssueId: fixture.blockedIssueId,
+      blockerIssueIds: [fixture.blockerIssueId],
+      blockerGenerations: [{ issueId: fixture.blockerIssueId, completedAt: completedBlocker?.completedAt }],
+      blockedTransitionAt: fixture.blockedTransitionAt,
+    });
+    expect(newKey).not.toBe(fixture.deliveredKey);
+    const newWakes = await db.select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, fixture.companyId),
+        eq(agentWakeupRequests.idempotencyKey, newKey),
+      ));
+    expect(newWakes).toHaveLength(1);
+    const secondPass = await heartbeat.reconcileResolvedDependencyWakes();
+    expect(secondPass.healed).toBe(0);
+  });
+
+  it.each(["owner", "action"] as const)("W2 starts a fresh wait when the %s changes after checkout", async (changedField) => {
+    const fixture = await seedDeliveredExternalWait();
+    const svc = issueService(db);
+    await svc.checkout(fixture.blockedIssueId, fixture.agentId, ["blocked"], null);
+    const unblockDescriptor = changedField === "owner"
+      ? { ...fixture.unblockDescriptor, owner: "board" as const }
+      : { ...fixture.unblockDescriptor, action: "Wait for the board to authorize the renewal test." };
+    const reblocked = await svc.update(fixture.blockedIssueId, {
+      status: "blocked",
+      unblockDescriptor,
+      actorAgentId: fixture.agentId,
+    });
+
+    expect(reblocked?.blockedTransitionAt?.getTime()).toBeGreaterThan(fixture.blockedTransitionAt.getTime());
+    expect(reblocked?.blockedOwnerNotifiedAt).toBeNull();
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+    expect(result.healed).toBe(1);
+    expect(result.issueIds).toEqual([fixture.blockedIssueId]);
+  });
+
+  it("W2 keeps a blocked cycle when an identical descriptor is patched separately", async () => {
+    const fixture = await seedDeliveredExternalWait();
+    const svc = issueService(db);
+    const patched = await svc.update(fixture.blockedIssueId, {
+      unblockDescriptor: { ...fixture.unblockDescriptor },
+    });
+    expect(patched?.blockedTransitionAt).toEqual(fixture.blockedTransitionAt);
+    expect(patched?.blockedOwnerNotifiedAt).toEqual(fixture.blockedTransitionAt);
+    await svc.checkout(fixture.blockedIssueId, fixture.agentId, ["blocked"], null);
+    await svc.update(fixture.blockedIssueId, {
+      status: "blocked",
+      unblockDescriptor: fixture.unblockDescriptor,
+      actorAgentId: fixture.agentId,
+    });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+    expect(result.healed).toBe(0);
+    expect(result.existingWakeSkipped).toBe(1);
+  });
+
+  it.each([false, true])("W2 starts a fresh wait when a blocked descriptor is edited before checkout (explicit status: %s)", async (explicitStatus) => {
+    const fixture = await seedDeliveredExternalWait();
+    const svc = issueService(db);
+    const unblockDescriptor = {
+      ...fixture.unblockDescriptor,
+      action: "Wait for the board to authorize the changed purchase test.",
+    };
+    // HTTP accepts a descriptor-only patch while the issue remains blocked.
+    // Editing that descriptor must not relabel the old cycle as the new wait.
+    await svc.update(fixture.blockedIssueId, {
+      unblockDescriptor,
+      ...(explicitStatus ? { status: "blocked" } : {}),
+    });
+    await svc.checkout(fixture.blockedIssueId, fixture.agentId, ["blocked"], null);
+    const reblocked = await svc.update(fixture.blockedIssueId, {
+      status: "blocked",
+      unblockDescriptor,
+      actorAgentId: fixture.agentId,
+    });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+    expect(result.healed).toBe(1);
+    expect(result.issueIds).toEqual([fixture.blockedIssueId]);
+    expect(reblocked?.blockedTransitionAt?.getTime()).toBeGreaterThan(fixture.blockedTransitionAt.getTime());
+    expect(reblocked?.blockedOwnerNotifiedAt).toBeNull();
+  });
+
+  it("W2 starts a fresh wait after completing and reopening the dependent", async () => {
+    const fixture = await seedDeliveredExternalWait();
+    const svc = issueService(db);
+    await svc.checkout(fixture.blockedIssueId, fixture.agentId, ["blocked"], null);
+    await svc.update(fixture.blockedIssueId, { status: "done" });
+    await svc.update(fixture.blockedIssueId, { status: "in_progress" });
+    const reblocked = await svc.update(fixture.blockedIssueId, {
+      status: "blocked",
+      unblockDescriptor: fixture.unblockDescriptor,
+      actorAgentId: fixture.agentId,
+    });
+
+    expect(reblocked?.blockedTransitionAt?.getTime()).toBeGreaterThan(fixture.blockedTransitionAt.getTime());
+    expect(reblocked?.blockedOwnerNotifiedAt).toBeNull();
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+    expect(result.healed).toBe(1);
+    expect(result.issueIds).toEqual([fixture.blockedIssueId]);
+  });
+
+  it("W2 still wakes the same external wait when its dependency set changes", async () => {
+    const fixture = await seedDeliveredExternalWait();
+    const newBlockerId = randomUUID();
+    await db.insert(issues).values({
+      id: newBlockerId,
+      companyId: fixture.companyId,
+      title: "Newly added completed blocker",
+      status: "done",
+      completedAt: fixture.blockerCompletedAt,
+      priority: "medium",
+      issueNumber: 3,
+      identifier: "R-EXTERNAL-WAIT-3",
+    });
+    const svc = issueService(db);
+    await svc.checkout(fixture.blockedIssueId, fixture.agentId, ["blocked"], null);
+    await svc.update(fixture.blockedIssueId, {
+      status: "blocked",
+      unblockDescriptor: fixture.unblockDescriptor,
+      blockedByIssueIds: [fixture.blockerIssueId, newBlockerId],
+      actorAgentId: fixture.agentId,
+    });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+    expect(result.healed).toBe(1);
+    expect(result.issueIds).toEqual([fixture.blockedIssueId]);
+    const secondPass = await heartbeatService(db).reconcileResolvedDependencyWakes();
+    expect(secondPass.healed).toBe(0);
   });
 
   it("heals a blocked dependent after a terminal reset when a previous-cycle old-key wake exists", async () => {

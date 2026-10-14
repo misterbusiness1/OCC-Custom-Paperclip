@@ -2006,6 +2006,66 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       .rejects.toThrow("native_pending_effect_target_missing:enqueue_continuation");
   }, 30_000);
 
+  it.each(["same", "changed"] as const)("W2 native blocker binding preserves only the %s carried wait", async (descriptorKind) => {
+    const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
+    const seeded = await seedFixture({
+      ...template,
+      id: `w2-native-wait-${randomUUID()}`,
+      given: { ...template.given, priorIssueStatus: "blocked", completionState: "native_wait" },
+    });
+    const blockedTransitionAt = new Date("2026-08-01T12:00:00.000Z");
+    const originalDescriptor = { owner: "board" as const, action: "Approve the initial purchase." };
+    await db.update(issues).set({
+      unblockDescriptor: originalDescriptor,
+      blockedTransitionAt,
+      blockedOwnerNotifiedAt: blockedTransitionAt,
+    }).where(eq(issues.id, seeded.issueId));
+    const checkedOut = await issueService(db).checkout(seeded.issueId, agentId, ["blocked"], null);
+    expect(checkedOut.status).toBe("in_progress");
+    await db.update(workAssessments).set({
+      priorIssueStatus: checkedOut.status,
+      priorStatusVersion: checkedOut.statusVersion,
+    }).where(eq(workAssessments.id, seeded.assessmentId));
+    const descriptor = descriptorKind === "same"
+      ? originalDescriptor
+      : { ...originalDescriptor, action: "Approve the newly required renewal." };
+
+    // The real native committer materializes bind_blocker before projecting the
+    // blocked status. That effect must not hide the prior descriptor from the
+    // issue service's locked wait-cycle comparison.
+    const committed = await commitNativeStatusDecision({
+      db,
+      companyId,
+      issueId: seeded.issueId,
+      runId: seeded.runId,
+      assessmentId: seeded.assessmentId,
+      priorStatus: checkedOut.status,
+      priorStatusVersion: checkedOut.statusVersion,
+      priorDecisionId: checkedOut.lastStatusDecisionId,
+      decision: {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "blocked",
+        toStatus: "blocked",
+        reasonCode: "current_track_blocker_waiting",
+        unblockDescriptor: descriptor,
+        effects: [{ kind: "bind_blocker", owner: descriptor.owner, action: descriptor.action }],
+      },
+    });
+    expect(committed.issue.status).toBe("blocked");
+    expect(committed.issue.unblockDescriptor).toEqual(descriptor);
+    if (descriptorKind === "same") {
+      expect(committed.issue.blockedTransitionAt).toEqual(blockedTransitionAt);
+      expect(committed.issue.blockedOwnerNotifiedAt).toEqual(blockedTransitionAt);
+    } else {
+      expect(committed.issue.blockedTransitionAt?.getTime()).toBeGreaterThan(blockedTransitionAt.getTime());
+      expect(committed.issue.blockedOwnerNotifiedAt).toBeNull();
+    }
+    const effects = await db.select().from(statusDecisionEffects)
+      .where(eq(statusDecisionEffects.decisionId, committed.decision.id));
+    expect(effects.find((effect) => effect.effectKind === "bind_blocker"))
+      .toMatchObject({ targetType: "issue_unblock_descriptor", targetId: seeded.issueId });
+  });
+
   async function seedPolicyReview(options: { genuine?: boolean; priorStatus?: "in_progress" | "blocked" | "in_review" } = {}) {
     const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
     const priorStatus = options.priorStatus ?? "in_progress";

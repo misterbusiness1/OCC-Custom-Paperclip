@@ -84,6 +84,7 @@ import type {
   IssueReviewAttentionPath,
   IssueBlockedInboxAttention,
   IssueBlockedInboxIssueRef,
+  IssueUnblockDescriptor,
   IssueRelationIssueSummary,
   IssueWatchdogSummary,
   LowTrustBoundary,
@@ -304,12 +305,62 @@ function assertTransition(from: string, to: string) {
   }
 }
 
+function sameIssueUnblockDescriptor(
+  left: IssueUnblockDescriptor | null | undefined,
+  right: IssueUnblockDescriptor | null | undefined,
+): boolean {
+  if (!left || !right || left.action !== right.action) return false;
+  if (left.owner === "board" || right.owner === "board") {
+    return left.owner === right.owner;
+  }
+  if ("agentId" in left.owner && "agentId" in right.owner) {
+    return left.owner.agentId === right.owner.agentId;
+  }
+  return "userId" in left.owner && "userId" in right.owner &&
+    left.owner.userId === right.owner.userId;
+}
+
 function applyStatusSideEffects(
   status: string | undefined,
   patch: Partial<typeof issues.$inferInsert>,
-  existing: Pick<typeof issues.$inferSelect, "status" | "completedAt">,
+  existing: Pick<typeof issues.$inferSelect,
+    "status" | "completedAt" | "unblockDescriptor" | "blockedTransitionAt" | "blockedOwnerNotifiedAt">,
 ): Partial<typeof issues.$inferInsert> {
+  if (
+    existing.status === "blocked" &&
+    (status === undefined || status === "blocked") &&
+    patch.unblockDescriptor !== undefined &&
+    patch.unblockDescriptor !== existing.unblockDescriptor &&
+    !sameIssueUnblockDescriptor(existing.unblockDescriptor, patch.unblockDescriptor)
+  ) {
+    // A descriptor-only edit must not relabel the old wait's receipt. Otherwise
+    // checkout would carry the new descriptor with the old delivered cycle.
+    patch.blockedTransitionAt = patch.updatedAt ?? new Date();
+    patch.blockedOwnerNotifiedAt = null;
+  }
   if (!status) return patch;
+
+  if (status === "blocked" && existing.status !== "blocked") {
+    const nextDescriptor = patch.unblockDescriptor === undefined
+      ? existing.unblockDescriptor
+      : patch.unblockDescriptor;
+    // Checkout carries the wait receipt into execution. Reasserting that same
+    // owner/action is still the same wait, not a new dependency-ready cycle.
+    // Blocker ids and completion generations remain part of wake deduplication.
+    const continuingWait = existing.status === "in_progress" &&
+      existing.blockedTransitionAt !== null &&
+      sameIssueUnblockDescriptor(existing.unblockDescriptor, nextDescriptor);
+    patch.blockedTransitionAt = continuingWait
+      ? existing.blockedTransitionAt
+      : patch.updatedAt ?? new Date();
+    patch.blockedOwnerNotifiedAt = continuingWait ? existing.blockedOwnerNotifiedAt : null;
+  } else if (status !== "blocked" && status !== existing.status) {
+    // Explicit lifecycle transitions end any carried wait, including a
+    // checkout followed by completion and a later reopen of the same issue.
+    patch.unblockDescriptor = null;
+    patch.blockedTransitionAt = null;
+    patch.blockedOwnerNotifiedAt = null;
+  }
 
   if (status === "in_progress" && !patch.startedAt) {
     patch.startedAt = new Date();
@@ -10791,18 +10842,6 @@ export function issueService(db: Db) {
         ...issueData,
         updatedAt: new Date(),
       };
-      if (existing.status !== "blocked" && issueData.status === "blocked") {
-        patch.blockedTransitionAt = patch.updatedAt;
-        patch.blockedOwnerNotifiedAt = null;
-      } else if (
-        existing.status === "blocked" &&
-        issueData.status &&
-        issueData.status !== "blocked"
-      ) {
-        patch.unblockDescriptor = null;
-        patch.blockedTransitionAt = null;
-        patch.blockedOwnerNotifiedAt = null;
-      }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
       }
@@ -10994,9 +11033,8 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
-        // Completion generation is based on the row that is locked for this
-        // write. A repeated DONE patch must retain its generation, while a
-        // real non-DONE -> DONE transition receives a new timestamp.
+        // Completion generations and carried wait receipts use the locked
+        // baseline, so concurrent changes cannot be mistaken for this write.
         applyStatusSideEffects(issueData.status, patch, receiptExisting);
         if (actorAgentId && patch.status === "done") {
           const [review] = await tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(eq(toolActionRequests.companyId, existing.companyId), eq(toolActionRequests.issueId, id), inArray(toolActionRequests.status, ["pending", "approved", "executing"]))).limit(1);

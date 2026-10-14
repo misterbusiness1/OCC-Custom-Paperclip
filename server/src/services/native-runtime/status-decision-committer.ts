@@ -730,20 +730,9 @@ async function materializeDecisionEffect(input: {
   }
   if (effect.kind === "bind_blocker") {
     failAt("blocker_materialization", input.failpoint);
-    const [bound] = await input.tx
-      .update(issues)
-      .set({
-        unblockDescriptor: { owner: effect.owner, action: effect.action },
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(issues.id, input.issue.id),
-          eq(issues.companyId, input.companyId),
-        ),
-      )
-      .returning({ id: issues.id });
-    if (!bound) throw new Error("native_blocker_binding_not_persisted");
+    // The blocked status projection below writes this descriptor atomically.
+    // Keep the prior descriptor intact until then, so issueService can compare
+    // the locked wait receipt before deciding whether this is a new cycle.
     let wakeId: string | null = null;
     if (effect.owner !== "board") {
       wakeId = await enqueueWake({
@@ -762,7 +751,7 @@ async function materializeDecisionEffect(input: {
     return {
       effectKind: effect.kind,
       targetType: "issue_unblock_descriptor",
-      targetId: bound.id,
+      targetId: input.issue.id,
       payload: { owner: effect.owner, action: effect.action, wakeId },
     };
   }
