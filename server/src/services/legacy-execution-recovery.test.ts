@@ -40,6 +40,27 @@ it("allows a confirmed interrupted checkpoint without treating ordinary cancella
   expect(legacyExecutionNeedsReconciliation({ ...stopped, status: "failed" })).toBe(true);
 });
 
+it("distinguishes a cancelled prelaunch retry from exhausted or uncertain provider work", () => {
+  const run = {
+    runtimeMode: "legacy", status: "cancelled", errorCode: "issue_dependencies_blocked",
+    scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure",
+    startedAt: null,
+    resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false, cancelledBeforeLaunch: true } },
+  };
+  expect(legacyExecutionNeedsReconciliation(run)).toBe(false);
+  expect(legacyExecutionNeedsReconciliation({ ...run, startedAt: new Date() })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...run, startedAt: undefined })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...run, scheduledRetryReason: "native_safe_replacement" })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed" })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...run, resultJson: {
+    executionRecovery: { ...run.resultJson.executionRecovery, providerWorkStarted: true },
+  } })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...run, resultJson: {
+    executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+  } })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...run, resultJson: {} })).toBe(true);
+});
+
 it.each([
   { providerStopped: false }, { sessionPreserved: false }, { actionOutcomes: "unknown" },
 ])("retains the hold for incomplete interruption evidence: %j", (missing) => {
