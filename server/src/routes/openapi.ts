@@ -102,6 +102,7 @@ import {
   APPROVAL_LINKED_ISSUES_MAX_IDS,
   createApprovalSchema,
   resolveApprovalSchema,
+  retireApprovalSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
@@ -1293,6 +1294,7 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "POST /api/approvals/{id}/retire",
   "GET /api/issues/{id}/comment-requests/{clientRequestId}",
   "GET /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections",
@@ -4901,6 +4903,25 @@ registry.registerPath({
     body: jsonBody(resolveApprovalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/approvals/{id}/retire",
+  tags: ["approvals"],
+  summary: "Retire an obsolete approval",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(retireApprovalSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({
