@@ -5474,7 +5474,7 @@ export function agentRoutes(
       await approvalsSvc.approve(openApproval.id, decidedByUserId);
       agent = await svc.getById(id);
     } else {
-      const approval = await svc.activatePendingApproval(id);
+      const approval = await svc.activatePendingApproval(existing.companyId, id);
       if (!approval) {
         res.status(404).json({ error: "Agent not found" });
         return;

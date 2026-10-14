@@ -23,7 +23,7 @@ import type {
   BudgetWindowKind,
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { nextApprovalUpdatedAt } from "./approval-version.js";
 
 type ScopeRecord = {
@@ -510,6 +510,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       companyId: string,
       input: BudgetPolicyUpsertInput,
       actorUserId: string | null,
+      postCommitPublications?: ActivityPublication[],
     ): Promise<BudgetPolicySummary> => {
       const scope = await resolveScopeRecord(db, input.scopeType, input.scopeId);
       if (scope.companyId !== companyId) {
@@ -623,7 +624,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           amount: row.amount,
           windowKind: row.windowKind,
         },
-      });
+      }, postCommitPublications);
 
       return buildPolicySummary(row);
     },

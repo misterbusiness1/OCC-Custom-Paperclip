@@ -1319,6 +1319,18 @@ issue.
 3. On approval, server creates agent row and initial API key (optional).
 4. Decision is logged in `activity_log`.
 
+When a hire request names an existing `agentId`, approval or rejection requires
+that agent to belong to the approval's company and still be `pending_approval`.
+The approval decision and target transition commit together, including approved
+configuration, secret bindings and budget policy, or rejection's key revocation.
+A missing, malformed, foreign, or nonpending target returns `409` without
+deciding the request. The guarded decision uses the payload actually stored by
+its update; expected-version checks and retries of an already stored decision
+retain their existing behavior. Hire requests without an agent target still
+create an agent in the approval's company. Adapter notification and the hire's
+secret-binding and budget activity publications follow commit; rollback discards
+those publications along with their audit rows.
+
 Board can bypass request flow and create agents directly via UI; direct create is still logged as a governance action.
 
 ## 12.2 CEO Strategy Approval
