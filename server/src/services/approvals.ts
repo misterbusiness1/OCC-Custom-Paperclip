@@ -1,11 +1,11 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvalComments, approvals } from "@paperclipai/db";
+import { activityLog, approvalComments, approvals, issueApprovals, issues } from "@paperclipai/db";
 import { approvalChangeRequestCommentBody, isUuidLike } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
-import { publishActivity, type ActivityPublication } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { nextApprovalUpdatedAt } from "./approval-version.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
@@ -144,6 +144,85 @@ export function approvalService(db: Db) {
   }
 
   return {
+    // A retirement is a board disposition of obsolete closed work, not an
+    // instruction for the requester to act on a normal rejection.
+    retire: async (
+      id: string,
+      companyId: string,
+      decidedByUserId: string,
+      decisionNote: string,
+      options: { expectedUpdatedAt: Date },
+    ): Promise<ResolutionResult> => {
+      if (!isUuidLike(id)) throw notFound("Approval not found");
+      if (!options?.expectedUpdatedAt || !Number.isFinite(options.expectedUpdatedAt.getTime()) || !decisionNote?.trim()) {
+        throw unprocessable("Retirement requires the exact approval version and a reason");
+      }
+      const publications: ActivityPublication[] = [];
+      const result = await db.transaction(async (tx) => {
+        // FOR UPDATE (not the ordinary status UPDATE's NO KEY UPDATE) also
+        // fences new issue_approvals inserts through their immediate parent FK.
+        const [current] = await tx.select().from(approvals).where(and(
+          eq(approvals.id, id), eq(approvals.companyId, companyId),
+        )).for("update");
+        if (!current) throw notFound("Approval not found");
+        assertExpectedVersion(current, options.expectedUpdatedAt);
+        if (current.type !== "request_board_approval") {
+          throw unprocessable("Only closed-work board requests can be retired");
+        }
+        if (current.status === "rejected") {
+          const [priorRetirement] = await tx.select({ details: activityLog.details }).from(activityLog).where(and(
+            eq(activityLog.companyId, companyId), eq(activityLog.entityType, "approval"),
+            eq(activityLog.entityId, id), eq(activityLog.action, "approval.retired_closed_request"),
+          )).limit(1);
+          if (priorRetirement?.details?.approvalUpdatedAt === current.updatedAt.toISOString()
+            && current.decisionNote === decisionNote) return { approval: current, applied: false };
+          throw conflict("This approval was already decided outside this retirement");
+        }
+        if (!canResolveStatuses.has(current.status)) {
+          throw unprocessable("Only pending or revision requested approvals can be retired");
+        }
+        // Lock existing links against unlink/reassignment, then the tasks in a
+        // stable order. All eligibility checks use these locked rows, not the
+        // route's earlier access check or a caller-provided list of task IDs.
+        const links = await tx.select().from(issueApprovals).where(eq(issueApprovals.approvalId, id))
+          .orderBy(asc(issueApprovals.issueId)).for("update");
+        if (links.length === 0 || links.some((link) => link.companyId !== companyId)) {
+          throw conflict("Retirement requires same-company closed linked tasks");
+        }
+        const linkedIssues = await tx.select().from(issues).where(inArray(issues.id, links.map((link) => link.issueId)))
+          .orderBy(asc(issues.id)).for("update");
+        if (linkedIssues.length !== links.length || linkedIssues.some((issue) =>
+          issue.companyId !== companyId || !["done", "cancelled"].includes(issue.status)
+          || issue.executionRunId !== null || issue.checkoutRunId !== null)) {
+          throw conflict("Retirement requires same-company closed linked tasks without live execution");
+        }
+        const now = new Date();
+        const [approval] = await tx.update(approvals).set({
+          status: "rejected", decidedByUserId, decisionNote, decidedAt: now,
+          updatedAt: nextApprovalUpdatedAt(now),
+        }).where(and(eq(approvals.id, id), eq(approvals.companyId, companyId), versionIs(options.expectedUpdatedAt)))
+          .returning();
+        if (!approval) throw versionConflict(current, options.expectedUpdatedAt);
+        const details = {
+          type: approval.type, approvalStatus: "rejected", requestedByAgentId: approval.requestedByAgentId,
+          requesterAgentId: approval.requestedByAgentId,
+          linkedIssueIds: linkedIssues.map((issue) => issue.id),
+          linkedIssueStatuses: linkedIssues.map((issue) => ({ id: issue.id, status: issue.status })),
+          reason: "closed_request_retired", executionSuppressed: true,
+          approvalUpdatedAt: approval.updatedAt.toISOString(),
+        };
+        // Neither action maps to approval.decided/plugin execution. Persist
+        // both before commit; publish only the committed, non-executable audit.
+        for (const action of ["approval.retired_closed_request", "approval.requester_wakeup_skipped"]) {
+          await logActivity(tx as unknown as Db, { companyId, actorType: "user", actorId: decidedByUserId,
+            action, entityType: "approval", entityId: id, details }, publications);
+        }
+        return { approval, applied: true };
+      });
+      for (const publication of publications) publishActivity(publication);
+      return result;
+    },
+
     list: (companyId: string, status?: string) => {
       const conditions = [eq(approvals.companyId, companyId)];
       if (status) conditions.push(eq(approvals.status, status));

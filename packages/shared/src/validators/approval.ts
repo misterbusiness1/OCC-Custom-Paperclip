@@ -78,6 +78,14 @@ export const resolveApprovalSchema = z.object({
 
 export type ResolveApproval = z.infer<typeof resolveApprovalSchema>;
 
+/** Explicit board retirement is never the default decision/notification path. */
+export const retireApprovalSchema = z.object({
+  decisionNote: multilineTextSchema.refine((value) => value.trim().length > 0, "A retirement reason is required"),
+  expectedUpdatedAt: z.string().datetime({ offset: true }),
+}).strict();
+
+export type RetireApproval = z.infer<typeof retireApprovalSchema>;
+
 export const requestApprovalRevisionSchema = z.object({
   decisionNote: multilineTextSchema.optional().nullable(),
   expectedUpdatedAt: expectedApprovalUpdatedAtSchema,

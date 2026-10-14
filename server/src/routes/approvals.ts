@@ -8,6 +8,7 @@ import {
   decisionReadyApprovalPayloadSchema,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
+  retireApprovalSchema,
   resubmitApprovalSchema,
   isUuidLike,
 } from "@paperclipai/shared";
@@ -647,6 +648,21 @@ export function approvalRoutes(
       await resumeRequesterAfterDecision({ approval, actorUserId: decidedByUserId });
     }
 
+    res.json(redactApprovalPayload(approval));
+  });
+
+  router.post("/approvals/:id/retire", validate(retireApprovalSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await requireApprovalAccess(req, id);
+    if (!existing) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    const { approval } = await svc.retire(id, existing.companyId, req.actor.userId ?? "board",
+      req.body.decisionNote, { expectedUpdatedAt: new Date(req.body.expectedUpdatedAt) });
+    // Retirement has already persisted its explicit no-execution disposition;
+    // never enter requester handback, wake, review-path or plugin decision work.
     res.json(redactApprovalPayload(approval));
   });
 

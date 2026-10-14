@@ -74,6 +74,40 @@ POST /api/approvals/{approvalId}/request-revision
 
 A `decisionNote` that is not empty is also stored as an approval comment, written by the deciding board user, with the body `Changes requested:`, a blank line, and the note. The next decision overwrites `decisionNote`; the comment stays. The comment is written in the same transaction as the status change, so a refused request (`409`, `422`) writes none. It adds no activity entry and no wake of its own.
 
+## Retire an obsolete closed request
+
+Board operators can explicitly retire a `request_board_approval` whose linked
+tasks are all `done` or `cancelled`, in the same company, with no checkout or
+execution owner. At least one linked task is required. This is separate from
+ordinary rejection, which continues to notify the requester.
+
+```
+POST /api/approvals/{approvalId}/retire
+{
+  "decisionNote": "Obsolete closed request; preserve its history.",
+  "expectedUpdatedAt": "2026-10-14T12:34:56.789Z"
+}
+```
+
+Both an exact version and a nonempty reason are required (`400` otherwise).
+The decision becomes `rejected`; tasks, comments, assignments and existing
+execution remain unchanged. No requester run, review-path wake, task handback
+or `approval.decided` plugin event is created. Two activity records commit
+atomically with the decision: `approval.retired_closed_request` and
+`approval.requester_wakeup_skipped`, with reason `closed_request_retired` and
+`executionSuppressed: true`. Their non-executable activity publications follow
+commit; a failed transaction publishes none.
+
+The server locks the approval, its links and its linked tasks while checking
+eligibility. An unlinked request, any open/foreign linked task, or a remaining
+execution/checkout owner returns `409` without changing the approval. Other
+approval types and nonresolvable states return `422`; ordinary approval and
+revision workflows are unaffected. A stale version returns `409`, including
+after an ambiguous response: read the approval and activity before retrying.
+A request using the current version and identical reason is idempotent only
+when the recorded decision was already this retirement. A normal rejection
+cannot be relabeled as a retirement.
+
 ## Expected Version
 
 Approve, Reject and Request Revision accept an optional `expectedUpdatedAt`: the `updatedAt` of the approval as the caller read it, as an ISO 8601 string.

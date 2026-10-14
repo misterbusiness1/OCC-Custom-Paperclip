@@ -4,9 +4,20 @@ import {
   createApprovalSchema,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
+  retireApprovalSchema,
 } from "./approval.js";
 
 describe("approval validators", () => {
+  it("requires an exact version and nonempty reason only for explicit retirement", () => {
+    const body = { decisionNote: "Obsolete closed request", expectedUpdatedAt: "2026-10-14T12:34:56.789Z" };
+    expect(retireApprovalSchema.parse(body)).toEqual(body);
+    for (const invalid of [{}, { decisionNote: body.decisionNote }, { ...body, decisionNote: " " },
+      { ...body, decisionNote: null }, { ...body, expectedUpdatedAt: "yesterday" }, { ...body, notifyRequester: false }]) {
+      expect(retireApprovalSchema.safeParse(invalid).success).toBe(false);
+    }
+    expect(resolveApprovalSchema.parse({})).toEqual({});
+  });
+
   it("passes real line breaks through unchanged", () => {
     expect(addApprovalCommentSchema.parse({ body: "Looks good\n\nApproved." }).body)
       .toBe("Looks good\n\nApproved.");
