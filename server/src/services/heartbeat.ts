@@ -9518,7 +9518,9 @@ export function heartbeatService(
       const agent = await getAgent(run.agentId);
       if (!agent || agent.companyId !== run.companyId) return null;
       const result = await scheduleBoundedRetryForRun(run, agent);
-      return result.outcome === "scheduled" ? result.run : null;
+      return result.outcome === "scheduled" || result.outcome === "retry_exhausted"
+        ? result
+        : null;
     },
   });
   const runDispatch = createRunDispatch(db);

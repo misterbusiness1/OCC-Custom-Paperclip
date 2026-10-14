@@ -1,4 +1,5 @@
 import { instanceSettingsService } from "../../../services/instance-settings.js";
+import { issueService } from "../../../services/issues.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -170,6 +171,85 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     });
     return id;
   }
+
+  it.each(["done", "cancelled"])("keeps a later human %s decision when an earlier closing comment drains", async (status) => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId, checkoutRunId: runId }).where(eq(issues.id, issueId));
+    const [comment] = await db.insert(issueComments).values({
+      companyId, issueId, authorUserId: "responsible-user", body: "Verified; closing this task.",
+      createdAt: new Date(Date.now() - 60_000),
+    }).returning();
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, requestedByActorId: "responsible-user",
+      payload: { commentId: comment.id, _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment.id] } },
+    });
+    await issueService(db).update(issueId, { status, actorUserId: "responsible-user" });
+    const release = createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} },
+    });
+    const result = await release({ companyId, runId, now: new Date() });
+    expect(result.outcome.kind).toBe("released");
+    expect(result.postCommitEffects).toEqual([]);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({
+      status, executionRunId: null, checkoutRunId: null,
+    });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0]).toMatchObject({ status: "cancelled", runId: null });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+  });
+
+  it.each([
+    "newer_comment", "mixed_newer_comment", "different_author", "agent_completion", "old_completion_version", "repeated_close_other_author", "repeated_cancel", "edited_comment",
+  ])("preserves independent follow-up input after completion: %s", async (scenario) => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+    const svc = issueService(db);
+    const terminalStatus = scenario === "repeated_cancel" ? "cancelled" : "done";
+    await svc.update(issueId, { status: terminalStatus, ...(scenario === "agent_completion"
+      ? {} : { actorUserId: "responsible-user" }) });
+    if (scenario === "old_completion_version") {
+      await svc.update(issueId, { status: "todo" });
+      await svc.update(issueId, { status: "done" });
+    }
+    if (scenario === "repeated_close_other_author") {
+      await svc.update(issueId, { status: "done", actorUserId: "other-user" });
+    }
+    const [closed] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const decidedAt = terminalStatus === "done" ? closed.completedAt! : closed.cancelledAt!;
+    const newer = new Date(decidedAt.getTime() + (scenario === "repeated_cancel" ? 1 : 1000));
+    const older = new Date(decidedAt.getTime() - 1000);
+    const authorUserId = ["different_author", "repeated_close_other_author"].includes(scenario) ? "other-user" : "responsible-user";
+    const comments = await db.insert(issueComments).values([
+      { companyId, issueId, authorUserId, body: "Follow-up request", createdAt: ["newer_comment", "repeated_cancel"].includes(scenario) ? newer : older,
+        updatedAt: scenario === "edited_comment" ? newer : older },
+      ...(scenario === "mixed_newer_comment" ? [{ companyId, issueId, authorUserId, body: "A new request", createdAt: newer, updatedAt: newer }] : []),
+    ]).returning();
+    if (scenario === "repeated_cancel") {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await svc.update(issueId, { status: "cancelled", actorUserId: "responsible-user" });
+      const [repeated] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(repeated.statusVersion).toBe(closed.statusVersion);
+      expect(repeated.cancelledAt!.getTime()).toBeGreaterThan(newer.getTime());
+    }
+    const commentIds = comments.map((comment) => comment.id);
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, requestedByActorId: authorUserId,
+      payload: { commentId: commentIds[0], _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: commentIds } },
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} },
+    });
+    const result = await release({ companyId, runId, now: newer });
+    expect(result.outcome.kind).toBe("promoted");
+    expect(result.postCommitEffects.some((effect) => effect.kind === "issue_reopened")).toBe(true);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("todo");
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0].runId).not.toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(2);
+  });
 
   it.each([
     "completed", "multiple_comments", "repeated_reference", "parent_reference", "mixed_issue_references", "mixed_foreign_references", "mixed_unknown_references", "no_comments", "missing_comment",

@@ -5146,6 +5146,12 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
 
+    if (req.actor.type === "agent" && hasOwn(req.body as object, "status")) {
+      throw forbidden(
+        "Agent-authenticated callers cannot set status through PATCH /agents/:id; use the dedicated lifecycle endpoints",
+      );
+    }
+
     if (hasOwn(req.body as object, "permissions")) {
       res.status(422).json({ error: "Use /api/agents/:id/permissions for permission changes" });
       return;
@@ -5468,7 +5474,7 @@ export function agentRoutes(
       await approvalsSvc.approve(openApproval.id, decidedByUserId);
       agent = await svc.getById(id);
     } else {
-      const approval = await svc.activatePendingApproval(id);
+      const approval = await svc.activatePendingApproval(existing.companyId, id);
       if (!approval) {
         res.status(404).json({ error: "Agent not found" });
         return;

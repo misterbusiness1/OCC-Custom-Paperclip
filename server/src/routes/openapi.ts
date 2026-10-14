@@ -3169,6 +3169,8 @@ registry.registerPath({
   path: "/api/agents/{id}",
   tags: ["agents"],
   summary: "Update an agent",
+  description:
+    "Agent-authenticated callers cannot include status; use the dedicated lifecycle endpoints. Mixed status and configuration requests from agents are rejected in full. Board callers may update status.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateAgentSchema.omit({ permissions: true })),
@@ -3177,6 +3179,7 @@ registry.registerPath({
     200: r.ok(),
     400: r.badRequest,
     401: r.unauthorized,
+    403: r.forbidden,
     404: r.notFound,
   },
 });

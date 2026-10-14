@@ -271,6 +271,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       linkedIssueId: executionIssue.id,
     });
 
+    const [coalescedRun] = await db.insert(routineRuns).values({ companyId, routineId: routine.id,
+      source: "schedule", status: "coalesced", linkedIssueId: executionIssue.id,
+      coalescedIntoRunId: runId, triggeredAt: new Date("2026-07-16T12:01:00.000Z") }).returning();
     await svc.syncRunStatusForIssue(executionIssue.id);
     const [failedRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, runId));
     expect(failedRun).toMatchObject({
@@ -283,6 +286,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         },
       },
     });
+    // Repeated reconciliation preserves the original failure/completion receipt,
+    // and never rewrites historical occurrences coalesced into this execution.
+    await Promise.all([svc.syncRunStatusForIssue(executionIssue.id), svc.syncRunStatusForIssue(executionIssue.id)]);
+    expect((await db.select().from(routineRuns).where(eq(routineRuns.id, runId)))[0]).toEqual(failedRun);
+    expect((await db.select().from(routineRuns).where(eq(routineRuns.id, coalescedRun!.id)))[0]).toEqual(coalescedRun);
     await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, executionIssue.id));
     await svc.syncRunStatusForIssue(executionIssue.id);
 
@@ -320,6 +328,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       },
     });
     expect(completedRun?.completedAt).toBeInstanceOf(Date);
+    await svc.syncRunStatusForIssue(executionIssue.id);
+    expect((await db.select().from(routineRuns).where(eq(routineRuns.id, runId)))[0]).toEqual(completedRun);
   });
 
   it("moves transient routine run failures into completion context", async () => {
@@ -677,14 +687,18 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await expect(svc.evaluateActivityGate(projectRoutine, now)).resolves.toMatchObject({ fire: true });
   });
 
-  it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
+  it.each([
+    { status: "todo", concurrencyPolicy: "coalesce_if_active" },
+    { status: "blocked", concurrencyPolicy: "skip_if_active" },
+  ])("creates a fresh execution when the previous $status issue is idle under $concurrencyPolicy", async ({ status, concurrencyPolicy }) => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
+    await db.update(routines).set({ concurrencyPolicy }).where(eq(routines.id, routine.id));
     const previousRunId = randomUUID();
     const previousIssue = await issueSvc.create(companyId, {
       projectId: routine.projectId,
       title: routine.title,
       description: routine.description,
-      status: "todo",
+      status,
       priority: routine.priority,
       assigneeAgentId: routine.assigneeAgentId,
       originKind: "routine_execution",
@@ -704,6 +718,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       completedAt: new Date("2026-03-20T12:00:00.000Z"),
     });
 
+    if (status === "blocked") {
+      await svc.syncRunStatusForIssue(previousIssue.id);
+      expect((await db.select().from(routineRuns).where(eq(routineRuns.id, previousRunId)))[0])
+        .toMatchObject({ status: "failed", completedAt: expect.any(Date) });
+    }
     const detailBefore = await svc.getDetail(routine.id);
     expect(detailBefore?.activeIssue).toBeNull();
 
@@ -1327,7 +1346,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(wakeupResolved).toBe(true);
   });
 
-  it("coalesces only when the existing routine issue has a live execution run", async () => {
+  it.each(["queued", "running", "scheduled_retry"])("coalesces while the existing routine issue has a %s execution", async (status) => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
     const liveHeartbeatRunId = randomUUID();
@@ -1360,7 +1379,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       agentId,
       invocationSource: "assignment",
       triggerDetail: "system",
-      status: "running",
+      status,
       contextSnapshot: { issueId: previousIssue.id },
       startedAt: new Date("2026-03-20T12:01:00.000Z"),
     });

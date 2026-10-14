@@ -7,6 +7,7 @@ import {
   issueApprovals,
   issueThreadInteractions,
   agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   activityLog,
   budgetPolicies,
@@ -18,8 +19,12 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueRelations,
+  issueComments,
+  issueRecoveryActions,
   issues,
   projects,
+  routineRuns,
+  routines,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -167,6 +172,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
+    await db.delete(routineRuns);
+    await db.delete(routines);
+    await db.delete(agentTaskSessions);
     await db.delete(issues);
     await db.delete(approvals);
     await db.delete(executionWorkspaces);
@@ -480,6 +488,322 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     // Exhaustion leaves the task available to a new explicit request.
     const { getExecutionBlocker } = await import("../services/execution-blocker.js");
     expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+  });
+
+  async function seedExhaustedRoutineFixture(errorCode = "acpx_auth_required") {
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
+    const routineId = randomUUID();
+    const routineRunId = randomUUID();
+    const initialRunId = randomUUID();
+    const firstRetryRunId = randomUUID();
+    const resultJson = { conversationContinuation: "continue_conversation_v1" };
+
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Support inbox triage",
+      status: "active",
+      concurrencyPolicy: "skip_if_active",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(routineRuns).values({
+      id: routineRunId,
+      companyId,
+      routineId,
+      source: "schedule",
+      status: "issue_created",
+      linkedIssueId: issueId,
+      triggeredAt: now,
+    });
+    await db.update(issues).set({
+      title: "Support inbox triage",
+      originKind: "routine_execution",
+      originId: routineId,
+      originRunId: routineRunId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    }).where(eq(issues.id, issueId));
+    // Persisted policy and invocation evidence belong to the stopped run.
+    await db.update(agents).set({ adapterType: "opencode_local" })
+      .where(eq(agents.id, agentId));
+    await db.insert(heartbeatRuns).values([0, 1].map((attempt) => {
+      const at = new Date(now.getTime() - (2 - attempt) * 60_000);
+      return {
+        id: attempt === 0 ? initialRunId : firstRetryRunId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        status: "failed",
+        runtimeMode: "legacy",
+        errorCode,
+        error: "Provider authentication or transport failed",
+        resultJson,
+        scheduledRetryAt: attempt === 0 ? null : at,
+        scheduledRetryAttempt: attempt,
+        scheduledRetryReason: attempt === 0 ? null : "transient_failure",
+        retryOfRunId: attempt === 0 ? null : initialRunId,
+        contextSnapshot: {
+          issueId,
+          source: "routine.dispatch",
+          wakeReason: attempt === 0 ? "issue_assigned" : "transient_failure_retry",
+          retryReason: attempt === 0 ? null : "transient_failure",
+        },
+        createdAt: at,
+        updatedAt: at,
+        finishedAt: at,
+      };
+    }));
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "legacy",
+      status: "failed",
+      errorCode,
+      error: "Provider authentication or transport failed",
+      scheduledRetryAt: now,
+      scheduledRetryAttempt: 2,
+      scheduledRetryReason: "transient_failure",
+      retryOfRunId: firstRetryRunId,
+      resultJson,
+      contextSnapshot: {
+        issueId,
+        source: "routine.dispatch",
+        wakeReason: "transient_failure_retry",
+        retryReason: "transient_failure",
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    for (const id of [initialRunId, firstRetryRunId, runId]) {
+      await appendHeartbeatRunEvent(db, { companyId, agentId, runId: id,
+        eventType: "adapter.invoke", payload: { adapterType: "kimi_local" } });
+    }
+    return { companyId, agentId, issueId, runId, now, routineId, routineRunId };
+  }
+
+  it.each(["acpx_auth_required", "adapter_failed"])(
+    "makes exhausted routine conversation recovery visible after %s without replay",
+    async (errorCode) => {
+      const { companyId, agentId, issueId, routineRunId } = await seedExhaustedRoutineFixture(errorCode);
+      // Exercise the actual startup/periodic recovery boundary. Calling the
+      // routine status helper here would hide the missing lifecycle projection.
+      await Promise.all([
+        heartbeatService(db).reconcileStrandedAssignedIssues(),
+        heartbeatService(createDb(tempDb!.connectionString)).reconcileStrandedAssignedIssues(),
+      ]);
+      const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect.soft(source).toMatchObject({
+        status: "blocked",
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+      });
+      const actions = await db.select().from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      expect.soft(actions).toHaveLength(1);
+      expect.soft(actions[0]).toMatchObject({
+        ownerType: "board",
+        ownerAgentId: null,
+        returnOwnerAgentId: agentId,
+      });
+      const [projected] = await db.select().from(routineRuns)
+        .where(eq(routineRuns.id, routineRunId));
+      expect.soft(projected).toMatchObject({
+        status: "failed",
+        failureReason: "Execution issue moved to blocked",
+      });
+      expect.soft(projected?.completedAt).toBeInstanceOf(Date);
+      expect(await db.select().from(issueComments).where(and(
+        eq(issueComments.issueId, issueId), eq(issueComments.authorType, "system"),
+      ))).toHaveLength(1);
+      const { getExecutionBlocker } = await import("../services/execution-blocker.js");
+      expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+
+      const restarted = heartbeatService(createDb(tempDb!.connectionString));
+      await Promise.all([
+        heartbeat.reconcileStrandedAssignedIssues(),
+        restarted.reconcileStrandedAssignedIssues(),
+      ]);
+      expect.soft(await db.select().from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(1);
+      expect(await db.select().from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+      expect(await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(0);
+    },
+  );
+
+  it.each(["approval", "interaction", "goal", "monitor", "dependency", "disabled"])(
+    "preserves the %s authority after routine retries are exhausted",
+    async (authority) => {
+      const { companyId, agentId, issueId, routineRunId } = await seedExhaustedRoutineFixture();
+      if (authority === "approval") {
+        const approvalId = randomUUID();
+        await db.insert(approvals).values({ id: approvalId, companyId, type: "hire_agent", status: "pending", payload: {} });
+        await db.insert(issueApprovals).values({ companyId, issueId, approvalId });
+      } else if (authority === "interaction") {
+        await db.insert(issueThreadInteractions).values({ companyId, issueId,
+          kind: "ask_user_questions", status: "pending", payload: { version: 1, questions: [] } });
+      } else if (authority === "goal") {
+        await db.insert(agentTaskSessions).values({ companyId, agentId, taskKey: issueId,
+          adapterType: "opencode_local", goalStatus: "paused" });
+      } else if (authority === "monitor") {
+        await db.update(issues).set({ monitorNextCheckAt: new Date(Date.now() + 60_000) }).where(eq(issues.id, issueId));
+      } else if (authority === "dependency") {
+        const blockerId = randomUUID();
+        await db.insert(issues).values({ id: blockerId, companyId, title: "Required work",
+          status: "blocked", assigneeUserId: "responsible-user" });
+        await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
+      } else {
+        await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } }).where(eq(agents.id, agentId));
+      }
+      await heartbeat.reconcileStrandedAssignedIssues();
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_progress");
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+      expect((await db.select().from(routineRuns).where(eq(routineRuns.id, routineRunId)))[0]?.status).toBe("issue_created");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+    },
+  );
+
+  it.each(["new_comment", "edited_comment"])(
+    "leaves %s after the failed run to its explicit request lifecycle",
+    async (input) => {
+      const { companyId, issueId, now } = await seedExhaustedRoutineFixture();
+      await db.insert(issueComments).values({ companyId, issueId, authorUserId: "responsible-user",
+        authorType: "user", body: "Continue with the repaired provider.",
+        createdAt: new Date(now.getTime() + (input === "new_comment" ? 1 : -1)),
+        updatedAt: new Date(now.getTime() + 1),
+      });
+      await heartbeat.reconcileStrandedAssignedIssues();
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_progress");
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+    },
+  );
+
+  it.each(["done", "cancelled", "in_review", "reassigned"])(
+    "does not overwrite %s committed after the exhausted sweep snapshot",
+    async (change) => {
+      const { companyId, agentId, issueId } = await seedExhaustedRoutineFixture();
+      let newAgentId = agentId;
+      if (change === "reassigned") {
+        newAgentId = randomUUID();
+        await db.insert(agents).values({ id: newAgentId, companyId, name: "New owner",
+          role: "engineer", status: "active", adapterType: "opencode_local" });
+      }
+      const original = mockedAppendHeartbeatRunEvent.getMockImplementation()!;
+      mockedAppendHeartbeatRunEvent.mockImplementationOnce(async (...args) => {
+        // The real exhaustion receipt occurs after candidate selection, before
+        // disposition. Interleave a committed operator decision at that seam.
+        await db.update(issues).set(change === "reassigned"
+          ? { assigneeAgentId: newAgentId, updatedAt: new Date() }
+          : { status: change, updatedAt: new Date() }).where(eq(issues.id, issueId));
+        return original(...args);
+      });
+      await heartbeat.reconcileStrandedAssignedIssues();
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({
+        status: change === "reassigned" ? "in_progress" : change, assigneeAgentId: newAgentId,
+      });
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+    },
+  );
+
+  it.each(["succeeded", "queued", "scheduled_retry"])(
+    "preserves a separate native %s run even without legacy context identity",
+    async (status) => {
+      const { companyId, agentId, issueId, now } = await seedExhaustedRoutineFixture();
+      await db.insert(heartbeatRuns).values({ id: "00000000-0000-4000-8000-000000000001",
+        companyId, agentId, invocationSource: "automation", runtimeMode: "native", status,
+        nativeIssueId: issueId, contextSnapshot: {},
+        createdAt: now, updatedAt: now,
+        scheduledRetryAt: status === "scheduled_retry" ? new Date(Date.now() + 60_000) : null,
+      });
+      try {
+        await heartbeat.reconcileStrandedAssignedIssues();
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_progress");
+        expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(4);
+      } finally {
+        // This test observes admission only; do not let teardown drive queued work.
+        await db.update(heartbeatRuns).set({ status: "cancelled" })
+          .where(eq(heartbeatRuns.id, "00000000-0000-4000-8000-000000000001"));
+      }
+    },
+  );
+
+  it.each(["board", "system"])("preserves an existing %s recovery action at exhaustion", async (ownerType) => {
+    const { companyId, agentId, issueId } = await seedExhaustedRoutineFixture();
+    const [existing] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "stranded_assigned_issue", ownerType, cause: "existing_recovery", fingerprint: "existing",
+      returnOwnerAgentId: agentId, nextAction: "Preserve this decision", evidence: { original: true },
+    }).returning();
+    await heartbeat.reconcileStrandedAssignedIssues();
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([existing]);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_progress");
+  });
+
+  it("retains the unknown legacy action-outcome hold after an adapter migration", async () => {
+    const { companyId, issueId, runId } = await seedExhaustedRoutineFixture();
+    await db.update(heartbeatRuns).set({ resultJson: null }).where(eq(heartbeatRuns.id, runId));
+    await db.update(heartbeatRunEvents).set({ payload: { adapterType: "process" } })
+      .where(and(eq(heartbeatRunEvents.runId, runId), eq(heartbeatRunEvents.eventType, "adapter.invoke")));
+    await heartbeat.reconcileStrandedAssignedIssues();
+    const { getExecutionBlocker } = await import("../services/execution-blocker.js");
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ cause: "legacy_execution_requires_reconciliation", runId });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_progress");
+  });
+
+  it("rolls back exhausted disposition when routine projection fails, then repairs on the next sweep", async () => {
+    const { issueId, routineRunId } = await seedExhaustedRoutineFixture();
+    const projection = await import("../services/routine-run-status.js");
+    const fault = vi.spyOn(projection, "syncRoutineRunStatusForIssue")
+      .mockRejectedValueOnce(new Error("injected routine projection fault"));
+    try {
+      await heartbeat.reconcileStrandedAssignedIssues();
+    } finally {
+      fault.mockRestore();
+    }
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_progress");
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toHaveLength(0);
+    expect((await db.select().from(routineRuns).where(eq(routineRuns.id, routineRunId)))[0]?.status).toBe("issue_created");
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("blocked");
+    expect((await db.select().from(routineRuns).where(eq(routineRuns.id, routineRunId)))[0]?.status).toBe("failed");
+  });
+
+  it("records a distinct exhausted incident after explicit board recovery without replay", async () => {
+    const { companyId, issueId, runId, routineRunId } = await seedExhaustedRoutineFixture();
+    await heartbeat.reconcileStrandedAssignedIssues();
+    const [first] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(first?.ownerType).toBe("board");
+    const { issueRecoveryActionService } = await import("../services/issue-recovery-actions.js");
+    const { issueService } = await import("../services/issues.js");
+    const { syncRoutineRunStatusForIssue } = await import("../services/routine-run-status.js");
+    await issueRecoveryActionService(db).resolveActiveForIssue({ companyId, sourceIssueId: issueId,
+      actionId: first!.id, status: "resolved", outcome: "restored", resolutionNote: "Provider repaired; explicitly continue." });
+    await issueService(db).update(issueId, { status: "in_progress", companyGuard: companyId });
+    await syncRoutineRunStatusForIssue(db, issueId, companyId);
+    expect((await db.select().from(routineRuns).where(eq(routineRuns.id, routineRunId)))[0])
+      .toMatchObject({ status: "issue_created", completedAt: null });
+
+    // Seed the terminal receipt of a later explicit conversation's exhausted
+    // chain. The sweep must retain the prior board decision as history.
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const laterId = randomUUID();
+    const laterAt = new Date();
+    await db.insert(heartbeatRuns).values({ ...source!, id: laterId, retryOfRunId: null,
+      createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt, scheduledRetryAt: laterAt });
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toHaveLength(2);
+    expect(actions.find((action) => action.id === first!.id)).toMatchObject({ status: "resolved", outcome: "restored" });
+    expect(actions.find((action) => action.id !== first!.id)).toMatchObject({ ownerType: "board",
+      evidence: { automaticRetry: { state: "exhausted", sourceRunId: laterId, retriesUsed: 2, maxRetries: 2 } } });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("blocked");
+    expect((await db.select().from(routineRuns).where(eq(routineRuns.id, routineRunId)))[0]?.status).toBe("failed");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(4);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(0);
   });
 
   it.each(["dependency", "disabled", "reassigned"])("respects the %s gate for interrupted conversations", async gate => {
