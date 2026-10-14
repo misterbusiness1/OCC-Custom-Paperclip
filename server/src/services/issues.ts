@@ -11131,81 +11131,84 @@ export function issueService(db: Db) {
           }
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
-            // Every terminal transition funnels through here, including direct
-            // service callers (tree control, recovery, pipelines, status cards)
-            // that never touch the HTTP routes, so pending interaction cards
-            // cannot outlive their issue. Dynamic import breaks the module
-            // cycle (issue-thread-interactions.js imports issueService).
-            const { issueThreadInteractionService } =
-              await import("./issue-thread-interactions.js");
-            const expiredInteractions = await issueThreadInteractionService(
-              tx,
-            ).expirePendingInteractionsForTerminalIssue(updated, {
-              agentId: actorAgentId ?? null,
-              userId: actorUserId ?? null,
-            }, options.deferredTerminalInteractionTelemetry);
-            const {
-              nativeQuestionCancellationIdentity,
-              requestNativeQuestionRunCancellation,
-            } = await import("./native-runtime/native-question-bridge.js");
-            for (const interaction of expiredInteractions) {
-              if (interaction.kind === "ask_user_questions") {
-                const nativeQuestion =
-                  nativeQuestionCancellationIdentity(interaction);
-                if (nativeQuestion) {
-                  if (dbOrTx !== db && !postCommitActions) {
-                    throw new Error(
-                      "Terminal native question updates in an external transaction require a post-commit action queue",
-                    );
-                  }
-                  const runId = await requestNativeQuestionRunCancellation(
-                    tx,
-                    nativeQuestion,
-                    { kind: "issue_terminal", issueStatus: updated.status },
+          }
+        }
+        if (updated.status === "done" || updated.status === "cancelled") {
+          // Reconcile historical pending cards on terminal metadata updates too.
+          // The issue row remains locked, and pending-only expiry is idempotent;
+          // summary/status-card/workspace effects still require a transition.
+          // Dynamic import breaks the issue-thread-interactions module cycle.
+          const { issueThreadInteractionService } =
+            await import("./issue-thread-interactions.js");
+          const expiredInteractions = await issueThreadInteractionService(
+            tx,
+          ).expirePendingInteractionsForTerminalIssue(updated, {
+            agentId: actorAgentId ?? null,
+            userId: actorUserId ?? null,
+          }, options.deferredTerminalInteractionTelemetry);
+          const {
+            nativeQuestionCancellationIdentity,
+            requestNativeQuestionRunCancellation,
+          } = await import("./native-runtime/native-question-bridge.js");
+          for (const interaction of expiredInteractions) {
+            if (interaction.kind === "ask_user_questions") {
+              const nativeQuestion =
+                nativeQuestionCancellationIdentity(interaction);
+              if (nativeQuestion) {
+                if (dbOrTx !== db && !postCommitActions) {
+                  throw new Error(
+                    "Terminal native question updates in an external transaction require a post-commit action queue",
                   );
-                  if (runId) {
-                    queuedPostCommitActions.push({
-                      type: "cancel_native_question_run",
-                      runId,
-                      issueId: updated.id,
-                      issueStatus: updated.status,
-                    });
-                  }
+                }
+                const runId = await requestNativeQuestionRunCancellation(
+                  tx,
+                  nativeQuestion,
+                  { kind: "issue_terminal", issueStatus: updated.status },
+                );
+                if (runId) {
+                  queuedPostCommitActions.push({
+                    type: "cancel_native_question_run",
+                    runId,
+                    issueId: updated.id,
+                    issueStatus: updated.status,
+                  });
                 }
               }
-              await logActivity(tx as unknown as Db, {
-                companyId: updated.companyId,
-                actorType: actorAgentId
-                  ? "agent"
-                  : actorUserId
-                    ? "user"
-                    : "system",
-                actorId: actorAgentId ?? actorUserId ?? "issue_service",
-                agentId: actorAgentId ?? null,
-                action: "issue.thread_interaction_expired",
-                entityType: "issue",
-                entityId: updated.id,
-                details: {
-                  identifier: updated.identifier ?? null,
-                  interactionId: interaction.id,
-                  interactionKind: interaction.kind,
-                  interactionStatus: interaction.status,
-                  source: "issue.status_transition.issue_closed",
-                  result: interaction.result ?? null,
-                },
-              }, options.deferredTerminalInteractionTelemetry ? activityPublications : undefined);
             }
+            await logActivity(tx as unknown as Db, {
+              companyId: updated.companyId,
+              actorType: actorAgentId
+                ? "agent"
+                : actorUserId
+                  ? "user"
+                  : "system",
+              actorId: actorAgentId ?? actorUserId ?? "issue_service",
+              agentId: actorAgentId ?? null,
+              action: "issue.thread_interaction_expired",
+              entityType: "issue",
+              entityId: updated.id,
+              details: {
+                identifier: updated.identifier ?? null,
+                interactionId: interaction.id,
+                interactionKind: interaction.kind,
+                interactionStatus: interaction.status,
+                source: "issue.status_transition.issue_closed",
+                reconciledWithoutStatusChange: receiptExisting.status === updated.status,
+                result: interaction.result ?? null,
+              },
+            }, options.deferredTerminalInteractionTelemetry ? activityPublications : undefined);
           }
-          // A status-card generation task that goes done/cancelled/blocked stops
-          // making progress; release the card's generation claim so the board tile
-          // stops spinning and offers "Run now" again (blocked = stuck on a human).
-          if (
-            updated.status === "done" ||
+        }
+        // A status-card generation task that goes done/cancelled/blocked stops
+        // making progress; release the card's generation claim so the board tile
+        // stops spinning and offers "Run now" again (blocked = stuck on a human).
+        if (
+          existing.status !== updated.status &&
+          (updated.status === "done" ||
             updated.status === "cancelled" ||
-            updated.status === "blocked"
-          ) {
-            await finalizeStatusCardsForStalledGeneration(tx, updated);
-          }
+            updated.status === "blocked")
+        ) {
+          await finalizeStatusCardsForStalledGeneration(tx, updated);
         }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(

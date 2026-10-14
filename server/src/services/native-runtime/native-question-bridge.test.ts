@@ -305,14 +305,19 @@ describeEmbeddedPostgres("native question bridge", () => {
     expect(await db.select().from(activityLog)).toHaveLength(1);
   });
 
-  it("cancels the active native run when the shared issue service expires its question", async () => {
+  it.each(["transition", "terminal_metadata"] as const)("cancels the active native run when %s expires its question", async (mode) => {
     await seed();
     const interaction = await projectNativeRuntimeRequest({
       db,
       binding: binding(),
       event: runtimeRequestEvent(),
     });
-    await issueService(db).update(issueId, { status: "cancelled" });
+    if (mode === "terminal_metadata") {
+      await db.update(issues).set({ status: "cancelled", cancelledAt: new Date() }).where(eq(issues.id, issueId));
+    }
+    await issueService(db).update(issueId, mode === "terminal_metadata"
+      ? { hiddenAt: new Date() }
+      : { status: "cancelled" });
 
     const [persistedInteraction] = await db.select({ status: issueThreadInteractions.status })
       .from(issueThreadInteractions)
@@ -331,18 +336,21 @@ describeEmbeddedPostgres("native question bridge", () => {
     });
   });
 
-  it("defers native cancellation until an external issue transaction commits", async () => {
+  it.each(["transition", "terminal_metadata"] as const)("defers %s native cancellation until an external issue transaction commits", async (mode) => {
     await seed();
     await projectNativeRuntimeRequest({
       db,
       binding: binding(),
       event: runtimeRequestEvent(),
     });
+    if (mode === "terminal_metadata") {
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, issueId));
+    }
     const postCommitActions: IssuePostCommitAction[] = [];
     await db.transaction(async (tx) => {
       await issueService(db).update(
         issueId,
-        { status: "done" },
+        mode === "terminal_metadata" ? { hiddenAt: new Date() } : { status: "done" },
         tx,
         undefined,
         postCommitActions,
@@ -359,6 +367,23 @@ describeEmbeddedPostgres("native question bridge", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId));
     expect(persistedRun?.status).toBe("cancelled");
+  });
+
+  it("rolls back terminal metadata reconciliation without an external post-commit queue", async () => {
+    await seed();
+    const interaction = await projectNativeRuntimeRequest({
+      db, binding: binding(), event: runtimeRequestEvent(),
+    });
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, issueId));
+
+    await expect(db.transaction(async (tx) => {
+      await issueService(db).update(issueId, { hiddenAt: new Date() }, tx);
+    })).rejects.toThrow("require a post-commit action queue");
+
+    expect(await issueThreadInteractionService(db).getById(interaction!.id)).toMatchObject({ status: "pending" });
+    expect(await issueService(db).getById(issueId)).toMatchObject({ status: "done", hiddenAt: null });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run?.status).toBe("running");
   });
 
   it("recovers a durable native cancellation when the post-commit process exits", async () => {

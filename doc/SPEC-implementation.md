@@ -516,6 +516,12 @@ Side effects:
 - entering `in_progress` sets `started_at` if null
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
+- Metadata updates to an already terminal issue reconcile historical pending interaction
+  cards to expired without reopening the issue or changing its status version,
+  completion time, or cancellation time. Repeated metadata updates do not repeat
+  interaction resolution. Existing linked-action revocation and terminal-card
+  publication rules apply; summary, status-card, and workspace transition effects
+  still require an actual status change.
 - A comment included in an update that leaves the issue `done` or `cancelled`
   is a completion report and does not wake its unchanged assignee. Comment-wake
   eligibility uses the saved status, so a deferred wake cannot undo that same
