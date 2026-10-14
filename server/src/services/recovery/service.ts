@@ -68,6 +68,7 @@ import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
 import {
   logActivity,
+  persistActivity,
   publishActivity,
   type ActivityPublication,
 } from "../activity-log.js";
@@ -76,6 +77,10 @@ import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { budgetService } from "../budgets.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { hasConversationContinuationPolicy } from "../conversation-continuation.js";
+import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
+import { syncRoutineRunStatusForIssue } from "../routine-run-status.js";
+import { createRunDispatch } from "../../modules/run-dispatch/index.js";
 import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
@@ -260,6 +265,12 @@ export function shouldRouteRecoveryToOriginalAgent(
 }
 
 type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
+
+type ExhaustedFailureRetry = {
+  outcome: "retry_exhausted";
+  attempt: number;
+  maxAttempts: number;
+};
 
 type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;
@@ -1225,7 +1236,11 @@ export function recoveryService(
     enqueueWakeup: RecoveryWakeup;
     scheduleRecoveryRetry?: (
       runId: string,
-    ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
+    ) => Promise<
+      | { outcome: "scheduled"; run: typeof heartbeatRuns.$inferSelect }
+      | ExhaustedFailureRetry
+      | null
+    >;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
     // Fork: true while this process's executeRun still owns the run (preparing
@@ -2204,7 +2219,10 @@ export function recoveryService(
     source: string;
     retryOfRunId?: string | null;
     extraContext?: Record<string, unknown>;
-  }) {
+  }, onExhausted?: (
+    run: typeof heartbeatRuns.$inferSelect,
+    exhaustion: ExhaustedFailureRetry,
+  ) => Promise<void>) {
     if (input.retryOfRunId) {
       const [predecessor] = await db
         .select()
@@ -2232,8 +2250,13 @@ export function recoveryService(
           });
           return null;
         }
-        if (deps.scheduleRecoveryRetry)
-          return deps.scheduleRecoveryRetry(predecessor.id);
+        if (deps.scheduleRecoveryRetry) {
+          const retry = await deps.scheduleRecoveryRetry(predecessor.id);
+          if (retry?.outcome === "retry_exhausted") {
+            await onExhausted?.(predecessor, retry);
+          }
+          return retry?.outcome === "scheduled" ? retry.run : null;
+        }
         return null;
       }
     }
@@ -2831,7 +2854,12 @@ export function recoveryService(
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
     suppressProviderQuotaWait?: boolean;
-  }) {
+    exhaustedFailureRetry?: {
+      sourceRunId: string;
+      retriesUsed: number;
+      maxRetries: number;
+    };
+  }, executor: Db = db) {
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
       input.recoveryCause,
@@ -2842,7 +2870,8 @@ export function recoveryService(
     });
     const isProviderQuotaWait = recoveryCause === "provider_quota" && !input.suppressProviderQuotaWait;
     const now = new Date();
-    const action = await recoveryActionsSvc.upsertSourceScoped({
+    const actionService = executor === db ? recoveryActionsSvc : issueRecoveryActionService(executor);
+    const action = await actionService.upsertSourceScoped({
       companyId: input.issue.companyId,
       sourceIssueId: input.issue.id,
       // A configuration-incomplete failure carries a per-identity fingerprint
@@ -2873,6 +2902,9 @@ export function recoveryService(
         }),
         failureSummary:
           summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
+        ...(input.exhaustedFailureRetry
+          ? { automaticRetry: { state: "exhausted", ...input.exhaustedFailureRetry } }
+          : {}),
         ...(input.suppressProviderQuotaWait
           ? { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY }
           : {}),
@@ -2881,7 +2913,9 @@ export function recoveryService(
         ? {}
         : { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY },
       nextAction:
-        recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+        input.exhaustedFailureRetry
+          ? "Automatic retries are exhausted. Board operator: inspect the stopped run and repair the provider or authentication configuration, then explicitly continue the original owner, reassign, or intentionally resolve the task."
+          : recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
           ? "Board operator: inspect the run evidence, then explicitly choose a valid issue disposition, retry the original owner, reassign, or intentionally resolve the task."
           : recoveryCause === "process_lost"
             ? "Board operator: inspect the retry history, then explicitly retry the original owner, reassign, or intentionally resolve the task."
@@ -4126,6 +4160,158 @@ export function recoveryService(
       attempt: nextAttempt,
     });
     return scheduled ? "queued" : "skipped";
+  }
+
+  async function disposeExhaustedFailureRetry(
+    observedIssue: typeof issues.$inferSelect,
+    observedRun: typeof heartbeatRuns.$inferSelect,
+    exhaustion: ExhaustedFailureRetry,
+  ) {
+    const publications: ActivityPublication[] = [];
+    const postCommitActions: IssuePostCommitAction[] = [];
+    const disposed = await db.transaction(async (tx) => {
+      await tx.execute(sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`);
+      const [current] = await tx.select().from(issues).where(and(
+        eq(issues.companyId, observedIssue.companyId),
+        eq(issues.id, observedIssue.id),
+      )).for("update");
+      if (!current || current.status !== "in_progress" || current.hiddenAt ||
+          current.statusVersion !== observedIssue.statusVersion ||
+          current.lastStatusDecisionId !== observedIssue.lastStatusDecisionId ||
+          current.updatedAt.getTime() !== observedIssue.updatedAt.getTime() ||
+          current.assigneeAgentId !== observedIssue.assigneeAgentId ||
+          current.assigneeUserId !== observedIssue.assigneeUserId ||
+          current.executionRunId !== observedIssue.executionRunId ||
+          current.checkoutRunId !== observedIssue.checkoutRunId ||
+          current.assigneeUserId || !current.assigneeAgentId) return false;
+
+      // Same lock order as dispatch: issue, then its source run. Never infer
+      // the old runtime from the agent's current (possibly migrated) adapter.
+      const [source] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, current.companyId),
+        eq(heartbeatRuns.id, observedRun.id),
+      )).for("update");
+      if (!source || source.runtimeMode !== "legacy" ||
+          !["failed", "timed_out", "interrupted"].includes(source.status) ||
+          source.agentId !== current.assigneeAgentId ||
+          (source.nativeIssueId ?? readNonEmptyString(parseObject(source.contextSnapshot).issueId)) !== current.id ||
+          !hasConversationContinuationPolicy(source.resultJson) ||
+          legacyExecutionNeedsReconciliation(source) ||
+          !Number.isInteger(exhaustion.maxAttempts) || exhaustion.maxAttempts < 1 ||
+          executionFailureRetryCount(source) < exhaustion.maxAttempts ||
+          classifyAdapterFailureForRecovery(source) ||
+          classifyContinuationFailure(source).kind === "provider_quota" ||
+          isOperatorCancelledRun(source, current.assigneeAgentId) ||
+          (current.executionRunId && current.executionRunId !== source.id) ||
+          (current.checkoutRunId && current.checkoutRunId !== source.id)) return false;
+
+      const [otherRun] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, current.companyId),
+        sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${current.id}`,
+        sql`${heartbeatRuns.id} <> ${source.id}`,
+        or(
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+          gte(heartbeatRuns.createdAt, source.createdAt),
+        ),
+      )).limit(1);
+      if (otherRun) return false;
+      if (await recoveryActionsSvc.getActiveForIssue(current.companyId, current.id, tx)) return false;
+
+      // Exhaustion is returned before the scheduler's normal admission gate.
+      // Reuse that gate under this transaction before changing source state.
+      const gate = await createRunDispatch(tx as unknown as Db).evaluateScheduledRetryGate({
+        runId: source.id,
+        companyId: current.companyId,
+        retryReasonOverride: "transient_failure",
+        now: new Date(),
+      });
+      if (!gate.allowed) return false;
+      const state = await collectDispositionRepairSourceState(tx as unknown as Db, { issue: current });
+      if (state.hasActiveExecutionPath || state.hasDurableWaitingPath || current.monitorNextCheckAt || current.unblockDescriptor) return false;
+      const [goal] = await tx.select({ id: agentTaskSessions.id }).from(agentTaskSessions).where(and(
+        eq(agentTaskSessions.companyId, current.companyId),
+        eq(agentTaskSessions.agentId, current.assigneeAgentId),
+        eq(agentTaskSessions.taskKey, current.id),
+        sql`${agentTaskSessions.goalStatus} is not null and ${agentTaskSessions.goalStatus} <> 'complete'`,
+      )).limit(1);
+      if (goal) return false;
+      if ((await readChatControlRecoveryStop(tx as unknown as Db, {
+        companyId: current.companyId,
+        issueId: current.id,
+        agentId: current.assigneeAgentId,
+        sourceRunId: source.id,
+      })).kind !== "clear") return false;
+
+      // A human message may have committed before this sweep's initial read,
+      // while its wake effect is still pending. It belongs to a fresh request,
+      // not this exhausted automatic incident. Edits preserve the same rule.
+      if (!source.finishedAt) return false;
+      const [newInput] = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+        eq(issueComments.companyId, current.companyId),
+        eq(issueComments.issueId, current.id),
+        sql`${issueComments.authorUserId} is not null`,
+        isNull(issueComments.deletedAt),
+        or(gte(issueComments.createdAt, source.finishedAt), gte(issueComments.updatedAt, source.finishedAt)),
+      )).limit(1);
+      if (newInput) return false;
+
+      const retriesUsed = executionFailureRetryCount(source);
+      const action = await ensureSourceScopedStrandedRecoveryAction({
+        issue: current,
+        previousStatus: "in_progress",
+        latestRun: source,
+        recoveryCause: "stranded_assigned_issue",
+        exhaustedFailureRetry: {
+          sourceRunId: source.id,
+          retriesUsed,
+          maxRetries: exhaustion.maxAttempts,
+        },
+      }, tx as unknown as Db);
+      const updated = await issuesSvc.update(current.id, {
+        status: "blocked",
+        companyGuard: current.companyId,
+      }, tx, publications, postCommitActions);
+      if (!updated) throw new Error("Exhausted recovery source disappeared under lock");
+      await syncRoutineRunStatusForIssue(tx as unknown as Db, current.id, current.companyId);
+      await issuesSvc.addComment(current.id,
+        `Paperclip stopped automatic conversation retries after ${retriesUsed} scheduled attempts. ` +
+        "The source is blocked for an explicit board decision; its assignee is unchanged.\n\n" +
+        `- Recovery action: \`${action.id}\`\n` +
+        `- Stopped run: \`${source.id}\`\n` +
+        `- Failure: \`${source.errorCode ?? source.status}\`\n\n` +
+        action.nextAction,
+        {}, {
+          authorType: "system",
+          presentation: compactRecoveryPresentation("Automatic retries exhausted"),
+          metadata: recoveryNoticeMetadata({
+            cause: "stranded_assigned_issue", latestRun: source,
+            recoveryActionId: action.id, previousStatus: current.status,
+          }),
+        }, tx);
+      const { publication } = await persistActivity(tx as unknown as Db, {
+        companyId: current.companyId,
+        actorType: "system",
+        actorId: "recovery",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: current.id,
+        runId: source.id,
+        details: {
+          identifier: current.identifier, status: "blocked", previousStatus: current.status,
+          source: "recovery.exhausted_failure_retry", recoveryActionId: action.id,
+          latestRunId: source.id, latestRunErrorCode: source.errorCode,
+          retriesUsed, maxRetries: exhaustion.maxAttempts,
+          recoveryOwnerType: "board", sourceAssigneePreserved: true,
+        },
+      });
+      publications.push(publication);
+      return true;
+    });
+    if (disposed) {
+      for (const publication of publications) publishActivity(publication);
+      await executeIssuePostCommitActions(db, postCommitActions);
+    }
+    return disposed;
   }
 
   async function escalateStrandedAssignedIssue(input: {
@@ -5669,6 +5855,7 @@ export function recoveryService(
         continue;
       }
 
+      let exhaustedDisposition = false;
       const queued = await enqueueStrandedIssueRecovery({
         issueId: issue.id,
         agentId,
@@ -5676,8 +5863,13 @@ export function recoveryService(
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",
         retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
+      }, async (run, exhaustion) => {
+        exhaustedDisposition = await disposeExhaustedFailureRetry(issue, run, exhaustion);
       });
-      if (queued) {
+      if (exhaustedDisposition) {
+        result.escalated += 1;
+        result.issueIds.push(issue.id);
+      } else if (queued) {
         result.continuationRequeued += 1;
         result.issueIds.push(issue.id);
       } else {
