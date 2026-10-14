@@ -11349,6 +11349,26 @@ export function issueService(db: Db) {
               );
           }
         }
+        if (actorUserId && receiptExisting.status !== updated.status &&
+            (updated.status === "done" || updated.status === "cancelled")) {
+          // This receipt is part of the status transaction, including external
+          // writers that publish their own post-commit issue update event.
+          const { publication } = await persistActivity(tx as unknown as Db, {
+            companyId: updated.companyId,
+            actorType: "user",
+            actorId: actorUserId,
+            action: "issue.terminal_decision",
+            entityType: "issue",
+            entityId: updated.id,
+            details: {
+              status: updated.status,
+              statusVersion: updated.statusVersion,
+              previousStatus: receiptExisting.status,
+              decidedAt: (updated.status === "done" ? updated.completedAt : updated.cancelledAt)?.toISOString(),
+            },
+          });
+          activityPublications.push(publication);
+        }
         if (
           actorUserId &&
           receiptExisting.status !== "done" &&

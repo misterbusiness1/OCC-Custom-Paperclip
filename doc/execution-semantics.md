@@ -96,6 +96,13 @@ The work is complete and terminal.
 
 The work will not continue and is terminal.
 
+A human terminal decision supersedes that same person's older queued task
+comments. The decision and its status-version receipt commit together; draining
+the queue cannot reopen the task solely for those comments. Newer comments,
+another person's input, and independent approval or interaction continuations
+retain their existing delivery rules. A receipt from an earlier close/reopen
+cycle does not suppress input after a later decision.
+
 ## 4. Agent-Owned vs User-Owned Execution
 
 The execution model differs depending on assignee type.

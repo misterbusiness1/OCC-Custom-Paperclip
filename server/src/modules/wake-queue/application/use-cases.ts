@@ -334,6 +334,25 @@ async function promoteDeferredWake(
     workingCandidate.deferredCommentIds.length > 0 &&
     (currentIssue.status === "done" || currentIssue.status === "cancelled")
   ) {
+    if (
+      workingCandidate.requestedByActorType === "user" &&
+      !workingCandidate.preservesIndependentContinuation &&
+      workingCandidate.payload.mutation !== "interaction" &&
+      ["issue_commented", "issue_reopened_via_comment"].includes(workingCandidate.wakeReason ?? workingCandidate.reason ?? "") &&
+      await ports.transaction.areCommentsSupersededByTerminalDecision({
+        companyId: run.companyId,
+        issueId: currentIssue.id,
+        commentIds: [...new Set([...workingCandidate.queuedCommentIds, ...workingCandidate.deferredCommentIds])],
+      })
+    ) {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: workingCandidate.id,
+        reason: "Queued comments were superseded by their author's later terminal decision",
+        now: input.now,
+      });
+      return null;
+    }
     const selfAuthorship = await ports.transaction.getCommentSelfAuthorship({
       companyId: run.companyId,
       issueId: currentIssue.id,
