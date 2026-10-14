@@ -597,6 +597,13 @@ access does not bypass that decision, and `agents:suggest-changes` alone cannot
 apply the lifecycle change. Pause, clear-error, terminate, approval, and
 key-management routes remain board-only.
 
+Agent-authenticated `PATCH /agents/:agentId` requests cannot include `status`,
+including self updates and callers with `agents:configure`. Status changes use
+the dedicated lifecycle routes and their authorization checks. A mixed status
+and configuration patch is rejected in full after the company-scoped resource
+lookup; ordinary authorized configuration patches and board status patches
+remain supported.
+
 ### 9.3.1 Shared default-open issue writes
 
 For standard-trust agents, issue comments, issue field/status updates, child

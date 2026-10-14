@@ -47,6 +47,10 @@ The Board has **unrestricted access** to the entire system at all times:
 
 The Board is not just an approval gate — it's a live control surface. The human can intervene at any level at any time.
 
+Agent-authenticated configuration updates cannot directly set agent lifecycle
+status. Agents use the dedicated lifecycle routes, including the direct-grant
+requirement for resume, so configuration access cannot bypass lifecycle control.
+
 #### Budget Delegation
 
 The Board sets Company-level budgets. The CEO can set budgets for Agents below them, and every manager Agent can do the same for their reports. How this cascading budget delegation works in practice is TBD, but the permission structure supports it. The Board can manually override any budget at any level.
