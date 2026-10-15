@@ -22,6 +22,7 @@ The CEO's initial strategic plan requires board approval before the CEO can star
 ```
 pending -> approved
         -> rejected
+        -> retired (rejected, without requester wake)
         -> revision_requested -> resubmitted -> pending
 ```
 
@@ -32,6 +33,25 @@ pending -> approved
    - **Approve** — the action proceeds
    - **Reject** — the action is denied
    - **Request revision** — ask the agent to modify and resubmit
+
+### Retiring Obsolete Closed Requests
+
+When a `request_board_approval` has become obsolete because all of its linked
+issues are already `done` or `cancelled`, the board can retire it through
+`POST /api/approvals/{approvalId}/retire`. Supply a nonempty `decisionNote` and
+the approval's freshly read `expectedUpdatedAt` value.
+
+Retirement is deliberately conservative: the request must have at least one
+linked issue, every linked issue must belong to the same company and be closed,
+and no linked issue may retain checkout or execution ownership. An ineligible or
+stale request is rejected without changing the approval; re-read the approval
+and its links before retrying.
+
+The operation records a rejected administrative disposition and visible
+retirement activity, but it does **not** wake the requesting agent or launch the
+approved action. Use ordinary rejection when the requester should receive and
+act on a rejection. Retirement is board-only and has no UI button; use the API
+or typed client.
 
 ## Reviewing Approvals
 

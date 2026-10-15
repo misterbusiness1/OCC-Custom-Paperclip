@@ -43,6 +43,7 @@ const ACTION_TIER: Record<string, EventTier> = {
   "approval.created": 1,
   "approval.approved": 1,
   "approval.rejected": 1,
+  "approval.retired_closed_request": 1,
   "approval.revision_requested": 1,
   "agent.created": 1,
 

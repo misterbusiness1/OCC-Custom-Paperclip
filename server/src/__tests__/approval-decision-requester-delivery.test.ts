@@ -5,6 +5,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   approvals,
   companies,
@@ -98,7 +99,11 @@ describeEmbeddedPostgres("approval decisions reach the requesting agent (fork PR
       return live.length === 0;
     }).catch(() => undefined);
     await new Promise((resolve) => setTimeout(resolve, 200));
-    mockAdapterExecute.mockClear();
+    mockAdapterExecute.mockReset();
+    mockAdapterExecute.mockResolvedValue({
+      exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+      summary: "Board decision received.", provider: "test", model: "test-model",
+    });
     for (let attempt = 0; attempt < 10; attempt += 1) {
       try {
         await db.execute(sql.raw(`
@@ -446,6 +451,41 @@ describeEmbeddedPostgres("approval decisions reach the requesting agent (fork PR
         details: expect.objectContaining({ approvalStatus: "approved", wakeRunId: run.id }),
       }),
     ]);
+  });
+
+  it("explicit retirement records the closed request without invoking the requester or changing its other closed task", async () => {
+    const fixture = await seed({ issueStatus: "done" });
+    const [sibling] = await db.insert(issues).values({
+      companyId: fixture.companyId, title: "Cancelled obsolete sibling", status: "cancelled",
+      assigneeAgentId: fixture.requesterAgentId, responsibleUserId: BOARD_USER_ID, cancelledAt: new Date(),
+    }).returning();
+    const before = await db.select().from(issues).where(eq(issues.companyId, fixture.companyId));
+    const [approval] = await db.select().from(approvals).where(eq(approvals.id, fixture.approvalId));
+    // The former notification path gave this adapter ordinary mutation authority.
+    // Retirement must never enter it, including for an unrelated self-owned task.
+    mockAdapterExecute.mockImplementationOnce(async ({ runId }) => {
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, sibling!.id));
+      await db.insert(issueComments).values({ companyId: fixture.companyId, issueId: sibling!.id,
+        authorAgentId: fixture.requesterAgentId, createdByRunId: runId, body: "Unexpected historical repair" });
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "Changed the sibling", provider: "test", model: "test-model" };
+    });
+
+    const res = await request(createApp(fixture.companyId))
+      .post(`/api/approvals/${fixture.approvalId}/retire`)
+      .send({ decisionNote: "Obsolete closed request; preserve history", expectedUpdatedAt: approval!.updatedAt.toISOString() });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("rejected");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, fixture.companyId))).toEqual([]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toEqual([]);
+    expect(await db.select().from(issueComments).where(eq(issueComments.companyId, fixture.companyId))).toEqual([]);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toEqual(before);
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, fixture.approvalId));
+    expect(activity.map(row => row.action).sort()).toEqual(["approval.requester_wakeup_skipped", "approval.retired_closed_request"]);
+    expect(activity.find(row => row.action === "approval.requester_wakeup_skipped")?.details)
+      .toMatchObject({ reason: "closed_request_retired", executionSuppressed: true });
   });
 
   it("reject still reaches the requester after it closed the linked issue, without reopening it", async () => {

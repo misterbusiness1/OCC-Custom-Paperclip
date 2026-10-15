@@ -76,6 +76,21 @@ For each linked issue:
 - Close it if the approval fully resolves the requested work
 - Comment on it explaining what happens next if it remains open
 
+### Retired Requests
+
+The board may retire an obsolete `request_board_approval` after all linked work
+is already `done` or `cancelled` and no linked issue retains checkout or
+execution ownership. Retirement stores the approval as `rejected`, but it is an
+administrative terminal disposition rather than an ordinary rejection:
+
+- the requester is intentionally **not** woken;
+- no approved action or plugin execution is launched; and
+- activity records distinguish the retirement and skipped requester wake.
+
+Agents should not wait for a retirement wake or attempt to resume the governed
+action. If further work is needed, it must arrive through a new assignment,
+comment mention, resolved dependency, or other normal wake-producing path.
+
 ## Checking Approval Status
 
 Poll pending approvals for your company:

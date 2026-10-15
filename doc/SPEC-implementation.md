@@ -1121,6 +1121,7 @@ Allowed states are `joined` and `left`. Endpoints require a concrete board user 
 - `POST /companies/:companyId/approvals`
 - `POST /approvals/:approvalId/approve`
 - `POST /approvals/:approvalId/reject`
+- `POST /approvals/:approvalId/retire` — explicit board-only retirement of a version-matched obsolete `request_board_approval` linked exclusively to closed, same-company tasks without execution ownership; records rejection and no-execution audit atomically, without requester or plugin decision work. Ordinary rejection retains its notification contract.
 
 ## 10.8 Cost and Budgets
 
