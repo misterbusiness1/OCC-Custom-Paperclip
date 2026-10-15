@@ -10,6 +10,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) =>
 
 import { ensureRemoteOpenCodeModelConfiguredAndAvailable, execute } from "./execute.js";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
+import { sessionCodec } from "./index.js";
 
 const runProcessMock = vi.mocked(runAdapterExecutionTargetProcess);
 
@@ -44,6 +45,93 @@ describe("OpenCode local skill injection", () => {
   afterEach(async () => {
     vi.unstubAllEnvs();
     await fs.rm(configHome, { recursive: true, force: true });
+  });
+
+  it.each([
+    { label: "fresh", previous: null, qualified: false, matching: true },
+    { label: "legacy", previous: "legacy-session", qualified: false, matching: true },
+    { label: "qualified", previous: "existing-session", qualified: true, matching: true },
+    { label: "different workspace", previous: "other-session", qualified: true, matching: false },
+  ])("reads the selected workspace with stale PWD ($label)", async ({ previous, qualified, matching }) => {
+    const workspace = path.join(configHome, "selected workspace");
+    const staleCwd = path.join(configHome, "server");
+    await fs.mkdir(workspace);
+    await fs.mkdir(staleCwd);
+    await fs.writeFile(path.join(workspace, "workspace-marker.txt"), "selected project");
+    await fs.writeFile(path.join(staleCwd, "workspace-marker.txt"), "server project");
+    vi.stubEnv("PWD", staleCwd);
+    const commandPath = path.join(configHome, "fake-opencode");
+    // OpenCode 1.19.0 run.ts resolves PWD before cwd unless --dir is supplied.
+    // Exercise that CLI boundary in a real child, without a model or network.
+    await fs.writeFile(commandPath, `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const root = path.resolve(process.env.PWD ?? process.cwd());
+const index = args.indexOf("--dir");
+const directory = index < 0 ? root : path.resolve(root, args[index + 1]);
+const text = JSON.stringify({ cwd: process.cwd(), pwd: process.env.PWD,
+  marker: fs.readFileSync(path.join(directory, "workspace-marker.txt"), "utf8"),
+  session: args.includes("--session") ? args[args.indexOf("--session") + 1] : null,
+  prompt: fs.readFileSync(0, "utf8") });
+console.log(JSON.stringify({ type: "text", sessionID: "cwd-session", part: { text } }));
+`, { mode: 0o755 });
+    const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
+      "@paperclipai/adapter-utils/execution-target",
+    );
+    runProcessMock.mockReset();
+    runProcessMock.mockImplementationOnce(actual.runAdapterExecutionTargetProcess);
+    const result = await execute({
+      runId: "cwd-run",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: previous,
+        sessionParams: previous ? { sessionId: previous, cwd: matching ? workspace : staleCwd, explicitDirectory: qualified } : null,
+        sessionDisplayId: null, taskKey: null },
+      config: { command: commandPath, cwd: staleCwd, model: "openai/gpt-5", env: { OPENCODE_ALLOW_ALL_MODELS: "1" } },
+      context: {
+        paperclipWorkspace: { cwd: workspace, source: "project_primary" },
+        paperclipSessionHandoffMarkdown: "Prior work: retain the approved design.",
+        paperclipWake: { reason: "issue_commented", issue: { id: "task-1", status: "in_progress" },
+          executionContinuation: { version: 1, checkpoint: "Keep the verified test results." } },
+      },
+      onLog: async () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    const observed = JSON.parse(result.summary!);
+    expect(observed).toMatchObject({
+      cwd: workspace, pwd: staleCwd, marker: "selected project", session: qualified && matching ? previous : null,
+    });
+    expect(observed.prompt).toContain("Prior work: retain the approved design.");
+    expect(observed.prompt).toContain("Keep the verified test results.");
+    if (previous && !qualified) expect(observed.prompt).toContain(previous);
+    expect(result.sessionParams).toMatchObject({ cwd: workspace, explicitDirectory: true });
+    expect(sessionCodec.deserialize(sessionCodec.serialize(result.sessionParams!))).toMatchObject({
+      cwd: workspace, explicitDirectory: true,
+    });
+  });
+
+  it("does not qualify an old session when the fresh attempt emits no session ID", async () => {
+    const commandPath = path.join(configHome, "fake-opencode");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValueOnce(probeResult({ stdout: "" }));
+    const result = await execute({
+      runId: "no-session-run",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: "legacy-session", sessionParams: { sessionId: "legacy-session", cwd: configHome },
+        sessionDisplayId: "legacy-session", taskKey: null },
+      config: { command: commandPath, cwd: configHome, model: "openai/gpt-5", env: { OPENCODE_ALLOW_ALL_MODELS: "1" } },
+      context: {},
+      onLog: async () => {},
+    });
+    expect(runProcessMock.mock.calls[0]?.[3]).not.toContain("--session");
+    expect(result).toMatchObject({ sessionId: null, sessionParams: null, clearSession: true });
+  });
+
+  it.each([undefined, false, "true", 1])("does not qualify legacy codec metadata (%s)", (marker) => {
+    const params = { sessionId: "legacy-session", cwd: configHome, explicitDirectory: marker };
+    expect(sessionCodec.deserialize(params)).not.toHaveProperty("explicitDirectory");
+    expect(sessionCodec.serialize(params)).not.toHaveProperty("explicitDirectory");
   });
 
   it.each([false, true])("keeps chat policy with a legacy OpenCode prompt (custom=%s)", async (custom) => {

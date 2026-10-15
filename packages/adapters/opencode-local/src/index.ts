@@ -94,8 +94,13 @@ Notes:
 - OpenCode supports multiple providers and models. Use \
   \`opencode models\` to list available options in provider/model format.
 - Paperclip requires an explicit \`model\` value for \`opencode_local\` agents.
-- Runs are executed with: opencode run --format json ...
-- Sessions are resumed with --session when stored session cwd matches current cwd.
+- Runs are executed with: opencode run --dir <effective workspace> --format json ...
+- Sessions resume with --session only after explicit directory qualification and when \
+  stored cwd and remote execution identity match. Pre-qualification sessions start a \
+  fresh provider context once because OpenCode may have used inherited PWD instead. \
+  Previous provider sessions and Paperclip task/run history remain stored. Supplied \
+  Paperclip handoff and execution-continuation context carry forward; the full prior \
+  provider transcript is not automatically copied.
 - The adapter sets OPENCODE_DISABLE_PROJECT_CONFIG=true to prevent OpenCode from \
   writing an opencode.json config file into the project working directory. Model \
   selection is passed via the --model CLI flag instead.

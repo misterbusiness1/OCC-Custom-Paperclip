@@ -471,12 +471,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
     const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+    const hasExplicitDirectory = runtimeSessionParams.explicitDirectory === true;
     const canResumeSession =
       runtimeSessionId.length > 0 &&
+      hasExplicitDirectory &&
       (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
       adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
     const sessionId = canResumeSession ? runtimeSessionId : null;
-    if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
+    if (runtimeSessionId && !hasExplicitDirectory) {
+      await onLog(
+        "stdout",
+        `[paperclip] OpenCode session "${runtimeSessionId}" predates explicit workspace selection. Starting a fresh session; prior session history is preserved.\n`,
+      );
+    } else if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
       await onLog(
         "stdout",
         `[paperclip] OpenCode session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
@@ -551,7 +558,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
       ? ""
       : renderTemplate(promptTemplate, templateData);
-    const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+    const sessionHandoffNote = joinPromptSections([
+      runtimeSessionId && !hasExplicitDirectory
+        ? `Previous OpenCode session: ${runtimeSessionId}. A fresh provider session is required to qualify workspace ${effectiveExecutionCwd}. Previous session history remains stored; continue from the supplied Paperclip task context and execution continuation.`
+        : "",
+      asString(context.paperclipSessionHandoffMarkdown, "").trim(),
+    ]);
     const prompt = joinPromptSections([
       instructionsPrefix,
       renderedBootstrapPrompt,
@@ -579,7 +591,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
     );
     const buildArgs = (resumeSessionId: string | null) => {
-      const args = ["run", "--format", "json"];
+      // OpenCode can prefer an inherited PWD over the child cwd. Pin the
+      // prepared local or remote workspace explicitly for every run attempt.
+      const args = ["run", "--dir", effectiveExecutionCwd, "--format", "json"];
       if (printLogs) args.push("--print-logs");
       if (resumeSessionId) args.push("--session", resumeSessionId);
       if (model) args.push("--model", model);
@@ -643,11 +657,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       const resolvedSessionId =
         attempt.parsed.sessionId ??
-        (clearSessionOnMissingSession ? null : runtimeSessionId ?? runtime.sessionId ?? null);
+        (clearSessionOnMissingSession ? null : sessionId);
       const resolvedSessionParams = resolvedSessionId
         ? ({
             sessionId: resolvedSessionId,
             cwd: effectiveExecutionCwd,
+            explicitDirectory: true,
             ...(workspaceId ? { workspaceId } : {}),
             ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
             ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
@@ -696,7 +711,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stderr: attempt.proc.stderr,
         },
         summary: attempt.parsed.summary,
-        clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
+        clearSession: Boolean(
+          !attempt.parsed.sessionId && (clearSessionOnMissingSession || (runtimeSessionId && !sessionId)),
+        ),
       };
     };
 
