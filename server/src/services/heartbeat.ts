@@ -5521,6 +5521,9 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
     ...(previousSessionParams ?? {}),
     cwd: projectCwd,
   };
+  // OpenCode qualification belongs to the provider session's original directory.
+  // Migrating our metadata does not move that provider session to the project.
+  delete migratedSessionParams.explicitDirectory;
   if (resolvedWorkspace.workspaceId)
     migratedSessionParams.workspaceId = resolvedWorkspace.workspaceId;
   if (resolvedWorkspace.repoUrl)

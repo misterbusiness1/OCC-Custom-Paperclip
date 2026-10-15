@@ -127,6 +127,7 @@ describe("opencode remote execution", () => {
   });
 
   it.each([false, true])("prepares the workspace, syncs OpenCode skills, and restores workspace changes for remote SSH execution (managed=%s)", async (managed) => {
+    vi.stubEnv("PWD", "/app");
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -239,6 +240,8 @@ describe("opencode remote execution", () => {
     const call = runCall as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
+    expect(call?.[2]).toContain("--dir");
+    expect(call?.[2][call[2].indexOf("--dir") + 1]).toBe(managedRemoteWorkspace);
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
     if (managed) {
       const home = `${managedRemoteWorkspace}/.paperclip-runtime/opencode/managed-auth/run-1`;
@@ -335,7 +338,11 @@ describe("opencode remote execution", () => {
     expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
   });
 
-  it("resumes saved OpenCode sessions for remote SSH execution only when the identity matches", async () => {
+  it.each([
+    { qualified: false, matching: true },
+    { qualified: true, matching: true },
+    { qualified: true, matching: false },
+  ])("guards remote SSH session resume ($qualified, $matching)", async ({ qualified, matching }) => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-resume-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -355,10 +362,11 @@ describe("opencode remote execution", () => {
         sessionId: "session-123",
         sessionParams: {
           sessionId: "session-123",
+          explicitDirectory: qualified,
           cwd: managedRemoteWorkspace,
           remoteExecution: {
             transport: "ssh",
-            host: "127.0.0.1",
+            host: matching ? "127.0.0.1" : "different-host",
             port: 2222,
             username: "fixture",
             remoteCwd: managedRemoteWorkspace,
@@ -395,7 +403,9 @@ describe("opencode remote execution", () => {
     const call = runChildProcess.mock.calls.find((entry) => Array.isArray(entry[2]) && entry[2].includes("run")) as
       | [string, string, string[]]
       | undefined;
-    expect(call?.[2]).toContain("--session");
-    expect(call?.[2]).toContain("session-123");
+    expect(call?.[2]).toContain("--dir");
+    expect(call?.[2][call[2].indexOf("--dir") + 1]).toBe(managedRemoteWorkspace);
+    expect(call?.[2].includes("--session")).toBe(qualified && matching);
+    expect(call?.[2].includes("session-123")).toBe(qualified && matching);
   });
 });
