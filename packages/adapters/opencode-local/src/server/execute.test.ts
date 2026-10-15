@@ -103,7 +103,10 @@ console.log(JSON.stringify({ type: "text", sessionID: "cwd-session", part: { tex
     });
     expect(observed.prompt).toContain("Prior work: retain the approved design.");
     expect(observed.prompt).toContain("Keep the verified test results.");
-    if (previous && !qualified) expect(observed.prompt).toContain(previous);
+    if (previous && !qualified) {
+      expect(observed.prompt).toContain("A fresh provider session is required");
+      expect(observed.prompt).not.toContain(previous);
+    }
     expect(result.sessionParams).toMatchObject({ cwd: workspace, explicitDirectory: true });
     expect(sessionCodec.deserialize(sessionCodec.serialize(result.sessionParams!))).toMatchObject({
       cwd: workspace, explicitDirectory: true,
@@ -149,6 +152,31 @@ console.log(JSON.stringify({ type: "text", sessionID: "cwd-session", part: { tex
       onLog: async () => {},
     })).rejects.toThrow("OpenCode extraArgs/args must not override Paperclip workspace or session routing");
     expect(runProcessMock).not.toHaveBeenCalled();
+  });
+
+  it("retries an unknown qualified session in the same explicit directory", async () => {
+    const commandPath = path.join(configHome, "fake-opencode");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValueOnce(probeResult({ exitCode: 1, stderr: "Session not found" }));
+    runProcessMock.mockResolvedValueOnce(probeResult({ stdout: JSON.stringify({
+      type: "text", sessionID: "replacement-session", part: { text: "done" },
+    }) }));
+    const result = await execute({
+      runId: "retry-run",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: "unknown-session", sessionParams: {
+        sessionId: "unknown-session", cwd: configHome, explicitDirectory: true,
+      }, sessionDisplayId: null, taskKey: null },
+      config: { command: commandPath, cwd: configHome, model: "openai/gpt-5", env: { OPENCODE_ALLOW_ALL_MODELS: "1" } },
+      context: {}, onLog: async () => {},
+    });
+    expect(runProcessMock).toHaveBeenCalledTimes(2);
+    const attempts = runProcessMock.mock.calls.map((call) => call[3]);
+    for (const args of attempts) expect(args.slice(0, 3)).toEqual(["run", "--dir", configHome]);
+    expect(attempts[0]).toEqual(expect.arrayContaining(["--session", "unknown-session"]));
+    expect(attempts[1]).not.toContain("--session");
+    expect(result.sessionParams).toMatchObject({ sessionId: "replacement-session", cwd: configHome, explicitDirectory: true });
   });
 
   it.each([false, true])("keeps chat policy with a legacy OpenCode prompt (custom=%s)", async (custom) => {

@@ -11,7 +11,6 @@ import {
   asBoolean,
   asNumber,
   asString,
-  asStringArray,
   parseObject,
   ensurePathInEnv,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -27,6 +26,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
+import { resolveOpenCodeExtraArgs } from "./run-args.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 
@@ -71,6 +71,21 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "opencode");
+  let extraArgs: string[];
+  try {
+    extraArgs = resolveOpenCodeExtraArgs(config);
+  } catch (err) {
+    return {
+      adapterType: ctx.adapterType,
+      status: "fail",
+      checks: [{
+        code: "opencode_extra_args_invalid",
+        level: "error",
+        message: err instanceof Error ? err.message : "Invalid OpenCode arguments.",
+      }],
+      testedAt: new Date().toISOString(),
+    };
+  }
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
@@ -330,15 +345,10 @@ export async function testEnvironment(
     }
 
     if (canRunProbe && modelValidationPassed) {
-      const extraArgs = (() => {
-        const fromExtraArgs = asStringArray(config.extraArgs);
-        if (fromExtraArgs.length > 0) return fromExtraArgs;
-        return asStringArray(config.args);
-      })();
       const variant = asString(config.variant, "").trim();
       const probeModel = configuredModel;
 
-      const args = ["run", "--format", "json"];
+      const args = ["run", "--dir", runtimeCwd, "--format", "json"];
       args.push("--model", probeModel);
       if (variant) args.push("--variant", variant);
       if (extraArgs.length > 0) args.push(...extraArgs);

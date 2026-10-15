@@ -28,7 +28,6 @@ import {
 import {
   asString,
   asNumber,
-  asStringArray,
   parseObject,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
@@ -51,6 +50,7 @@ import {
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { resolveOpenCodeExtraArgs } from "./run-args.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -202,24 +202,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const command = asString(config.command, "opencode");
   const model = asString(config.model, "").trim();
   const variant = asString(config.variant, "").trim();
-  const extraArgs = (() => {
-    const fromExtraArgs = asStringArray(config.extraArgs);
-    return fromExtraArgs.length > 0 ? fromExtraArgs : asStringArray(config.args);
-  })();
-  for (const arg of extraArgs) {
-    let overridesRouting = /^--(?:no-)?(?:dir|session|continue|fork|attach)(?:=|$)/.test(arg);
-    if (/^-[^-]/.test(arg)) {
-      // OpenCode/yargs permits bundled short flags. String-valued aliases
-      // consume the remainder, so e.g. -mcustom/model is an ordinary value.
-      for (const flag of arg.slice(1)) {
-        if (flag === "s" || flag === "c") { overridesRouting = true; break; }
-        if ("mfpu".includes(flag) || flag === "=") break;
-      }
-    }
-    if (overridesRouting) {
-      throw new Error("OpenCode extraArgs/args must not override Paperclip workspace or session routing (--dir, --session/-s, --continue/-c, --fork, --attach).");
-    }
-  }
+  const extraArgs = resolveOpenCodeExtraArgs(config);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -573,7 +556,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = joinPromptSections([
       runtimeSessionId && !hasExplicitDirectory
-        ? `Previous OpenCode session: ${runtimeSessionId}. A fresh provider session is required to qualify workspace ${effectiveExecutionCwd}. Previous session history remains stored; continue from the supplied Paperclip task context and execution continuation.`
+        ? `A fresh provider session is required to qualify workspace ${effectiveExecutionCwd}. Previous session history remains stored; continue from the supplied Paperclip task context and execution continuation.`
         : "",
       asString(context.paperclipSessionHandoffMarkdown, "").trim(),
     ]);

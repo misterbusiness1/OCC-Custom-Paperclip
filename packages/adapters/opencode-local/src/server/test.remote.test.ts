@@ -71,6 +71,11 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
+vi.mock("./models.js", () => ({
+  discoverOpenCodeModels: vi.fn(async () => [{ id: "openai/gpt-5" }]),
+  ensureOpenCodeModelConfiguredAndAvailable: vi.fn(async () => {}),
+}));
+
 import { testEnvironment } from "./test.js";
 
 describe("opencode remote environment diagnostics", () => {
@@ -80,6 +85,7 @@ describe("opencode remote environment diagnostics", () => {
   beforeEach(async () => {
     configHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-config-"));
     vi.stubEnv("XDG_CONFIG_HOME", configHome);
+    vi.stubEnv("PWD", "/app");
   });
 
   afterEach(async () => {
@@ -87,6 +93,39 @@ describe("opencode remote environment diagnostics", () => {
     vi.unstubAllEnvs();
     await rm(configHome, { recursive: true, force: true });
     await Promise.all(configHomes.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
+  });
+
+  it.each([
+    { extraArgs: ["--dir=/elsewhere"] },
+    { args: ["-sold-session"] },
+  ])("rejects conflicting probe arguments before any target or command operation: %j", async (args) => {
+    const result = await testEnvironment({
+      companyId: "company-1", adapterType: "opencode_local",
+      config: { command: "opencode", cwd: configHome, ...args },
+    });
+    expect(result.status).toBe("fail");
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "opencode_extra_args_invalid", level: "error",
+    }));
+    expect(ensureAdapterExecutionTargetDirectory).not.toHaveBeenCalled();
+    expect(prepareAdapterExecutionTargetRuntime).not.toHaveBeenCalled();
+    expect(maybeRunSandboxInstallCommand).not.toHaveBeenCalled();
+    expect(ensureAdapterExecutionTargetCommandResolvable).not.toHaveBeenCalled();
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+  });
+
+  it("pins a local hello probe to its cwd despite stale PWD and preserves ordinary arguments", async () => {
+    const result = await testEnvironment({
+      companyId: "company-1", adapterType: "opencode_local",
+      config: { command: "opencode", cwd: configHome, model: "openai/gpt-5",
+        extraArgs: ["--agent", "build", "--variant", "high"] },
+    });
+    expect(result.status).toBe("pass");
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      [string, unknown, string, string[], { cwd: string; env: Record<string, string> }];
+    expect(call[3].slice(0, 3)).toEqual(["run", "--dir", configHome]);
+    expect(call[3]).toEqual(expect.arrayContaining(["--agent", "build", "--variant", "high"]));
+    expect(call[4]).toMatchObject({ cwd: configHome, env: { PWD: "/app" } });
   });
 
   it.each([false, true])("stages remote runtime config assets for sandbox hello probes (managed=%s)", async (managed) => {
@@ -145,6 +184,8 @@ describe("opencode remote environment diagnostics", () => {
       | [string, AdapterExecutionTarget, string, string[], { cwd: string; env: Record<string, string> }]
       | undefined;
     expect(probeCall?.[4].cwd).toBe("/remote/workspace/.paperclip-runtime/runs/test/workspace");
+    expect(probeCall?.[3].slice(0, 3)).toEqual(["run", "--dir", probeCall?.[4].cwd]);
+    expect(probeCall?.[4].env.PWD).toBe("/app");
     if (managed) {
       expect(probeCall?.[4].env.HOME).toContain("/remote/workspace/.paperclip-runtime/runs/test/workspace/.paperclip-runtime/opencode/managed-auth/");
       expect(probeCall?.[4].env.XDG_DATA_HOME).toBe(`${probeCall?.[4].env.HOME}/data`);
