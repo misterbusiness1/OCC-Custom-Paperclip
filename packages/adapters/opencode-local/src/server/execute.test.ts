@@ -134,6 +134,23 @@ console.log(JSON.stringify({ type: "text", sessionID: "cwd-session", part: { tex
     expect(sessionCodec.serialize(params)).not.toHaveProperty("explicitDirectory");
   });
 
+  it.each([
+    "--dir", "--dir=/elsewhere", "--session", "--session=old", "-s", "-sold",
+    "--continue", "--continue=true", "-c", "-csold", "-yc", "--fork", "--fork=true",
+    "--attach", "--attach=http://elsewhere", "--no-dir", "--no-session",
+  ])("rejects routing override %s before command or model launch", async (flag) => {
+    runProcessMock.mockReset();
+    await expect(execute({
+      runId: "invalid-args-run",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "/not-installed-opencode", cwd: configHome, model: "openai/gpt-5", extraArgs: [flag] },
+      context: {},
+      onLog: async () => {},
+    })).rejects.toThrow("OpenCode extraArgs/args must not override Paperclip workspace or session routing");
+    expect(runProcessMock).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("keeps chat policy with a legacy OpenCode prompt (custom=%s)", async (custom) => {
     const commandPath = path.join(configHome, "fake-opencode");
     await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -299,6 +316,7 @@ console.log(JSON.stringify({ type: "text", sessionID: "cwd-session", part: { tex
           command: commandPath,
           cwd: workspace,
           model,
+          extraArgs: ["--agent", "build", "--variant", "high", "-mcustom/model"],
           env: {
             OPENROUTER_API_KEY: apiKey,
             OPENCODE_ALLOW_ALL_MODELS: "1",
@@ -320,6 +338,7 @@ console.log(JSON.stringify({ type: "text", sessionID: "cwd-session", part: { tex
       const executionCall = runProcessMock.mock.calls.at(-1)!;
       expect(executionCall[3]).toContain("--model");
       expect(executionCall[3]).toContain(model);
+      expect(executionCall[3]).toEqual(expect.arrayContaining(["--agent", "build", "--variant", "high", "-mcustom/model"]));
       expect((executionCall[4] as { env: Record<string, string> }).env.OPENROUTER_API_KEY).toBe(apiKey);
       expect(JSON.stringify({ logs, metadata, result })).not.toContain(apiKey);
       expect(JSON.stringify(metadata)).toContain('"OPENROUTER_API_KEY":"***REDACTED***"');

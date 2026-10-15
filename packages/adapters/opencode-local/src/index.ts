@@ -83,7 +83,9 @@ Core fields:
 - dangerouslySkipPermissions (boolean, optional): inject a runtime OpenCode config that allows \`external_directory\` access without interactive prompts; defaults to true for unattended Paperclip runs
 - promptTemplate (string, optional): run prompt template
 - command (string, optional): defaults to "opencode"
-- extraArgs (string[], optional): additional CLI args
+- extraArgs (string[], optional): additional CLI args; workspace/session routing flags \
+  --dir, --session/-s, --continue/-c, --fork, and --attach are reserved for Paperclip \
+  (including their equal-value, negated, and short-bundle forms). Legacy args has the same restriction.
 - env (object, optional): KEY=VALUE environment variables
 
 Operational fields:
