@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
+import { sessionCodec as openCodeSessionCodec } from "@paperclipai/adapter-opencode-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
@@ -1213,6 +1214,42 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       workspaceId: "workspace-1",
     });
     expect(result.warning).toContain("Attempting to resume session");
+  });
+
+  it("clears OpenCode directory qualification when migrating fallback metadata to a project", () => {
+    const agentId = "opencode-agent";
+    const previousSessionParams = {
+      sessionId: "qualified-fallback-session",
+      cwd: resolveDefaultAgentWorkspaceDir(agentId),
+      workspaceId: "workspace-1",
+      explicitDirectory: true,
+    };
+    const result = resolveRuntimeSessionParamsForWorkspace({
+      agentId, previousSessionParams,
+      resolvedWorkspace: buildResolvedWorkspace({ cwd: "/tmp/new-project-cwd" }),
+    });
+    expect(result.sessionParams).toMatchObject({
+      sessionId: previousSessionParams.sessionId, cwd: "/tmp/new-project-cwd", workspaceId: "workspace-1",
+    });
+    expect(result.sessionParams).not.toHaveProperty("explicitDirectory");
+    expect(openCodeSessionCodec.deserialize(openCodeSessionCodec.serialize(result.sessionParams)))
+      .not.toHaveProperty("explicitDirectory");
+    expect(previousSessionParams.explicitDirectory).toBe(true);
+    expect(previousSessionParams.cwd).toBe(resolveDefaultAgentWorkspaceDir(agentId));
+  });
+
+  it("keeps OpenCode directory qualification when the resolved directory is unchanged", () => {
+    const agentId = "opencode-agent";
+    const previousSessionParams = {
+      sessionId: "qualified-session", cwd: resolveDefaultAgentWorkspaceDir(agentId), explicitDirectory: true,
+    };
+    const result = resolveRuntimeSessionParamsForWorkspace({
+      agentId, previousSessionParams,
+      resolvedWorkspace: buildResolvedWorkspace({ cwd: previousSessionParams.cwd }),
+    });
+    expect(result.sessionParams).toBe(previousSessionParams);
+    expect(result.sessionParams).toMatchObject({ explicitDirectory: true });
+    expect(result.warning).toBeNull();
   });
 
   it("does not migrate when previous session cwd is not the fallback workspace", () => {
