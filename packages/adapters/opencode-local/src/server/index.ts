@@ -23,7 +23,7 @@ export const sessionCodec: AdapterSessionCodec = {
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
-      ...(record.explicitDirectory === true ? { explicitDirectory: true } : {}),
+      ...(record.explicitDirectory === true && cwd ? { explicitDirectory: true } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
       ...(repoRef ? { repoRef } : {}),
@@ -46,7 +46,7 @@ export const sessionCodec: AdapterSessionCodec = {
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
-      ...(params.explicitDirectory === true ? { explicitDirectory: true } : {}),
+      ...(params.explicitDirectory === true && cwd ? { explicitDirectory: true } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
       ...(repoRef ? { repoRef } : {}),

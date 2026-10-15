@@ -131,6 +131,25 @@ console.log(JSON.stringify({ type: "text", sessionID: "cwd-session", part: { tex
     expect(result).toMatchObject({ sessionId: null, sessionParams: null, clearSession: true });
   });
 
+  it.each([undefined, "", "   "])("does not qualify or resume marked metadata without a cwd (%s)", async (cwd) => {
+    const params = { sessionId: "malformed-session", explicitDirectory: true, cwd };
+    expect.soft(sessionCodec.deserialize(params)).not.toHaveProperty("explicitDirectory");
+    expect.soft(sessionCodec.serialize(params)).not.toHaveProperty("explicitDirectory");
+    const commandPath = path.join(configHome, "fake-opencode");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValueOnce(probeResult({ stdout: "" }));
+    const result = await execute({
+      runId: "malformed-session-run",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: params.sessionId, sessionParams: params, sessionDisplayId: null, taskKey: null },
+      config: { command: commandPath, cwd: configHome, model: "openai/gpt-5", env: { OPENCODE_ALLOW_ALL_MODELS: "1" } },
+      context: {}, onLog: async () => {},
+    });
+    expect(runProcessMock.mock.calls[0]?.[3]).not.toContain("--session");
+    expect(result).toMatchObject({ sessionId: null, sessionParams: null, clearSession: true });
+  });
+
   it.each([undefined, false, "true", 1])("does not qualify legacy codec metadata (%s)", (marker) => {
     const params = { sessionId: "legacy-session", cwd: configHome, explicitDirectory: marker };
     expect(sessionCodec.deserialize(params)).not.toHaveProperty("explicitDirectory");

@@ -467,11 +467,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
     const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
-    const hasExplicitDirectory = runtimeSessionParams.explicitDirectory === true;
+    const hasExplicitDirectory = runtimeSessionParams.explicitDirectory === true && runtimeSessionCwd.trim().length > 0;
     const canResumeSession =
       runtimeSessionId.length > 0 &&
       hasExplicitDirectory &&
-      (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
+      path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd) &&
       adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
     const sessionId = canResumeSession ? runtimeSessionId : null;
     if (runtimeSessionId && !hasExplicitDirectory) {
