@@ -603,7 +603,10 @@ export function approvalRoutes(
       details: { type: approval.type, issueIds: uniqueIssueIds },
     });
 
-    res.status(201).json(redactApprovalPayload(approval));
+    res.status(201).json({
+      ...redactApprovalPayload(approval),
+      issueIds: uniqueIssueIds,
+    });
   });
 
   router.get("/approvals/:id/issues", async (req, res) => {

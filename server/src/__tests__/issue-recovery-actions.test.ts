@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  approvals,
   agentRuntimeState,
   authUsers,
   agentWakeupRequests,
@@ -15,6 +16,7 @@ import {
   environments,
   heartbeatRuns,
   issueComments,
+  issueApprovals,
   issueInboxArchives,
   issueRecoveryActions,
   issueRelations,
@@ -139,6 +141,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
   afterEach(async () => {
     await db.delete(issueRecoveryActions);
+    await db.delete(issueApprovals);
+    await db.delete(approvals);
     await db.delete(issueComments);
     await db.delete(environmentLeases);
     await db.delete(activityLog);
@@ -807,8 +811,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       invocationSource: "manual",
       status: "failed",
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
-      error: "You've hit your usage limit for GPT-5. Try again at 12:00 AM (UTC).",
-      errorCode: "adapter_failed",
+      error: "ACP agent reported a terminal limit failure.",
+      errorCode: "acpx_turn_failed",
       startedAt: new Date("2026-07-15T20:00:00.000Z"),
       finishedAt: new Date("2026-07-15T20:01:00.000Z"),
       contextSnapshot: { issueId: sourceIssueId },
@@ -824,7 +828,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: "in_progress",
       assigneeAgentId: coderId,
       monitorScheduledBy: "assignee",
-      monitorNotes: "Provider usage quota reached; retry the original assignee at the provider reset time.",
+      monitorNotes: "Provider usage quota reached; retry the original assignee after the default recovery backoff.",
     });
     expect(updatedIssue?.monitorNextCheckAt).toBeInstanceOf(Date);
     expect(updatedIssue?.executionPolicy).toMatchObject({
@@ -846,6 +850,180 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const secondResult = await recovery.reconcileStrandedAssignedIssues();
     expect(secondResult).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+  });
+
+  it("requeues an approved approval whose linked issue has no continuation", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const decidedAt = new Date("2026-10-15T19:57:00.000Z");
+    const [approval] = await db.insert(approvals).values({
+      companyId,
+      type: "request_board_approval",
+      status: "approved",
+      payload: { title: "Authorized action" },
+      requestedByAgentId: coderId,
+      decidedByUserId: "board-user",
+      decidedAt,
+      updatedAt: decidedAt,
+    }).returning();
+    await db.insert(issueApprovals).values({
+      companyId,
+      issueId: sourceIssueId,
+      approvalId: approval!.id,
+      linkedByAgentId: coderId,
+    });
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() }));
+
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+      reason: "issue_continuation_needed",
+      contextSnapshot: expect.objectContaining({
+        approvalId: approval!.id,
+        approvalStatus: "approved",
+        approvalWakeReason: "approval_approved",
+        issueIds: [sourceIssueId],
+        approvalOrphanRecovery: true,
+      }),
+    }));
+  });
+
+  it("reconciles an older unresolved approval when a newer linked approval already continued", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const olderDecidedAt = new Date("2026-10-15T19:55:00.000Z");
+    const newerDecidedAt = new Date("2026-10-15T19:57:00.000Z");
+    const [olderApproval, newerApproval] = await db.insert(approvals).values([
+      {
+        companyId,
+        type: "request_board_approval",
+        status: "approved",
+        payload: { title: "Older authorized action" },
+        requestedByAgentId: coderId,
+        decidedByUserId: "board-user",
+        decidedAt: olderDecidedAt,
+        updatedAt: olderDecidedAt,
+      },
+      {
+        companyId,
+        type: "request_board_approval",
+        status: "approved",
+        payload: { title: "Newer authorized action" },
+        requestedByAgentId: coderId,
+        decidedByUserId: "board-user",
+        decidedAt: newerDecidedAt,
+        updatedAt: newerDecidedAt,
+      },
+    ]).returning();
+    await db.insert(issueApprovals).values([
+      { companyId, issueId: sourceIssueId, approvalId: olderApproval!.id, linkedByAgentId: coderId },
+      { companyId, issueId: sourceIssueId, approvalId: newerApproval!.id, linkedByAgentId: coderId },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "succeeded",
+      startedAt: new Date("2026-10-15T19:57:20.000Z"),
+      finishedAt: new Date("2026-10-15T19:57:30.000Z"),
+      createdAt: new Date("2026-10-15T19:57:20.000Z"),
+      contextSnapshot: { issueId: sourceIssueId, approvalId: newerApproval!.id },
+    });
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() }));
+
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+      contextSnapshot: expect.objectContaining({ approvalId: olderApproval!.id }),
+    }));
+  });
+
+  it("correlates a multi-issue approval continuation by approval id", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const secondIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: secondIssueId,
+      companyId,
+      title: "Second linked issue",
+      status: "in_progress",
+      assigneeAgentId: coderId,
+      priority: "medium",
+    });
+    const decidedAt = new Date("2026-10-15T19:57:00.000Z");
+    const [approval] = await db.insert(approvals).values({
+      companyId,
+      type: "request_board_approval",
+      status: "approved",
+      payload: { title: "Multi-issue authorized action" },
+      requestedByAgentId: coderId,
+      decidedByUserId: "board-user",
+      decidedAt,
+      updatedAt: decidedAt,
+    }).returning();
+    await db.insert(issueApprovals).values([
+      { companyId, issueId: sourceIssueId, approvalId: approval!.id, linkedByAgentId: coderId },
+      { companyId, issueId: secondIssueId, approvalId: approval!.id, linkedByAgentId: coderId },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "succeeded",
+      startedAt: new Date("2026-10-15T19:57:20.000Z"),
+      finishedAt: new Date("2026-10-15T19:57:30.000Z"),
+      createdAt: new Date("2026-10-15T19:57:20.000Z"),
+      contextSnapshot: { issueId: sourceIssueId, approvalId: approval!.id },
+    });
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() }));
+
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(result.continuationRequeued).toBe(0);
+  });
+
+  it("escalates when an approved approval continuation terminates without executing", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const decidedAt = new Date("2026-10-15T19:57:00.000Z");
+    const [approval] = await db.insert(approvals).values({
+      companyId,
+      type: "request_board_approval",
+      status: "approved",
+      payload: { title: "Authorized action" },
+      requestedByAgentId: coderId,
+      decidedByUserId: "board-user",
+      decidedAt,
+      updatedAt: decidedAt,
+    }).returning();
+    await db.insert(issueApprovals).values({
+      companyId,
+      issueId: sourceIssueId,
+      approvalId: approval!.id,
+      linkedByAgentId: coderId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "ACP agent reported a terminal failure.",
+      errorCode: "acpx_turn_failed",
+      startedAt: new Date("2026-10-15T19:57:20.000Z"),
+      finishedAt: new Date("2026-10-15T19:57:30.000Z"),
+      contextSnapshot: { issueId: sourceIssueId, approvalId: approval!.id, wakeReason: "approval_approved" },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(await db.select().from(issueRecoveryActions)).toEqual([
+      expect.objectContaining({ sourceIssueId, status: "active" }),
+    ]);
   });
 
   it("schedules another provider-quota monitor after a prior quota monitor fired", async () => {

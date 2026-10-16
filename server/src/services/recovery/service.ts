@@ -571,6 +571,10 @@ const PROVIDER_BALANCE_EXHAUSTED_RE = new RegExp([
 // Provider usage windows and rate limits (Claude session/weekly limits, Kimi
 // 5-hour limit, Codex usage limit, account rate limits).
 const PROVIDER_USAGE_LIMIT_RE = new RegExp([
+  // Some ACP servers discard the provider detail and expose only this
+  // terminal summary. It is still a provider usage ceiling and remains
+  // distinct from the credential/authentication classifiers below.
+  String.raw`^ACP agent reported a terminal limit failure\.?$`,
   String.raw`you(?:'|’)ve (?:hit|reached|exceeded) your\b[^\n]{0,60}?\blimit\b`,
   // "rate limited" (a transient 429 throttle) stays on the transient path.
   String.raw`\b(?:usage|session|rate|quota)[\s_-]limit(?!ed)`,
@@ -2047,6 +2051,7 @@ export function recoveryService(
     companyId: string,
     issueId: string,
     agentId?: string | null,
+    approvalId?: string | null,
   ) {
     return db
       .select({ id: agentWakeupRequests.id })
@@ -2055,8 +2060,13 @@ export function recoveryService(
         and(
           eq(agentWakeupRequests.companyId, companyId),
           eq(agentWakeupRequests.status, "queued"),
-          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          approvalId
+            ? sql`true`
+            : sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
           agentId ? eq(agentWakeupRequests.agentId, agentId) : sql`true`,
+          approvalId
+            ? sql`${agentWakeupRequests.payload} ->> 'approvalId' = ${approvalId}`
+            : sql`true`,
         ),
       )
       .limit(1)
@@ -2099,6 +2109,45 @@ export function recoveryService(
       .then((rows) => rows[0] ?? null);
   }
 
+  async function listApprovedApprovalsForIssue(
+    companyId: string,
+    issueId: string,
+  ) {
+    return db
+      .select({
+        id: approvals.id,
+        requestedByAgentId: approvals.requestedByAgentId,
+        decidedAt: approvals.decidedAt,
+        updatedAt: approvals.updatedAt,
+      })
+      .from(issueApprovals)
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+      .where(
+        and(
+          eq(issueApprovals.companyId, companyId),
+          eq(issueApprovals.issueId, issueId),
+          eq(approvals.companyId, companyId),
+          eq(approvals.status, "approved"),
+        ),
+      )
+      .orderBy(
+        desc(sql`coalesce(${approvals.decidedAt}, ${approvals.updatedAt})`),
+        desc(approvals.id),
+      )
+      .then((rows) => rows);
+  }
+
+  async function listIssueIdsForApproval(companyId: string, approvalId: string) {
+    return db
+      .select({ issueId: issueApprovals.issueId })
+      .from(issueApprovals)
+      .where(and(
+        eq(issueApprovals.companyId, companyId),
+        eq(issueApprovals.approvalId, approvalId),
+      ))
+      .then((rows) => rows.map((row) => row.issueId));
+  }
+
   async function hasSuccessfulIssueRunSince(
     companyId: string,
     issueId: string,
@@ -2133,6 +2182,7 @@ export function recoveryService(
     issueId: string,
     agentId: string,
     since: Date,
+    approvalId?: string | null,
   ): Promise<LatestIssueRun> {
     return db
       .select({
@@ -2152,7 +2202,12 @@ export function recoveryService(
         and(
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, agentId),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          approvalId
+            ? sql`true`
+            : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          approvalId
+            ? sql`${heartbeatRuns.contextSnapshot} ->> 'approvalId' = ${approvalId}`
+            : sql`true`,
           or(
             gte(heartbeatRuns.createdAt, since),
             gte(heartbeatRuns.finishedAt, since),
@@ -2219,6 +2274,7 @@ export function recoveryService(
     source: string;
     retryOfRunId?: string | null;
     extraContext?: Record<string, unknown>;
+    idempotencyKey?: string;
   }, onExhausted?: (
     run: typeof heartbeatRuns.$inferSelect,
     exhaustion: ExhaustedFailureRetry,
@@ -2289,6 +2345,7 @@ export function recoveryService(
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
       // The sweep can combine an old in-progress issue snapshot with a newer
       // successful run. Validate eligibility under the enqueue issue lock so
       // completion or reassignment cannot create a redundant continuation.
@@ -4817,6 +4874,7 @@ export function recoveryService(
       skipped: 0,
       issueIds: [] as string[],
     };
+    const reconciledApprovalIds = new Set<string>();
 
     const candidateIssueIds = candidates.map((issue) => issue.id);
     const unfinishedGoalBindings = new Set<string>();
@@ -5206,6 +5264,85 @@ export function recoveryService(
           continue;
         }
       }
+
+      const approvedApprovals = await listApprovedApprovalsForIssue(
+        issue.companyId,
+        issue.id,
+      );
+      let handledApprovedApproval = false;
+      for (const approvedApproval of approvedApprovals) {
+        if (reconciledApprovalIds.has(approvedApproval.id)) continue;
+        const approvalDecisionAt = approvedApproval.decidedAt ?? approvedApproval.updatedAt;
+        if (approvedApproval.requestedByAgentId !== agentId) continue;
+        const postApprovalRun = await getLatestIssueRunSince(
+          issue.companyId,
+          issue.id,
+          agentId,
+          approvalDecisionAt,
+          approvedApproval.id,
+        );
+        if (postApprovalRun && !isUnsuccessfulTerminalIssueRun(postApprovalRun)) {
+          reconciledApprovalIds.add(approvedApproval.id);
+          continue;
+        }
+        if (!postApprovalRun) {
+          if (await hasQueuedIssueWake(issue.companyId, issue.id, agentId, approvedApproval.id)) {
+            reconciledApprovalIds.add(approvedApproval.id);
+            continue;
+          }
+          if (await isInvocationBudgetBlocked(issue, agentId)) {
+            result.skipped += 1;
+            handledApprovedApproval = true;
+            break;
+          }
+          const queued = await enqueueStrandedIssueRecovery({
+            issueId: issue.id,
+            agentId,
+            reason: "issue_continuation_needed",
+            retryReason: "issue_continuation_needed",
+            source: "approval.approved_orphan_recovery",
+            idempotencyKey: `approval-approved-orphan-recovery:${approvedApproval.id}`,
+            retryOfRunId: latestRun?.id ?? null,
+            extraContext: {
+              approvalId: approvedApproval.id,
+              approvalStatus: "approved",
+              approvalWakeReason: "approval_approved",
+              issueIds: await listIssueIdsForApproval(issue.companyId, approvedApproval.id),
+              approvalOrphanRecovery: true,
+            },
+          });
+          if (queued) {
+            reconciledApprovalIds.add(approvedApproval.id);
+            result.continuationRequeued += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          handledApprovedApproval = true;
+          continue;
+        }
+        if (isUnsuccessfulTerminalIssueRun(postApprovalRun)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: issue.status as StrandedPreviousStatus,
+            latestRun: postApprovalRun,
+            comment:
+              `Paperclip detected that approved approval \`${approvedApproval.id}\` woke its requester, ` +
+              "but the authorized continuation ended unsuccessfully and no live execution or waiting path remains. " +
+              "Opening a source-scoped recovery action so the approved action cannot disappear silently.",
+          });
+          if (updated) {
+            reconciledApprovalIds.add(approvedApproval.id);
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          handledApprovedApproval = true;
+          continue;
+        }
+      }
+      if (handledApprovedApproval) continue;
 
       const acceptedContinuationInteraction =
         await getLatestAcceptedContinuationInteraction(
