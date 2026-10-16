@@ -1235,6 +1235,7 @@ export type {
   IssueTreePreviewWarning,
   Goal,
   Approval,
+  CreatedApproval,
   ApprovalComment,
   ApprovalLinkedIssue,
   ApprovalLinkedIssuesByApproval,

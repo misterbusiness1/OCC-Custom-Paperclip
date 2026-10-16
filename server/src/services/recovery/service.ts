@@ -2051,6 +2051,7 @@ export function recoveryService(
     companyId: string,
     issueId: string,
     agentId?: string | null,
+    approvalId?: string | null,
   ) {
     return db
       .select({ id: agentWakeupRequests.id })
@@ -2059,8 +2060,13 @@ export function recoveryService(
         and(
           eq(agentWakeupRequests.companyId, companyId),
           eq(agentWakeupRequests.status, "queued"),
-          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          approvalId
+            ? sql`true`
+            : sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
           agentId ? eq(agentWakeupRequests.agentId, agentId) : sql`true`,
+          approvalId
+            ? sql`${agentWakeupRequests.payload} ->> 'approvalId' = ${approvalId}`
+            : sql`true`,
         ),
       )
       .limit(1)
@@ -2103,7 +2109,7 @@ export function recoveryService(
       .then((rows) => rows[0] ?? null);
   }
 
-  async function getLatestApprovedApprovalForIssue(
+  async function listApprovedApprovalsForIssue(
     companyId: string,
     issueId: string,
   ) {
@@ -2128,8 +2134,18 @@ export function recoveryService(
         desc(sql`coalesce(${approvals.decidedAt}, ${approvals.updatedAt})`),
         desc(approvals.id),
       )
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows);
+  }
+
+  async function listIssueIdsForApproval(companyId: string, approvalId: string) {
+    return db
+      .select({ issueId: issueApprovals.issueId })
+      .from(issueApprovals)
+      .where(and(
+        eq(issueApprovals.companyId, companyId),
+        eq(issueApprovals.approvalId, approvalId),
+      ))
+      .then((rows) => rows.map((row) => row.issueId));
   }
 
   async function hasSuccessfulIssueRunSince(
@@ -2166,6 +2182,7 @@ export function recoveryService(
     issueId: string,
     agentId: string,
     since: Date,
+    approvalId?: string | null,
   ): Promise<LatestIssueRun> {
     return db
       .select({
@@ -2185,7 +2202,12 @@ export function recoveryService(
         and(
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, agentId),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          approvalId
+            ? sql`true`
+            : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          approvalId
+            ? sql`${heartbeatRuns.contextSnapshot} ->> 'approvalId' = ${approvalId}`
+            : sql`true`,
           or(
             gte(heartbeatRuns.createdAt, since),
             gte(heartbeatRuns.finishedAt, since),
@@ -2252,6 +2274,7 @@ export function recoveryService(
     source: string;
     retryOfRunId?: string | null;
     extraContext?: Record<string, unknown>;
+    idempotencyKey?: string;
   }, onExhausted?: (
     run: typeof heartbeatRuns.$inferSelect,
     exhaustion: ExhaustedFailureRetry,
@@ -2322,6 +2345,7 @@ export function recoveryService(
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
       // The sweep can combine an old in-progress issue snapshot with a newer
       // successful run. Validate eligibility under the enqueue issue lock so
       // completion or reassignment cannot create a redundant continuation.
@@ -4850,6 +4874,7 @@ export function recoveryService(
       skipped: 0,
       issueIds: [] as string[],
     };
+    const reconciledApprovalIds = new Set<string>();
 
     const candidateIssueIds = candidates.map((issue) => issue.id);
     const unfinishedGoalBindings = new Set<string>();
@@ -5240,31 +5265,35 @@ export function recoveryService(
         }
       }
 
-      const approvedApproval = await getLatestApprovedApprovalForIssue(
+      const approvedApprovals = await listApprovedApprovalsForIssue(
         issue.companyId,
         issue.id,
       );
-      const approvalDecisionAt =
-        approvedApproval?.decidedAt ?? approvedApproval?.updatedAt ?? null;
-      if (
-        approvedApproval &&
-        approvalDecisionAt &&
-        approvedApproval.requestedByAgentId === agentId
-      ) {
+      let handledApprovedApproval = false;
+      for (const approvedApproval of approvedApprovals) {
+        if (reconciledApprovalIds.has(approvedApproval.id)) continue;
+        const approvalDecisionAt = approvedApproval.decidedAt ?? approvedApproval.updatedAt;
+        if (approvedApproval.requestedByAgentId !== agentId) continue;
         const postApprovalRun = await getLatestIssueRunSince(
           issue.companyId,
           issue.id,
           agentId,
           approvalDecisionAt,
+          approvedApproval.id,
         );
+        if (postApprovalRun && !isUnsuccessfulTerminalIssueRun(postApprovalRun)) {
+          reconciledApprovalIds.add(approvedApproval.id);
+          continue;
+        }
         if (!postApprovalRun) {
-          if (await hasQueuedIssueWake(issue.companyId, issue.id, agentId)) {
-            result.skipped += 1;
+          if (await hasQueuedIssueWake(issue.companyId, issue.id, agentId, approvedApproval.id)) {
+            reconciledApprovalIds.add(approvedApproval.id);
             continue;
           }
           if (await isInvocationBudgetBlocked(issue, agentId)) {
             result.skipped += 1;
-            continue;
+            handledApprovedApproval = true;
+            break;
           }
           const queued = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
@@ -5272,21 +5301,24 @@ export function recoveryService(
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
             source: "approval.approved_orphan_recovery",
+            idempotencyKey: `approval-approved-orphan-recovery:${approvedApproval.id}`,
             retryOfRunId: latestRun?.id ?? null,
             extraContext: {
               approvalId: approvedApproval.id,
               approvalStatus: "approved",
               approvalWakeReason: "approval_approved",
-              issueIds: [issue.id],
+              issueIds: await listIssueIdsForApproval(issue.companyId, approvedApproval.id),
               approvalOrphanRecovery: true,
             },
           });
           if (queued) {
+            reconciledApprovalIds.add(approvedApproval.id);
             result.continuationRequeued += 1;
             result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;
           }
+          handledApprovedApproval = true;
           continue;
         }
         if (isUnsuccessfulTerminalIssueRun(postApprovalRun)) {
@@ -5300,14 +5332,17 @@ export function recoveryService(
               "Opening a source-scoped recovery action so the approved action cannot disappear silently.",
           });
           if (updated) {
+            reconciledApprovalIds.add(approvedApproval.id);
             result.escalated += 1;
             result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;
           }
+          handledApprovedApproval = true;
           continue;
         }
       }
+      if (handledApprovedApproval) continue;
 
       const acceptedContinuationInteraction =
         await getLatestAcceptedContinuationInteraction(

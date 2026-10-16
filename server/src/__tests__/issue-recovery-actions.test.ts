@@ -888,6 +888,102 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     }));
   });
 
+  it("reconciles an older unresolved approval when a newer linked approval already continued", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const olderDecidedAt = new Date("2026-10-15T19:55:00.000Z");
+    const newerDecidedAt = new Date("2026-10-15T19:57:00.000Z");
+    const [olderApproval, newerApproval] = await db.insert(approvals).values([
+      {
+        companyId,
+        type: "request_board_approval",
+        status: "approved",
+        payload: { title: "Older authorized action" },
+        requestedByAgentId: coderId,
+        decidedByUserId: "board-user",
+        decidedAt: olderDecidedAt,
+        updatedAt: olderDecidedAt,
+      },
+      {
+        companyId,
+        type: "request_board_approval",
+        status: "approved",
+        payload: { title: "Newer authorized action" },
+        requestedByAgentId: coderId,
+        decidedByUserId: "board-user",
+        decidedAt: newerDecidedAt,
+        updatedAt: newerDecidedAt,
+      },
+    ]).returning();
+    await db.insert(issueApprovals).values([
+      { companyId, issueId: sourceIssueId, approvalId: olderApproval!.id, linkedByAgentId: coderId },
+      { companyId, issueId: sourceIssueId, approvalId: newerApproval!.id, linkedByAgentId: coderId },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "succeeded",
+      startedAt: new Date("2026-10-15T19:57:20.000Z"),
+      finishedAt: new Date("2026-10-15T19:57:30.000Z"),
+      createdAt: new Date("2026-10-15T19:57:20.000Z"),
+      contextSnapshot: { issueId: sourceIssueId, approvalId: newerApproval!.id },
+    });
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() }));
+
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+      contextSnapshot: expect.objectContaining({ approvalId: olderApproval!.id }),
+    }));
+  });
+
+  it("correlates a multi-issue approval continuation by approval id", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const secondIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: secondIssueId,
+      companyId,
+      title: "Second linked issue",
+      status: "in_progress",
+      assigneeAgentId: coderId,
+      priority: "medium",
+    });
+    const decidedAt = new Date("2026-10-15T19:57:00.000Z");
+    const [approval] = await db.insert(approvals).values({
+      companyId,
+      type: "request_board_approval",
+      status: "approved",
+      payload: { title: "Multi-issue authorized action" },
+      requestedByAgentId: coderId,
+      decidedByUserId: "board-user",
+      decidedAt,
+      updatedAt: decidedAt,
+    }).returning();
+    await db.insert(issueApprovals).values([
+      { companyId, issueId: sourceIssueId, approvalId: approval!.id, linkedByAgentId: coderId },
+      { companyId, issueId: secondIssueId, approvalId: approval!.id, linkedByAgentId: coderId },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "succeeded",
+      startedAt: new Date("2026-10-15T19:57:20.000Z"),
+      finishedAt: new Date("2026-10-15T19:57:30.000Z"),
+      createdAt: new Date("2026-10-15T19:57:20.000Z"),
+      contextSnapshot: { issueId: sourceIssueId, approvalId: approval!.id },
+    });
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() }));
+
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(result.continuationRequeued).toBe(0);
+  });
+
   it("escalates when an approved approval continuation terminates without executing", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const decidedAt = new Date("2026-10-15T19:57:00.000Z");

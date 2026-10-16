@@ -5,6 +5,7 @@ import {
   resolveApprovalSchema,
   resubmitApprovalSchema,
   type Approval,
+  type CreatedApproval,
   type ApprovalComment,
 } from "@paperclipai/shared";
 import {
@@ -126,7 +127,7 @@ export function registerApprovalCommands(program: Command): void {
             requestedByAgentId: opts.requestedByAgentId,
             issueIds: parseCsv(opts.issueIds),
           });
-          const created = await ctx.api.post<Approval>(apiPath`/api/companies/${ctx.companyId}/approvals`, payload);
+          const created = await ctx.api.post<CreatedApproval>(apiPath`/api/companies/${ctx.companyId}/approvals`, payload);
           printOutput(created, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);

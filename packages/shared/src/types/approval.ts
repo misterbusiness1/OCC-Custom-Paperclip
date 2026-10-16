@@ -15,6 +15,11 @@ export interface Approval {
   updatedAt: Date;
 }
 
+/** The create response normalizes the approval's durable issue links. */
+export interface CreatedApproval extends Approval {
+  issueIds: string[];
+}
+
 export interface ApprovalComment {
   id: string;
   companyId: string;
