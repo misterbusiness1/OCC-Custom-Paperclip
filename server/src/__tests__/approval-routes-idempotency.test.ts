@@ -581,6 +581,7 @@ describe("approval routes idempotent retries", () => {
       requestedByAgentId: "agent-1",
       requestedByUserId: null,
       status: "pending",
+      issueIds: ["00000000-0000-0000-0000-000000000001"],
     });
     expect(mockSecretService.normalizeHireApprovalPayloadForPersistence).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(

@@ -571,6 +571,10 @@ const PROVIDER_BALANCE_EXHAUSTED_RE = new RegExp([
 // Provider usage windows and rate limits (Claude session/weekly limits, Kimi
 // 5-hour limit, Codex usage limit, account rate limits).
 const PROVIDER_USAGE_LIMIT_RE = new RegExp([
+  // Some ACP servers discard the provider detail and expose only this
+  // terminal summary. It is still a provider usage ceiling and remains
+  // distinct from the credential/authentication classifiers below.
+  String.raw`^ACP agent reported a terminal limit failure\.?$`,
   String.raw`you(?:'|’)ve (?:hit|reached|exceeded) your\b[^\n]{0,60}?\blimit\b`,
   // "rate limited" (a transient 429 throttle) stays on the transient path.
   String.raw`\b(?:usage|session|rate|quota)[\s_-]limit(?!ed)`,
@@ -2094,6 +2098,35 @@ export function recoveryService(
           sql`coalesce(${issueThreadInteractions.resolvedAt}, ${issueThreadInteractions.updatedAt})`,
         ),
         desc(issueThreadInteractions.id),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getLatestApprovedApprovalForIssue(
+    companyId: string,
+    issueId: string,
+  ) {
+    return db
+      .select({
+        id: approvals.id,
+        requestedByAgentId: approvals.requestedByAgentId,
+        decidedAt: approvals.decidedAt,
+        updatedAt: approvals.updatedAt,
+      })
+      .from(issueApprovals)
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+      .where(
+        and(
+          eq(issueApprovals.companyId, companyId),
+          eq(issueApprovals.issueId, issueId),
+          eq(approvals.companyId, companyId),
+          eq(approvals.status, "approved"),
+        ),
+      )
+      .orderBy(
+        desc(sql`coalesce(${approvals.decidedAt}, ${approvals.updatedAt})`),
+        desc(approvals.id),
       )
       .limit(1)
       .then((rows) => rows[0] ?? null);
@@ -5198,6 +5231,75 @@ export function recoveryService(
               latestRun,
               adapterFailureClassification,
             );
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+      }
+
+      const approvedApproval = await getLatestApprovedApprovalForIssue(
+        issue.companyId,
+        issue.id,
+      );
+      const approvalDecisionAt =
+        approvedApproval?.decidedAt ?? approvedApproval?.updatedAt ?? null;
+      if (
+        approvedApproval &&
+        approvalDecisionAt &&
+        approvedApproval.requestedByAgentId === agentId
+      ) {
+        const postApprovalRun = await getLatestIssueRunSince(
+          issue.companyId,
+          issue.id,
+          agentId,
+          approvalDecisionAt,
+        );
+        if (!postApprovalRun) {
+          if (await hasQueuedIssueWake(issue.companyId, issue.id, agentId)) {
+            result.skipped += 1;
+            continue;
+          }
+          if (await isInvocationBudgetBlocked(issue, agentId)) {
+            result.skipped += 1;
+            continue;
+          }
+          const queued = await enqueueStrandedIssueRecovery({
+            issueId: issue.id,
+            agentId,
+            reason: "issue_continuation_needed",
+            retryReason: "issue_continuation_needed",
+            source: "approval.approved_orphan_recovery",
+            retryOfRunId: latestRun?.id ?? null,
+            extraContext: {
+              approvalId: approvedApproval.id,
+              approvalStatus: "approved",
+              approvalWakeReason: "approval_approved",
+              issueIds: [issue.id],
+              approvalOrphanRecovery: true,
+            },
+          });
+          if (queued) {
+            result.continuationRequeued += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+        if (isUnsuccessfulTerminalIssueRun(postApprovalRun)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: issue.status as StrandedPreviousStatus,
+            latestRun: postApprovalRun,
+            comment:
+              `Paperclip detected that approved approval \`${approvedApproval.id}\` woke its requester, ` +
+              "but the authorized continuation ended unsuccessfully and no live execution or waiting path remains. " +
+              "Opening a source-scoped recovery action so the approved action cannot disappear silently.",
+          });
+          if (updated) {
             result.escalated += 1;
             result.issueIds.push(issue.id);
           } else {
