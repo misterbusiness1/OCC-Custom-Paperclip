@@ -318,11 +318,12 @@ describe("inbox helpers", () => {
   });
 
   it.each([
-    { currentUserId: "user-1", expected: 1 },
-    { currentUserId: "user-2", expected: 1 },
+    // Each user's own failure and the failure attributed to no one (a fork rule).
+    { currentUserId: "user-1", expected: 2 },
+    { currentUserId: "user-2", expected: 2 },
     { currentUserId: "local-board", expected: 1 },
     { currentUserId: null, expected: 0 },
-  ])("counts only personal failed runs for $currentUserId", ({ currentUserId, expected }) => {
+  ])("counts personal and unattributed failed runs for $currentUserId", ({ currentUserId, expected }) => {
     const result = computeInboxBadgeData({
       approvals: [], joinRequests: [], dashboard, mineIssues: [],
       dismissedAlerts: new Set(), dismissedAtByKey: new Map(), currentUserId,

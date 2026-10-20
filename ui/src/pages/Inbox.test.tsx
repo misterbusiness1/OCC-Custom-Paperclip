@@ -404,8 +404,9 @@ describe("Inbox toolbar", () => {
   });
 
   it.each([
-    { tab: "mine", userId: "user-1", visible: ["own-failure"], hidden: ["other-failure", "unowned-failure"] },
-    { tab: "mine", userId: "user-2", visible: ["other-failure"], hidden: ["own-failure", "unowned-failure"] },
+    // A failure attributed to no one is shown to every board user (a fork rule).
+    { tab: "mine", userId: "user-1", visible: ["own-failure", "unowned-failure"], hidden: ["other-failure"] },
+    { tab: "mine", userId: "user-2", visible: ["other-failure", "unowned-failure"], hidden: ["own-failure"] },
     { tab: "mine", userId: "local-board", visible: ["unowned-failure"], hidden: ["own-failure", "other-failure"] },
     { tab: "mine", userId: null, visible: [], hidden: ["own-failure", "other-failure", "unowned-failure"] },
     { tab: "all", userId: "user-1", visible: ["own-failure", "other-failure", "unowned-failure"], hidden: [] },

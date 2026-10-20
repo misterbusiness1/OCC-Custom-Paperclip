@@ -61,11 +61,13 @@ describeEmbeddedPostgres("inbox dismissals", () => {
   });
 
   it.each([
-    { userId: "user-1", expected: 1 },
-    { userId: "user-2", expected: 1 },
-    { userId: "uninvolved-user", expected: 0 },
+    // Each user's own failure, plus the failure attributed to no one: a fork rule shows that one to
+    // every board user, not only to the single-user local board.
+    { userId: "user-1", expected: 2 },
+    { userId: "user-2", expected: 2 },
+    { userId: "uninvolved-user", expected: 1 },
     { userId: "local-board", expected: 1 },
-    { userId: "user-1", actorType: "agent", expected: 1 },
+    { userId: "user-1", actorType: "agent", expected: 2 },
     { userId: null, actorType: "agent", expected: 0 },
   ])("scopes failed-run badges to $userId (actor=$actorType)", async ({ userId, actorType, expected }) => {
     const companyId = randomUUID();
