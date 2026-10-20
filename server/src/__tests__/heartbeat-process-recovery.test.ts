@@ -1577,7 +1577,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     "continuation_user_authorization_missing",
     "continuation_task_ownership_changed",
   ])("retains untyped continuation setup failures: %s", async (message) => {
+    // Make the privacy expectation deterministic across host environments.
+    // The canonical run error stays exact; external diagnostics redact this value.
     const { runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+    const previousDiagnosticSecret = process.env.PAPERCLIP_TEST_DIAGNOSTIC_SECRET;
+    process.env.PAPERCLIP_TEST_DIAGNOSTIC_SECRET = "user";
     const error = new Error(message, { cause: Object.assign(new Error("upstream setup failed"), { code: "ECONNRESET" }) });
     const build = vi.spyOn(executionContinuation, "buildExecutionContinuation")
       .mockRejectedValueOnce(error);
@@ -1593,7 +1597,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       const report = await waitForValue(async () => mockCaptureRunFailure.mock.calls.find(([event]) => event.runId === runId)?.[0]);
       expect(report?.diagnostics).toMatchObject({
         execution: { failurePhase: "setup" },
-        exceptions: [{ message, stack: expect.stringContaining("heartbeat-process-recovery.test.ts") }, { code: "ECONNRESET" }],
+        exceptions: [{
+          message: message.replace("_user_", "_***REDACTED***_"),
+          stack: expect.stringContaining("heartbeat-process-recovery.test.ts"),
+        }, { code: "ECONNRESET" }],
       });
       const [wakeup] = await db.select().from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.id, wakeupRequestId));
@@ -1603,6 +1610,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       )).toBe(false);
     } finally {
       build.mockRestore();
+      if (previousDiagnosticSecret === undefined) delete process.env.PAPERCLIP_TEST_DIAGNOSTIC_SECRET;
+      else process.env.PAPERCLIP_TEST_DIAGNOSTIC_SECRET = previousDiagnosticSecret;
     }
   });
 
@@ -6310,12 +6319,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issueComments)
       .where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("bounded retry budget");
-    expect(comments[0]?.body).toContain("no live execution path");
+    expect(comments[0]?.body).toContain("2 scheduled attempts");
+    expect(comments[0]?.body).toContain("Automatic retries are exhausted");
     expect(comments[0]?.authorType).toBe("system");
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
-      tone: "danger",
+      tone: "warning",
     });
 
     // The escalated issue is board-owned now: a second sweep leaves it alone.
