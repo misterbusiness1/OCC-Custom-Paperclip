@@ -3,6 +3,8 @@ import { and, eq, isNull } from "drizzle-orm";
 import { heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
 import {
   APPROVAL_LINKED_ISSUES_MAX_IDS,
+  APPROVAL_QUEUE_DECIDED_LIMIT_MAX,
+  APPROVAL_QUEUE_DECIDED_PAGE_SIZE,
   addApprovalCommentSchema,
   createApprovalSchema,
   decisionReadyApprovalPayloadSchema,
@@ -24,15 +26,23 @@ import {
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
+import { approvalContentVersion } from "../services/approval-version.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
 import { badRequest, unprocessable } from "../errors.js";
 
-function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
+/**
+ * An approval as the API returns it: the payload redacted, plus its `contentVersion`, which is
+ * computed from the stored payload before redaction (see `approvalContentVersion`).
+ */
+function redactApprovalPayload<T extends { type: string; payload: Record<string, unknown>; decisionNote: string | null }>(
+  approval: T,
+): T & { contentVersion: string } {
   return {
     ...approval,
     payload: redactEventPayload(approval.payload) ?? {},
+    contentVersion: approvalContentVersion(approval),
   };
 }
 
@@ -41,8 +51,18 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
  * service call. Nothing is passed when the caller sent none, so such a call is
  * exactly what it was before the field existed.
  */
-function expectedVersionArgs(body: { expectedUpdatedAt?: string }): [] | [{ expectedUpdatedAt: Date }] {
-  return body.expectedUpdatedAt ? [{ expectedUpdatedAt: new Date(body.expectedUpdatedAt) }] : [];
+function expectedVersionArgs(body: {
+  expectedUpdatedAt?: string;
+  expectedContentVersion?: string;
+  expectedStatus?: string;
+}): [] | [{ expectedUpdatedAt: Date; expectedContentVersion?: string; expectedStatus?: string }] {
+  if (!body.expectedUpdatedAt) return [];
+  return [{
+    expectedUpdatedAt: new Date(body.expectedUpdatedAt),
+    ...(body.expectedContentVersion && body.expectedStatus
+      ? { expectedContentVersion: body.expectedContentVersion, expectedStatus: body.expectedStatus }
+      : {}),
+  }];
 }
 
 function isStatusOnlyRecoveryContext(contextSnapshot: unknown) {
@@ -516,6 +536,29 @@ export function approvalRoutes(
     const status = req.query.status as string | undefined;
     const result = await svc.list(companyId, status);
     res.json(result.map((approval) => redactApprovalPayload(approval)));
+  });
+
+  // The board's queue: every open approval and only the most recently decided ones, so the
+  // list the board pages through does not grow with every decision ever made.
+  router.get("/companies/:companyId/approvals/queue", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertApprovalAccessAllowed(req, res, companyId))) return;
+    const raw = req.query.decidedLimit;
+    let decidedLimit = APPROVAL_QUEUE_DECIDED_PAGE_SIZE;
+    if (raw !== undefined) {
+      const parsed = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+      if (!Number.isSafeInteger(parsed) || parsed > APPROVAL_QUEUE_DECIDED_LIMIT_MAX) {
+        throw badRequest(`decidedLimit must be a whole number from 0 to ${APPROVAL_QUEUE_DECIDED_LIMIT_MAX}`);
+      }
+      decidedLimit = parsed;
+    }
+    const queue = await svc.listQueue(companyId, decidedLimit);
+    res.json({
+      approvals: queue.approvals.map((approval) => redactApprovalPayload(approval)),
+      decidedLimit,
+      decidedHasMore: queue.decidedHasMore,
+    });
   });
 
   // The linked tasks of several approvals in one read, for a list that shows

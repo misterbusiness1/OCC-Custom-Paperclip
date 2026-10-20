@@ -6,6 +6,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { ApprovalSectionLabel } from "./ApprovalSectionLabel";
 import { formatCents } from "../lib/utils";
 import { approvalReadableText } from "../lib/approval-readable-text";
+import { approvalCost, approvalDecideBy, decideByState, decideByText, formatApprovalCost } from "../lib/approval-terms";
 
 export { approvalReadableText };
 
@@ -757,6 +758,62 @@ export function stripLeadingListMarker(value: string): string {
   return value.replace(/^(?:[-*•]|\d{1,3}[.)])[^\S\n]+/, "");
 }
 
+/**
+ * The request's typed terms, when it has them: what approving costs and when the board must decide.
+ * A passed deadline is said in the destructive color, so it is not read as an ordinary date.
+ */
+export function ApprovalTerms({
+  payload,
+  compact = false,
+  className,
+}: {
+  payload: Record<string, unknown>;
+  compact?: boolean;
+  className?: string;
+}) {
+  const cost = approvalCost(payload);
+  const decideBy = approvalDecideBy(payload);
+  if (!cost && !decideBy) return null;
+  const now = Date.now();
+  const state = decideBy ? decideByState(decideBy, now) : null;
+  const deadlineClass =
+    state === "overdue"
+      ? "text-destructive font-medium"
+      : state === "soon"
+        ? "text-amber-700 dark:text-amber-300 font-medium"
+        : "text-muted-foreground";
+  if (compact) {
+    return (
+      <span className={cn("inline-flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs", className)} data-approval-terms="compact">
+        {cost && <span className="text-foreground/80" data-approval-cost="">{formatApprovalCost(cost)}</span>}
+        {decideBy && state && (
+          <span className={deadlineClass} data-approval-decide-by={state}>
+            {decideByText(decideBy, now)}
+          </span>
+        )}
+      </span>
+    );
+  }
+  return (
+    <dl className={cn("grid gap-x-6 gap-y-2 sm:grid-cols-2", className)} data-approval-terms="">
+      {cost && (
+        <div className="space-y-0.5">
+          <dt className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Cost</dt>
+          <dd className="font-medium text-foreground" data-approval-cost="">{formatApprovalCost(cost)}</dd>
+        </div>
+      )}
+      {decideBy && state && (
+        <div className="space-y-0.5">
+          <dt className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Decide by</dt>
+          <dd className={deadlineClass} data-approval-decide-by={state}>
+            <time dateTime={decideBy.toISOString()} title={decideBy.toLocaleString()}>{decideByText(decideBy, now)}</time>
+          </dd>
+        </div>
+      )}
+    </dl>
+  );
+}
+
 function BoardApprovalPayloadContent({
   payload,
   resolveAgentName,
@@ -784,6 +841,7 @@ function BoardApprovalPayloadContent({
           <MarkdownBody className="leading-6 text-foreground/90">{summary}</MarkdownBody>
         </div>
       )}
+      <ApprovalTerms payload={payload} />
       {brief.recommendation && (
         <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3.5 py-3">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-amber-700 dark:text-amber-300">

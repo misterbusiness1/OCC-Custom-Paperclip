@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import type { Approval } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetApprovalQueueWindows } from "../lib/approval-queue";
 
 const routerMock = vi.hoisted(() => ({
   location: { pathname: "/approvals/pending", search: "", hash: "" },
@@ -17,6 +18,7 @@ const routerMock = vi.hoisted(() => ({
 
 const apiMocks = vi.hoisted(() => ({
   list: vi.fn(),
+  listQueue: vi.fn(),
   approve: vi.fn(),
   reject: vi.fn(),
   requestRevision: vi.fn(),
@@ -24,6 +26,14 @@ const apiMocks = vi.hoisted(() => ({
   listLinkedIssues: vi.fn(),
   agentsList: vi.fn(),
 }));
+// The queue read the list query now uses serves what the `list` mock serves, as one window.
+function serveQueueFromList() {
+  apiMocks.listQueue.mockImplementation(async (companyId: string, decidedLimit: number) => ({
+    approvals: (await apiMocks.list(companyId)) ?? [],
+    decidedLimit,
+    decidedHasMore: false,
+  }));
+}
 
 const generalSettingsMock = vi.hoisted(() => ({ keyboardShortcutsEnabled: true }));
 const companyMock = vi.hoisted(() => ({ selectedCompanyId: "company-1" }));
@@ -147,6 +157,8 @@ describe("Approvals", () => {
     // An approval is held for a few seconds before it is sent; the tests move the clock past that.
     vi.useFakeTimers({ shouldAdvanceTime: true });
     for (const mock of Object.values(apiMocks)) mock.mockReset();
+    serveQueueFromList();
+    resetApprovalQueueWindows();
     toastMock.pushToast.mockReset();
     routerMock.navigate.mockReset();
     routerMock.location.pathname = "/approvals/pending";
@@ -5717,5 +5729,112 @@ describe("Approvals", () => {
     expect(rows()[0].tabIndex).toBe(-1);
     expect(openIds()).toEqual(["email"]);
     expect(document.activeElement).toBe(rows()[1]);
+  });
+
+  describe("typed deadline and cost, and decisions older than the window", () => {
+    const termsPayload = (id: string, terms: Record<string, unknown>) => ({
+      title: `Request ${id}`,
+      recommendedAction: "Approve it.",
+      reasoning: "It fits the request.",
+      pros: ["A pro."],
+      risks: ["A risk."],
+      ...terms,
+    });
+
+    it("shows cost and deadline on the card header, says a passed deadline as such, and orders by them", async () => {
+      const now = Date.now();
+      approvals = [
+        createApproval("cheap-late", "2026-09-20T00:00:00.000Z", {
+          payload: termsPayload("cheap-late", {
+            cost: { amount: 12, currency: "USD", period: "month" },
+            decideBy: new Date(now + 5 * 24 * 3_600_000).toISOString(),
+          }),
+        }),
+        createApproval("pricey-overdue", "2026-10-01T00:00:00.000Z", {
+          payload: termsPayload("pricey-overdue", {
+            cost: { amount: 900, currency: "USD" },
+            decideBy: new Date(now - 2 * 3_600_000).toISOString(),
+          }),
+        }),
+        createApproval("plain", "2026-09-25T00:00:00.000Z"),
+      ];
+      await render("Request cheap-late");
+
+      const overdue = rows().find((row) => row.dataset.approvalCard === "pricey-overdue")!;
+      const state = overdue.querySelector("[data-approval-decide-by]");
+      expect(state?.getAttribute("data-approval-decide-by")).toBe("overdue");
+      expect(state?.textContent).toMatch(/^Deadline passed 2 h ago$/);
+      expect(overdue.querySelector("[data-approval-cost]")?.textContent).toContain("900");
+      const plain = rows().find((row) => row.dataset.approvalCard === "plain")!;
+      expect(plain.querySelector("[data-approval-terms]")).toBeNull();
+
+      // The tab's time order first; the order button then steps to deadline, cost and back.
+      expect(order()).toEqual(["cheap-late", "plain", "pricey-overdue"]);
+      const orderBy = () => container.querySelector<HTMLButtonElement>("[data-approval-order-by]")!;
+      expect(orderBy().textContent).toBe("Order: Time");
+      await click(orderBy());
+      expect(routerMock.location.search).toBe("?sort=due");
+      expect(order()).toEqual(["pricey-overdue", "cheap-late", "plain"]);
+      await click(orderBy());
+      expect(order()).toEqual(["pricey-overdue", "cheap-late", "plain"]);
+      expect(orderBy().textContent).toBe("Order: Cost");
+      await click(orderBy());
+      expect(routerMock.location.search).toBe("");
+      expect(order()).toEqual(["cheap-late", "plain", "pricey-overdue"]);
+    });
+
+    it("offers no order button when no request carries a deadline or a cost", async () => {
+      await render();
+      expect(container.querySelector("[data-approval-order-by]")).toBeNull();
+    });
+
+    it("reads older decisions on request, a page at a time, while the server says more exist", async () => {
+      routerMock.location.pathname = "/approvals/all";
+      const decided = Array.from({ length: 3 }, (_, index) =>
+        createApproval(`decided-${index}`, "2026-09-01T00:00:00.000Z", {
+          status: "approved",
+          decidedAt: new Date(Date.UTC(2026, 9, 10 - index)),
+        }));
+      apiMocks.listQueue.mockImplementation(async (_companyId: string, decidedLimit: number) => ({
+        approvals: [createApproval("open", "2026-10-05T00:00:00.000Z"), ...decided.slice(0, decidedLimit === 100 ? 2 : 3)],
+        decidedLimit,
+        decidedHasMore: decidedLimit === 100,
+      }));
+      await render("Request open");
+
+      expect(apiMocks.listQueue).toHaveBeenLastCalledWith("company-1", 100);
+      const footer = () => container.querySelector("[data-approval-older-decisions]");
+      expect(footer()?.textContent).toContain("These are the 100 most recent decisions.");
+      expect(order()).not.toContain("decided-2");
+
+      await click(button(footer()!, "Load older decisions"));
+      await vi.waitFor(() => expect(order()).toContain("decided-2"));
+      expect(apiMocks.listQueue).toHaveBeenLastCalledWith("company-1", 200);
+      expect(footer()).toBeNull();
+    });
+
+    it("does not offer older decisions under To decide", async () => {
+      apiMocks.listQueue.mockImplementation(async (_companyId: string, decidedLimit: number) => ({
+        approvals: approvals.filter((approval) => approval.status === "pending"),
+        decidedLimit,
+        decidedHasMore: true,
+      }));
+      await render();
+      expect(container.querySelector("[data-approval-older-decisions]")).toBeNull();
+    });
+
+    it("sends the content version and status with a decision when the server gave one", async () => {
+      approvals = [createApproval("versioned", "2026-09-20T00:00:00.000Z", { contentVersion: "c".repeat(32) })];
+      apiMocks.reject.mockImplementation(async () => ({ ...approvals[0], status: "rejected" }));
+      await render("Request versioned");
+
+      await click(button(rows()[0], "Reject"));
+      await click(button(rows()[0], "Reject request"));
+
+      await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalled());
+      expect(apiMocks.reject.mock.calls[0]![2]).toEqual({
+        expectedUpdatedAt: { updatedAt: approvals[0]!.updatedAt, status: "pending", contentVersion: "c".repeat(32) },
+      });
+    });
   });
 });

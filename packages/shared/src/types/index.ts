@@ -803,6 +803,7 @@ export type {
   ApprovalComment,
   ApprovalLinkedIssue,
   ApprovalLinkedIssuesByApproval,
+  ApprovalQueue,
 } from "./approval.js";
 export type {
   BudgetPolicy,

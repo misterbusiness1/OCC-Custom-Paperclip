@@ -6,7 +6,21 @@ import type { Approval } from "@paperclipai/shared";
  * since (resubmitted, sent back, decided), so a request is never decided in a version the reader
  * did not have in front of them.
  */
-export type ApprovalVersion = Approval["updatedAt"] | string;
+export type ApprovalVersion =
+  | Approval["updatedAt"]
+  | string
+  | Pick<Approval, "updatedAt" | "status" | "contentVersion">;
+
+/**
+ * The version of an approval as a decision should send it: its `updatedAt`, and, from a server
+ * that gives one, its `contentVersion` and `status`. With those the server still decides a
+ * request that was resubmitted unchanged since the page read it, instead of answering 409.
+ */
+export function approvalVersionOf(approval: Pick<Approval, "updatedAt" | "status" | "contentVersion">): ApprovalVersion {
+  // From an older server (no content version) the version is the time alone, exactly as before.
+  if (!approval.contentVersion) return approval.updatedAt;
+  return { updatedAt: approval.updatedAt, status: approval.status, contentVersion: approval.contentVersion };
+}
 
 /** What the server said about the approval when it refused a decision made for an older version. */
 export type ApprovalVersionConflict = {
@@ -45,6 +59,28 @@ export function isApprovalVersionConflict(error: unknown): boolean {
  */
 export function expectedUpdatedAtField(version: ApprovalVersion | null | undefined): string | undefined {
   if (version === null || version === undefined) return undefined;
-  const time = new Date(version).getTime();
+  const at = typeof version === "object" && !(version instanceof Date) ? version.updatedAt : version;
+  const time = new Date(at).getTime();
   return Number.isNaN(time) ? undefined : new Date(time).toISOString();
+}
+
+/**
+ * The version as the request fields: `expectedUpdatedAt`, and `expectedContentVersion` with
+ * `expectedStatus` when the version carries both. Empty when there is no usable time; the server
+ * then does not check.
+ */
+export function expectedVersionFields(version: ApprovalVersion | null | undefined): {
+  expectedUpdatedAt?: string;
+  expectedContentVersion?: string;
+  expectedStatus?: string;
+} {
+  const expectedUpdatedAt = expectedUpdatedAtField(version);
+  if (expectedUpdatedAt === undefined) return {};
+  if (version && typeof version === "object" && !(version instanceof Date)) {
+    const { contentVersion, status } = version;
+    if (typeof contentVersion === "string" && contentVersion.length > 0 && typeof status === "string") {
+      return { expectedUpdatedAt, expectedContentVersion: contentVersion, expectedStatus: status };
+    }
+  }
+  return { expectedUpdatedAt };
 }

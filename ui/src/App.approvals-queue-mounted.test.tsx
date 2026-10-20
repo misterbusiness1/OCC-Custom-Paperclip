@@ -16,6 +16,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetApprovalQueueWindows } from "./lib/approval-queue";
 
 // See App.approvals-routing.test.tsx: jsdom rejects a rule that <App>'s import graph inserts.
 vi.hoisted(() => {
@@ -42,6 +43,7 @@ vi.hoisted(() => {
 
 const apiMocks = vi.hoisted(() => ({
   list: vi.fn(),
+  listQueue: vi.fn(),
   approve: vi.fn(),
   reject: vi.fn(),
   requestRevision: vi.fn(),
@@ -49,6 +51,14 @@ const apiMocks = vi.hoisted(() => ({
   listLinkedIssues: vi.fn(),
   agentsList: vi.fn(),
 }));
+// The queue read the list query now uses serves what the `list` mock serves, as one window.
+function serveQueueFromList() {
+  apiMocks.listQueue.mockImplementation(async (companyId: string, decidedLimit: number) => ({
+    approvals: (await apiMocks.list(companyId)) ?? [],
+    decidedLimit,
+    decidedHasMore: false,
+  }));
+}
 
 /** Every mount and unmount of the route element that shows the queue. */
 const lifecycle = vi.hoisted(() => ({ events: [] as string[] }));
@@ -185,6 +195,8 @@ describe("the Approvals queue stays mounted when a link to /approvals is followe
     // An approval is held for a few seconds before it is sent; the tests move the clock themselves.
     vi.useFakeTimers({ shouldAdvanceTime: true });
     for (const mock of Object.values(apiMocks)) mock.mockReset();
+    serveQueueFromList();
+    resetApprovalQueueWindows();
     lifecycle.events.length = 0;
     window.localStorage.clear();
     apiMocks.list.mockResolvedValue([

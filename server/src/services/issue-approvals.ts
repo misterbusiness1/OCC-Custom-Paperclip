@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { approvals, issueApprovals, issues } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactEventPayload } from "../redaction.js";
+import { approvalContentVersion } from "./approval-version.js";
 
 interface LinkActor {
   agentId?: string | null;
@@ -67,6 +68,8 @@ export function issueApprovalService(db: Db) {
       return result.map((approval) => ({
         ...approval,
         payload: redactEventPayload(approval.payload) ?? {},
+        // Computed from the stored payload, before redaction, as on the approval routes.
+        contentVersion: approvalContentVersion(approval),
       }));
     },
 

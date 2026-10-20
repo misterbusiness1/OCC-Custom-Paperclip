@@ -23,7 +23,7 @@ import {
   approvalDecisionErrorText,
   useSettlingApprovals,
 } from "../components/ApprovalDecisionActions";
-import type { ApprovalVersion } from "../lib/approval-version";
+import { approvalVersionOf, type ApprovalVersion } from "../lib/approval-version";
 import { ApprovalDecisionSummary, type ApprovalAgentNameResolver } from "../components/ApprovalDecisionSummary";
 import { ApprovalSectionHeadingLevel } from "../components/ApprovalSectionLabel";
 import { APPROVE_AFTER_ADVANCE_MS } from "../components/ApprovalHold";
@@ -234,6 +234,15 @@ export function ApprovalDetail() {
   };
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
+  // The board's change requests, oldest first, once the request is decided. Read from the comments the
+  // server keeps for each one; an agent's comment that starts with the same words is not one.
+  const decidedChangeRequests =
+    approval.status === "approved" || approval.status === "rejected" || approval.status === "cancelled"
+      ? (comments ?? []).flatMap((comment: ApprovalComment) => {
+          const note = comment.authorAgentId ? null : approvalChangeRequestFromCommentBody(comment.body);
+          return note === null ? [] : [{ id: comment.id, createdAt: comment.createdAt, note }];
+        })
+      : [];
   const isBudgetApproval = approval.type === "budget_override_required";
   const showDecisionActions = isActionable && !isBudgetApproval;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
@@ -338,6 +347,31 @@ export function ApprovalDetail() {
             </ApprovalSectionHeadingLevel.Provider>
           )}
 
+          {/* A decided request keeps the board's change requests in view: they explain what the decision was made on. */}
+          {decidedChangeRequests.length > 0 && (
+            <div className="border-t border-border/60 pt-4" data-approval-decided-change-requests="">
+              <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+                {decidedChangeRequests.length === 1
+                  ? "Changes asked for before this decision"
+                  : `Changes asked for before this decision (${decidedChangeRequests.length} rounds)`}
+              </p>
+              <ol className="mt-2 space-y-3">
+                {decidedChangeRequests.map((request, index) => (
+                  <li key={request.id} className="text-sm leading-6">
+                    <p className="text-xs text-muted-foreground">
+                      {decidedChangeRequests.length > 1 ? `Round ${index + 1} · ` : ""}
+                      <time dateTime={new Date(request.createdAt).toISOString()}>
+                        {new Date(request.createdAt).toLocaleString()}
+                      </time>
+                    </p>
+                    {/* The board's own words, as typed. */}
+                    <p className="whitespace-pre-wrap break-words text-foreground">{request.note}</p>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
           {approval.decisionNote && (
             <div className="border-t border-border/60 pt-4">
               <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
@@ -373,11 +407,11 @@ export function ApprovalDetail() {
                 subject={subject}
                 status={approval.status}
                 // Each decision names the version on the page now; the server refuses it for any later one.
-                onApprove={(note) => approveMutation.mutate({ note, expectedUpdatedAt: approval.updatedAt })}
-                onReject={(note) => rejectMutation.mutate({ note, expectedUpdatedAt: approval.updatedAt })}
+                onApprove={(note) => approveMutation.mutate({ note, expectedUpdatedAt: approvalVersionOf(approval) })}
+                onReject={(note) => rejectMutation.mutate({ note, expectedUpdatedAt: approvalVersionOf(approval) })}
                 onRequestRevision={
                   approval.requestedByAgentId
-                    ? (note) => revisionMutation.mutate({ note, expectedUpdatedAt: approval.updatedAt })
+                    ? (note) => revisionMutation.mutate({ note, expectedUpdatedAt: approvalVersionOf(approval) })
                     : undefined
                 }
                 isPending={decisionPending}

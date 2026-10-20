@@ -47,6 +47,7 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock("../api/approvals", () => ({
   approvalsApi: {
     list: apiMocks.approvalsList,
+    listQueue: async (companyId: string, decidedLimit: number) => ({ approvals: (await apiMocks.approvalsList(companyId)) ?? [], decidedLimit, decidedHasMore: false }),
     approve: apiMocks.approve,
     reject: apiMocks.reject,
     requestRevision: apiMocks.requestRevision,

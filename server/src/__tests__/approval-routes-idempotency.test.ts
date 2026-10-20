@@ -5,6 +5,7 @@ import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 const mockApprovalService = vi.hoisted(() => ({
   list: vi.fn(),
+  listQueue: vi.fn(),
   getById: vi.fn(),
   create: vi.fn(),
   approve: vi.fn(),
@@ -1151,6 +1152,144 @@ describe("approval routes idempotent retries", () => {
       expect(res.status).toBe(200);
       expect(mockIssueService.update).not.toHaveBeenCalled();
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("approval queue route, content versions and typed request terms", () => {
+  const pendingRow = {
+    id: "00000000-0000-0000-0000-0000000000a1",
+    companyId: "company-1",
+    type: "request_board_approval",
+    status: "pending",
+    payload: { title: "Hosting", apiKey: "sk-live-secret-value-1234567890" },
+    decisionNote: null,
+    requestedByAgentId: null,
+    requestedByUserId: null,
+    decidedByUserId: null,
+    decidedAt: null,
+    createdAt: new Date("2026-10-20T10:00:00.000Z"),
+    updatedAt: new Date("2026-10-20T10:00:00.000Z"),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockApprovalService.listQueue.mockReset();
+    mockApprovalService.getById.mockReset();
+    mockApprovalService.approve.mockReset();
+    mockApprovalService.create.mockReset();
+    mockAccessService.decide.mockReset();
+    mockAccessService.decide.mockResolvedValue({ allowed: true, action: "company_scope:read", reason: "allow_test", explanation: "ok" });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([]);
+    mockLogActivity.mockResolvedValue(undefined);
+  });
+
+  it("returns the open approvals and the requested window of decided ones, each with its content version", async () => {
+    mockApprovalService.listQueue.mockResolvedValue({ approvals: [pendingRow], decidedHasMore: true });
+
+    const res = await request(await createApp()).get("/api/companies/company-1/approvals/queue?decidedLimit=25");
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.listQueue).toHaveBeenCalledWith("company-1", 25);
+    expect(res.body.decidedLimit).toBe(25);
+    expect(res.body.decidedHasMore).toBe(true);
+    expect(res.body.approvals).toHaveLength(1);
+    expect(res.body.approvals[0].contentVersion).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("uses the default window without a limit and refuses a malformed or too large one", async () => {
+    mockApprovalService.listQueue.mockResolvedValue({ approvals: [], decidedHasMore: false });
+    const app = await createApp();
+
+    expect((await request(app).get("/api/companies/company-1/approvals/queue")).status).toBe(200);
+    expect(mockApprovalService.listQueue).toHaveBeenCalledWith("company-1", 100);
+    for (const bad of ["-1", "abc", "1.5", "2001", ""]) {
+      const res = await request(app).get(`/api/companies/company-1/approvals/queue?decidedLimit=${bad}`);
+      expect(res.status, bad).toBe(400);
+    }
+    expect(mockApprovalService.listQueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a company outside the caller scope and an actor outside the approvals boundary", async () => {
+    expect((await request(await createApp()).get("/api/companies/company-2/approvals/queue")).status).toBe(403);
+    mockAccessService.decide.mockResolvedValue({ allowed: false });
+    expect((await request(await createApp()).get("/api/companies/company-1/approvals/queue")).status).toBe(403);
+    expect(mockApprovalService.listQueue).not.toHaveBeenCalled();
+  });
+
+  it("computes the content version from the stored payload, not the redacted one the response shows", async () => {
+    mockApprovalService.getById.mockResolvedValue(pendingRow);
+    const other = { ...pendingRow, payload: { title: "Hosting", apiKey: "sk-live-another-secret-0987654321" } };
+
+    const first = await request(await createApp()).get(`/api/approvals/${pendingRow.id}`);
+    mockApprovalService.getById.mockResolvedValue(other);
+    const second = await request(await createApp()).get(`/api/approvals/${pendingRow.id}`);
+
+    expect(first.status).toBe(200);
+    expect(second.body.payload).toEqual(first.body.payload);
+    expect(second.body.contentVersion).not.toBe(first.body.contentVersion);
+  });
+
+  it("passes the content version and status of the decided-on approval to the service", async () => {
+    mockApprovalService.getById.mockResolvedValue(pendingRow);
+    mockApprovalService.approve.mockResolvedValue({ approval: { ...pendingRow, status: "approved" }, applied: false });
+    const body = {
+      decisionNote: "ok",
+      expectedUpdatedAt: "2026-10-20T10:00:00.000Z",
+      expectedContentVersion: "a".repeat(32),
+      expectedStatus: "revision_requested",
+    };
+
+    const res = await request(await createApp()).post(`/api/approvals/${pendingRow.id}/approve`).send(body);
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.approve).toHaveBeenCalledWith(pendingRow.id, "user-1", "ok", {
+      expectedUpdatedAt: new Date(body.expectedUpdatedAt),
+      expectedContentVersion: body.expectedContentVersion,
+      expectedStatus: "revision_requested",
+    });
+  });
+
+  it("drops a content version sent without a status, and refuses a malformed one", async () => {
+    mockApprovalService.getById.mockResolvedValue(pendingRow);
+    mockApprovalService.approve.mockResolvedValue({ approval: { ...pendingRow, status: "approved" }, applied: false });
+    const app = await createApp();
+
+    await request(app).post(`/api/approvals/${pendingRow.id}/approve`)
+      .send({ expectedUpdatedAt: "2026-10-20T10:00:00.000Z", expectedContentVersion: "b".repeat(32) });
+    expect(mockApprovalService.approve).toHaveBeenLastCalledWith(pendingRow.id, "user-1", undefined, {
+      expectedUpdatedAt: new Date("2026-10-20T10:00:00.000Z"),
+    });
+
+    const bad = await request(app).post(`/api/approvals/${pendingRow.id}/approve`)
+      .send({ expectedUpdatedAt: "2026-10-20T10:00:00.000Z", expectedContentVersion: "not-hex", expectedStatus: "pending" });
+    expect(bad.status).toBe(400);
+  });
+
+  describe("typed cost and deadline on a board request", () => {
+    const decisionFields = {
+      recommendedAction: "Approve provider X.",
+      reasoning: "It meets the requirements.",
+      pros: ["Bounded cost."],
+      risks: ["Usage may grow."],
+    };
+    const create = async (payload: Record<string, unknown>) =>
+      request(await createApp()).post("/api/companies/company-1/approvals").send({ type: "request_board_approval", payload });
+
+    it.each([
+      ["a cost without a currency", { cost: { amount: 42 } }],
+      ["a lower-case currency", { cost: { amount: 42, currency: "usd" } }],
+      ["a negative amount", { cost: { amount: -1, currency: "USD" } }],
+      ["an amount given as text", { cost: { amount: "42", currency: "USD" } }],
+      ["an unknown period", { cost: { amount: 42, currency: "USD", period: "week" } }],
+      ["an unknown cost field", { cost: { amount: 42, currency: "USD", note: "x" } }],
+      ["a cost given as text", { cost: "$42/month" }],
+      ["a date without a time", { decideBy: "2026-10-24" }],
+      ["a time without an offset", { decideBy: "2026-10-24T17:00:00" }],
+    ])("refuses %s with 400", async (_label, terms) => {
+      const res = await create({ ...decisionFields, ...terms });
+      expect(res.status).toBe(400);
+      expect(mockApprovalService.create).not.toHaveBeenCalled();
     });
   });
 });
