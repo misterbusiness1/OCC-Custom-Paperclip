@@ -37,32 +37,15 @@ fi
 # repairing fresh volumes, restored descendants, and GID-only remaps.
 home_dir="${PAPERCLIP_HOME:-/paperclip}"
 if [ -d "$home_dir" ]; then
-    mount_table="$(findmnt --target "$home_dir" --submounts --noheadings --raw --output TARGET,VFS-OPTIONS)"
-
-    repair_tree_ownership() {
-        tree=$1
-        set -- "$tree"
-        while read -r mount_target mount_options; do
-            case "$mount_target" in
-                "$tree"/*) set -- "$@" -path "$mount_target" -prune -o ;;
-            esac
-        done <<EOF
-$mount_table
-EOF
-        set -- "$@" \( ! -user node -o ! -group node \) -exec chown node:node {} +
-        find "$@"
-    }
-
-    repair_tree_ownership "$home_dir"
-    while read -r mount_target mount_options; do
-        case "$mount_target:$mount_options" in
-            "$home_dir"/*:rw|"$home_dir"/*:rw,*|"$home_dir"/*:*,rw|"$home_dir"/*:*,rw,*)
-                repair_tree_ownership "$mount_target"
-                ;;
-        esac
-    done <<EOF
-$mount_table
-EOF
+    python3 "$(dirname "$0")/docker-ownership-repair.py" "$home_dir" "$PUID" "$PGID" &
+    repair_pid=$!
+    trap 'kill -TERM "$repair_pid" 2>/dev/null || :; wait "$repair_pid" 2>/dev/null || :; exit 143' TERM
+    trap 'kill -INT "$repair_pid" 2>/dev/null || :; wait "$repair_pid" 2>/dev/null || :; exit 130' INT
+    if wait "$repair_pid"; then
+        trap - TERM INT
+    else
+        exit "$?"
+    fi
 fi
 
 exec gosu node "$@"

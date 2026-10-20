@@ -61,6 +61,8 @@ export async function terminalizeLegacyExecution(input: {
   status: string;
   patch?: Partial<typeof heartbeatRuns.$inferInsert>;
   fromStatuses?: string[];
+  /** Additional outcome authority, acquired after issue lock and before run write. */
+  beforeRunUpdate?: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<void>;
 }) {
   const { db, run, status, patch } = input;
   const issueId =
@@ -81,6 +83,7 @@ export async function terminalizeLegacyExecution(input: {
           )
           .for("update")
       : [];
+    await input.beforeRunUpdate?.(tx);
     const [updated] = await tx
       .update(heartbeatRuns)
       .set({

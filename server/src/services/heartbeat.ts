@@ -17,7 +17,7 @@ import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from
 import { isCancelledLegacyPrelaunch } from "./cancelled-native-startup.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
-import { createProviderCooldownKey, managedProviderCooldownMetadata, resolveProviderCooldownSecretVersions } from "./provider-cooldown-scope.js";
+import { createProviderCooldownKey, declaredCodexProviderAccountKey, managedProviderCooldownMetadata, resolveProviderCooldownSecretVersions } from "./provider-cooldown-scope.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_ADAPTER_TYPES, CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
@@ -588,7 +588,7 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
-import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import { evaluateCodexCredentialReadiness, resolveCodexAcpProviderAccountKey } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
@@ -634,7 +634,7 @@ import {
 } from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { serverVersion } from "../version.js";
-import { agentProviderCooldownUntil } from "./agent-provider-cooldown.js";
+import { agentProviderCooldownUntil, lockProviderAccountAdmission, providerAccountRecoveryAdmission } from "./agent-provider-cooldown.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -11132,7 +11132,7 @@ export function heartbeatService(
     issueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null,
     responsibleUserId: string | null,
     routineContext: Awaited<ReturnType<typeof getRoutineEnvForExecutionIssue>>,
-  ): Promise<string | null> {
+  ): Promise<{ providerCooldownKey: string; providerAccountKey: string | null } | null> {
     const projectId = issueContext?.projectId ?? readNonEmptyString(context.projectId);
     const project = projectId ? await db.select({ env: projects.env }).from(projects)
       .where(and(eq(projects.companyId, agent.companyId), eq(projects.id, projectId)))
@@ -11191,12 +11191,17 @@ export function heartbeatService(
         ...(projectId ? [{ consumerType: "project" as const, consumerId: projectId, env: projectEnv, responsibleUserId }] : []),
         ...(routineContext.routineId ? [{ consumerType: "routine" as const, consumerId: routineContext.routineId, env: routineEnv, responsibleUserId }] : []),
       ]);
-      return createProviderCooldownKey({
+      const providerCooldownKey = createProviderCooldownKey({
         adapterType: agent.adapterType, adapterConfig: scopedAdapterConfig,
         aiConnection, responsibleUserId,
         environment: { ...environment, envVars: environmentEnv },
         projectEnv, routineEnv, credentialMetadata, secretVersions,
       });
+      const providerAccountKey = await declaredCodexProviderAccountKey({
+        companyId: agent.companyId, adapterType: agent.adapterType, adapterConfig: scopedAdapterConfig,
+        environmentDriver: environment.driver, environmentEnv, projectEnv, routineEnv, managed: Boolean(aiConnection),
+      });
+      return { providerCooldownKey, providerAccountKey };
     } catch (error) {
       // An invalid/revoked binding must receive the normal configuration error,
       // rather than inherit a wait belonging to its previous valid account.
@@ -12880,6 +12885,22 @@ export function heartbeatService(
     void reportRunFailure(db, updated);
   }
 
+  function providerAccountKeyForOutcome(run: typeof heartbeatRuns.$inferSelect | null, status: string,
+    result: Record<string, unknown> | null | undefined) {
+    return status === "failed" && result?.providerHttpStatus === 429 && result.errorFamily === "transient_upstream"
+      ? readNonEmptyString(parseObject(parseObject(run?.runnerProfileJson).adapterDispatch).providerAccountKey) : null;
+  }
+
+  async function writeAccountOutcome<T>(run: typeof heartbeatRuns.$inferSelect | null, status: string,
+    result: Record<string, unknown> | null | undefined, write: (writer: Pick<Db, "update">) => Promise<T>): Promise<T> {
+    const accountKey = providerAccountKeyForOutcome(run, status, result);
+    if (!accountKey || !run) return write(db);
+    return db.transaction(async tx => {
+      await lockProviderAccountAdmission(tx, run.companyId, accountKey);
+      return write(tx);
+    });
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -12909,6 +12930,7 @@ export function heartbeatService(
         },
       };
     }
+    const providerAccountKey = providerAccountKeyForOutcome(previousStatus, status, patch?.resultJson);
     const updated =
       previousStatus &&
       legacyExecutionNeedsReconciliation({
@@ -12921,8 +12943,10 @@ export function heartbeatService(
             run: previousStatus,
             status,
             patch,
+            beforeRunUpdate: providerAccountKey
+              ? (tx) => lockProviderAccountAdmission(tx, previousStatus.companyId, providerAccountKey) : undefined,
           })
-        : await db
+        : await writeAccountOutcome(previousStatus, status, patch?.resultJson, (writer) => writer
             .update(heartbeatRuns)
             .set({
               status,
@@ -12932,7 +12956,7 @@ export function heartbeatService(
             })
             .where(eq(heartbeatRuns.id, runId))
             .returning()
-            .then((rows) => rows[0] ?? null);
+            .then((rows) => rows[0] ?? null));
 
     if (updated) {
       publishLiveEvent({
@@ -12993,6 +13017,13 @@ export function heartbeatService(
         },
       };
     }
+    const providerAccountKey = providerAccountKeyForOutcome(previousStatus, status, patch?.resultJson);
+    const writeRunStatus = (writer: Pick<Db, "update">) => writer
+      .update(heartbeatRuns)
+      .set({ status, ...patch, executionStatusDeliveryId: randomUUID(), updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status, fromStatuses),
+        ...(isHeartbeatRunTerminalStatus(status) ? [nativeRunnerOwnershipNotHeldCondition()] : [])))
+      .returning().then((rows) => rows[0] ?? null);
     const updated =
       previousStatus &&
       legacyExecutionNeedsReconciliation({
@@ -13006,26 +13037,10 @@ export function heartbeatService(
             status,
             patch,
             fromStatuses,
+            beforeRunUpdate: providerAccountKey
+              ? (tx) => lockProviderAccountAdmission(tx, previousStatus.companyId, providerAccountKey) : undefined,
           })
-        : await db
-            .update(heartbeatRuns)
-            .set({
-              status,
-              ...patch,
-              executionStatusDeliveryId: randomUUID(),
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(heartbeatRuns.id, runId),
-                inArray(heartbeatRuns.status, fromStatuses),
-                ...(isHeartbeatRunTerminalStatus(status)
-                  ? [nativeRunnerOwnershipNotHeldCondition()]
-                  : []),
-              ),
-            )
-            .returning()
-            .then((rows) => rows[0] ?? null);
+        : await writeAccountOutcome(previousStatus, status, patch?.resultJson, writeRunStatus);
 
     if (updated) {
       publishLiveEvent({
@@ -15430,6 +15445,13 @@ export function heartbeatService(
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
+    if (baseSchedule && transientRetryNotBefore && run.resultJson?.providerAccountWaitSource === "bounded_retry" &&
+        run.resultJson.providerHttpStatus === 429 && transientRecovery?.errorFamily === "transient_upstream") {
+      // The outcome already sampled and persisted this policy delay once.
+      // Repeated scheduling/restart must reuse it rather than sample jitter again.
+      baseSchedule.dueAt = transientRetryNotBefore;
+      baseSchedule.delayMs = Math.max(0, transientRetryNotBefore.getTime() - now.getTime());
+    }
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
 
@@ -17529,14 +17551,17 @@ export function heartbeatService(
       issueContext: cooldownIssueContext,
       routineEnvContext: cooldownRoutineContext,
     });
-    const providerCooldownKey = await providerCooldownKeyForRun(
+    const providerScope = await providerCooldownKeyForRun(
       agent, context, cooldownIssueContext, responsibleUserId, cooldownRoutineContext,
     );
+    const providerCooldownKey = providerScope?.providerCooldownKey ?? null;
+    const providerAccountKey = providerScope?.providerAccountKey ?? null;
     if (providerCooldownKey && await agentProviderCooldownUntil(db, agent.companyId, agent.id, providerCooldownKey)) {
       // Keep the same durable queued run. The normal scheduler rechecks it;
       // no provider call, failure, retry lineage or timer is created here.
       return null;
     }
+    if (providerAccountKey && !(await providerAccountRecoveryAdmission(db, agent.companyId, providerAccountKey, run.id)).allowed) return null;
     const claimedAt = new Date();
     const queuedCommentIds = queuedCommentIdsFromRunContext(context);
     if (
@@ -17557,6 +17582,15 @@ export function heartbeatService(
     // the current assignee's issue ownership.
     const claimDeferred = new Error("Queued run ownership is not currently available");
     async function bindClaimOwnership(tx: Db, claimed: typeof heartbeatRuns.$inferSelect) {
+      if (providerAccountKey) {
+        await lockProviderAccountAdmission(tx, claimed.companyId, providerAccountKey);
+        const admission = await providerAccountRecoveryAdmission(tx, claimed.companyId, providerAccountKey, claimed.id);
+        if (!admission.allowed) throw claimDeferred;
+        const adapterDispatch = { ...parseObject(parseObject(claimed.runnerProfileJson).adapterDispatch), providerAccountKey,
+          providerAccountRecoveryOf: admission.recoveryOf };
+        claimed.runnerProfileJson = { ...parseObject(claimed.runnerProfileJson), adapterDispatch };
+        await tx.update(heartbeatRuns).set({ runnerProfileJson: claimed.runnerProfileJson }).where(eq(heartbeatRuns.id, claimed.id));
+      }
       const claimedContext = parseObject(claimed.contextSnapshot);
       const claimedIssueId = readNonEmptyString(claimedContext.issueId);
       if (claimedIssueId && claimedContext.wakeReason !== "source_scoped_recovery_action") {
@@ -21038,6 +21072,7 @@ export function heartbeatService(
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
     let providerCooldownDeferralRequested = false;
+    let providerAccountPreparationDeferralRequested = false;
     let nativeOwnershipHeld = false;
     let nativeDispatchStarted = false;
     let nativeWorkspaceFinalizeScheduled = false;
@@ -22207,6 +22242,24 @@ export function heartbeatService(
       // A recovered native turn keeps the provider scope admitted with its
       // immutable input. Fresh turns use the exact environment/project/routine
       // samples and resolved credential version used to prepare this execution.
+      const admitPreparedProviderAccount = async (providerAccountKey: string | null): Promise<boolean> => {
+        if (persistedNativeExecutionInput || runOptions.nativeRestartRecovery || runOptions.nativeLeaseOwner) return true;
+        return db.transaction(async (tx) => {
+          if (providerAccountKey) await lockProviderAccountAdmission(tx, agent.companyId, providerAccountKey);
+          const admission = providerAccountKey
+            ? await providerAccountRecoveryAdmission(tx, agent.companyId, providerAccountKey, run.id)
+            : { allowed: true, recoveryOf: null };
+          if (!admission.allowed) return false;
+          const patch = { providerAccountKey, providerAccountRecoveryOf: admission.recoveryOf };
+          const [stamped] = await tx.update(heartbeatRuns).set({
+            runnerProfileJson: sql`jsonb_set(coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb), '{adapterDispatch}', coalesce(${heartbeatRuns.runnerProfileJson}->'adapterDispatch', '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb, true)`,
+          }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.status, "running")))
+            .returning({ runnerProfileJson: heartbeatRuns.runnerProfileJson });
+          if (!stamped) throw new Error("Provider account admission lost run ownership");
+          run = { ...run, runnerProfileJson: stamped.runnerProfileJson };
+          return true;
+        });
+      };
       if (!persistedNativeExecutionInput) {
         const providerEnv = (env: unknown) => parseObject(stripForbiddenEnvBindings(
           aiBinding ? stripAiAuthBindings(env) : env, true,
@@ -22232,8 +22285,14 @@ export function heartbeatService(
           return;
         }
         await db.update(heartbeatRuns).set({
-          runnerProfileJson: sql`jsonb_set(coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb), '{adapterDispatch}', ${JSON.stringify({ adapterType: agent.adapterType, providerCooldownKey: executedProviderCooldownKey })}::jsonb, true)`,
+          runnerProfileJson: sql`jsonb_set(coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb), '{adapterDispatch}', coalesce(${heartbeatRuns.runnerProfileJson}->'adapterDispatch', '{}'::jsonb) || ${JSON.stringify({ adapterType: agent.adapterType, providerCooldownKey: executedProviderCooldownKey })}::jsonb, true)`,
         }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, agent.companyId)));
+        const actualAccountKey = agent.adapterType === "codex_local" && selectedEnvironmentForConfig?.driver === "local"
+          ? await resolveCodexAcpProviderAccountKey(agent.companyId, resolvedConfig) : null;
+        if (!await admitPreparedProviderAccount(actualAccountKey)) {
+          providerCooldownDeferralRequested = true;
+          return;
+        }
       }
       if (secretManifest.length > 0) {
         context.paperclipSecrets = {
@@ -25322,6 +25381,15 @@ export function heartbeatService(
                         : undefined,
                     onLog,
                     onMeta: onAdapterMeta,
+                    onProviderAccount: async (providerAccountKey) => {
+                      await controllerLease.assertOwned();
+                      await authorizeFailedChatRetryExecution();
+                      if (!await admitPreparedProviderAccount(providerAccountKey)) {
+                        providerCooldownDeferralRequested = true;
+                        providerAccountPreparationDeferralRequested = true;
+                        throw new Error("Provider account recovery is pending");
+                      }
+                    },
                     onEvent: onAdapterEvent,
                     startupTraceContext: getStartupTraceContext(),
                     onRuntimeProgress: async (progress) => {
@@ -25379,6 +25447,7 @@ export function heartbeatService(
             if (!guardedDispatch.dispatched) return;
             adapterResult = await guardedDispatch.resultPromise;
           }
+          if (providerCooldownDeferralRequested) return;
           // Adapter returned cleanly, which means its workspace-restore finally
           // block also ran without throwing. Record the workspace_finalize
           // barrier so dependents that share this executionWorkspace can wake.
@@ -25422,6 +25491,7 @@ export function heartbeatService(
             }
           }
         } catch (adapterErr) {
+          if (providerCooldownDeferralRequested) return;
           if (adapterErr instanceof NativeControllerDetachedForRestartError) {
             // Preserve the provider and its run for the new controller. This
             // also keeps generic teardown from terminalizing/releasing its lease.
@@ -25862,8 +25932,21 @@ export function heartbeatService(
           adapterResult.summary ?? null,
         );
 
+        const finishedAt = new Date();
+        if (status === "failed" && persistedResultJson?.providerHttpStatus === 429 &&
+            persistedResultJson.errorFamily === "transient_upstream" &&
+            readNonEmptyString(parseObject(parseObject(run.runnerProfileJson).adapterDispatch).providerAccountKey) &&
+            !readTransientRetryNotBeforeFromRun({ resultJson: persistedResultJson })) {
+          // One durable timing contract for this outcome, including exhausted
+          // lineages. This is existing bounded policy, not a provider reset.
+          const attempt = Math.min(executionFailureRetryCount(run) + 1, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS);
+          const schedule = computeBoundedTransientHeartbeatRetrySchedule(attempt, finishedAt)!;
+          persistedResultJson.retryNotBefore = schedule.dueAt.toISOString();
+          persistedResultJson.transientRetryNotBefore = schedule.dueAt.toISOString();
+          persistedResultJson.providerAccountWaitSource = "bounded_retry";
+        }
         const finalRunPatch: Partial<typeof heartbeatRuns.$inferInsert> = {
-          finishedAt: new Date(),
+          finishedAt,
           error: runErrorMessage,
           errorCode: runErrorCode,
           exitCode: adapterResult.exitCode,
@@ -25900,7 +25983,7 @@ export function heartbeatService(
               (processCancellation && !processCancellation.failed && status === "cancelled")) &&
             persistedRunWrite.run?.status === status
           ) {
-            persistedRun = await db
+            const writeLateResult = (writer: Pick<Db, "update">) => writer
               .update(heartbeatRuns)
               .set({
                 ...finalRunPatch,
@@ -25916,6 +25999,7 @@ export function heartbeatService(
               )
               .returning()
               .then((rows) => rows[0] ?? null);
+            persistedRun = await writeAccountOutcome(persistedRunWrite.run, status, finalRunPatch.resultJson, writeLateResult);
           }
           if (!persistedRun) {
             logger.info(
@@ -27105,7 +27189,9 @@ export function heartbeatService(
         // Keep the claim unclaimable throughout cleanup. An old executor must
         // never release a successor's resources or terminalize its new attempt.
         await options.beforeProviderCooldownClaimRelease?.(run.id);
-        await releaseRunClaimedJustBeforeSuppression(db, run.id, legacyControllerBootId);
+        await releaseRunClaimedJustBeforeSuppression(db, run.id, legacyControllerBootId, {
+          adapterPreparationOnly: providerAccountPreparationDeferralRequested,
+        });
         latestRun = await getRun(run.id);
       }
       // Terminalization precedes lease and adapter cleanup. Only now is the

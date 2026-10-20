@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,10 +54,21 @@ function installStubs(ids: {
   for (const cmd of ["usermod", "groupmod", "chown"]) {
     writeStub(cmd, `echo "${cmd} $*" >> "${logFile}"`);
   }
-  const mountTable =
-    ids.mounts?.map(({ target, options }) => `${target} ${options},relatime`).join("\n") ??
-    "/ rw,relatime";
-  writeStub("findmnt", `printf '%s\\n' '${mountTable}'`);
+  for (const mount of ids.mounts ?? []) mkdirSync(mount.target, { recursive: true });
+  const mountTargets = [{ target: "/", options: "rw" }, ...(ids.mounts ?? [])];
+  const mountTable = JSON.stringify({ filesystems: mountTargets.map(({ target, options }, index) => {
+    const parent = mountTargets
+      .map((mount, parentIndex) => ({ ...mount, id: parentIndex + 1 }))
+      .filter((mount) => mount.target !== target && target.startsWith(`${mount.target.replace(/\/$/, "")}/`))
+      .sort((a, b) => b.target.length - a.target.length)[0];
+    return {
+      target, fsroot: target, "vfs-options": `${options},relatime`, "maj:min": "0:1",
+      id: index + 1, parent: parent?.id ?? 0,
+    };
+  }) });
+  const mountTableFile = join(stubDir, "mounts.json");
+  writeFileSync(mountTableFile, mountTable);
+  writeStub("findmnt", `cat "${mountTableFile}"`);
   writeStub(
     "find",
     [
