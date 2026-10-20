@@ -5806,6 +5806,26 @@ describe("Approvals", () => {
       expect(order()).toEqual(["first-due", "second-due", "third-due"]);
     });
 
+    it("orders sent-back and pending requests by deadline under All decisions, with older decisions after them", async () => {
+      const now = Date.now();
+      const due = (hours: number) => new Date(now + hours * 3_600_000).toISOString();
+      routerMock.location.pathname = "/approvals/all";
+      routerMock.location.search = "?sort=due";
+      approvals = [
+        createApproval("pending-late", "2026-10-01T00:00:00.000Z", { payload: termsPayload("pending-late", { decideBy: due(8) }) }),
+        createApproval("sent-back-soon", "2026-10-02T00:00:00.000Z", {
+          status: "revision_requested", decisionNote: "Add the quote.", decidedAt: new Date("2026-10-03T00:00:00.000Z"),
+          payload: termsPayload("sent-back-soon", { decideBy: due(1) }),
+        }),
+        createApproval("decided-earlier", "2026-09-01T00:00:00.000Z", {
+          status: "approved", decidedAt: new Date("2026-10-04T00:00:00.000Z"),
+          payload: termsPayload("decided-earlier", { decideBy: due(-48) }),
+        }),
+      ];
+      await render("Request pending-late");
+      expect(order()).toEqual(["sent-back-soon", "pending-late", "decided-earlier"]);
+    });
+
     it("offers no order button when no request carries a deadline or a cost", async () => {
       await render();
       expect(container.querySelector("[data-approval-order-by]")).toBeNull();
