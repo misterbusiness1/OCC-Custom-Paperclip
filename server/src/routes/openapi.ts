@@ -100,6 +100,8 @@ import {
   updateUserSecretValueSchema,
   // Approval
   APPROVAL_LINKED_ISSUES_MAX_IDS,
+  APPROVAL_QUEUE_DECIDED_LIMIT_MAX,
+  APPROVAL_QUEUE_DECIDED_PAGE_SIZE,
   createApprovalSchema,
   resolveApprovalSchema,
   retireApprovalSchema,
@@ -4838,6 +4840,33 @@ registry.registerPath({
     body: jsonBody(createApprovalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/approvals/queue",
+  tags: ["approvals"],
+  summary: "List the board's approval queue",
+  description:
+    "Returns every open approval (pending or sent back) and the most recently decided ones, newest decision first. `decidedHasMore` says whether older decided approvals exist; ask again with a larger `decidedLimit` to read them. Each approval carries `contentVersion`, which a decision can send back as `expectedContentVersion`.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      decidedLimit: z.string().optional().describe(
+        `How many decided approvals to return: a whole number from 0 to ${APPROVAL_QUEUE_DECIDED_LIMIT_MAX}. Default ${APPROVAL_QUEUE_DECIDED_PAGE_SIZE}.`,
+      ),
+    }),
+  },
+  responses: {
+    200: r.ok(z.object({
+      approvals: z.array(z.record(z.string(), z.unknown())),
+      decidedLimit: z.number(),
+      decidedHasMore: z.boolean(),
+    })),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
 });
 
 registry.registerPath({
