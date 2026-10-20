@@ -5783,6 +5783,29 @@ describe("Approvals", () => {
       expect(order()).toEqual(["cheap-late", "plain", "pricey-overdue"]);
     });
 
+    it("keeps a request decided here in its place under Order: Deadline, and orders sent-back requests by deadline too", async () => {
+      const now = Date.now();
+      const due = (hours: number) => new Date(now + hours * 3_600_000).toISOString();
+      approvals = [
+        createApproval("first-due", "2026-10-01T00:00:00.000Z", { payload: termsPayload("first-due", { decideBy: due(2) }) }),
+        createApproval("second-due", "2026-09-01T00:00:00.000Z", { payload: termsPayload("second-due", { decideBy: due(5) }) }),
+        createApproval("third-due", "2026-09-02T00:00:00.000Z", { payload: termsPayload("third-due", { decideBy: due(9) }) }),
+      ];
+      routerMock.location.search = "?sort=due";
+      apiMocks.reject.mockImplementation(async (id: string) => {
+        approvals = approvals.map((approval) => approval.id === id ? { ...approval, status: "rejected", decidedAt: new Date() } : approval);
+        return approvals.find((approval) => approval.id === id)!;
+      });
+      await render("Request first-due");
+      expect(order()).toEqual(["first-due", "second-due", "third-due"]);
+
+      await click(button(rows()[0], "Reject"));
+      await click(button(rows()[0], "Reject request"));
+      await vi.waitFor(() => expect(apiMocks.reject).toHaveBeenCalled());
+      await vi.waitFor(() => expect(rows()[0].hasAttribute("data-approval-decided-row")).toBe(true));
+      expect(order()).toEqual(["first-due", "second-due", "third-due"]);
+    });
+
     it("offers no order button when no request carries a deadline or a cost", async () => {
       await render();
       expect(container.querySelector("[data-approval-order-by]")).toBeNull();

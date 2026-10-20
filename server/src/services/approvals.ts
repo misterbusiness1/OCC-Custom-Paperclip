@@ -83,7 +83,9 @@ export function approvalService(db: Db) {
       eq(activityLog.entityType, "approval"),
       eq(activityLog.entityId, current.id),
       eq(activityLog.action, "approval.revision_requested"),
-      sql`${activityLog.createdAt} >= ${since.toISOString()}::timestamptz`,
+      // The entry is written by the route with the database clock; the version comes from the app
+      // clock. A margin keeps a small skew from hiding a send-back. Erring here only means a 409.
+      sql`${activityLog.createdAt} >= ${since.toISOString()}::timestamptz - interval '5 seconds'`,
     )).limit(1);
     return Boolean(row);
   }

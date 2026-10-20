@@ -1118,6 +1118,8 @@ export function Approvals() {
   // it was decided elsewhere: the reader stays on the decided row, and no row moves under their hands.
   const keepsPlace = (a: Approval) =>
     Boolean(decidedHere[a.id] || leftHere[a.id] || decisions.inFlight[a.id] || decisions.errors[a.id]);
+  const byDeadline = (a: Approval) =>
+    needsBoard(a) || a.status === "revision_requested" || keepsPlace(a) || Boolean(heldApprovals[a.id]);
   const sortTime = (a: Approval) =>
     statusFilter === "all" && !needsBoard(a) && a.decidedAt && !keepsPlace(a)
       ? timeOf(a.decidedAt)
@@ -1128,11 +1130,12 @@ export function Approvals() {
     .filter((a) => (inActiveKind(a) && matchesSearch(a)) || staysListed(a))
     .sort((a, b) => {
       // A request without a deadline or a cost keeps the tab's own order after those that have one.
-      // A deadline orders only requests still waiting on the board; a decided one keeps the time order after them.
+      // A deadline orders only requests still open (pending or sent back), and the ones the reader is
+      // working on here, which keep their place; a request decided earlier follows in the time order.
       const byTerms = sortOrder === "due"
-        ? (needsBoard(a) === needsBoard(b)
-          ? (needsBoard(a) ? compareByDecideBy(a.payload, b.payload) : 0)
-          : needsBoard(a) ? -1 : 1)
+        ? (byDeadline(a) === byDeadline(b)
+          ? (byDeadline(a) ? compareByDecideBy(a.payload, b.payload) : 0)
+          : byDeadline(a) ? -1 : 1)
         : sortOrder === "cost"
           ? compareByCost(a.payload, b.payload)
           : 0;
