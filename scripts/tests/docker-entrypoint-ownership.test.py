@@ -45,7 +45,7 @@ class OwnershipIntegration(unittest.TestCase):
     def tearDown(self):
         subprocess.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "/bin/chown",
                         "--mount", f"type=bind,src={self.root},dst=/fixture", ARGS.image,
-                        "-hR", "1000:1000", "/fixture"], check=True, capture_output=True, timeout=20)
+                        "-hR", f"{os.getuid()}:{os.getgid()}", "/fixture"], check=True, capture_output=True, timeout=20)
         self.temp.cleanup()
 
     def directory(self, name):
