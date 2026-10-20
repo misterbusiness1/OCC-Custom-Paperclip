@@ -274,7 +274,7 @@ index d454fd7..c94fc6b 100644
  		return {
  			stopReason: response.stopReason,
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index e8102ac..3c10c1f 100644
+index e8102ac..7678b6d 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
 @@ -1,7 +1,8 @@
@@ -310,7 +310,24 @@ index e8102ac..3c10c1f 100644
  } | {
    type: "tool_call";
    text: string;
-@@ -313,6 +323,37 @@ type AcpRuntimeOptions = {
+@@ -214,12 +224,16 @@ type AcpRuntimeEvent = {
+ {
+   type: "error";
+   message: string;
++  /** Trusted numeric provider status; raw provider error data is never exposed. */
++  providerHttpStatus?: number;
+   code?: string;
+   detailCode?: string;
+   retryable?: boolean;
+ };
+ type AcpRuntimeTurnResultError = {
+   message: string;
++  /** Trusted numeric provider status; raw provider error data is never exposed. */
++  providerHttpStatus?: number;
+   code?: string;
+   detailCode?: string;
+   retryable?: boolean;
+@@ -313,6 +327,37 @@ type AcpRuntimeOptions = {
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
    }) => Promise<AcpPermissionDecision | undefined>;
@@ -349,7 +366,7 @@ index e8102ac..3c10c1f 100644
  type AcpFileSessionStoreOptions = {
    stateDir: string;
 diff --git a/dist/runtime.js b/dist/runtime.js
-index a1f4a70..ba26a5a 100644
+index a1f4a70..270bc70 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -371,7 +371,7 @@ const PROMPT_EVENT_PARSERS = {
@@ -396,7 +413,40 @@ index a1f4a70..ba26a5a 100644
  function normalizeUsageCost(value) {
  	if (!isRecord(value)) return;
  	const amount = asOptionalFiniteNumber(value.amount);
-@@ -812,7 +840,18 @@ var AcpRuntimeManager = class {
+@@ -645,10 +673,32 @@ function createRecordId(sessionKey, mode) {
+ function resumePolicyForSessionMode(mode) {
+ 	return mode === "persistent" ? "same-session-only" : "allow-new";
+ }
++// Keep provider diagnostics on a closed, numeric allowlist. Raw ACP data can
++// contain credentials, request bodies or additional private provider details.
++function providerHttpStatusFromError(error) {
++	const acp = extractAcpError(error);
++	if (!acp || (acp.code !== -32603 && acp.code !== -32000)) return;
++	const data = acp.data;
++	if (!data || typeof data !== "object" || Array.isArray(data)) return;
++	const info = data.codexErrorInfo;
++	if (!info || typeof info !== "object" || Array.isArray(info)) return;
++	const variants = [
++		"httpConnectionFailed",
++		"responseStreamConnectionFailed",
++		"responseStreamDisconnected",
++		"responseTooManyFailedAttempts"
++	].filter((key) => Object.hasOwn(info, key));
++	if (variants.length !== 1) return;
++	const detail = info[variants[0]];
++	if (!detail || typeof detail !== "object" || Array.isArray(detail)) return;
++	const status = detail.httpStatusCode;
++	return Number.isInteger(status) && status >= 400 && status <= 599 ? status : void 0;
++}
+ function legacyTerminalEventFromTurnResult(result) {
+ 	if (result.status === "failed") return {
+ 		type: "error",
+ 		message: result.error.message,
++		...result.error.providerHttpStatus !== void 0 ? { providerHttpStatus: result.error.providerHttpStatus } : {},
+ 		...result.error.code ? { code: result.error.code } : {},
+ 		...result.error.detailCode ? { detailCode: result.error.detailCode } : {},
+ 		...result.error.retryable === void 0 ? {} : { retryable: result.error.retryable }
+@@ -812,7 +862,18 @@ var AcpRuntimeManager = class {
  		this.deps = deps;
  	}
  	createClient(options) {
@@ -416,7 +466,7 @@ index a1f4a70..ba26a5a 100644
  	}
  	createSessionOwner(input) {
  		const owner = {
-@@ -821,12 +860,16 @@ var AcpRuntimeManager = class {
+@@ -821,12 +882,16 @@ var AcpRuntimeManager = class {
  			pendingSessionUpdates: []
  		};
  		input.client.setEventHandlers({
@@ -433,7 +483,7 @@ index a1f4a70..ba26a5a 100644
  		const active = owner.activeTurn;
  		if (active) {
  			const { task, turn } = active;
-@@ -863,6 +906,9 @@ var AcpRuntimeManager = class {
+@@ -863,6 +928,9 @@ var AcpRuntimeManager = class {
  		projection.checkpoint.request();
  	}
  	routeOwnedClientOperation(owner, operation) {
@@ -443,7 +493,7 @@ index a1f4a70..ba26a5a 100644
  		const active = owner.activeTurn;
  		if (!active) return;
  		const { task, turn } = active;
-@@ -1008,6 +1054,8 @@ var AcpRuntimeManager = class {
+@@ -1008,6 +1076,8 @@ var AcpRuntimeManager = class {
  		record.closedAt = void 0;
  		record.protocolVersion = owner.client.initializeResult?.protocolVersion;
  		record.agentCapabilities = owner.client.initializeResult?.agentCapabilities;
@@ -452,7 +502,7 @@ index a1f4a70..ba26a5a 100644
  		applyLifecycleSnapshotToRecord(record, owner.client.getAgentLifecycleSnapshot());
  	}
  	async finishBufferedOwnerControl(owner, record) {
-@@ -1086,6 +1134,11 @@ var AcpRuntimeManager = class {
+@@ -1086,6 +1156,11 @@ var AcpRuntimeManager = class {
  		record.closed = false;
  		record.closedAt = void 0;
  		this.closingActiveRecords.delete(record.acpxRecordId);
@@ -464,7 +514,7 @@ index a1f4a70..ba26a5a 100644
  		await this.options.sessionStore.save(record);
  		return record;
  	}
-@@ -1149,6 +1202,8 @@ var AcpRuntimeManager = class {
+@@ -1149,6 +1224,8 @@ var AcpRuntimeManager = class {
  		this.closingActiveRecords.delete(record.acpxRecordId);
  		record.protocolVersion = client.initializeResult?.protocolVersion;
  		record.agentCapabilities = client.initializeResult?.agentCapabilities;
@@ -473,7 +523,7 @@ index a1f4a70..ba26a5a 100644
  		applyConfigOptionsToRecord(record, session.sessionResult);
  		const modelApplication = await applyRequestedModelIfAdvertised({
  			client,
-@@ -1469,6 +1524,10 @@ var AcpRuntimeManager = class {
+@@ -1469,6 +1546,10 @@ var AcpRuntimeManager = class {
  			setSessionConfigOption: async (configId, value) => {
  				return (await task.state.activeController.setResolvedSessionConfigOption(configId, value)).response;
  			},
@@ -484,7 +534,7 @@ index a1f4a70..ba26a5a 100644
  			setResolvedSessionConfigOption: async (configId, value) => await this.setRuntimeResolvedSessionConfigOption(task, turn, configId, value)
  		};
  	}
-@@ -1575,6 +1634,8 @@ var AcpRuntimeManager = class {
+@@ -1575,6 +1656,8 @@ var AcpRuntimeManager = class {
  		reconcileAgentSessionId(turn.record, turn.record.agentSessionId);
  		turn.record.protocolVersion = turn.client.initializeResult?.protocolVersion;
  		turn.record.agentCapabilities = turn.client.initializeResult?.agentCapabilities;
@@ -493,7 +543,20 @@ index a1f4a70..ba26a5a 100644
  		turn.record.acpx = turn.acpxState;
  		applyConversation(turn.record, turn.conversation);
  		applyLifecycleSnapshotToRecord(turn.record, turn.client.getAgentLifecycleSnapshot());
-@@ -1707,6 +1768,17 @@ var AcpRuntimeManager = class {
+@@ -1584,10 +1667,12 @@ var AcpRuntimeManager = class {
+ 		task.promptStarted.reject(error);
+ 		task.sessionReady.reject(error);
+ 		const normalized = normalizeOutputError(error, { origin: "runtime" });
++		const providerHttpStatus = providerHttpStatusFromError(error);
+ 		return {
+ 			status: "failed",
+ 			error: {
+ 				message: normalized.message,
++				...providerHttpStatus !== void 0 ? { providerHttpStatus } : {},
+ 				...normalized.code ? { code: normalized.code } : {},
+ 				...normalized.detailCode ? { detailCode: normalized.detailCode } : {},
+ 				...normalized.retryable !== void 0 ? { retryable: normalized.retryable } : {}
+@@ -1707,6 +1792,17 @@ var AcpRuntimeManager = class {
  		});
  		await this.options.sessionStore.save(result.record);
  	}
@@ -511,7 +574,7 @@ index a1f4a70..ba26a5a 100644
  	async cancel(handle) {
  		await this.activeControllers.get(handle.acpxRecordId ?? handle.sessionKey)?.requestCancelActivePrompt();
  	}
-@@ -2119,6 +2191,14 @@ var AcpxRuntime = class {
+@@ -2119,6 +2215,14 @@ var AcpxRuntime = class {
  		const { handle, state } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
  	}

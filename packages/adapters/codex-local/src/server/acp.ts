@@ -30,7 +30,7 @@ import type {
   AcpxRemoteManagedHomeContext,
   AcpxRemoteManagedHomeResult,
 } from "@paperclipai/adapter-utils/acpx-engine/execute";
-import { hasTrustedTerminalProviderDiagnostic } from "@paperclipai/adapter-utils/acpx-engine/execute";
+import { hasTrustedTerminalProviderDiagnostic, resolveCodexAcpAuthHome } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asBoolean,
   asNumber,
@@ -56,6 +56,7 @@ import {
   stageCodexHomeForSync,
 } from "./codex-home.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { readCodexProviderAccountKey } from "./codex-auth-cache.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -280,6 +281,12 @@ function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecu
     resolveBillingIdentity: resolveCodexAcpBillingIdentity,
     prepareRemoteManagedHome: prepareCodexRemoteManagedHome,
     ...options,
+    resolveProviderAccountKey: async ({ ctx, env }) => {
+      // Remote targets can select image-owned credentials after staging. A host
+      // credential is not proof of that remote account.
+      if (readAdapterExecutionTarget({ executionTarget: ctx.executionTarget, legacyRemoteExecution: ctx.executionTransport?.remoteExecution })?.kind === "remote") return null;
+      return readCodexProviderAccountKey(ctx.agent.companyId, env.CODEX_HOME, env.OPENAI_API_KEY ?? process.env.OPENAI_API_KEY);
+    },
     // This trust boundary is adapter-owned. Callers may replace runtime test
     // seams, but cannot broaden which content receives internal provenance.
     terminalProviderDiagnosticMatcher: isCodexAcpTerminalDiagnosticSummary,
@@ -287,6 +294,14 @@ function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecu
     moduleDir,
     packageRootDir,
   };
+}
+
+/** Read-only admission projection of the same ACP home selection used at execution. */
+export async function resolveCodexAcpProviderAccountKey(companyId: string, config: Record<string, unknown>): Promise<string | null> {
+  if (resolveCodexExecutionEngine(config).engine !== "acp") return null;
+  const env = parseObject(config.env);
+  return readCodexProviderAccountKey(companyId, await resolveCodexAcpAuthHome(companyId, config),
+    typeof env.OPENAI_API_KEY === "string" ? env.OPENAI_API_KEY : process.env.OPENAI_API_KEY);
 }
 
 function withCodexFailureClassification(

@@ -223,6 +223,8 @@ export interface AdapterExecutionContext {
   runtimeTools?: AdapterRuntimeToolAccess;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+  /** Host admission of the adapter's actual selected opaque account, before transport opens. */
+  onProviderAccount?: (providerAccountKey: string | null) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   /**

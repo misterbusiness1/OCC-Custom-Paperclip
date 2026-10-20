@@ -50,6 +50,8 @@ export {
   resolveCodexAuthCacheDir,
   isCodexAuthCachePath,
   readSubscriptionAccountId,
+  createCodexProviderAccountKey,
+  readCodexProviderAccountKey,
 } from "./codex-auth-cache.js";
 export { parseCodexJsonl, isCodexHarnessCrash, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {

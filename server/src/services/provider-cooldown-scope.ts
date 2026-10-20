@@ -5,6 +5,25 @@ import { forbidden, unprocessable } from "../errors.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { createEffectiveRunConfigFingerprints } from "./effective-run-config-fingerprints.js";
 import { secretService } from "./secrets.js";
+import { resolveCodexAcpProviderAccountKey } from "@paperclipai/adapter-codex-local/server";
+
+/** Metadata-only admission. Unresolved secret routes are checked after normal
+ * credential resolution, never decrypted or guessed at the claim boundary. */
+export async function declaredCodexProviderAccountKey(input: {
+  companyId: string; adapterType: string; adapterConfig: Record<string, unknown>;
+  environmentDriver: string; environmentEnv: unknown; projectEnv: unknown; routineEnv: unknown; managed: boolean;
+}): Promise<string | null> {
+  if (input.adapterType !== "codex_local" || input.environmentDriver !== "local" || input.managed) return null;
+  const declared = { ...record(input.environmentEnv), ...record(input.adapterConfig.env), ...record(input.projectEnv), ...record(input.routineEnv) };
+  const env: Record<string, string> = {};
+  for (const key of ["CODEX_HOME", "OPENAI_API_KEY"]) {
+    const value = declared[key];
+    if (typeof value === "string") env[key] = value;
+    else if (value && typeof value === "object" && record(value).type === "plain" && typeof record(value).value === "string") env[key] = record(value).value as string;
+    else if (value != null) return null;
+  }
+  return resolveCodexAcpProviderAccountKey(input.companyId, { ...input.adapterConfig, env });
+}
 
 export type ProviderCooldownSecretVersion = { secretId: string; version: number; envKey?: string | null };
 

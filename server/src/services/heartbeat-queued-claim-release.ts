@@ -9,7 +9,8 @@ function readNonEmptyString(value: unknown): string | null {
 }
 
 /** Return an undispatched local claim to queue in the queue editor's lock order. */
-export async function releaseRunClaimedJustBeforeSuppression(db: Db, runId: string, controllerBootId: string) {
+export async function releaseRunClaimedJustBeforeSuppression(db: Db, runId: string, controllerBootId: string,
+  options?: { adapterPreparationOnly?: boolean }) {
   const now = new Date();
   // Read only a lock-order hint, then revalidate the complete identity after
   // issue -> wake -> run locks. Never take the run first against queue editors.
@@ -39,13 +40,15 @@ export async function releaseRunClaimedJustBeforeSuppression(db: Db, runId: stri
     if (current.wakeupRequestId && (!lockedWake || lockedWake.status !== "claimed"
         || lockedWake.runId !== current.id || lockedWake.agentId !== current.agentId)) return;
     if (current.runtimeMode === "legacy" && (current.controllerBootId !== controllerBootId
-        || current.executionStage !== "preparing" || current.processPid !== null)) return;
+        || (current.executionStage !== "preparing" && !(options?.adapterPreparationOnly && current.executionStage === "dispatching"))
+        || current.processPid !== null || current.processGroupId !== null || current.processStartedAt !== null)) return;
     const released = await tx
       .update(heartbeatRuns)
       .set({
         status: "queued",
         startedAt: null,
         responsibleUserId: null,
+        activeIdentityContextId: null,
         ...(current.runtimeMode === "legacy" ? {
           controllerBootId: null,
           controllerLeaseExpiresAt: null,
