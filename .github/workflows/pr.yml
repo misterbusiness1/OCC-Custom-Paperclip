@@ -65,6 +65,9 @@ jobs:
       - name: Test release verify workflow wiring
         run: node --test ./scripts/__tests__/release-verify-workflow.test.mjs
 
+      - name: Test PR lockfile qualification
+        run: node --test ./scripts/__tests__/pr-lockfile-workflow.test.mjs
+
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 
@@ -77,22 +80,19 @@ jobs:
           PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
             node ./scripts/check-release-package-bootstrap.mjs "${changed_paths[@]}"
 
-      - name: Validate dependency resolution when manifests change
+      - name: Qualify dependency lockfile for downstream jobs
         id: regen_lockfile
         run: |
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
-          manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
-          if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
-            pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
-            echo "regenerated=1" >> "$GITHUB_OUTPUT"
-          else
+          pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+          if git diff --quiet -- pnpm-lock.yaml; then
             echo "regenerated=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "regenerated=1" >> "$GITHUB_OUTPUT"
           fi
 
-      # Manifest-only PRs (where pnpm-lock.yaml stays at base because the policy
-      # job above blocks committing it) need the regenerated lockfile for the
-      # downstream `pnpm install --frozen-lockfile` steps. Upload it here so
-      # every job consumes the same hash without recomputing.
+      # Every PR needs a lockfile matching its actual checkout, including source
+      # changes opened while the bot's lockfile refresh is still pending on base.
+      # Share one generated graph with all frozen-install jobs when bytes change.
       - name: Upload regenerated lockfile for downstream jobs
         if: steps.regen_lockfile.outputs.regenerated == '1'
         uses: actions/upload-artifact@v7
