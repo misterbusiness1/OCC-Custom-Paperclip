@@ -85,6 +85,7 @@ describe("classifyProviderQuotaErrorMessage", () => {
     ["Claude AI usage limit reached|1790370000", "usage_limit"],
     ["rate_limit_error: Number of request tokens has exceeded your per-minute rate limit", "usage_limit"],
     ["RESOURCE_EXHAUSTED: Quota exceeded for quota metric 'Generate Content API requests per minute'", "usage_limit"],
+    ["ACP agent reported a terminal limit failure.", "usage_limit"],
   ])("classifies %j as %s", (message, kind) => {
     expect(classifyProviderQuotaErrorMessage(message)).toBe(kind);
   });
@@ -95,6 +96,7 @@ describe("classifyProviderQuotaErrorMessage", () => {
     "Invalid API key · Please run /login",
     "Not logged in · Please run /login",
     "authentication_error: invalid bearer token (rate limit headers omitted)",
+    "ACP agent reported a terminal failure: revoked token",
     "Error: 401 {\"error\":{\"message\":\"Incorrect API key provided\",\"code\":\"insufficient_quota\"}}",
     "Authentication required: 403 quota exceeded; purchase extra usage or upgrade your plan",
     "Authentication required: 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. Contact support.",

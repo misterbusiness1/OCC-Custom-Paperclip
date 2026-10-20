@@ -13,6 +13,7 @@ import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "../services/ai-connection-runtime.js";
+import { createProviderCooldownKey, managedProviderCooldownMetadata } from "../services/provider-cooldown-scope.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
@@ -324,20 +325,53 @@ describe("managed AI connections", () => {
     const intent = { provider: "openai" as const, method: "subscription" as const, name: "Refresh test", ownership: "personal" as const, agentIds: [], allAgents: true, loginSessionId: "fixture" };
     const saved = await service.save(companyId, "alice", intent, auth("first", 10));
     const runInput = { ...input, adapterType: "codex_local", responsibleUserId: "alice", binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: { model: "same-model" } };
+    const cooldownKey = (credentialMetadata: unknown) => createProviderCooldownKey({
+      adapterType: runInput.adapterType, adapterConfig: runInput.config,
+      aiConnection: runInput.binding, responsibleUserId: runInput.responsibleUserId,
+      environment: null, projectEnv: {}, routineEnv: {}, credentialMetadata,
+    });
+    const originalMetadata = await managedProviderCooldownMetadata(db, runInput);
+    const originalKey = cooldownKey(originalMetadata);
     const first = await prepareManagedAiRuntime(db, runInput);
+    expect(cooldownKey(first.cooldownMetadata)).toBe(originalKey);
     await writeFile(path.join(String(first.config.env.CODEX_HOME), "auth.json"), auth("refreshed", 11));
     await first.cleanup();
     const selected = await service.select({ ...runInput, userId: "alice" });
     expect(await service.credential(selected)).toBe(auth("refreshed", 11));
+    const refreshedMetadata = await managedProviderCooldownMetadata(db, runInput);
+    expect(refreshedMetadata.credential.secretId).toBe(originalMetadata.credential.secretId);
+    expect(refreshedMetadata.credential.version).toBeGreaterThan(originalMetadata.credential.version);
+    // OAuth token rotation changes the runtime credential without changing
+    // the account whose provider quota is still exhausted.
+    expect(cooldownKey(refreshedMetadata)).toBe(originalKey);
     const second = await prepareManagedAiRuntime(db, runInput);
     expect(second.identity).not.toBe(first.identity);
+    expect(cooldownKey(second.cooldownMetadata)).toBe(originalKey);
     // A same-account reconnect writes an older last_refresh than the run
     // that is still open.
     await service.save(companyId, "alice", { ...intent, connectionId: saved.connectionId }, auth("reconnect", 12));
+    const reconnectedMetadata = await managedProviderCooldownMetadata(db, runInput);
+    const reconnectedKey = cooldownKey(reconnectedMetadata);
+    // Reconnect preserves connection/grant/secret identity, but is an explicit
+    // operator action that permits probing the reconnected account.
+    expect(reconnectedMetadata.attribution).toEqual(originalMetadata.attribution);
+    expect(reconnectedMetadata.credential.secretId).toBe(originalMetadata.credential.secretId);
+    expect(reconnectedKey).not.toBe(originalKey);
     await writeFile(path.join(String(second.config.env.CODEX_HOME), "auth.json"), auth("later-refresh", 13));
     await second.cleanup();
     // The newer refresh persists to the grant it started from.
     expect(await service.credential(await service.select({ ...runInput, userId: "alice" }))).toBe(auth("later-refresh", 13));
+    const laterRefreshMetadata = await managedProviderCooldownMetadata(db, runInput);
+    expect(laterRefreshMetadata.credential.version).toBeGreaterThan(reconnectedMetadata.credential.version);
+    expect(cooldownKey(laterRefreshMetadata)).toBe(reconnectedKey);
+
+    const alternate = await service.save(companyId, "alice", { ...intent, name: "Alternate refresh account" }, auth("alternate", 14));
+    await service.setDefault(companyId, "alice", alternate.grantId);
+    const alternateMetadata = await managedProviderCooldownMetadata(db, runInput);
+    expect(alternateMetadata.attribution.grantId).toBe(alternate.grantId);
+    expect(cooldownKey(alternateMetadata)).not.toBe(reconnectedKey);
+    await service.setDefault(companyId, "alice", saved.grantId);
+    expect(cooldownKey(await managedProviderCooldownMetadata(db, runInput))).toBe(reconnectedKey);
   });
   it("resolves two concurrent OpenAI subscription write-backs by freshness, not by order", async () => {
     const userId = "concurrent-freshness-user";

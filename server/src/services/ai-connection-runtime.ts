@@ -9,6 +9,7 @@ import {
   AI_CONNECTION_CAPABILITIES,
   type AiConnectionBinding,
 } from "@paperclipai/shared";
+import { managedProviderCooldownMetadataForSelection } from "./provider-cooldown-scope.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { secretService } from "./secrets.js";
 import { decideCodexAuthMerge } from "@paperclipai/adapter-codex-local/server";
@@ -225,7 +226,8 @@ export async function prepareManagedAiRuntime(
       throw unprocessable(
         "The selected default changed. Retry this execution.",
       );
-    const value = await service.credential(selection);
+    const cooldownMetadata = await managedProviderCooldownMetadataForSelection(db, selection);
+    const value = await service.credential(selection, cooldownMetadata.credential.version);
     home = await mkdtemp(
       path.join(
         os.tmpdir(),
@@ -284,6 +286,7 @@ export async function prepareManagedAiRuntime(
         managedAiConnection: { ...selection.attribution, identity },
       },
       attribution: selection.attribution,
+      cooldownMetadata,
       accountName: selection.connection.name,
       accountOwnerUserId: selection.grant.subjectUserId,
       identity,

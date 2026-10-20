@@ -571,6 +571,9 @@ const PROVIDER_BALANCE_EXHAUSTED_RE = new RegExp([
 // Provider usage windows and rate limits (Claude session/weekly limits, Kimi
 // 5-hour limit, Codex usage limit, account rate limits).
 const PROVIDER_USAGE_LIMIT_RE = new RegExp([
+  // acpx preserves the typed terminal limit category even when the bridge
+  // omits the provider sentence. This is not a credential/auth failure.
+  String.raw`^ACP agent reported a terminal limit failure\.?$`,
   String.raw`you(?:'|’)ve (?:hit|reached|exceeded) your\b[^\n]{0,60}?\blimit\b`,
   // "rate limited" (a transient 429 throttle) stays on the transient path.
   String.raw`\b(?:usage|session|rate|quota)[\s_-]limit(?!ed)`,

@@ -373,7 +373,7 @@ export function aiConnectionService(db: Db) {
       } satisfies AiConnectionAttribution,
     };
   }
-  async function credential(row: Awaited<ReturnType<typeof select>>) {
+  async function credential(row: Awaited<ReturnType<typeof select>>, version: number | "latest" = "latest") {
     const ref = row.grant.credentialSecretRefs.find(
       (r) => r.configPath === "ai.credential",
     );
@@ -413,7 +413,7 @@ export function aiConnectionService(db: Db) {
           definitionId: secret.userSecretDefinitionId,
           responsibleUserId: secret.ownerUserId,
           required: true,
-          version: "latest",
+          version,
         },
         context,
       );
@@ -423,7 +423,7 @@ export function aiConnectionService(db: Db) {
     return secrets.resolveSecretValue(
       row.connection.companyId,
       secret.id,
-      "latest",
+      version,
       context,
     );
   }
@@ -625,7 +625,7 @@ export function aiConnectionService(db: Db) {
             status: "active",
             healthStatus: "ok",
             healthMessage: null,
-            config: { ...reconnect.connection.config, aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic" },
+            config: { ...reconnect.connection.config, aiAccountGeneration: randomUUID(), aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic" },
             updatedAt: new Date(),
           })
           .where(eq(toolConnections.id, id));
@@ -647,6 +647,8 @@ export function aiConnectionService(db: Db) {
             enabled: true,
             healthStatus: "ok",
             config: {
+              // Explicit account selection changes independently of OAuth refresh.
+              aiAccountGeneration: randomUUID(),
               sourceTemplateKey: input.provider,
               ai: { provider: input.provider, method: input.method },
               aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic",

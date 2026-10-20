@@ -17,6 +17,7 @@ import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from
 import { isCancelledLegacyPrelaunch } from "./cancelled-native-startup.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
+import { createProviderCooldownKey, managedProviderCooldownMetadata, resolveProviderCooldownSecretVersions } from "./provider-cooldown-scope.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_ADAPTER_TYPES, CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
@@ -471,6 +472,7 @@ import {
   parseProjectExecutionWorkspacePolicy,
   resolveEffectiveWorkspaceStrategyType,
   resolveExecutionWorkspaceEnvironmentId,
+  ManagedSandboxUnavailableError,
   resolveExecutionWorkspaceMode,
   resolveSharedWorkspaceConcurrency,
   selectEnvironmentExecutionWorkspaceSettings,
@@ -632,6 +634,7 @@ import {
 } from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { serverVersion } from "../version.js";
+import { agentProviderCooldownUntil } from "./agent-provider-cooldown.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -9255,6 +9258,8 @@ export type HeartbeatEnvironmentRuntime = ReturnType<
 export interface HeartbeatServiceOptions {
   /** Test seam before the atomic native runtime handoff. */
   beforeNativeRuntimeSelection?: (runId: string) => Promise<void>;
+  /** Test seam after a provider-wait executor settles, before releasing its claim. */
+  beforeProviderCooldownClaimRelease?: (runId: string) => Promise<void>;
   /** Test seam before the serialized legacy adapter dispatch transition. */
   beforeLegacyAdapterDispatch?: (runId: string) => Promise<void>;
   /** Test seam immediately before the locked queued-wake claim. */
@@ -11117,6 +11122,87 @@ export function heartbeatService(
       )
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  // Resolve declared scope without provisioning workspaces or reading credentials.
+  // Execution uses the same environment policy and stamps its sampled inputs.
+  async function providerCooldownKeyForRun(
+    agent: typeof agents.$inferSelect,
+    context: Record<string, unknown>,
+    issueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null,
+    responsibleUserId: string | null,
+    routineContext: Awaited<ReturnType<typeof getRoutineEnvForExecutionIssue>>,
+  ): Promise<string | null> {
+    const projectId = issueContext?.projectId ?? readNonEmptyString(context.projectId);
+    const project = projectId ? await db.select({ env: projects.env }).from(projects)
+      .where(and(eq(projects.companyId, agent.companyId), eq(projects.id, projectId)))
+      .then((rows) => rows[0] ?? null) : null;
+    const settings = await instanceSettings.get();
+    const managedSandboxOnly = (await instanceSettings.getExperimental()).enableManagedSandboxOnly === true;
+    const [localEnvironment] = await environmentsSvc.list({ driver: "local" });
+    // No existing local row means there cannot be a previously executed local
+    // scope to match. Leave provisioning and its errors to normal execution.
+    if (!localEnvironment) return null;
+    const managed = managedSandboxOnly
+      ? await environmentsSvc.findManagedSandboxEnvironment(agent.companyId) : null;
+    let selectedEnvironmentId: string;
+    try {
+      selectedEnvironmentId = resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: agent.defaultEnvironmentId,
+        instanceDefaultEnvironmentId: settings.defaultEnvironmentId ?? null,
+        localDefaultEnvironmentId: localEnvironment.id,
+        managedSandboxOnly,
+        managedSandboxEnvironmentId: managed?.id ?? null,
+      }).environmentId;
+    } catch (error) {
+      if (error instanceof ManagedSandboxUnavailableError) return null;
+      throw error;
+    }
+    if (isExecutionForcedToKubernetes({ executionMode: settings.general.executionMode, managedSandboxOnly })) {
+      const kubernetes = await environmentsSvc.findKubernetesEnvironment(agent.companyId);
+      if (!kubernetes) return null;
+      selectedEnvironmentId = kubernetes.id;
+    }
+    const environment = selectedEnvironmentId === localEnvironment.id
+      ? localEnvironment : await environmentsSvc.getById(selectedEnvironmentId);
+    if (!environment) return null;
+    const overrides = issueContext?.assigneeAgentId === agent.id
+      ? parseIssueAssigneeAdapterOverrides(issueContext.assigneeAdapterOverrides) : null;
+    const adapterConfig = { ...parseObject(agent.adapterConfig), ...(overrides?.adapterConfig ?? {}) };
+    const parsedAiConnection = agent.runtimeConfig?.aiConnection
+      ? aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection) : null;
+    if (parsedAiConnection && !parsedAiConnection.success) return null;
+    const aiConnection = parsedAiConnection?.data;
+    const providerEnv = (env: unknown) => parseObject(stripForbiddenEnvBindings(
+      aiConnection ? stripAiAuthBindings(env) : env, true,
+    ));
+    const environmentEnv = providerEnv(environment.envVars);
+    const projectEnv = providerEnv(project?.env);
+    const routineEnv = providerEnv(routineContext.env);
+    const scopedAdapterConfig = { ...adapterConfig, env: providerEnv(adapterConfig.env) };
+    try {
+      const credentialMetadata = aiConnection ? await managedProviderCooldownMetadata(db, {
+        companyId: agent.companyId, agentId: agent.id, responsibleUserId,
+        adapterType: agent.adapterType, binding: aiConnection, config: scopedAdapterConfig,
+      }) : null;
+      const secretVersions = await resolveProviderCooldownSecretVersions(secretsSvc, agent.companyId, [
+        { consumerType: "agent", consumerId: agent.id, env: scopedAdapterConfig.env, responsibleUserId },
+        { consumerType: "environment", consumerId: environment.id, env: environmentEnv, responsibleUserId },
+        ...(projectId ? [{ consumerType: "project" as const, consumerId: projectId, env: projectEnv, responsibleUserId }] : []),
+        ...(routineContext.routineId ? [{ consumerType: "routine" as const, consumerId: routineContext.routineId, env: routineEnv, responsibleUserId }] : []),
+      ]);
+      return createProviderCooldownKey({
+        adapterType: agent.adapterType, adapterConfig: scopedAdapterConfig,
+        aiConnection, responsibleUserId,
+        environment: { ...environment, envVars: environmentEnv },
+        projectEnv, routineEnv, credentialMetadata, secretVersions,
+      });
+    } catch (error) {
+      // An invalid/revoked binding must receive the normal configuration error,
+      // rather than inherit a wait belonging to its previous valid account.
+      if (error instanceof HttpError) return null;
+      throw error;
+    }
   }
 
   async function getTaskSession(
@@ -17434,19 +17520,24 @@ export function heartbeatService(
       }
     }
 
-    const claimedAt = new Date();
+    const cooldownIssueContext = issueId
+      ? await getIssueExecutionContext(run.companyId, issueId) : null;
+    const cooldownRoutineContext = await getRoutineEnvForExecutionIssue(run.companyId, cooldownIssueContext);
     const responsibleUserId = await resolveResponsibleUserIdForRun({
       run,
       contextSnapshot: context,
-      issueContext: issueId
-        ? await getIssueExecutionContext(run.companyId, issueId)
-        : null,
-      routineEnvContext: {
-        routineId: null,
-        env: null,
-        responsibleUserId: null,
-      },
+      issueContext: cooldownIssueContext,
+      routineEnvContext: cooldownRoutineContext,
     });
+    const providerCooldownKey = await providerCooldownKeyForRun(
+      agent, context, cooldownIssueContext, responsibleUserId, cooldownRoutineContext,
+    );
+    if (providerCooldownKey && await agentProviderCooldownUntil(db, agent.companyId, agent.id, providerCooldownKey)) {
+      // Keep the same durable queued run. The normal scheduler rechecks it;
+      // no provider call, failure, retry lineage or timer is created here.
+      return null;
+    }
+    const claimedAt = new Date();
     const queuedCommentIds = queuedCommentIdsFromRunContext(context);
     if (
       issueId &&
@@ -17659,7 +17750,7 @@ export function heartbeatService(
                   .update(heartbeatRuns)
                   .set({
                     status: "running",
-                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType, providerCooldownKey } })}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                     responsibleUserId,
                     startedAt: lockedRun.startedAt ?? claimedAt,
@@ -17759,7 +17850,7 @@ export function heartbeatService(
                 .update(heartbeatRuns)
                 .set({
                   status: "running",
-                  runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                  runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType, providerCooldownKey } })}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                   responsibleUserId,
                   startedAt: lockedRun.startedAt ?? claimedAt,
@@ -17847,7 +17938,7 @@ export function heartbeatService(
             .update(heartbeatRuns)
             .set({
               status: "running",
-              runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+              runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType, providerCooldownKey } })}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
               responsibleUserId,
               startedAt: run.startedAt ?? claimedAt,
@@ -20946,6 +21037,7 @@ export function heartbeatService(
     let githubLauncherLocation:
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
+    let providerCooldownDeferralRequested = false;
     let nativeOwnershipHeld = false;
     let nativeDispatchStarted = false;
     let nativeWorkspaceFinalizeScheduled = false;
@@ -22111,6 +22203,37 @@ export function heartbeatService(
         for (const key of AI_AUTH_ENV_KEYS) secretKeys.add(key);
         context.aiConnection = { ...managedAiRuntime.attribution, identity: managedAiRuntime.identity };
         await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiConnection: context.aiConnection })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
+      }
+      // A recovered native turn keeps the provider scope admitted with its
+      // immutable input. Fresh turns use the exact environment/project/routine
+      // samples and resolved credential version used to prepare this execution.
+      if (!persistedNativeExecutionInput) {
+        const providerEnv = (env: unknown) => parseObject(stripForbiddenEnvBindings(
+          aiBinding ? stripAiAuthBindings(env) : env, true,
+        ));
+        const executedProviderCooldownKey = createProviderCooldownKey({
+          adapterType: agent.adapterType,
+          adapterConfig: { ...parseObject(agent.adapterConfig), ...(issueAssigneeOverrides?.adapterConfig ?? {}),
+            env: providerEnv(mergedConfig.env) },
+          aiConnection: aiBinding, responsibleUserId,
+          environment: selectedEnvironmentForConfig ? {
+            ...selectedEnvironmentForConfig, envVars: providerEnv(selectedEnvironmentForConfig.envVars),
+          } : null,
+          projectEnv: providerEnv(projectContext?.env), routineEnv: providerEnv(routineEnvContext.env),
+          credentialMetadata: managedAiRuntime?.cooldownMetadata ?? null,
+          secretVersions: secretManifest.flatMap((entry) =>
+            typeof entry.version === "number" ? [{ secretId: entry.secretId, version: entry.version, envKey: entry.envKey }] : []),
+        });
+        // A declaration can change after claim. Recheck the sampled route
+        // before provider work and return the same undispatched claim to queue.
+        if (!runOptions.nativeRestartRecovery && !runOptions.nativeLeaseOwner &&
+            await agentProviderCooldownUntil(db, agent.companyId, agent.id, executedProviderCooldownKey)) {
+          providerCooldownDeferralRequested = true;
+          return;
+        }
+        await db.update(heartbeatRuns).set({
+          runnerProfileJson: sql`jsonb_set(coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb), '{adapterDispatch}', ${JSON.stringify({ adapterType: agent.adapterType, providerCooldownKey: executedProviderCooldownKey })}::jsonb, true)`,
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, agent.companyId)));
       }
       if (secretManifest.length > 0) {
         context.paperclipSecrets = {
@@ -26818,6 +26941,8 @@ export function heartbeatService(
         // released, so the UI never shows a finished task as "Live".
         if (
           latestRun &&
+          // This fresh claim remains owned until pre-provider cleanup settles.
+          !providerCooldownDeferralRequested &&
           !nativeSessionResumeScheduled &&
           !nativeWorkspaceFinalizeScheduled &&
           !nativeOwnershipHeld
@@ -26976,9 +27101,16 @@ export function heartbeatService(
           adapterExecutionControls.delete(run.id);
         }
       }
+      if (providerCooldownDeferralRequested) {
+        // Keep the claim unclaimable throughout cleanup. An old executor must
+        // never release a successor's resources or terminalize its new attempt.
+        await options.beforeProviderCooldownClaimRelease?.(run.id);
+        await releaseRunClaimedJustBeforeSuppression(db, run.id, legacyControllerBootId);
+        latestRun = await getRun(run.id);
+      }
       // Terminalization precedes lease and adapter cleanup. Only now is the
       // owner gone; retry pending input for ordinary completions as well as Stop.
-      if (latestRun?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(latestRun.status)) {
+      if (!providerCooldownDeferralRequested && latestRun?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(latestRun.status)) {
         const [pending] = await db.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
           eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
           eq(agentWakeupRequests.status, "deferred_issue_execution"),
@@ -26995,7 +27127,7 @@ export function heartbeatService(
         !nativeWorkspaceFinalizeScheduled &&
         !isHeartbeatShuttingDown()
       ) {
-        if (latestRun) await resumeRemoteStopComments(latestRun).catch(err => {
+        if (latestRun && !providerCooldownDeferralRequested) await resumeRemoteStopComments(latestRun).catch(err => {
           logger.warn({ err, runId: run.id }, "failed to resume user messages after remote Stop");
         });
         await startNextQueuedRunForAgent(run.agentId);
