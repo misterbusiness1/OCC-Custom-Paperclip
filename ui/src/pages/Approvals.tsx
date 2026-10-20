@@ -11,8 +11,8 @@ import {
   type PointerEvent,
 } from "react";
 import { Link, useNavigate, useLocation, useSearchParams } from "@/lib/router";
-import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { APPROVAL_QUEUE_DECIDED_LIMIT_MAX, type Approval } from "@paperclipai/shared";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { APPROVAL_QUEUE_DECIDED_LIMIT_MAX, type Approval, type ApprovalLinkedIssuesByApproval } from "@paperclipai/shared";
 import { approvalsApi } from "../api/approvals";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
@@ -452,6 +452,11 @@ export function Approvals() {
   const sortOrder: SortOrder = SORT_ORDERS.includes(sortParam as SortOrder) ? (sortParam as SortOrder) : defaultSort;
   // The search term is not part of the address: it is typed to find one request, not to keep a view.
   const [searchText, setSearchText] = useState("");
+  // The linked tasks this page has read, per approval, for the selected company (see the read below).
+  const [linkedKnownState, setLinkedKnown] = useState<{ companyId: string | null; byId: ApprovalLinkedIssuesByApproval }>({
+    companyId: null,
+    byId: {},
+  });
   const searchTerm = searchText.trim().toLowerCase();
   // Approvals decided on this visit stay listed as a compact row, so deciding
   // one request does not move the rest of the queue or leave the page.
@@ -1575,15 +1580,31 @@ export function Approvals() {
   // The linked-task chips of every row on the page come from one read, not one per card. The key is
   // the set of rows shown, so a row the page brings in is read with the others; the rows already
   // shown keep their chips while that read is on its way. Returning to the browser tab reads nothing.
-  const linkedIssueIdsKey = visible.map((approval) => approval.id).sort().join(",");
-  const { data: linkedIssuesByApproval } = useQuery({
+  const linkedKnown = linkedKnownState.companyId === selectedCompanyId ? linkedKnownState : { companyId: selectedCompanyId ?? null, byId: {} as ApprovalLinkedIssuesByApproval };
+  // Only the rows whose linked tasks this page has not read yet are read: a decision changes the
+  // rows on the page, and re-reading every row each time would repeat the read for unchanged rows.
+  const missingLinkedIds = visible
+    .map((approval) => approval.id)
+    .filter((id) => !(id in linkedKnown.byId))
+    .sort();
+  const linkedIssueIdsKey = missingLinkedIds.join(",");
+  const { data: fetchedLinkedIssues } = useQuery({
     queryKey: queryKeys.approvals.linkedIssues(selectedCompanyId ?? "", linkedIssueIdsKey),
     queryFn: () => approvalsApi.listLinkedIssues(selectedCompanyId!, linkedIssueIdsKey.split(",")),
     enabled: !!selectedCompanyId && linkedIssueIdsKey.length > 0,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
-    placeholderData: keepPreviousData,
   });
+  useEffect(() => {
+    if (!fetchedLinkedIssues || !linkedIssueIdsKey) return;
+    setLinkedKnown((prev) => {
+      const byId = prev.companyId === selectedCompanyId ? { ...prev.byId } : {};
+      // An approval without linked tasks has no key in the answer: it is known to have none.
+      for (const id of linkedIssueIdsKey.split(",")) byId[id] = fetchedLinkedIssues[id] ?? [];
+      return { companyId: selectedCompanyId ?? null, byId };
+    });
+  }, [fetchedLinkedIssues, linkedIssueIdsKey, selectedCompanyId]);
+  const linkedIssuesByApproval = linkedKnown.byId;
 
   if (!selectedCompanyId) {
     return <p className="text-sm text-muted-foreground">Select an organization first.</p>;

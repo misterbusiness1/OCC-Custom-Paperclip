@@ -356,7 +356,7 @@ describe("Approvals", () => {
       expect(apiMocks.listLinkedIssues).toHaveBeenCalledTimes(1);
     });
 
-    it("keeps the chips of the rows already shown while a new row is read with them", async () => {
+    it("reads only the new row, and keeps the chips of the rows already shown while it is on its way", async () => {
       await render();
       await vi.waitFor(() => expect(rows()[0].textContent).toContain("DEMO-7"));
       let answer!: (value: Record<string, unknown[]>) => void;
@@ -369,13 +369,12 @@ describe("Approvals", () => {
       });
       await vi.waitFor(() => expect(order()).toContain("later"));
 
-      // One more read, for all rows; the chip already shown stays while it is on its way.
+      // One more read, for the new row only; the chip already shown stays while it is on its way.
       await vi.waitFor(() => expect(apiMocks.listLinkedIssues).toHaveBeenCalledTimes(2));
-      expect(apiMocks.listLinkedIssues).toHaveBeenLastCalledWith("company-1", ["email", "later", "newest", "oldest"]);
+      expect(apiMocks.listLinkedIssues).toHaveBeenLastCalledWith("company-1", ["later"]);
       expect(rows()[0].textContent).toContain("DEMO-7");
 
       await act(async () => answer({
-        oldest: [{ id: "issue-1", identifier: "DEMO-7", title: "Linked task", status: "in_review" }],
         later: [{ id: "issue-2", identifier: "DEMO-9", title: "Another task", status: "todo" }],
       }));
       const later = rows().find((row) => row.dataset.approvalCard === "later")!;
