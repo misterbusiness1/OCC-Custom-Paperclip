@@ -46,53 +46,96 @@ export async function agentProviderCooldownUntil(
     : null;
 }
 
+export type ProviderAdmissionScope =
+  | { kind: "account"; providerAccountKey: string }
+  | { kind: "agent_provider"; agentId: string; providerCooldownKey: string };
+
+export function providerAdmissionScope(agentId: string, providerCooldownKey: string | null,
+  providerAccountKey: string | null): ProviderAdmissionScope | null {
+  if (providerAccountKey) return { kind: "account", providerAccountKey };
+  return providerCooldownKey ? { kind: "agent_provider", agentId, providerCooldownKey } : null;
+}
+
+/** Preserve account receipts while making an ungrouped route's provenance explicit. */
+export function providerAdmissionMetadata(scope: ProviderAdmissionScope | null, recoveryOf: string | null) {
+  return {
+    providerAdmissionScopeKind: scope?.kind ?? null,
+    providerAccountKey: scope?.kind === "account" ? scope.providerAccountKey : null,
+    providerAccountRecoveryOf: scope?.kind === "account" ? recoveryOf : null,
+    providerAgentRecoveryOf: scope?.kind === "agent_provider" ? recoveryOf : null,
+  };
+}
+
+function admissionScopePredicate(companyId: string, scope: ProviderAdmissionScope) {
+  return and(eq(heartbeatRuns.companyId, companyId), scope.kind === "account"
+    ? sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'providerAccountKey' = ${scope.providerAccountKey}`
+    : and(eq(heartbeatRuns.agentId, scope.agentId),
+      sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'providerCooldownKey' = ${scope.providerCooldownKey}`,
+      // Only an explicitly sampled null identity establishes an ungrouped scope.
+      // Historical runs without that preparation receipt remain unassociated.
+      sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->'providerAccountKey' = 'null'::jsonb`));
+}
+
 /** MUST be called on a transaction that also reads admission and commits the
  * claim/stamp. Outside a transaction PostgreSQL releases this lock immediately.
  * Serializes decisions, never a healthy provider turn. */
-export async function lockProviderAccountAdmission(db: Pick<Db, "execute">, companyId: string, providerAccountKey: string) {
-  await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`provider-account:${companyId}:${providerAccountKey}`}, 0))`);
+export async function lockProviderAdmission(db: Pick<Db, "execute">, companyId: string, scope: ProviderAdmissionScope) {
+  const lockKey = scope.kind === "account"
+    ? `provider-account:${companyId}:${scope.providerAccountKey}`
+    : `provider-agent:${companyId}:${scope.agentId}:${scope.providerCooldownKey}`;
+  await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
 }
 
-export async function providerAccountRecoveryAdmission(
+export async function providerRecoveryAdmission(
   db: Pick<Db, "select">,
   companyId: string,
-  providerAccountKey: string,
+  scope: ProviderAdmissionScope,
   runId: string,
   now = new Date(),
   options?: { afterSourceRead?: () => Promise<void> },
 ): Promise<{ allowed: boolean; recoveryOf: string | null; retryAt: Date | null }> {
-  const scope = and(eq(heartbeatRuns.companyId, companyId),
-    sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'providerAccountKey' = ${providerAccountKey}`);
-  const [source] = await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt,
+  const predicate = admissionScopePredicate(companyId, scope);
+  const recoveryField = scope.kind === "account" ? "providerAccountRecoveryOf" : "providerAgentRecoveryOf";
+  const failures = await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt,
     retryAt: sql<string | null>`${heartbeatRuns.resultJson}->>'retryNotBefore'`,
-  }).from(heartbeatRuns).where(and(scope, eq(heartbeatRuns.status, "failed"),
+    // Nested SQL keeps correlated outer columns qualified in Drizzle projections.
+    childRetryAt: sql<Date | null>`(select min(child.scheduled_retry_at) from heartbeat_runs child
+      where child.company_id = ${sql`${heartbeatRuns.companyId}`} and child.retry_of_run_id = ${sql`${heartbeatRuns.id}`})`,
+  }).from(heartbeatRuns).where(and(predicate, eq(heartbeatRuns.status, "failed"),
     sql`${heartbeatRuns.resultJson}->>'errorFamily' = 'transient_upstream'`,
     sql`${heartbeatRuns.resultJson}->'providerHttpStatus' = '429'::jsonb`,
     isNotNull(heartbeatRuns.finishedAt),
-  )).orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.id)).limit(1);
-  if (!source?.finishedAt) return { allowed: true, recoveryOf: null, retryAt: null };
+  ));
+  const finiteDate = (value: string | Date | null) => {
+    if (!value) return null;
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isFinite(date.getTime()) ? date : null;
+  };
+  // A later-finishing or delayed writer must not shorten an outstanding wait.
+  // Rank safely parsed receipts, not raw JSON timestamp casts or commit order.
+  // Old structured failures may use their actual typed retry-child deadline.
+  const sources = failures.flatMap(failure => {
+    const dueAt = finiteDate(failure.retryAt) ?? finiteDate(failure.childRetryAt);
+    return dueAt && failure.finishedAt ? [{ ...failure, finishedAt: failure.finishedAt, dueAt }] : [];
+  }).sort((a, b) => b.dueAt.getTime() - a.dueAt.getTime()
+    || b.finishedAt.getTime() - a.finishedAt.getTime() || b.id.localeCompare(a.id));
+  const source = sources[0];
+  if (!source) return { allowed: true, recoveryOf: null, retryAt: null };
   await options?.afterSourceRead?.();
-  // Only a causal post-wait ordinary probe can clear this failure. An older
-  // in-flight success, or a reset-only turn, carries no recovery evidence.
-  const [recovered] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(scope,
+  const dueAt = source.dueAt;
+  // Only an ordinary probe of this exact strongest receipt, started after its
+  // wait, can clear it. An older in-flight or reset-only success is not proof.
+  const [recovered] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(predicate,
     eq(heartbeatRuns.status, "succeeded"),
-    sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'providerAccountRecoveryOf' = ${source.id}`,
-    gte(heartbeatRuns.startedAt, source.finishedAt),
+    sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>${recoveryField} = ${source.id}`,
+    gte(heartbeatRuns.startedAt, source.finishedAt), gte(heartbeatRuns.startedAt, dueAt),
     sql`${heartbeatRuns.resultJson}->>'conversationReset' is distinct from 'true'`,
   )).limit(1);
   if (recovered) return { allowed: true, recoveryOf: null, retryAt: null };
-  const retryAt = source.retryAt ? new Date(source.retryAt) : null;
-  // Legacy structured evidence without a persisted timing contract cannot
-  // invent a reset. Its own bounded retry remains the recovery authority.
-  const [retry] = retryAt && Number.isFinite(retryAt.getTime()) ? [] : await db.select({ at: heartbeatRuns.scheduledRetryAt })
-    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, source.id), isNotNull(heartbeatRuns.scheduledRetryAt)))
-    .orderBy(heartbeatRuns.scheduledRetryAt).limit(1);
-  const dueAt = retryAt && Number.isFinite(retryAt.getTime()) ? retryAt : retry?.at ?? null;
-  if (!dueAt) return { allowed: true, recoveryOf: null, retryAt: null };
   if (dueAt > now) return { allowed: false, recoveryOf: source.id, retryAt: dueAt };
-  const [probe] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(scope,
+  const [probe] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(predicate,
     eq(heartbeatRuns.status, "running"), sql`${heartbeatRuns.id} <> ${runId}`,
-    sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'providerAccountRecoveryOf' is not null`,
+    sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>${recoveryField} is not null`,
   )).limit(1);
   return { allowed: !probe, recoveryOf: source.id, retryAt: dueAt };
 }
