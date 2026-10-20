@@ -1034,7 +1034,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     }));
   });
 
-  it("reconciles an older unresolved approval when a newer linked approval already continued", async () => {
+  it.each(["clear", "paused", "pending_approval"])("reconciles an older unresolved approval when a newer linked approval already continued with %s gates", async (gate) => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const olderDecidedAt = new Date("2026-10-15T19:55:00.000Z");
     const newerDecidedAt = new Date("2026-10-15T19:57:00.000Z");
@@ -1075,17 +1075,42 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       createdAt: new Date("2026-10-15T19:57:20.000Z"),
       contextSnapshot: { issueId: sourceIssueId, approvalId: newerApproval!.id },
     });
+    if (gate === "paused") {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, coderId));
+    } else if (gate === "pending_approval") {
+      const [pending] = await db.insert(approvals).values({
+        companyId,
+        type: "request_board_approval",
+        status: "pending",
+        payload: { title: "Another action still requires approval" },
+        requestedByAgentId: coderId,
+      }).returning();
+      await db.insert(issueApprovals).values({
+        companyId, issueId: sourceIssueId, approvalId: pending!.id,
+      });
+    }
     const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() }));
 
     const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
 
+    if (gate !== "clear") {
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.escalated).toBe(0);
+      expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(issue).toMatchObject({ status: "in_progress", assigneeAgentId: coderId });
+      return;
+    }
     expect(result.continuationRequeued).toBe(1);
+    expect(result.dispositionRepairRequeued).toBe(0);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
     expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
       contextSnapshot: expect.objectContaining({ approvalId: olderApproval!.id }),
     }));
   });
 
-  it("correlates a multi-issue approval continuation by approval id", async () => {
+  it("correlates a multi-issue approval by id while repairing its unfinished source disposition", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const secondIssueId = randomUUID();
     await db.insert(issues).values({
@@ -1122,12 +1147,38 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       createdAt: new Date("2026-10-15T19:57:20.000Z"),
       contextSnapshot: { issueId: sourceIssueId, approvalId: approval!.id },
     });
-    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() }));
+    const enqueueWakeup = vi.fn<Parameters<typeof recoveryService>[1]["enqueueWakeup"]>(
+      async (agentId, opts) => {
+        const [run] = await db.insert(heartbeatRuns).values({
+          id: randomUUID(),
+          companyId,
+          agentId,
+          invocationSource: opts?.source ?? "automation",
+          status: "queued",
+          contextSnapshot: opts?.contextSnapshot,
+        }).returning();
+        return run!;
+      },
+    );
 
     const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
 
-    expect(enqueueWakeup).not.toHaveBeenCalled();
-    expect(result.continuationRequeued).toBe(0);
+    // The approved action already ran once for both linked issues. Its source
+    // still has no recorded disposition, so only ordinary disposition repair
+    // is eligible; the approval continuation must not be replayed.
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+      reason: "issue_disposition_repair",
+      contextSnapshot: expect.objectContaining({
+        issueId: sourceIssueId,
+        source: "issue.deliberate_wait_disposition_repair",
+      }),
+    }));
+    expect(enqueueWakeup).not.toHaveBeenCalledWith(coderId, expect.objectContaining({
+      contextSnapshot: expect.objectContaining({ approvalId: approval!.id }),
+    }));
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.dispositionRepairRequeued).toBe(1);
   });
 
   it("escalates when an approved approval continuation terminates without executing", async () => {

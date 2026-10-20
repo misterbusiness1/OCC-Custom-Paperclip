@@ -5043,6 +5043,106 @@ export function recoveryService(
     };
     const reconciledApprovalIds = new Set<string>();
 
+    async function reconcileApprovedIssueContinuations(
+      issue: typeof issues.$inferSelect,
+      agentId: string,
+      latestRun: LatestIssueRun,
+      legacySource?: NonNullable<LatestIssueRun>,
+    ) {
+      const approvedApprovals = await listApprovedApprovalsForIssue(
+        issue.companyId,
+        issue.id,
+      );
+      if (approvedApprovals.length === 0) return false;
+      if (legacySource) {
+        // An authorized approval may own the next action, but it cannot bypass
+        // the existing legacy continuation authority's pause, budget, wait,
+        // owner, or lifecycle gates.
+        const state = await collectDispositionRepairSourceState(db, { issue });
+        const decision = await decidePersistedLegacyContinuation(
+          issue,
+          legacySource.id,
+          state,
+          legacyDispositionEpisode(legacySource),
+        );
+        if (decision.kind === "skip") return false;
+      }
+      let handledApprovedApproval = false;
+      for (const approvedApproval of approvedApprovals) {
+        if (reconciledApprovalIds.has(approvedApproval.id)) continue;
+        const approvalDecisionAt = approvedApproval.decidedAt ?? approvedApproval.updatedAt;
+        if (approvedApproval.requestedByAgentId !== agentId) continue;
+        const postApprovalRun = await getLatestIssueRunSince(
+          issue.companyId,
+          issue.id,
+          agentId,
+          approvalDecisionAt,
+          approvedApproval.id,
+        );
+        if (postApprovalRun && !isUnsuccessfulTerminalIssueRun(postApprovalRun)) {
+          reconciledApprovalIds.add(approvedApproval.id);
+          continue;
+        }
+        if (!postApprovalRun) {
+          if (await hasQueuedIssueWake(issue.companyId, issue.id, agentId, approvedApproval.id)) {
+            reconciledApprovalIds.add(approvedApproval.id);
+            continue;
+          }
+          if (await isInvocationBudgetBlocked(issue, agentId)) {
+            result.skipped += 1;
+            handledApprovedApproval = true;
+            break;
+          }
+          const queued = await enqueueStrandedIssueRecovery({
+            issueId: issue.id,
+            agentId,
+            reason: "issue_continuation_needed",
+            retryReason: "issue_continuation_needed",
+            source: "approval.approved_orphan_recovery",
+            idempotencyKey: `approval-approved-orphan-recovery:${approvedApproval.id}`,
+            retryOfRunId: latestRun?.id ?? null,
+            extraContext: {
+              approvalId: approvedApproval.id,
+              approvalStatus: "approved",
+              approvalWakeReason: "approval_approved",
+              issueIds: await listIssueIdsForApproval(issue.companyId, approvedApproval.id),
+              approvalOrphanRecovery: true,
+            },
+          });
+          if (queued) {
+            reconciledApprovalIds.add(approvedApproval.id);
+            result.continuationRequeued += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          handledApprovedApproval = true;
+          continue;
+        }
+        if (isUnsuccessfulTerminalIssueRun(postApprovalRun)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: issue.status as StrandedPreviousStatus,
+            latestRun: postApprovalRun,
+            comment:
+              `Paperclip detected that approved approval \`${approvedApproval.id}\` woke its requester, ` +
+              "but the authorized continuation ended unsuccessfully and no live execution or waiting path remains. " +
+              "Opening a source-scoped recovery action so the approved action cannot disappear silently.",
+          });
+          if (updated) {
+            reconciledApprovalIds.add(approvedApproval.id);
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          handledApprovedApproval = true;
+          continue;
+        }
+      }
+      return handledApprovedApproval;
+    }
+
     const candidateIssueIds = candidates.map((issue) => issue.id);
     const unfinishedGoalBindings = new Set<string>();
     if (candidateIssueIds.length > 0) {
@@ -5144,6 +5244,7 @@ export function recoveryService(
       if (latestRun?.status === "succeeded" && issue.status !== "in_review") {
         const [source] = await db.select({ runtimeMode: heartbeatRuns.runtimeMode }).from(heartbeatRuns).where(eq(heartbeatRuns.id, latestRun.id)).limit(1);
         if (source?.runtimeMode !== "native") {
+          if (await reconcileApprovedIssueContinuations(issue, agentId, latestRun, latestRun)) continue;
           const outcome = await reconcileLegacyContinuation(latestRun.id);
           if (outcome === "queued") {
             result.continuationRequeued += 1;
@@ -5454,84 +5555,7 @@ export function recoveryService(
         }
       }
 
-      const approvedApprovals = await listApprovedApprovalsForIssue(
-        issue.companyId,
-        issue.id,
-      );
-      let handledApprovedApproval = false;
-      for (const approvedApproval of approvedApprovals) {
-        if (reconciledApprovalIds.has(approvedApproval.id)) continue;
-        const approvalDecisionAt = approvedApproval.decidedAt ?? approvedApproval.updatedAt;
-        if (approvedApproval.requestedByAgentId !== agentId) continue;
-        const postApprovalRun = await getLatestIssueRunSince(
-          issue.companyId,
-          issue.id,
-          agentId,
-          approvalDecisionAt,
-          approvedApproval.id,
-        );
-        if (postApprovalRun && !isUnsuccessfulTerminalIssueRun(postApprovalRun)) {
-          reconciledApprovalIds.add(approvedApproval.id);
-          continue;
-        }
-        if (!postApprovalRun) {
-          if (await hasQueuedIssueWake(issue.companyId, issue.id, agentId, approvedApproval.id)) {
-            reconciledApprovalIds.add(approvedApproval.id);
-            continue;
-          }
-          if (await isInvocationBudgetBlocked(issue, agentId)) {
-            result.skipped += 1;
-            handledApprovedApproval = true;
-            break;
-          }
-          const queued = await enqueueStrandedIssueRecovery({
-            issueId: issue.id,
-            agentId,
-            reason: "issue_continuation_needed",
-            retryReason: "issue_continuation_needed",
-            source: "approval.approved_orphan_recovery",
-            idempotencyKey: `approval-approved-orphan-recovery:${approvedApproval.id}`,
-            retryOfRunId: latestRun?.id ?? null,
-            extraContext: {
-              approvalId: approvedApproval.id,
-              approvalStatus: "approved",
-              approvalWakeReason: "approval_approved",
-              issueIds: await listIssueIdsForApproval(issue.companyId, approvedApproval.id),
-              approvalOrphanRecovery: true,
-            },
-          });
-          if (queued) {
-            reconciledApprovalIds.add(approvedApproval.id);
-            result.continuationRequeued += 1;
-            result.issueIds.push(issue.id);
-          } else {
-            result.skipped += 1;
-          }
-          handledApprovedApproval = true;
-          continue;
-        }
-        if (isUnsuccessfulTerminalIssueRun(postApprovalRun)) {
-          const updated = await escalateStrandedAssignedIssue({
-            issue,
-            previousStatus: issue.status as StrandedPreviousStatus,
-            latestRun: postApprovalRun,
-            comment:
-              `Paperclip detected that approved approval \`${approvedApproval.id}\` woke its requester, ` +
-              "but the authorized continuation ended unsuccessfully and no live execution or waiting path remains. " +
-              "Opening a source-scoped recovery action so the approved action cannot disappear silently.",
-          });
-          if (updated) {
-            reconciledApprovalIds.add(approvedApproval.id);
-            result.escalated += 1;
-            result.issueIds.push(issue.id);
-          } else {
-            result.skipped += 1;
-          }
-          handledApprovedApproval = true;
-          continue;
-        }
-      }
-      if (handledApprovedApproval) continue;
+      if (await reconcileApprovedIssueContinuations(issue, agentId, latestRun)) continue;
 
       const acceptedContinuationInteraction =
         await getLatestAcceptedContinuationInteraction(
