@@ -13,7 +13,31 @@ const CODEX_USAGE_LIMIT_RE =
 const CODEX_ACP_PROVIDER_QUOTA_SUMMARY_RE =
   /^you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+[^.!\n]+(?:[.!])?$/i;
 const CODEX_ACP_CREDITS_QUOTA_SUMMARY_RE =
-  /^you(?:'|’)ve hit your usage limit\. Visit https:\/\/chatgpt\.com\/codex\/settings\/usage to purchase more credits or try again at [^.!?\r\n]{1,160}[.!]?$/i;
+  /^you(?:'|’)ve hit your usage limit\. Visit https:\/\/chatgpt\.com\/(?:codex\/)?settings\/usage to purchase more credits or try again at ([^.!?\r\n]{1,160})[.!]?$/i;
+// Codex's RetryLimitReachedError and ServerOverloaded texts (codex-rs
+// protocol/src/error.rs). Both are throttles that clear on their own.
+const CODEX_ACP_TRANSIENT_UPSTREAM_SUMMARY_RE =
+  /^(?:exceeded retry limit, last status: (?:429 Too Many Requests|5\d\d [A-Za-z ]{1,40})(?:, request id: [^\s,]{1,128})?|Selected model is at capacity\. Please try a different model\.)$/i;
+// Codex-owned framing that can surround the provider sentence in the same
+// failed turn: a leading skills-budget warning and the remote compaction
+// wrapper. Anything else in the output keeps the turn generic.
+const CODEX_ACP_SKILLS_BUDGET_WARNING_RE =
+  /^Warning: Exceeded skills context budget of \d{1,3}%\.[^\r\n]{0,300}\r?\n\s*\n/i;
+const CODEX_ACP_REMOTE_COMPACT_PREFIX_RE = /^Error running remote compact task: /i;
+// Codex prints reset times in its process-local zone as "%b %-d{suffix}, %Y
+// %-I:%M %p", or "%-I:%M %p" for a same-day reset (format_retry_timestamp).
+const CODEX_ACP_DATED_RESET_RE =
+  /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* (\d{1,2})(?:st|nd|rd|th), (\d{4}) (\d{1,2}):(\d{2}) ([AP])M$/i;
+const CODEX_ACP_SAME_DAY_RESET_RE = /^(\d{1,2}):(\d{2}) ([AP])M$/i;
+const MONTH_INDEX: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+// Codex's longest usage window is weekly; a later reset is not a provider
+// window and stays on the server's bounded fallback.
+const CODEX_ACP_MAX_RESET_HORIZON_MS = 8 * 24 * 60 * 60 * 1000;
+// Codex prints whole minutes, so the real reset can be up to 59 s later.
+const CODEX_ACP_RESET_MINUTE_CEILING_MS = 60_000;
 const CODEX_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit|model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
 const CODEX_REFRESH_TOKEN_REUSED_RE =
@@ -315,12 +339,86 @@ export function extractCodexRetryNotBefore(input: {
  * evidence, whereas quoted quota text and generic capacity messages are not.
  */
 export function isCodexAcpProviderQuotaSummary(summary: string): boolean {
-  const normalized = summary.trim();
-  // The credits notice is also a provider-owned sentence, but its dated reset
-  // has no verified timezone contract. The existing extractor deliberately
-  // leaves that format unparsed so native retry scheduling uses its fallback.
-  return CODEX_ACP_PROVIDER_QUOTA_SUMMARY_RE.test(normalized)
-    || CODEX_ACP_CREDITS_QUOTA_SUMMARY_RE.test(normalized);
+  const diagnostic = unwrapCodexAcpTerminalDiagnostic(summary);
+  return CODEX_ACP_PROVIDER_QUOTA_SUMMARY_RE.test(diagnostic)
+    || CODEX_ACP_CREDITS_QUOTA_SUMMARY_RE.test(diagnostic);
+}
+
+/** Codex's own retry-exhausted and server-overloaded sentences, same exactness rules as quota. */
+export function isCodexAcpTransientUpstreamSummary(summary: string): boolean {
+  return CODEX_ACP_TRANSIENT_UPSTREAM_SUMMARY_RE.test(unwrapCodexAcpTerminalDiagnostic(summary));
+}
+
+/** Every provider sentence the ACP lane may trust as a whole-output terminal diagnostic. */
+export function isCodexAcpTerminalDiagnosticSummary(summary: string): boolean {
+  return isCodexAcpProviderQuotaSummary(summary) || isCodexAcpTransientUpstreamSummary(summary);
+}
+
+/** The provider sentence without Codex's own warning and compaction framing. */
+export function unwrapCodexAcpTerminalDiagnostic(summary: string): string {
+  let diagnostic = summary.trim();
+  while (CODEX_ACP_SKILLS_BUDGET_WARNING_RE.test(diagnostic)) {
+    diagnostic = diagnostic.replace(CODEX_ACP_SKILLS_BUDGET_WARNING_RE, "").trim();
+  }
+  return diagnostic.replace(CODEX_ACP_REMOTE_COMPACT_PREFIX_RE, "").trim();
+}
+
+/**
+ * Reset time of an ACP quota sentence. Codex formats it in its own local zone,
+ * so callers use this only when Codex runs in this process's zone. Beyond the
+ * horizon it returns null so the server keeps its bounded fallback.
+ */
+export function extractCodexAcpQuotaRetryNotBefore(summary: string, now = new Date()): Date | null {
+  const diagnostic = unwrapCodexAcpTerminalDiagnostic(summary);
+  const resetText = diagnostic.match(CODEX_ACP_CREDITS_QUOTA_SUMMARY_RE)?.[1]?.trim();
+  if (!resetText) {
+    const retryAt = extractCodexRetryNotBefore({ errorMessage: diagnostic }, now);
+    return retryAt && isWithinCodexAcpResetHorizon(retryAt, now) ? retryAt : null;
+  }
+  const printed = parseCodexDatedReset(resetText) ?? parseCodexSameDayReset(resetText, now);
+  if (!printed) return null;
+  const ceiling = printed.getTime() + CODEX_ACP_RESET_MINUTE_CEILING_MS;
+  // The provider still reports the limit, so a printed time that has already
+  // passed (the reset minute itself, or clock skew) means "shortly", never
+  // "tomorrow" and never "immediately".
+  const retryAt = new Date(ceiling > now.getTime() ? ceiling : now.getTime() + CODEX_ACP_RESET_MINUTE_CEILING_MS);
+  return isWithinCodexAcpResetHorizon(retryAt, now) ? retryAt : null;
+}
+
+function isWithinCodexAcpResetHorizon(retryAt: Date, now: Date): boolean {
+  const aheadMs = retryAt.getTime() - now.getTime();
+  return aheadMs > 0 && aheadMs <= CODEX_ACP_MAX_RESET_HORIZON_MS;
+}
+
+// Codex prints the time alone only for a reset later on the same local day.
+function parseCodexSameDayReset(resetText: string, now: Date): Date | null {
+  const match = resetText.match(CODEX_ACP_SAME_DAY_RESET_RE);
+  if (!match) return null;
+  const hour12 = Number.parseInt(match[1] ?? "", 10);
+  const minute = Number.parseInt(match[2] ?? "", 10);
+  if (hour12 < 1 || hour12 > 12 || minute > 59) return null;
+  const retryAt = new Date(now);
+  retryAt.setHours((hour12 % 12) + ((match[3] ?? "").toLowerCase() === "p" ? 12 : 0), minute, 0, 0);
+  // Codex chose the same-day form on its own clock. Only a turn that settled
+  // just after midnight can read as more than 23 h ahead; that is the day that
+  // has just ended. If ambiguous, a one-minute retry is cheaper than a day.
+  if (retryAt.getTime() - now.getTime() > 23 * 60 * 60 * 1000) retryAt.setDate(retryAt.getDate() - 1);
+  return retryAt;
+}
+
+function parseCodexDatedReset(resetText: string): Date | null {
+  const match = resetText.match(CODEX_ACP_DATED_RESET_RE);
+  if (!match) return null;
+  const monthIndex = MONTH_INDEX[(match[1] ?? "").slice(0, 3).toLowerCase()];
+  const day = Number.parseInt(match[2] ?? "", 10);
+  const year = Number.parseInt(match[3] ?? "", 10);
+  const hour12 = Number.parseInt(match[4] ?? "", 10);
+  const minute = Number.parseInt(match[5] ?? "", 10);
+  if (monthIndex === undefined || hour12 < 1 || hour12 > 12 || minute > 59) return null;
+  const hour = (hour12 % 12) + ((match[6] ?? "").toLowerCase() === "p" ? 12 : 0);
+  const retryAt = new Date(year, monthIndex, day, hour, minute, 0, 0);
+  // Reject rolled-over dates such as "Feb 31st".
+  return retryAt.getMonth() === monthIndex && retryAt.getDate() === day ? retryAt : null;
 }
 
 export function isCodexTransientUpstreamError(input: {

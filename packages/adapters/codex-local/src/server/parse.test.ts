@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyCodexAuthRefreshFailure,
+  extractCodexAcpQuotaRetryNotBefore,
   extractCodexRetryNotBefore,
   isCodexHarnessCrash,
   isCodexAcpProviderQuotaSummary,
+  isCodexAcpTerminalDiagnosticSummary,
+  isCodexAcpTransientUpstreamSummary,
+  unwrapCodexAcpTerminalDiagnostic,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -37,6 +41,103 @@ describe("Codex ACP credits quota summary", () => {
     "You've hit your usage limit. To get more access now, send a request to your admin or try again at Sep 8th, 2026 2:00 PM.",
   ])("rejects a nonmatching credits quota summary: %s", (summary) => {
     expect(isCodexAcpProviderQuotaSummary(summary)).toBe(false);
+  });
+});
+
+describe("Codex ACP terminal diagnostics (2026-10-19 production shapes)", () => {
+  const credits = "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 24th, 2026 8:40 PM.";
+  const skillsWarning = "Warning: Exceeded skills context budget of 2%. All skill descriptions were removed and 108 additional skills were not included in the model-visible skills list.";
+  const now = new Date(2026, 9, 20, 2, 15);
+
+  it.each([
+    ["exact", credits],
+    ["skills warning first", `${skillsWarning}\n\n${credits}`],
+    ["remote compaction wrapper", `Error running remote compact task: ${credits}`],
+    ["upstream settings URL", credits.replace("/codex/settings/", "/settings/")],
+    ["curly apostrophe", credits.replace("You've", "You’ve")],
+  ])("recognizes the credits quota %s and reads its local reset", (_label, summary) => {
+    expect(isCodexAcpProviderQuotaSummary(summary)).toBe(true);
+    expect(isCodexAcpTransientUpstreamSummary(summary)).toBe(false);
+    expect(unwrapCodexAcpTerminalDiagnostic(summary)).toBe(summary.slice(summary.indexOf("You")));
+    // Codex prints the reset in its process-local zone (format_retry_timestamp),
+    // in whole minutes, so the retry waits until the printed minute has ended.
+    expect(extractCodexAcpQuotaRetryNotBefore(summary, now)?.getTime()).toBe(new Date(2026, 9, 24, 20, 41).getTime());
+  });
+
+  it("reads a same-day clock reset", () => {
+    const summary = credits.replace("Oct 24th, 2026 8:40 PM", "8:40 PM");
+    expect(extractCodexAcpQuotaRetryNotBefore(summary, now)?.getTime()).toBe(new Date(2026, 9, 20, 20, 41).getTime());
+  });
+
+  it.each([
+    ["inside the printed minute", new Date(2026, 9, 24, 20, 40, 20), new Date(2026, 9, 24, 20, 41)],
+    ["just after the printed minute", new Date(2026, 9, 24, 20, 41, 30), new Date(2026, 9, 24, 20, 42, 30)],
+  ])("never rolls a same-day reset to tomorrow when the retry lands %s", (_label, at, expected) => {
+    const summary = credits.replace("Oct 24th, 2026 8:40 PM", "8:40 PM");
+    expect(extractCodexAcpQuotaRetryNotBefore(summary, at)?.getTime()).toBe(expected.getTime());
+  });
+
+  it("reads a same-day reset printed just before midnight as the day that ended", () => {
+    const summary = credits.replace("Oct 24th, 2026 8:40 PM", "11:59 PM");
+    const at = new Date(2026, 9, 25, 0, 0, 5);
+    expect(extractCodexAcpQuotaRetryNotBefore(summary, at)?.getTime()).toBe(at.getTime() + 60_000);
+  });
+
+  it.each([
+    ["just after 1 AM", new Date(2026, 9, 24, 1, 0), "11:00 PM", new Date(2026, 9, 24, 23, 1)],
+    ["in the afternoon", new Date(2026, 9, 24, 13, 0), "11:59 PM", new Date(2026, 9, 25, 0, 0)],
+  ])("keeps a same-day reset later the same day (%s)", (_label, at, reset, expected) => {
+    const summary = credits.replace("Oct 24th, 2026 8:40 PM", reset);
+    expect(extractCodexAcpQuotaRetryNotBefore(summary, at)?.getTime()).toBe(expected.getTime());
+  });
+
+  it("waits a minute, not zero, for a dated reset that has already passed", () => {
+    const summary = credits.replace("Oct 24th, 2026 8:40 PM", "Oct 19th, 2026 8:40 PM");
+    expect(extractCodexAcpQuotaRetryNotBefore(summary, now)?.getTime()).toBe(now.getTime() + 60_000);
+  });
+
+  it.each([
+    ["eight days ahead", "Oct 28th, 2026 1:00 AM", new Date(2026, 9, 28, 1, 1)],
+    ["beyond the weekly horizon", "Oct 28th, 2026 8:40 PM", null],
+    ["far beyond the horizon", "Nov 30th, 2026 8:40 PM", null],
+    ["without a time", "a later time", null],
+  ])("bounds a reset %s", (_label, reset, expected) => {
+    expect(extractCodexAcpQuotaRetryNotBefore(credits.replace("Oct 24th, 2026 8:40 PM", reset), now)?.getTime() ?? null)
+      .toBe(expected?.getTime() ?? null);
+  });
+
+  it("rejects an impossible date inside the horizon instead of rolling it over", () => {
+    const lateFebruary = new Date(2027, 1, 25, 12, 0);
+    const summary = (day: string) => credits.replace("Oct 24th, 2026", `Feb ${day}, 2027`);
+    expect(extractCodexAcpQuotaRetryNotBefore(summary("28th"), lateFebruary)?.getTime()).toBe(new Date(2027, 1, 28, 20, 41).getTime());
+    expect(extractCodexAcpQuotaRetryNotBefore(summary("30th"), lateFebruary)).toBeNull();
+  });
+
+  it.each([
+    "exceeded retry limit, last status: 429 Too Many Requests",
+    "exceeded retry limit, last status: 429 Too Many Requests, request id: req_123",
+    "exceeded retry limit, last status: 429 Too Many Requests, request id: a1b2/c3+d4==",
+    "exceeded retry limit, last status: 503 Service Unavailable",
+    "Selected model is at capacity. Please try a different model.",
+    `${skillsWarning}\n\nexceeded retry limit, last status: 429 Too Many Requests`,
+  ])("recognizes the transient upstream sentence: %s", (summary) => {
+    expect(isCodexAcpTransientUpstreamSummary(summary)).toBe(true);
+    expect(isCodexAcpProviderQuotaSummary(summary)).toBe(false);
+    expect(isCodexAcpTerminalDiagnosticSummary(summary)).toBe(true);
+  });
+
+  it.each([
+    "exceeded retry limit, last status: 400 Bad Request",
+    "The provider said: exceeded retry limit, last status: 429 Too Many Requests",
+    "exceeded retry limit, last status: 429 Too Many Requests\nI will retry later.",
+    "The requested model is at capacity. Please try again later.",
+    skillsWarning,
+    `${skillsWarning}\n\nI could not finish the task.`,
+    `${skillsWarning}\n${credits}`,
+    `Error running remote compact task: ${skillsWarning}\n\nsomething else`,
+    `Provider said: Error running remote compact task: ${credits}`,
+  ])("rejects a framed or nonmatching diagnostic: %s", (summary) => {
+    expect(isCodexAcpTerminalDiagnosticSummary(summary)).toBe(false);
   });
 });
 
