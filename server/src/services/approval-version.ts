@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { approvals } from "@paperclipai/db";
 
@@ -35,10 +35,28 @@ export function approvalContentVersion(approval: {
   payload: Record<string, unknown>;
   decisionNote: string | null;
 }): string {
-  return createHash("sha256")
+  return createHmac("sha256", contentVersionKey())
     .update(stableJson({ type: approval.type, payload: approval.payload, decisionNote: approval.decisionNote ?? null }))
     .digest("hex")
     .slice(0, 32);
+}
+
+let cachedContentVersionKey: Buffer | null = null;
+
+/**
+ * The key of the content version. It is keyed so that the value, which is computed from the
+ * unredacted payload and returned next to the redacted one, cannot be used to test guesses for a
+ * redacted secret. Derived from the instance's auth secret, so it is the same across restarts;
+ * without one, a key random to this process (versions then change at a restart, and a decision on
+ * a version read before it falls back to the plain 409).
+ */
+function contentVersionKey(): Buffer {
+  if (cachedContentVersionKey) return cachedContentVersionKey;
+  const secret = process.env.BETTER_AUTH_SECRET || process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  cachedContentVersionKey = secret
+    ? createHash("sha256").update(`paperclip-approval-content-version:${secret}`).digest()
+    : randomBytes(32);
+  return cachedContentVersionKey;
 }
 
 /**

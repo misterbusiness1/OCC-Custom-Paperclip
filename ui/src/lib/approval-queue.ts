@@ -41,7 +41,11 @@ function setWindow(companyId: string, next: QueueWindow) {
 export async function fetchApprovalList(companyId: string): Promise<Approval[]> {
   const { decidedLimit } = windowFor(companyId);
   const queue = await approvalsApi.listQueue(companyId, decidedLimit);
-  setWindow(companyId, { decidedLimit, decidedHasMore: queue.decidedHasMore });
+  // A read never sets the window's size, only whether older decisions exist, and only while the
+  // window is still the one it read: a read that started before "Load older" must not shrink it back.
+  if (windowFor(companyId).decidedLimit === decidedLimit) {
+    setWindow(companyId, { decidedLimit, decidedHasMore: queue.decidedHasMore });
+  }
   return queue.approvals;
 }
 

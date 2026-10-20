@@ -312,7 +312,7 @@ export function ApprovalCard({
         <span>Created {timeAgo(approval.createdAt)}</span>
       )}
       {/* Cost and deadline on the header, so they can be read with the card closed. A deadline matters only while the request is open. */}
-      {(approval.status === "pending" || approval.status === "revision_requested") && (
+      {!isOpen && approval.type === "request_board_approval" && (approval.status === "pending" || approval.status === "revision_requested") && (
         <ApprovalTerms payload={approval.payload} compact />
       )}
       {missingSourceNote && <span>{missingSourceNote}</span>}

@@ -976,6 +976,8 @@ describe("ApprovalDetail, a decided request and the changes asked for before it"
     { id: "c2", authorAgentId: MANAGER_ID, authorUserId: null, body: "Changes requested:\n\nNot the board.", createdAt: new Date("2026-10-05T13:30:00.000Z") },
     { id: "c3", authorAgentId: null, authorUserId: "user-1", body: "A plain comment.", createdAt: new Date("2026-10-05T13:40:00.000Z") },
     { id: "c4", authorAgentId: null, authorUserId: "user-1", body: "Changes requested:\n\n1. Name the price.\n2. Keep it monthly.", createdAt: new Date("2026-10-05T14:00:00.000Z") },
+    // Written after the decision: not part of what it was decided on.
+    { id: "c5", authorAgentId: null, authorUserId: "user-1", body: "Changes requested:\n\nToo late.", createdAt: new Date("2026-10-05T16:00:00.000Z") },
   ];
 
   it("lists every round of the board's change requests, oldest first, on an approved request", async () => {

@@ -239,7 +239,10 @@ export function ApprovalDetail() {
   const decidedChangeRequests =
     approval.status === "approved" || approval.status === "rejected" || approval.status === "cancelled"
       ? (comments ?? []).flatMap((comment: ApprovalComment) => {
-          const note = comment.authorAgentId ? null : approvalChangeRequestFromCommentBody(comment.body);
+          // A board member's comment from before the decision: one written later is not what it was decided on.
+          if (comment.authorAgentId || !comment.authorUserId) return [];
+          if (approval.decidedAt && new Date(comment.createdAt).getTime() > new Date(approval.decidedAt).getTime()) return [];
+          const note = approvalChangeRequestFromCommentBody(comment.body);
           return note === null ? [] : [{ id: comment.id, createdAt: comment.createdAt, note }];
         })
       : [];
@@ -351,9 +354,8 @@ export function ApprovalDetail() {
           {decidedChangeRequests.length > 0 && (
             <div className="border-t border-border/60 pt-4" data-approval-decided-change-requests="">
               <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-                {decidedChangeRequests.length === 1
-                  ? "Changes asked for before this decision"
-                  : `Changes asked for before this decision (${decidedChangeRequests.length} rounds)`}
+                {approval.status === "cancelled" ? "Changes asked for before it was cancelled" : "Changes asked for before this decision"}
+                {decidedChangeRequests.length > 1 ? ` (${decidedChangeRequests.length} rounds)` : ""}
               </p>
               <ol className="mt-2 space-y-3">
                 {decidedChangeRequests.map((request, index) => (

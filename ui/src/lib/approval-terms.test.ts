@@ -7,6 +7,7 @@ import {
   decideByState,
   decideByText,
   formatApprovalCost,
+  formatDecideBy,
 } from "./approval-terms";
 
 const NOW = Date.parse("2026-10-20T12:00:00.000Z");
@@ -16,7 +17,8 @@ describe("approval terms", () => {
   it("reads a cost and a deadline only in the documented shape", () => {
     expect(approvalCost({ cost: { amount: 42, currency: "USD", period: "month" } })).toEqual({ amount: 42, currency: "USD", period: "month" });
     expect(approvalCost({ cost: "$42/month" })).toBeNull();
-    expect(approvalCost({ cost: { amount: 42, currency: "usd" } })).toBeNull();
+    expect(approvalCost({ cost: { amount: 42, currency: "usd" } })).toEqual({ amount: 42, currency: "USD" });
+    expect(approvalCost({ cost: { amount: "42", currency: "USD" } })).toBeNull();
     expect(approvalCost({})).toBeNull();
     expect(approvalCost(null)).toBeNull();
     expect(approvalDecideBy({ decideBy: "2026-10-24T17:00:00Z" })?.toISOString()).toBe("2026-10-24T17:00:00.000Z");
@@ -37,7 +39,8 @@ describe("approval terms", () => {
     expect(decideByText(new Date(NOW - 2 * HOUR), NOW)).toBe("Deadline passed 2 h ago");
     expect(decideByText(new Date(NOW + 3 * HOUR), NOW)).toBe("Decide within 3 h");
     expect(decideByText(new Date(NOW + 20 * 60_000), NOW)).toBe("Decide within 20 min");
-    expect(decideByText(new Date(NOW + 5 * 24 * HOUR), NOW)).toMatch(/^Decide by /);
+    expect(decideByText(new Date(NOW + 5 * 24 * HOUR), NOW)).toMatch(/^Decide by .*2026/);
+    expect(formatDecideBy(new Date(NOW))).toMatch(/UTC|GMT|[A-Z]{2,5}/);
   });
 
   it("orders by deadline soonest first and by cost highest first, with requests without one last", () => {
