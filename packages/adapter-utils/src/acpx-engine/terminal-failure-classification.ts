@@ -8,11 +8,23 @@ const KIMI_WRAPPED_FIVE_HOUR_QUOTA_RE =
 
 export const ACP_WRAPPED_QUOTA_RETRY_DELAY_MS = 5 * 60 * 60 * 1000;
 
+type TerminalFailure = Pick<AdapterExecutionResult, "errorCode" | "errorFamily" | "retryNotBefore"> & {
+  providerHttpStatus?: number;
+};
+
 export function classifyAcpTerminalFailure(
   message: string,
   nowMs = Date.now(),
-): Pick<AdapterExecutionResult, "errorCode" | "errorFamily" | "retryNotBefore"> {
+  providerHttpStatus?: number,
+): TerminalFailure {
   const normalized = message.trim();
+  // This primitive comes from the runtime's closed provider-error projection,
+  // never from assistant text, raw headers, or an arbitrary JSON status field.
+  const status = typeof providerHttpStatus === "number" && Number.isInteger(providerHttpStatus)
+    && providerHttpStatus >= 400 && providerHttpStatus <= 599
+    ? providerHttpStatus
+    : undefined;
+  const provider = status === undefined ? {} : { providerHttpStatus: status };
 
   // This is the one observed ACP wrapper that lies about authentication. Keep
   // the exception anchored so mixed or merely similar auth failures cannot be
@@ -22,22 +34,24 @@ export function classifyAcpTerminalFailure(
       errorCode: "provider_quota",
       errorFamily: "provider_quota",
       retryNotBefore: new Date(nowMs + ACP_WRAPPED_QUOTA_RETRY_DELAY_MS).toISOString(),
+      ...provider,
     };
   }
-  if (ACP_HARD_AUTH_FAILURE_RE.test(normalized) || /authentication required/i.test(normalized)) {
-    return { errorCode: "acpx_auth_required", errorFamily: null, retryNotBefore: null };
+  if (status === 401 || status === 403 || ACP_HARD_AUTH_FAILURE_RE.test(normalized) || /authentication required/i.test(normalized)) {
+    return { errorCode: "acpx_auth_required", errorFamily: null, retryNotBefore: null, ...provider };
   }
   // A 429 is a transient throttle even when its text also says quota or limit.
-  if (ACP_TRANSIENT_RATE_LIMIT_RE.test(normalized)) {
+  if (status === 429 || (status !== undefined && status >= 500) || ACP_TRANSIENT_RATE_LIMIT_RE.test(normalized)) {
     return {
       errorCode: "acpx_transient_upstream",
       errorFamily: "transient_upstream",
       retryNotBefore: null,
+      ...provider,
     };
   }
   // Leave ordinary provider-quota text on the existing generic path. Server
   // finalization already normalizes that path, including provider reset-time
   // parsing and its ordinary bounded backoff; only the explicit Kimi wrapper
   // above needs an adapter-owned five-hour timestamp.
-  return { errorCode: "acpx_turn_failed", errorFamily: null, retryNotBefore: null };
+  return { errorCode: "acpx_turn_failed", errorFamily: null, retryNotBefore: null, ...provider };
 }

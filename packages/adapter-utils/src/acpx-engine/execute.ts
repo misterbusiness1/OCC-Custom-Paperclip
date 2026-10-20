@@ -361,6 +361,8 @@ export interface AcpxRemoteManagedHomeResult {
 
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
+  /** Resolve metadata from the prepared credential route, before any transport or warm-session reuse. */
+  resolveProviderAccountKey?: (input: { ctx: AdapterExecutionContext; env: Record<string, string> }) => Promise<string | null>;
   /**
    * Fail-closed recognizer for a provider-owned terminal diagnostic. ACPX
    * 0.12 does not expose diagnostic provenance, so the engine invokes this
@@ -1266,6 +1268,23 @@ async function reconcileManagedCodexSkills(input: {
   }
 }
 
+/** Shared by admission metadata and preparation; configured homes deliberately bypass shared seeding. */
+export function resolveCodexAcpHomePaths(companyId: string, config: Record<string, unknown>) {
+  const env = parseObject(config.env);
+  return {
+    configuredHome: typeof env.CODEX_HOME === "string" && env.CODEX_HOME.trim()
+      ? path.resolve(env.CODEX_HOME.trim()) : null,
+    sourceHome: process.env.CODEX_HOME?.trim() ? path.resolve(process.env.CODEX_HOME.trim()) : path.join(os.homedir(), ".codex"),
+    targetHome: resolveManagedCodexHomeDir(companyId),
+  };
+}
+
+export async function resolveCodexAcpAuthHome(companyId: string, config: Record<string, unknown>) {
+  const selection = resolveCodexAcpHomePaths(companyId, config);
+  if (selection.configuredHome) return selection.configuredHome;
+  return await pathExists(path.join(selection.sourceHome, "auth.json")) ? selection.sourceHome : selection.targetHome;
+}
+
 async function prepareCodexSkillRuntime(input: {
   companyId: string;
   config: Record<string, unknown>;
@@ -1286,21 +1305,12 @@ async function prepareCodexSkillRuntime(input: {
   stepMetrics?: StartupStepMeasureOptions;
 }): Promise<{ identity: Record<string, unknown>; commandNotes: string[] }> {
   const now = input.now ?? (() => Date.now());
-  const envConfig = parseObject(input.config.env);
-  const configuredCodexHome =
-    typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
-      ? path.resolve(envConfig.CODEX_HOME.trim())
-      : null;
-  const sourceCodexHome =
-    typeof process.env.CODEX_HOME === "string" && process.env.CODEX_HOME.trim().length > 0
-      ? path.resolve(process.env.CODEX_HOME.trim())
-      : path.join(os.homedir(), ".codex");
-  const managedCodexHome = resolveManagedCodexHomeDir(input.companyId);
-  const effectiveCodexHome = configuredCodexHome ??
+  const selection = resolveCodexAcpHomePaths(input.companyId, input.config);
+  const effectiveCodexHome = selection.configuredHome ??
     await prepareManagedCodexHome({
       companyId: input.companyId,
-      sourceHome: sourceCodexHome,
-      targetHome: managedCodexHome,
+      sourceHome: selection.sourceHome,
+      targetHome: selection.targetHome,
       onLog: input.onLog,
     });
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
@@ -2144,6 +2154,11 @@ async function buildRuntime(input: {
       skillCommandNotes.push("Selected Paperclip skills are tracked only; ACPX custom commands do not expose a runtime skill contract yet.");
     }
   }
+
+  const providerAccountKey = input.deps.resolveProviderAccountKey
+    ? await input.deps.resolveProviderAccountKey({ ctx: input.ctx, env }) : null;
+  await input.ctx.onProviderAccount?.(providerAccountKey);
+  if (providerAccountKey) skillsIdentity = { ...skillsIdentity, providerAccountKey };
 
   const configuredCommand = asString(config.agentCommand, "").trim();
   const builtInCommand = await resolveBuiltInAgentCommand({
@@ -5059,7 +5074,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
         const terminalFailure = terminal.status === "failed" && !timedOut && !channelLost
-          ? classifyAcpTerminalFailure(terminal.error.message, now())
+          ? classifyAcpTerminalFailure(terminal.error.message, now(), terminal.error.providerHttpStatus)
           : null;
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
@@ -5101,6 +5116,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             requestedModel: prepared.requestedModel || null,
             requestedThinkingEffort: prepared.requestedThinkingEffort || null,
             fastMode: prepared.fastMode,
+            ...(terminalFailure?.providerHttpStatus !== undefined
+              ? { providerHttpStatus: terminalFailure.providerHttpStatus }
+              : {}),
             ...(terminalFailure?.errorFamily ? { errorFamily: terminalFailure.errorFamily } : {}),
             ...(terminalFailure?.retryNotBefore
               ? {

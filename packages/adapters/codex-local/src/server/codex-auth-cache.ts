@@ -1,6 +1,6 @@
 import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { toAccountHandle } from "@paperclipai/shared";
@@ -430,6 +430,30 @@ export function readSubscriptionAccountId(bytes: Buffer): string | null {
     return null;
   }
   return accountId;
+}
+
+/** Opaque attribution, never an authentication credential or a path identity. */
+export function createCodexProviderAccountKey(companyId: string, accountId: string): string {
+  return createHash("sha256").update(JSON.stringify(["codex-subscription-v1", companyId, accountId])).digest("hex");
+}
+
+/** Read only the explicit subscription identity; API-key and unknown routes stay ungrouped. */
+export async function readCodexProviderAccountKey(
+  companyId: string,
+  codexHome: string,
+  apiKey?: string | null,
+): Promise<string | null> {
+  if (apiKey?.trim()) return null;
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(path.join(codexHome, "auth.json"));
+  } catch {
+    // This optional metadata read is not credential validation. Normal runtime
+    // preparation owns permission, missing-file and malformed-route errors.
+    return null;
+  }
+  const accountId = readSubscriptionAccountId(bytes);
+  return accountId ? createCodexProviderAccountKey(companyId, accountId) : null;
 }
 
 export type WriteCodexAuthCacheEntryOutcome = "written" | "kept-slot";

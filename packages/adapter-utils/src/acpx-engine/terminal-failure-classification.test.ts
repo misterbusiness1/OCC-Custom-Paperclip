@@ -62,4 +62,39 @@ describe("classifyAcpTerminalFailure", () => {
       retryNotBefore: null,
     });
   });
+
+  it.each([429, 500, 503])("uses trusted HTTP %i when the message is only Internal error", (status) => {
+    expect(classifyAcpTerminalFailure("Internal error", now, status)).toEqual({
+      errorCode: "acpx_transient_upstream",
+      errorFamily: "transient_upstream",
+      retryNotBefore: null,
+      providerHttpStatus: status,
+    });
+  });
+
+  it.each([401, 403])("keeps trusted HTTP %i on the auth path", (status) => {
+    expect(classifyAcpTerminalFailure("Internal error", now, status)).toEqual({
+      errorCode: "acpx_auth_required",
+      errorFamily: null,
+      retryNotBefore: null,
+      providerHttpStatus: status,
+    });
+  });
+
+  it("keeps hard-auth text authoritative when trusted metadata also reports 429", () => {
+    expect(classifyAcpTerminalFailure("Authentication failed: invalid API key", now, 429)).toEqual({
+      errorCode: "acpx_auth_required",
+      errorFamily: null,
+      retryNotBefore: null,
+      providerHttpStatus: 429,
+    });
+  });
+
+  it.each([NaN, Infinity, 399, 600, 429.5])("rejects malformed runtime status %s", (status) => {
+    expect(classifyAcpTerminalFailure("Internal error", now, status)).toEqual({
+      errorCode: "acpx_turn_failed",
+      errorFamily: null,
+      retryNotBefore: null,
+    });
+  });
 });
