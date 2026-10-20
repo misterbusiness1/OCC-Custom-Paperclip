@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { startMockMcp, type MockMcpServer } from "./mock-mcp-server";
 
 // Current Apps lifecycle coverage. The legacy Tools -> Applications CRUD table
 // was retired; old links now redirect to /apps. Keep this harness focused on
@@ -41,19 +42,24 @@ async function createApplication(
 async function createConnection(
   request: APIRequestContext,
   companyId: string,
-  data: { applicationName?: string; applicationId?: string; name: string; transport?: string; config?: object },
+  data: { applicationName?: string; applicationId?: string; name: string; transport?: string; config: object },
 ): Promise<{ id: string; applicationId: string; name: string }> {
   const res = await request.post(`/api/companies/${companyId}/tools/connections`, {
     data: {
       transport: "mcp_remote",
-      config: { url: "https://fixture.example/mcp" },
       enabled: true,
       status: "active",
       ...data,
     },
   });
   if (!res.ok()) throw new Error(`create connection failed ${res.status()}: ${await res.text()}`);
-  return res.json();
+  const connection = await res.json();
+  // The periodic sweep uses this same probe. A connected fixture must really
+  // respond to tools/list so the Healthy/Open expectations survive that sweep.
+  const health = await request.post(`/api/tool-connections/${connection.id}/health-check`);
+  expect(health.ok(), `health check failed ${health.status()}: ${await health.text()}`).toBe(true);
+  expect((await health.json()).connection.healthStatus).toBe("ok");
+  return connection;
 }
 
 async function gotoApps(page: Page, prefix: string) {
@@ -63,14 +69,21 @@ async function gotoApps(page: Page, prefix: string) {
 
 test.describe.serial("applications lifecycle", () => {
   let seed: SeedResult;
+  let mock: MockMcpServer;
 
   test.beforeAll(async ({ request }) => {
+    mock = await startMockMcp();
     seed = await discoverCompany(request);
   });
 
   test.afterAll(async ({ request }) => {
-    if (!seed?.companyId) return;
-    await request.delete(`/api/companies/${seed.companyId}`).catch(() => undefined);
+    try {
+      if (seed?.companyId) {
+        await request.delete(`/api/companies/${seed.companyId}`).catch(() => undefined);
+      }
+    } finally {
+      await mock?.close();
+    }
   });
 
   test("Connections list surfaces connected and not-connected apps", async ({ page, request }) => {
@@ -79,6 +92,7 @@ test.describe.serial("applications lifecycle", () => {
     const connected = await createConnection(request, seed.companyId, {
       applicationName: connectedName,
       name: connectedName,
+      config: { url: mock.url },
     });
     const notConnected = await createApplication(request, seed.companyId, { name: notConnectedName });
 
@@ -109,6 +123,7 @@ test.describe.serial("applications lifecycle", () => {
     const connection = await createConnection(request, seed.companyId, {
       applicationName: appName,
       name: appName,
+      config: { url: mock.url },
     });
 
     await page.goto(`/${seed.prefix}/apps/${connection.id}/setup`);
