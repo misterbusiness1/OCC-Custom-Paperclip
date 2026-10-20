@@ -54,11 +54,11 @@ export function approvalService(db: Db) {
    * has moved on but still asks the same thing (see `DecisionOptions`), the version just read.
    * Undefined when the caller named none. Throws 409 for any other newer version.
    */
-  function admittedVersion(
+  async function admittedVersion(
     current: ApprovalRecord,
     options: DecisionOptions | undefined,
     decidableStatuses: ReadonlySet<string>,
-  ): Date | undefined {
+  ): Promise<Date | undefined> {
     const expected = options?.expectedUpdatedAt;
     if (!expected) return undefined;
     if (current.updatedAt.getTime() === expected.getTime()) return expected;
@@ -68,10 +68,24 @@ export function approvalService(db: Db) {
       && decidableStatuses.has(current.status)
       && isSameRequestStatusMove(options.expectedStatus, current.status)
       && approvalContentVersion(current) === options.expectedContentVersion
+      // A reader who saw it pending did not see a send-back since, even one without a note
+      // (which leaves the content as it was): someone else intervened, so the reader reloads.
+      && !(options.expectedStatus === "pending" && (await sentBackSince(current, expected)))
     ) {
       return current.updatedAt;
     }
     throw versionConflict(current, expected);
+  }
+
+  async function sentBackSince(current: ApprovalRecord, since: Date) {
+    const [row] = await db.select({ id: activityLog.id }).from(activityLog).where(and(
+      eq(activityLog.companyId, current.companyId),
+      eq(activityLog.entityType, "approval"),
+      eq(activityLog.entityId, current.id),
+      eq(activityLog.action, "approval.revision_requested"),
+      sql`${activityLog.createdAt} >= ${since.toISOString()}::timestamptz`,
+    )).limit(1);
+    return Boolean(row);
   }
 
   // The API returns milliseconds; a row written by now() holds microseconds.
@@ -130,7 +144,7 @@ export function approvalService(db: Db) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       // Checked first: a caller that names a version is not told "already approved"
       // for an approval that someone else decided.
-      const expected = admittedVersion(current, options, canResolveStatuses);
+      const expected = await admittedVersion(current, options, canResolveStatuses);
       if (!canResolveStatuses.has(current.status)) {
         if (current.status === targetStatus) {
           return { approval: current, applied: false };
@@ -173,9 +187,13 @@ export function approvalService(db: Db) {
       if (!expected || current.updatedAt.getTime() === expected.getTime()) break;
     }
 
-    admittedVersion(current, options, canResolveStatuses);
+    await admittedVersion(current, options, canResolveStatuses);
     if (current.status === targetStatus) {
       return { approval: current, applied: false };
+    }
+    // Still decidable after both passes: it kept moving under the decision. Ask for a reload.
+    if (options?.expectedUpdatedAt && canResolveStatuses.has(current.status)) {
+      throw versionConflict(current, options.expectedUpdatedAt);
     }
 
     throw unprocessable(
@@ -288,8 +306,12 @@ export function approvalService(db: Db) {
           .orderBy(desc(sql`coalesce(${approvals.decidedAt}, ${approvals.updatedAt})`), desc(approvals.id))
           .limit(decidedLimit + 1)
         : [];
+      // The two reads are separate statements: a request decided between them is in both. The
+      // decided row is the newer one; the open copy is dropped.
+      const window = decided.slice(0, decidedLimit);
+      const decidedIds = new Set(decided.map((approval) => approval.id));
       return {
-        approvals: [...open, ...decided.slice(0, decidedLimit)],
+        approvals: [...open.filter((approval) => !decidedIds.has(approval.id)), ...window],
         decidedHasMore: decided.length > decidedLimit,
       };
     },
@@ -470,7 +492,7 @@ export function approvalService(db: Db) {
     ) => {
       const revisableStatuses = new Set(["pending"]);
       let current = await getExistingApproval(id);
-      admittedVersion(current, options, revisableStatuses);
+      await admittedVersion(current, options, revisableStatuses);
       if (current.status !== "pending") {
         throw unprocessable("Only pending approvals can request revision");
       }
@@ -487,7 +509,7 @@ export function approvalService(db: Db) {
 
       // Two passes at most, as for approve and reject.
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const expected = admittedVersion(current, options, revisableStatuses);
+        const expected = await admittedVersion(current, options, revisableStatuses);
         if (current.status !== "pending") break;
         const now = new Date();
         // One transaction: the comment exists only when this call sent the request
@@ -532,7 +554,10 @@ export function approvalService(db: Db) {
         if (!expected || current.updatedAt.getTime() === expected.getTime()) break;
       }
 
-      admittedVersion(current, options, revisableStatuses);
+      await admittedVersion(current, options, revisableStatuses);
+      if (options?.expectedUpdatedAt && current.status === "pending") {
+        throw versionConflict(current, options.expectedUpdatedAt);
+      }
       throw unprocessable("Only pending approvals can request revision");
     },
 

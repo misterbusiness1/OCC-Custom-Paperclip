@@ -1279,12 +1279,11 @@ describe("approval queue route, content versions and typed request terms", () =>
 
     it.each([
       ["a cost without a currency", { cost: { amount: 42 } }],
-      ["a lower-case currency", { cost: { amount: 42, currency: "usd" } }],
       ["a negative amount", { cost: { amount: -1, currency: "USD" } }],
       ["an amount given as text", { cost: { amount: "42", currency: "USD" } }],
       ["an unknown period", { cost: { amount: 42, currency: "USD", period: "week" } }],
       ["an unknown cost field", { cost: { amount: 42, currency: "USD", note: "x" } }],
-      ["a cost given as text", { cost: "$42/month" }],
+      ["a cost object with a text amount and a currency", { cost: { amount: "42", currency: "USD" } }],
       ["a date without a time", { decideBy: "2026-10-24" }],
       ["a time without an offset", { decideBy: "2026-10-24T17:00:00" }],
     ])("refuses %s with 400", async (_label, terms) => {

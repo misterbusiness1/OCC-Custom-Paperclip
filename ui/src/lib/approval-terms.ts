@@ -50,12 +50,20 @@ function spanText(ms: number): string {
   return `${Math.round(hours / 24)} days`;
 }
 
+/** The deadline as a date and time with the reader's time zone named, as board members may be in several. */
+export function formatDecideBy(decideBy: Date): string {
+  // Explicit fields: dateStyle and timeStyle cannot be combined with timeZoneName (Intl throws).
+  return decideBy.toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short",
+  });
+}
+
 /** "Decide within 3 h", "Deadline passed 2 h ago", or "Decide by" and the date. */
 export function decideByText(decideBy: Date, now: number): string {
   const left = decideBy.getTime() - now;
   if (left <= 0) return `Deadline passed ${spanText(-left)} ago`;
   if (left <= DECIDE_BY_SOON_MS) return `Decide within ${spanText(left)}`;
-  return `Decide by ${decideBy.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`;
+  return `Decide by ${formatDecideBy(decideBy)}`;
 }
 
 /**

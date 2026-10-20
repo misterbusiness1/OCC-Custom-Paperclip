@@ -39,9 +39,16 @@ export const approvalOriginalRequestSchema = z.object({
  */
 export const approvalCostSchema = z.object({
   amount: z.number().finite().nonnegative(),
-  currency: z.string().regex(/^[A-Z]{3}$/, "currency must be a three-letter ISO 4217 code, such as USD"),
-  period: z.enum(APPROVAL_COST_PERIODS).optional(),
+  currency: z.string().trim().transform((value) => value.toUpperCase())
+    .pipe(z.string().regex(/^[A-Z]{3}$/, "currency must be a three-letter ISO 4217 code, such as USD")),
+  period: z.enum(APPROVAL_COST_PERIODS).nullish().transform((value) => value ?? undefined),
 }).strict();
+
+/**
+ * `cost` on a board request: the typed object above, checked when the field is an object. A text
+ * or a number (what agents wrote before the field was typed) is kept as it is and not read as a cost.
+ */
+const approvalCostFieldSchema = z.union([z.string(), z.number(), approvalCostSchema]);
 
 /** The time by which the board must decide, as an ISO 8601 date-time with an offset. */
 export const approvalDecideBySchema = z.string().datetime({ offset: true });
@@ -52,7 +59,7 @@ export const decisionReadyApprovalPayloadSchema = z.object({
   pros: z.array(decisionTextSchema).min(1),
   risks: z.array(decisionTextSchema).min(1),
   originalRequest: approvalOriginalRequestSchema.optional(),
-  cost: approvalCostSchema.optional(),
+  cost: approvalCostFieldSchema.optional(),
   decideBy: approvalDecideBySchema.optional(),
 }).passthrough();
 

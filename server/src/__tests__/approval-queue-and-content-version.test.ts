@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { approvals, companies, createDb } from "@paperclipai/db";
-import { createApprovalSchema } from "@paperclipai/shared";
+import { activityLog, approvals, companies, createDb } from "@paperclipai/db";
+import { approvalCostSchema, createApprovalSchema } from "@paperclipai/shared";
 import { approvalService } from "../services/approvals.js";
 import { approvalContentVersion, isSameRequestStatusMove } from "../services/approval-version.js";
 import {
@@ -62,6 +62,23 @@ describe("typed cost and deadline on a board request", () => {
     expect(parsed.success).toBe(true);
     expect(parsed.data?.payload).toMatchObject({ cost: { amount: 42.5, currency: "USD", period: "month" } });
     expect(createApprovalSchema.safeParse({ type: "request_board_approval", payload: { ...decisionFields, cost: { amount: 0, currency: "EUR" } } }).success).toBe(true);
+  });
+
+  it("keeps a cost written as text or a number, as agents wrote it before the field was typed", () => {
+    for (const cost of ["$42/month", 42]) {
+      const parsed = createApprovalSchema.safeParse({ type: "request_board_approval", payload: { ...decisionFields, cost } });
+      expect(parsed.success, String(cost)).toBe(true);
+      expect(parsed.data?.payload.cost).toBe(cost);
+    }
+  });
+
+  it("accepts a currency in small letters and an empty period, and reads them as USD and none", () => {
+    const cost = { amount: 5, currency: " usd ", period: null };
+    const parsed = createApprovalSchema.safeParse({ type: "request_board_approval", payload: { ...decisionFields, cost } });
+    expect(parsed.success).toBe(true);
+    // The stored payload is kept as written; readers parse it with the same schema.
+    expect(parsed.data?.payload.cost).toEqual(cost);
+    expect(approvalCostSchema.parse(cost)).toEqual({ amount: 5, currency: "USD" });
   });
 
   it("does not check the fields on other approval types", () => {
@@ -200,6 +217,24 @@ describeEmbeddedPostgres("approval queue and content-aware versions", () => {
 
       await expect(svc.approve(pending.id, "user-1", "ok", view)).rejects.toMatchObject(VERSION_CONFLICT);
       await expect(svc.requestRevision(pending.id, "user-1", "Shorter", view)).rejects.toMatchObject(VERSION_CONFLICT);
+    });
+
+    it("is refused when someone sent it back without a note and it was resubmitted unchanged since", async () => {
+      const companyId = await createCompany();
+      const svc = approvalService(db);
+      const pending = await createPending(companyId);
+      const view = seen(pending);
+      await svc.requestRevision(pending.id, "other-user", null);
+      // The route writes this entry for every send-back; a note-less one changes nothing else.
+      await db.insert(activityLog).values({
+        companyId, actorType: "user", actorId: "other-user", action: "approval.revision_requested",
+        entityType: "approval", entityId: pending.id, details: {},
+      });
+      await pause();
+      await svc.resubmit(pending.id, { title: "First version" });
+      expect(approvalContentVersion(await read(pending.id))).toBe(view.expectedContentVersion);
+
+      await expect(svc.approve(pending.id, "user-1", "ok", view)).rejects.toMatchObject(VERSION_CONFLICT);
     });
 
     it("is refused when it was already decided, as before", async () => {

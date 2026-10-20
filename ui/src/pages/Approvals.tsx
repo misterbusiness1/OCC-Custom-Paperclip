@@ -12,7 +12,7 @@ import {
 } from "react";
 import { Link, useNavigate, useLocation, useSearchParams } from "@/lib/router";
 import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Approval } from "@paperclipai/shared";
+import { APPROVAL_QUEUE_DECIDED_LIMIT_MAX, type Approval } from "@paperclipai/shared";
 import { approvalsApi } from "../api/approvals";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
@@ -1128,8 +1128,11 @@ export function Approvals() {
     .filter((a) => (inActiveKind(a) && matchesSearch(a)) || staysListed(a))
     .sort((a, b) => {
       // A request without a deadline or a cost keeps the tab's own order after those that have one.
+      // A deadline orders only requests still waiting on the board; a decided one keeps the time order after them.
       const byTerms = sortOrder === "due"
-        ? compareByDecideBy(a.payload, b.payload)
+        ? (needsBoard(a) === needsBoard(b)
+          ? (needsBoard(a) ? compareByDecideBy(a.payload, b.payload) : 0)
+          : needsBoard(a) ? -1 : 1)
         : sortOrder === "cost"
           ? compareByCost(a.payload, b.payload)
           : 0;
@@ -1811,6 +1814,11 @@ export function Approvals() {
       )}
 
       {statusFilter === "all" && queueWindow.decidedHasMore && remaining <= 0 && (
+        queueWindow.decidedLimit >= APPROVAL_QUEUE_DECIDED_LIMIT_MAX ? (
+          <p className="pt-2 text-center text-xs text-muted-foreground" data-approval-older-decisions="cap">
+            {`These are the ${queueWindow.decidedLimit} most recent decisions. Open an older one from its task.`}
+          </p>
+        ) : (
         <div className="flex flex-col items-center gap-2 pt-2 text-center" data-approval-older-decisions="">
           <p className="text-xs text-muted-foreground">
             {searchTerm || kindFilter !== "all"
@@ -1821,6 +1829,7 @@ export function Approvals() {
             {loadingOlder ? "Loading older decisions…" : "Load older decisions"}
           </Button>
         </div>
+        )
       )}
 
       {sentBack.length > 0 && (
