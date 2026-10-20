@@ -1335,7 +1335,9 @@ describe("codex_local ACP lane", () => {
     const result = await execute(buildContext(root));
 
     expect(result.exitCode).toBe(1);
-    expect(result.errorMessage).toBe("ACP turn failed");
+    // The provider sentence replaces ACP's generic terminal message.
+    expect(result.errorMessage).toBe(summary);
+    expect(result.resultJson?.stopReason).toBe("ACP turn failed");
     expect(result.summary).toBe(summary);
     expect(result.errorCode).toBe("provider_quota");
     expect(result.errorFamily).toBe("provider_quota");
@@ -1367,7 +1369,9 @@ describe("codex_local ACP lane", () => {
     expect(result.errorFamily).not.toBe("provider_quota");
   });
 
-  it.each(["Sep 8th, 2026 2:00 PM.", "an unavailable reset time."])(
+  // A reset beyond Codex's weekly horizon or without a time keeps the
+  // scheduler's bounded fallback.
+  it.each(["Sep 8th, 2099 2:00 PM.", "an unavailable reset time."])(
     "classifies the observed credits quota with bounded reset fallback: %s",
     async (reset) => {
       const root = await makeTempRoot("paperclip-codex-acp-credits-quota-");
@@ -1381,7 +1385,8 @@ describe("codex_local ACP lane", () => {
       });
       const result = await execute(buildContext(root));
       expect(result.exitCode).toBe(1);
-      expect(result.errorMessage).toBe("Prompt failed");
+      expect(result.errorMessage).toBe(summary);
+      expect(result.resultJson?.stopReason).toBe("Prompt failed");
       expect(result.summary).toBe(summary);
       expect(result.errorCode).toBe("provider_quota");
       expect(result.errorFamily).toBe("provider_quota");
@@ -1391,6 +1396,113 @@ describe("codex_local ACP lane", () => {
       expect(result.resultJson).not.toHaveProperty("transientRetryNotBefore");
     },
   );
+
+  describe("2026-10-19 production failure shapes", () => {
+    const credits = "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 24th, 2026 8:40 PM.";
+    const skillsWarning = "Warning: Exceeded skills context budget of 2%. All skill descriptions were removed and 108 additional skills were not included in the model-visible skills list.";
+    const outputDelta = (text: string) => ({ type: "text_delta", text, stream: "output", tag: "agent_message_chunk" });
+    const compactingTool = {
+      type: "tool_call",
+      toolCallId: "compact-1",
+      title: "Context compacting",
+      status: "in_progress",
+      tag: "tool_call",
+    };
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function runFailedTurn(
+      events: readonly unknown[],
+      message = "Internal error",
+      overrides: Partial<AdapterExecutionContext> = {},
+    ) {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date(2026, 9, 20, 2, 15));
+      const root = await makeTempRoot("paperclip-codex-acp-production-shape-");
+      const execute = createCodexAcpExecutor({
+        createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(
+          options,
+          [...events] as never,
+          { status: "failed", error: { message } },
+        ) as never,
+      });
+      const context = buildContext(root);
+      return execute({ ...context, ...overrides, config: { ...context.config, ...(overrides.config ?? {}) } });
+    }
+
+    it.each([
+      ["exact credits sentence", [outputDelta(credits)]],
+      ["skills warning before it", [outputDelta(`${skillsWarning}\n\n`), outputDelta(credits)]],
+      ["remote compaction wrapper", [compactingTool, outputDelta(`Error running remote compact task: ${credits}`)]],
+    ] as const)("classifies the %s as provider quota with the provider reset", async (_label, events) => {
+      const result = await runFailedTurn(events);
+      const resetAt = new Date(2026, 9, 24, 20, 41).toISOString();
+      expect(result.errorCode).toBe("provider_quota");
+      expect(result.errorFamily).toBe("provider_quota");
+      expect(result.errorMessage).toBe(credits);
+      expect(result.retryNotBefore).toBe(resetAt);
+      expect(result.resultJson).toMatchObject({
+        errorFamily: "provider_quota",
+        stopReason: "Internal error",
+        retryNotBefore: resetAt,
+        transientRetryNotBefore: resetAt,
+        providerQuotaRetryNotBefore: resetAt,
+      });
+    });
+
+    it.each([
+      "exceeded retry limit, last status: 429 Too Many Requests",
+      "Selected model is at capacity. Please try a different model.",
+    ])("classifies %s as a Codex transient upstream failure", async (sentence) => {
+      const result = await runFailedTurn([outputDelta(sentence)]);
+      expect(result.errorCode).toBe("codex_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.errorMessage).toBe(sentence);
+      expect(result.retryNotBefore).toBeNull();
+      expect(result.resultJson).toMatchObject({ errorFamily: "transient_upstream", stopReason: "Internal error" });
+      expect(result.resultJson).not.toHaveProperty("retryNotBefore");
+    });
+
+    it.each([
+      ["thought before a 429", [
+        { type: "text_delta", text: "Checking the files", stream: "thought", tag: "agent_thought_chunk" },
+        outputDelta("exceeded retry limit, last status: 429 Too Many Requests"),
+      ]],
+      ["assistant text before a 429", [
+        outputDelta("I updated the file."),
+        compactingTool,
+        outputDelta("exceeded retry limit, last status: 429 Too Many Requests"),
+      ]],
+      ["skills warning followed by assistant text", [outputDelta(`${skillsWarning}\n\nThe task is done.`)]],
+      ["quoted 429", [outputDelta("The provider said: exceeded retry limit, last status: 429 Too Many Requests")]],
+    ] as const)("keeps %s generic", async (_label, events) => {
+      const result = await runFailedTurn(events);
+      expect(result.errorCode).toBe("acpx_turn_failed");
+      expect(result.errorFamily ?? null).toBeNull();
+      expect(result.errorMessage).toBe("Internal error");
+    });
+
+    it("leaves the reset to the server when Codex may run in another time zone", async () => {
+      const root = await makeTempRoot("paperclip-codex-acp-production-shape-tz-");
+      const overridden = await runFailedTurn([outputDelta(credits)], "Internal error", {
+        config: { ...buildContext(root).config, env: { CODEX_HOME: path.join(root, "codex-home"), TZ: "Pacific/Auckland" } },
+      });
+      expect(overridden.errorCode).toBe("provider_quota");
+      expect(overridden.errorMessage).toBe(credits);
+      expect(overridden.retryNotBefore).toBeNull();
+      expect(overridden.resultJson).not.toHaveProperty("providerQuotaRetryNotBefore");
+    });
+
+    it("lets an auth failure outrank a transient sentence", async () => {
+      const result = await runFailedTurn(
+        [outputDelta("exceeded retry limit, last status: 429 Too Many Requests")],
+        "OAuth failed: refresh_token_invalidated",
+      );
+      expect(result.errorCode).toBe("refresh_token_invalidated");
+    });
+  });
 
   it("classifies an exact failed whole-summary notice split across ACP chunks", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-credits-quota-split-");

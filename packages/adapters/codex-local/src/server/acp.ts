@@ -42,8 +42,11 @@ import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/works
 import { normalizeCodexModel } from "../index.js";
 import {
   classifyCodexAuthRefreshFailure,
-  extractCodexRetryNotBefore,
+  extractCodexAcpQuotaRetryNotBefore,
   isCodexAcpProviderQuotaSummary,
+  isCodexAcpTerminalDiagnosticSummary,
+  isCodexAcpTransientUpstreamSummary,
+  unwrapCodexAcpTerminalDiagnostic,
 } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
@@ -279,14 +282,17 @@ function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecu
     ...options,
     // This trust boundary is adapter-owned. Callers may replace runtime test
     // seams, but cannot broaden which content receives internal provenance.
-    terminalProviderDiagnosticMatcher: isCodexAcpProviderQuotaSummary,
+    terminalProviderDiagnosticMatcher: isCodexAcpTerminalDiagnosticSummary,
     adapterType: "codex_local",
     moduleDir,
     packageRootDir,
   };
 }
 
-function withCodexFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
+function withCodexFailureClassification(
+  result: AdapterExecutionResult,
+  options: { codexClockIsLocal: boolean },
+): AdapterExecutionResult {
   if ((result.exitCode ?? 0) === 0) return result;
   const resultJson = parseObject(result.resultJson);
   const stopReason = asString(resultJson.stopReason, "");
@@ -308,19 +314,39 @@ function withCodexFailureClassification(result: AdapterExecutionResult): Adapter
     };
   }
 
+  // ACP reports these provider failures only as a generic "Internal error";
+  // the provider's sentence arrives as the turn's whole output. Classify it
+  // only when the engine marked that output as a trusted terminal diagnostic.
   const summary = result.summary ?? "";
   if (
     result.errorCode !== "acpx_turn_failed" ||
-    !isCodexAcpProviderQuotaSummary(summary) ||
     !hasTrustedTerminalProviderDiagnostic(result, summary)
   ) {
     return result;
   }
+  const diagnostic = unwrapCodexAcpTerminalDiagnostic(summary);
 
-  const retryNotBefore = extractCodexRetryNotBefore({ errorMessage: result.summary ?? "" });
+  if (isCodexAcpTransientUpstreamSummary(summary)) {
+    return {
+      ...result,
+      errorMessage: diagnostic,
+      errorCode: "codex_transient_upstream",
+      errorFamily: "transient_upstream",
+      resultJson: {
+        ...(result.resultJson ?? {}),
+        errorFamily: "transient_upstream",
+      },
+    };
+  }
+  if (!isCodexAcpProviderQuotaSummary(summary)) return result;
+
+  // Codex prints the reset in its own local zone; read it only when that is
+  // this process's zone (local target, no TZ override for the agent).
+  const retryNotBefore = options.codexClockIsLocal ? extractCodexAcpQuotaRetryNotBefore(summary) : null;
 
   return {
     ...result,
+    errorMessage: diagnostic,
     errorCode: "provider_quota",
     errorFamily: "provider_quota",
     retryNotBefore: retryNotBefore?.toISOString() ?? null,
@@ -385,7 +411,14 @@ export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): C
       ...ctx,
       config: buildCodexAcpConfig(ctx.config),
     });
-    return withCodexFailureClassification(result);
+    const target = readAdapterExecutionTarget({
+      executionTarget: ctx.executionTarget,
+      legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+    });
+    const agentTimeZone = parseObject(parseObject(ctx.config).env).TZ;
+    return withCodexFailureClassification(result, {
+      codexClockIsLocal: target?.kind !== "remote" && (agentTimeZone === undefined || agentTimeZone === process.env.TZ),
+    });
   };
 }
 

@@ -1218,6 +1218,24 @@ as execution. Codex CLI defaults permit workspace writes and network access for
 Paperclip coordination without disabling its sandbox; explicit operator
 restrictions and execution-target network denials remain effective.
 
+### Provider quota waits
+
+Typed terminal ACP limit failures from Codex and Claude use the shared provider
+quota classification. A future provider reset also holds an agent's other queued
+work for the same declared provider scope. The wait survives service restarts and
+ends after the persisted reset or a successful turn in that scope. Admission and
+execution preserve the existing company, pause, budget, dependency and ownership
+gates. Recovery retains the scope of an already admitted native turn.
+
+Provider scope contains adapter and authorized account selection, environment,
+project and routine bindings. Only a fingerprint is persisted. Account switches
+and explicit reconnects permit a new probe. Automatic OAuth refresh keeps the
+same managed-account scope. Optional absent user secrets do not disable a wait.
+Historical runs without a provider scope keep their existing per-issue retry
+schedule. They do not establish an account-wide wait; the next newly stamped
+failure can establish one. The server must not infer historical account identity
+from an agent's current adapter or credentials.
+
 ## 11.2 Process Adapter
 
 Config shape:
