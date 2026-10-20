@@ -453,10 +453,13 @@ export function Approvals() {
   // The search term is not part of the address: it is typed to find one request, not to keep a view.
   const [searchText, setSearchText] = useState("");
   // The linked tasks this page has read, per approval, for the selected company (see the read below).
-  const [linkedKnownState, setLinkedKnown] = useState<{ companyId: string | null; byId: ApprovalLinkedIssuesByApproval }>({
-    companyId: null,
-    byId: {},
-  });
+  // `byId` is what the page shows; `fresh` holds the ids read since the last live update of linked
+  // tasks, so a live update re-reads every row while the chips already shown stay on screen.
+  const [linkedKnownState, setLinkedKnown] = useState<{
+    companyId: string | null;
+    byId: ApprovalLinkedIssuesByApproval;
+    fresh: ReadonlySet<string>;
+  }>({ companyId: null, byId: {}, fresh: new Set() });
   const searchTerm = searchText.trim().toLowerCase();
   // Approvals decided on this visit stay listed as a compact row, so deciding
   // one request does not move the rest of the queue or leave the page.
@@ -1580,15 +1583,34 @@ export function Approvals() {
   // The linked-task chips of every row on the page come from one read, not one per card. The key is
   // the set of rows shown, so a row the page brings in is read with the others; the rows already
   // shown keep their chips while that read is on its way. Returning to the browser tab reads nothing.
-  const linkedKnown = linkedKnownState.companyId === selectedCompanyId ? linkedKnownState : { companyId: selectedCompanyId ?? null, byId: {} as ApprovalLinkedIssuesByApproval };
+  const linkedKnown = linkedKnownState.companyId === selectedCompanyId
+    ? linkedKnownState
+    : { companyId: selectedCompanyId ?? null, byId: {} as ApprovalLinkedIssuesByApproval, fresh: new Set<string>() };
+  // Live updates invalidate the company's linked-task reads (LiveUpdatesProvider). This always-active
+  // marker under the same prefix is refetched by every such invalidation; its new time means "re-read".
+  const { dataUpdatedAt: linkedGenerationAt } = useQuery({
+    queryKey: [...queryKeys.approvals.linkedIssuesOfCompany(selectedCompanyId ?? ""), "generation"],
+    queryFn: async () => Date.now(),
+    enabled: !!selectedCompanyId,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+  const lastLinkedGeneration = useRef(0);
+  useEffect(() => {
+    if (!linkedGenerationAt) return;
+    const first = lastLinkedGeneration.current === 0;
+    lastLinkedGeneration.current = linkedGenerationAt;
+    if (first) return;
+    setLinkedKnown((prev) => ({ ...prev, fresh: new Set() }));
+  }, [linkedGenerationAt]);
   // Only the rows whose linked tasks this page has not read yet are read: a decision changes the
   // rows on the page, and re-reading every row each time would repeat the read for unchanged rows.
   const missingLinkedIds = visible
     .map((approval) => approval.id)
-    .filter((id) => !(id in linkedKnown.byId))
+    .filter((id) => !linkedKnown.fresh.has(id))
     .sort();
   const linkedIssueIdsKey = missingLinkedIds.join(",");
-  const { data: fetchedLinkedIssues } = useQuery({
+  const { data: fetchedLinkedIssues, isFetching: linkedIssuesFetching } = useQuery({
     queryKey: queryKeys.approvals.linkedIssues(selectedCompanyId ?? "", linkedIssueIdsKey),
     queryFn: () => approvalsApi.listLinkedIssues(selectedCompanyId!, linkedIssueIdsKey.split(",")),
     enabled: !!selectedCompanyId && linkedIssueIdsKey.length > 0,
@@ -1596,14 +1618,21 @@ export function Approvals() {
     refetchOnWindowFocus: false,
   });
   useEffect(() => {
-    if (!fetchedLinkedIssues || !linkedIssueIdsKey) return;
+    // Only an answer that is not being refetched: after a live update the cache can still hold the
+    // previous answer for this key while the new read is on its way.
+    if (!fetchedLinkedIssues || !linkedIssueIdsKey || linkedIssuesFetching) return;
     setLinkedKnown((prev) => {
-      const byId = prev.companyId === selectedCompanyId ? { ...prev.byId } : {};
+      const same = prev.companyId === selectedCompanyId;
+      const byId: ApprovalLinkedIssuesByApproval = same ? { ...prev.byId } : {};
+      const fresh = new Set(same ? prev.fresh : []);
       // An approval without linked tasks has no key in the answer: it is known to have none.
-      for (const id of linkedIssueIdsKey.split(",")) byId[id] = fetchedLinkedIssues[id] ?? [];
-      return { companyId: selectedCompanyId ?? null, byId };
+      for (const id of linkedIssueIdsKey.split(",")) {
+        byId[id] = fetchedLinkedIssues[id] ?? [];
+        fresh.add(id);
+      }
+      return { companyId: selectedCompanyId ?? null, byId, fresh };
     });
-  }, [fetchedLinkedIssues, linkedIssueIdsKey, selectedCompanyId]);
+  }, [fetchedLinkedIssues, linkedIssueIdsKey, linkedIssuesFetching, selectedCompanyId]);
   const linkedIssuesByApproval = linkedKnown.byId;
 
   if (!selectedCompanyId) {

@@ -356,6 +356,26 @@ describe("Approvals", () => {
       expect(apiMocks.listLinkedIssues).toHaveBeenCalledTimes(1);
     });
 
+    it("re-reads every row after a live update of linked tasks, keeping the chips shown until the answer lands", async () => {
+      await render();
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("DEMO-7"));
+      const readsBefore = apiMocks.listLinkedIssues.mock.calls.length;
+      let answer!: (value: Record<string, unknown[]>) => void;
+      apiMocks.listLinkedIssues.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+
+      // What LiveUpdatesProvider does on issue.approval_linked / unlinked and on approval events.
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.linkedIssuesOfCompany("company-1") });
+      });
+      await vi.waitFor(() => expect(apiMocks.listLinkedIssues.mock.calls.length).toBe(readsBefore + 1));
+      expect(apiMocks.listLinkedIssues).toHaveBeenLastCalledWith("company-1", ["email", "newest", "oldest"]);
+      expect(rows()[0].textContent).toContain("DEMO-7");
+
+      await act(async () => answer({ oldest: [{ id: "issue-8", identifier: "DEMO-8", title: "Relinked task", status: "todo" }] }));
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("DEMO-8"));
+      expect(rows()[0].textContent).not.toContain("DEMO-7");
+    });
+
     it("reads only the new row, and keeps the chips of the rows already shown while it is on its way", async () => {
       await render();
       await vi.waitFor(() => expect(rows()[0].textContent).toContain("DEMO-7"));
