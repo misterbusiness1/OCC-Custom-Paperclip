@@ -990,6 +990,23 @@ describe("ApprovalDetail, a decided request and the changes asked for before it"
     expect(container.querySelector("[data-approval-decision-note]")?.textContent).toBe("Ship it.");
   });
 
+  it("shows cost and deadline in the panel the board decides from, above the buttons", async () => {
+    apiMocks.listComments.mockResolvedValue([]);
+    const base = createApproval();
+    await renderDecided(createApproval({
+      payload: { ...base.payload, cost: { amount: 42, currency: "USD", period: "month" }, decideBy: new Date(Date.now() - 3_600_000).toISOString() },
+    }));
+    const panel = container.querySelector<HTMLElement>("section[aria-labelledby='approval-title']")!;
+    const terms = panel.querySelector<HTMLElement>("dl[data-approval-terms]");
+    expect(terms).not.toBeNull();
+    expect(terms!.textContent).toContain("$42.00 / month");
+    expect(terms!.querySelector("[data-approval-decide-by]")?.getAttribute("data-approval-decide-by")).toBe("overdue");
+    const approve = [...panel.querySelectorAll("button")].find((button) => button.textContent === "Approve")!;
+    expect(Boolean(terms!.compareDocumentPosition(approve) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    // Not inside the collapsed full request only.
+    expect(terms!.closest("details")).toBeNull();
+  });
+
   it("shows nothing extra for an open request or one decided without change requests", async () => {
     apiMocks.listComments.mockResolvedValue(comments);
     await renderDecided(createApproval({ status: "pending", decisionNote: "Name the price." }));
