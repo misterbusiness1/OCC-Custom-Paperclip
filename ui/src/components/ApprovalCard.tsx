@@ -12,6 +12,7 @@ import {
   approvalSubject,
   isEmailReplyPayload,
   typeLabel,
+  ApprovalTerms,
 } from "./ApprovalPayload";
 import {
   ApprovalDecisionSummary,
@@ -309,6 +310,10 @@ export function ApprovalCard({
         </span>
       ) : (
         <span>Created {timeAgo(approval.createdAt)}</span>
+      )}
+      {/* Cost and deadline on the header, so they can be read with the card closed. A deadline matters only while the request is open. */}
+      {(approval.status === "pending" || approval.status === "revision_requested") && (
+        <ApprovalTerms payload={approval.payload} compact />
       )}
       {missingSourceNote && <span>{missingSourceNote}</span>}
       {/* A closed row has no notice and no buttons, so it says these two things itself. */}

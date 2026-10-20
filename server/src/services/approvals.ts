@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, approvalComments, approvals, issueApprovals, issues } from "@paperclipai/db";
 import { approvalChangeRequestCommentBody, isUuidLike } from "@paperclipai/shared";
@@ -6,7 +6,7 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
-import { nextApprovalUpdatedAt } from "./approval-version.js";
+import { approvalContentVersion, isSameRequestStatusMove, nextApprovalUpdatedAt } from "./approval-version.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -23,7 +23,16 @@ export function approvalService(db: Db) {
    * Every write to an approval moves `updatedAt` to a later millisecond
    * (`nextApprovalUpdatedAt`), so it works as a version.
    */
-  type DecisionOptions = { expectedUpdatedAt?: Date };
+  type DecisionOptions = {
+    expectedUpdatedAt?: Date;
+    /**
+     * The `contentVersion` and `status` of the approval the caller decided on. Optional. When both
+     * are sent with `expectedUpdatedAt`, a newer version that still asks the same thing (the same
+     * content, and only a resubmission between) is decided instead of refused with 409.
+     */
+    expectedContentVersion?: string;
+    expectedStatus?: string;
+  };
 
   function versionConflict(current: ApprovalRecord, expected: Date) {
     return conflict("This request changed after you opened it. Reload it and decide again.", {
@@ -38,6 +47,31 @@ export function approvalService(db: Db) {
     if (expected && current.updatedAt.getTime() !== expected.getTime()) {
       throw versionConflict(current, expected);
     }
+  }
+
+  /**
+   * The version a decision's write is guarded with: the one the caller named, or, when the approval
+   * has moved on but still asks the same thing (see `DecisionOptions`), the version just read.
+   * Undefined when the caller named none. Throws 409 for any other newer version.
+   */
+  function admittedVersion(
+    current: ApprovalRecord,
+    options: DecisionOptions | undefined,
+    decidableStatuses: ReadonlySet<string>,
+  ): Date | undefined {
+    const expected = options?.expectedUpdatedAt;
+    if (!expected) return undefined;
+    if (current.updatedAt.getTime() === expected.getTime()) return expected;
+    if (
+      options.expectedContentVersion
+      && options.expectedStatus
+      && decidableStatuses.has(current.status)
+      && isSameRequestStatusMove(options.expectedStatus, current.status)
+      && approvalContentVersion(current) === options.expectedContentVersion
+    ) {
+      return current.updatedAt;
+    }
+    throw versionConflict(current, expected);
   }
 
   // The API returns milliseconds; a row written by now() holds microseconds.
@@ -87,55 +121,61 @@ export function approvalService(db: Db) {
     options?: DecisionOptions,
     applyDecision?: (approval: ApprovalRecord, txDb: Db) => Promise<void>,
   ): Promise<ResolutionResult> {
-    const expected = options?.expectedUpdatedAt;
-    const existing = await getExistingApproval(id);
-    // Checked first: a caller that names a version is not told "already approved"
-    // for an approval that someone else decided.
-    assertExpectedVersion(existing, expected);
-    if (!canResolveStatuses.has(existing.status)) {
-      if (existing.status === targetStatus) {
-        return { approval: existing, applied: false };
+    const refused = () => unprocessable(
+      `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
+    );
+    let current = await getExistingApproval(id);
+    // Two passes at most: a write that missed because the approval was resubmitted unchanged in
+    // between is tried once more against the version read then.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      // Checked first: a caller that names a version is not told "already approved"
+      // for an approval that someone else decided.
+      const expected = admittedVersion(current, options, canResolveStatuses);
+      if (!canResolveStatuses.has(current.status)) {
+        if (current.status === targetStatus) {
+          return { approval: current, applied: false };
+        }
+        throw refused();
       }
-      throw unprocessable(
-        `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
-      );
+
+      const now = new Date();
+      const updated = await db.transaction(async (tx) => {
+        const row = await tx.update(approvals)
+          .set({
+            status: targetStatus,
+            decidedByUserId,
+            decisionNote: decisionNote ?? null,
+            decidedAt: now,
+            updatedAt: nextApprovalUpdatedAt(now),
+          })
+          .where(
+            and(
+              eq(approvals.id, id),
+              inArray(approvals.status, resolvableStatuses),
+              // The version is checked again in the write, so a change between the read and the write is caught.
+              ...(expected ? [versionIs(expected)] : []),
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        // Use the payload returned by the guarded write: an unversioned decision
+        // may race with resubmission, and must act on the payload it actually decided.
+        // Target/config/budget failures roll back the approval as well.
+        if (row && applyDecision) await applyDecision(row, tx as unknown as Db);
+        return row;
+      });
+
+      if (updated) {
+        return { approval: updated, applied: true };
+      }
+
+      current = await getExistingApproval(id);
+      if (!expected || current.updatedAt.getTime() === expected.getTime()) break;
     }
 
-    const now = new Date();
-    const updated = await db.transaction(async (tx) => {
-      const row = await tx.update(approvals)
-        .set({
-          status: targetStatus,
-          decidedByUserId,
-          decisionNote: decisionNote ?? null,
-          decidedAt: now,
-          updatedAt: nextApprovalUpdatedAt(now),
-        })
-        .where(
-          and(
-            eq(approvals.id, id),
-            inArray(approvals.status, resolvableStatuses),
-            // The version is checked again in the write, so a change between the read and the write is caught.
-            ...(expected ? [versionIs(expected)] : []),
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      // Use the payload returned by the guarded write: an unversioned decision
-      // may race with resubmission, and must act on the payload it actually decided.
-      // Target/config/budget failures roll back the approval as well.
-      if (row && applyDecision) await applyDecision(row, tx as unknown as Db);
-      return row;
-    });
-
-    if (updated) {
-      return { approval: updated, applied: true };
-    }
-
-    const latest = await getExistingApproval(id);
-    assertExpectedVersion(latest, expected);
-    if (latest.status === targetStatus) {
-      return { approval: latest, applied: false };
+    admittedVersion(current, options, canResolveStatuses);
+    if (current.status === targetStatus) {
+      return { approval: current, applied: false };
     }
 
     throw unprocessable(
@@ -231,6 +271,27 @@ export function approvalService(db: Db) {
       const conditions = [eq(approvals.companyId, companyId)];
       if (status) conditions.push(eq(approvals.status, status));
       return db.select().from(approvals).where(and(...conditions));
+    },
+
+    /**
+     * The board's queue: every open approval (pending or sent back) and the `decidedLimit` most
+     * recently decided ones, newest decision first. `decidedHasMore` says whether older decided
+     * approvals exist beyond that window.
+     */
+    listQueue: async (companyId: string, decidedLimit: number) => {
+      const openStatuses = ["pending", "revision_requested"];
+      const open = await db.select().from(approvals)
+        .where(and(eq(approvals.companyId, companyId), inArray(approvals.status, openStatuses)));
+      const decided = decidedLimit > 0
+        ? await db.select().from(approvals)
+          .where(and(eq(approvals.companyId, companyId), sql`${approvals.status} not in ('pending', 'revision_requested')`))
+          .orderBy(desc(sql`coalesce(${approvals.decidedAt}, ${approvals.updatedAt})`), desc(approvals.id))
+          .limit(decidedLimit + 1)
+        : [];
+      return {
+        approvals: [...open, ...decided.slice(0, decidedLimit)],
+        decidedHasMore: decided.length > decidedLimit,
+      };
     },
 
     getById: (id: string) =>
@@ -407,10 +468,10 @@ export function approvalService(db: Db) {
       decisionNote?: string | null,
       options?: DecisionOptions,
     ) => {
-      const expected = options?.expectedUpdatedAt;
-      const existing = await getExistingApproval(id);
-      assertExpectedVersion(existing, expected);
-      if (existing.status !== "pending") {
+      const revisableStatuses = new Set(["pending"]);
+      let current = await getExistingApproval(id);
+      admittedVersion(current, options, revisableStatuses);
+      if (current.status !== "pending") {
         throw unprocessable("Only pending approvals can request revision");
       }
 
@@ -424,47 +485,54 @@ export function approvalService(db: Db) {
           })
         : null;
 
-      const now = new Date();
-      // One transaction: the comment exists only when this call sent the request
-      // back. A refused call (409, 422) and a retry of a stored one write nothing.
-      const updated = await db.transaction(async (tx) => {
-        const row = await tx
-          .update(approvals)
-          .set({
-            status: "revision_requested",
-            decidedByUserId,
-            decisionNote: decisionNote ?? null,
-            decidedAt: now,
-            updatedAt: nextApprovalUpdatedAt(now),
-          })
-          // The status, and the version when one is given, are checked again in the
-          // write: a request decided or resubmitted since the read is not overwritten.
-          .where(
-            and(
-              eq(approvals.id, id),
-              eq(approvals.status, "pending"),
-              ...(expected ? [versionIs(expected)] : []),
-            ),
-          )
-          .returning()
-          .then((rows) => rows[0] ?? null);
-        if (row && commentBody) {
-          await tx.insert(approvalComments).values({
-            companyId: row.companyId,
-            approvalId: row.id,
-            authorAgentId: null,
-            authorUserId: decidedByUserId,
-            body: commentBody,
-            createdAt: now,
-            updatedAt: now,
-          });
-        }
-        return row;
-      });
-      if (updated) return updated;
+      // Two passes at most, as for approve and reject.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const expected = admittedVersion(current, options, revisableStatuses);
+        if (current.status !== "pending") break;
+        const now = new Date();
+        // One transaction: the comment exists only when this call sent the request
+        // back. A refused call (409, 422) and a retry of a stored one write nothing.
+        const updated = await db.transaction(async (tx) => {
+          const row = await tx
+            .update(approvals)
+            .set({
+              status: "revision_requested",
+              decidedByUserId,
+              decisionNote: decisionNote ?? null,
+              decidedAt: now,
+              updatedAt: nextApprovalUpdatedAt(now),
+            })
+            // The status, and the version when one is given, are checked again in the
+            // write: a request decided or resubmitted since the read is not overwritten.
+            .where(
+              and(
+                eq(approvals.id, id),
+                eq(approvals.status, "pending"),
+                ...(expected ? [versionIs(expected)] : []),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (row && commentBody) {
+            await tx.insert(approvalComments).values({
+              companyId: row.companyId,
+              approvalId: row.id,
+              authorAgentId: null,
+              authorUserId: decidedByUserId,
+              body: commentBody,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+          return row;
+        });
+        if (updated) return updated;
 
-      const latest = await getExistingApproval(id);
-      assertExpectedVersion(latest, expected);
+        current = await getExistingApproval(id);
+        if (!expected || current.updatedAt.getTime() === expected.getTime()) break;
+      }
+
+      admittedVersion(current, options, revisableStatuses);
       throw unprocessable("Only pending approvals can request revision");
     },
 

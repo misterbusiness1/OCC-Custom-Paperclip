@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { approvalsApi } from "../api/approvals";
 import { queryKeys } from "../lib/queryKeys";
+import { approvalListQuery } from "../lib/approval-queue";
 
 /**
  * How many approvals of a company wait on the board: the same requests the
@@ -10,8 +10,7 @@ import { queryKeys } from "../lib/queryKeys";
  */
 export function usePendingApprovalCount(companyId: string | null | undefined): number {
   const { data } = useQuery({
-    queryKey: queryKeys.approvals.list(companyId!),
-    queryFn: () => approvalsApi.list(companyId!),
+    ...approvalListQuery(companyId!),
     enabled: !!companyId,
     select: (approvals) => approvals.filter((approval) => approval.status === "pending").length,
   });

@@ -26,6 +26,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
+import { approvalListQuery } from "../lib/approval-queue";
 import { useDialogActions } from "../context/DialogContext";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
 import {
@@ -123,7 +124,7 @@ import {
   composeApproveGuards,
   useApprovalRevisionGuard,
 } from "../components/ApprovalRevision";
-import { approvalVersionConflict, type ApprovalVersion } from "../lib/approval-version";
+import { approvalVersionConflict, approvalVersionOf, type ApprovalVersion } from "../lib/approval-version";
 import { APPROVE_AFTER_ADVANCE_MS, useRowMovedAt } from "../components/ApprovalHold";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
@@ -1052,8 +1053,7 @@ function StreamlinedInbox() {
     isLoading: isApprovalsLoading,
     error: approvalsError,
   } = useQuery({
-    queryKey: queryKeys.approvals.list(selectedCompanyId!),
-    queryFn: () => approvalsApi.list(selectedCompanyId!),
+    ...approvalListQuery(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -3313,17 +3313,17 @@ function StreamlinedInbox() {
                           resolveAgentName={(agentId) => (agents ? agentName(agentId) : undefined)}
                           onApprove={(note) => {
                             if (approvalDecisions.start(item.approval.id, "approve")) {
-                              approveMutation.mutate({ id: item.approval.id, note, expectedUpdatedAt: item.approval.updatedAt });
+                              approveMutation.mutate({ id: item.approval.id, note, expectedUpdatedAt: approvalVersionOf(item.approval) });
                             }
                           }}
                           onReject={(note) => {
                             if (approvalDecisions.start(item.approval.id, "reject")) {
-                              rejectMutation.mutate({ id: item.approval.id, note, expectedUpdatedAt: item.approval.updatedAt });
+                              rejectMutation.mutate({ id: item.approval.id, note, expectedUpdatedAt: approvalVersionOf(item.approval) });
                             }
                           }}
                           onRequestRevision={(note) => {
                             if (approvalDecisions.start(item.approval.id, "revision")) {
-                              requestRevisionMutation.mutate({ id: item.approval.id, note, expectedUpdatedAt: item.approval.updatedAt });
+                              requestRevisionMutation.mutate({ id: item.approval.id, note, expectedUpdatedAt: approvalVersionOf(item.approval) });
                             }
                           }}
                           isPending={

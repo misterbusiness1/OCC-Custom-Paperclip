@@ -8,9 +8,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "./Sidebar.production";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-const mockApprovalsApi = vi.hoisted(() => ({
-  list: vi.fn(),
-}));
+const mockApprovalsApi = vi.hoisted(() => {
+  const list = vi.fn();
+  return {
+    list,
+  // The queue read the list query now uses; it serves what the `list` mock serves, as one window.
+  listQueue: vi.fn(async (companyId: string, decidedLimit: number) => ({ approvals: (await list(companyId)) ?? [], decidedLimit, decidedHasMore: false })),
+  };
+});
 
 const mockSidebar = vi.hoisted(() => ({
   isMobile: false,

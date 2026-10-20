@@ -3,12 +3,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { ApiError } from "../api/client";
 import { inboxDismissalsApi } from "../api/inboxDismissals";
-import { approvalsApi } from "../api/approvals";
 import { authApi } from "../api/auth";
 import { dashboardApi } from "../api/dashboard";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { approvalListQuery } from "../lib/approval-queue";
 import {
   filterLocalInboxArchivedIssues,
   useLocalInboxArchiveIssueIds,
@@ -187,8 +187,7 @@ export function useInboxBadge(companyId: string | null | undefined) {
   });
 
   const { data: approvals = [] } = useQuery({
-    queryKey: queryKeys.approvals.list(companyId!),
-    queryFn: () => approvalsApi.list(companyId!),
+    ...approvalListQuery(companyId!),
     enabled: !!companyId,
   });
 
