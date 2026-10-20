@@ -4105,6 +4105,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId)),
     ).toHaveLength(1);
+    expect(await db.select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, issueId)),
+    ).toEqual([expect.objectContaining({
+      ownerType: "board",
+      returnOwnerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+      evidence: expect.objectContaining({ automaticRetry: {
+        state: "exhausted", sourceRunId: runId, retriesUsed: 2, maxRetries: 2,
+      } }),
+    })]);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+      .toMatchObject({ status: "blocked", assigneeAgentId: agentId });
+    const run = await heartbeatService(db).getRun(runId);
+    expect(await getExecutionBlocker(db, run!.companyId, issueId)).toBeNull();
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {

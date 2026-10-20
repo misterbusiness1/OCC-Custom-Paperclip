@@ -801,6 +801,7 @@ export type {
 export type { Goal } from "./goal.js";
 export type {
   Approval,
+  CreatedApproval,
   ApprovalComment,
   ApprovalLinkedIssue,
   ApprovalLinkedIssuesByApproval,

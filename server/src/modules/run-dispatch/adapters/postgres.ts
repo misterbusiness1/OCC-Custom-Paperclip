@@ -705,8 +705,30 @@ export function createPostgresRunDispatchAdapter(
 
   async function cancelSuppressedRetryInTx(
     tx: Db,
+    run: HeartbeatRun,
     input: CancelSuppressedRetryInput,
   ): Promise<CancelSuppressedRetryResult> {
+    // The caller holds the issue and scheduled-run locks. This receipt describes
+    // only this retry, never the actions of the predecessor it would continue.
+    const priorRecovery = run.resultJson?.executionRecovery;
+    const knownUnstartedRecovery = priorRecovery === undefined ||
+      (parseObject(priorRecovery).kind === "bootstrap" &&
+        parseObject(priorRecovery).providerWorkStarted === false);
+    const cancelledBeforeLaunch = run.runtimeMode === "legacy" &&
+      run.scheduledRetryReason !== "native_safe_replacement" &&
+      knownUnstartedRecovery && !run.usageJson && run.exitCode === null &&
+      !run.startedAt && !run.finishedAt && !run.processPid && !run.processGroupId && !run.processStartedAt &&
+      !run.controllerBootId && !run.controllerLeaseExpiresAt && !run.executionStage &&
+      !run.executionControlDeadlineAt && !run.executionStatusDeliveryId && !run.activeIdentityContextId &&
+      !run.lastOutputAt && run.lastOutputSeq === 0 && run.lastOutputBytes === null && !run.lastOutputStream &&
+      !run.stdoutExcerpt && !run.stderrExcerpt && !run.externalRunId && !run.sessionIdAfter &&
+      !run.nativeSessionId && !run.nativeIssueId && !run.runnerInstanceId && !run.nativePhase &&
+      !run.nativePhaseUpdatedAt && !run.driverKind && !run.driverVersion && !run.signal &&
+      !run.completionContractId && !run.completionContractSha256 &&
+      !run.logStore && !run.logRef && !run.logCompressed && run.logBytes === null && !run.logSha256 &&
+      run.issueCommentStatus === "not_applicable" && !run.issueCommentSatisfiedByCommentId &&
+      !run.issueCommentRetryQueuedAt && !run.lastUsefulActionAt && !run.livenessState &&
+      !run.livenessReason && !run.nextAction && !run.runnerProfileJson?.adapterDispatch;
     const [row] = await tx
       .update(heartbeatRuns)
       .set({
@@ -714,6 +736,17 @@ export function createPostgresRunDispatchAdapter(
         finishedAt: input.now,
         error: input.reason,
         errorCode: input.errorCode,
+        ...(cancelledBeforeLaunch ? {
+          resultJson: {
+            ...parseObject(run.resultJson),
+            executionRecovery: {
+              ...parseObject(priorRecovery),
+              kind: "bootstrap",
+              providerWorkStarted: false,
+              cancelledBeforeLaunch: true,
+            },
+          },
+        } : {}),
         updatedAt: input.now,
       })
       .where(
@@ -805,7 +838,7 @@ export function createPostgresRunDispatchAdapter(
       );
 
       if (!factsResult.agentFound) {
-        const cancelled = await cancelSuppressedRetryInTx(tx as unknown as Db, {
+        const cancelled = await cancelSuppressedRetryInTx(tx as unknown as Db, run, {
           runId: input.runId,
           companyId: input.companyId,
           now,
@@ -840,7 +873,7 @@ export function createPostgresRunDispatchAdapter(
         factsResult.facts.retryReasonKind !== "native_safe_replacement";
 
       if (!gate.allowed && !isLegacyMissingIssueException) {
-        const cancelled = await cancelSuppressedRetryInTx(tx as unknown as Db, {
+        const cancelled = await cancelSuppressedRetryInTx(tx as unknown as Db, run, {
           runId: input.runId,
           companyId: input.companyId,
           now,

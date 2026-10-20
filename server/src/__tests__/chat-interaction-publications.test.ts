@@ -22,6 +22,7 @@ import {
 import type { ChatProvider } from "@paperclipai/shared";
 import { enqueueTerminalIssueInteractionChatPublications } from "../services/chat-interaction-publications.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { issueService } from "../services/issues.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -1113,6 +1114,34 @@ describeEmbeddedPostgres(
             (row.payload.card.actions ?? []).length === 0,
         ),
       ).toBe(true);
+    });
+
+    it.each(["done", "cancelled"] as const)("settles published historical cards once when %s issue metadata is updated", async (status) => {
+      const fixture = await seedBoundIssue();
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.issueId, companyId: fixture.companyId },
+        { kind: "request_confirmation", payload: { version: 1, prompt: "Historical request" } },
+        { agentId: fixture.agentId },
+      );
+      await markInteractionCardsPublished(fixture.companyId, interaction.id);
+      await db.update(issues).set({
+        status, completedAt: status === "done" ? new Date() : null,
+        cancelledAt: status === "cancelled" ? new Date() : null,
+      }).where(eq(issues.id, fixture.issueId));
+
+      await issueService(db).update(fixture.issueId, { hiddenAt: new Date(), actorUserId: "board-user" });
+      const firstPublications = await publicationsForInteraction(fixture.companyId, interaction.id);
+      const settlements = firstPublications.filter((row) => row.state === "pending");
+      expect(settlements).toHaveLength(2);
+      expect(settlements.every((row) =>
+        row.payload.text === "Expired: task is closed." &&
+        row.payload.card?.body === "Expired: task is closed" &&
+        (row.payload.card.actions ?? []).length === 0,
+      )).toBe(true);
+
+      await issueService(db).update(fixture.issueId, { hiddenAt: null, actorUserId: "board-user" });
+      const repeated = await publicationsForInteraction(fixture.companyId, interaction.id);
+      expect(repeated.map((row) => row.id).sort()).toEqual(firstPublications.map((row) => row.id).sort());
     });
 
     it("cancels stale-target prompts and settles terminal-issue expirations", async () => {

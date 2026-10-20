@@ -10,6 +10,7 @@ import {
 const dependentIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const blockerIssueId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const companyId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const agentId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const firstCycle = new Date("2026-04-01T12:00:00.000Z");
 const secondCycle = new Date("2026-08-01T09:30:00.000Z");
 
@@ -66,6 +67,22 @@ describe("buildIssueBlockersResolvedWakeStateKey", () => {
     expect(first).not.toBe(second);
   });
 
+  it("changes when the same blocker completes in a later status cycle", () => {
+    const first = buildIssueBlockersResolvedWakeStateKey({
+      dependentIssueId,
+      blockerIssueIds: [blockerIssueId],
+      blockerGenerations: [{ issueId: blockerIssueId, completedAt: firstCycle }],
+      blockedTransitionAt: secondCycle,
+    });
+    const second = buildIssueBlockersResolvedWakeStateKey({
+      dependentIssueId,
+      blockerIssueIds: [blockerIssueId],
+      blockerGenerations: [{ issueId: blockerIssueId, completedAt: secondCycle }],
+      blockedTransitionAt: secondCycle,
+    });
+    expect(first).not.toBe(second);
+  });
+
   it("hashes a null cycle as none and differs from any timestamp", () => {
     const noneKey = buildIssueBlockersResolvedWakeStateKey({
       dependentIssueId,
@@ -95,6 +112,7 @@ describe("buildIssueBlockersResolvedWakeStateKey", () => {
 describe("findExistingIssueBlockersResolvedWakeForReadyState", () => {
   const readyState = {
     companyId,
+    agentId,
     dependentIssueId,
     blockerIssueIds: [blockerIssueId],
     blockedTransitionAt: secondCycle,
@@ -170,6 +188,7 @@ describe("findExistingIssueBlockersResolvedWakeForReadyState", () => {
       ]),
       {
         companyId,
+        agentId,
         dependentIssueId,
         blockerIssueIds: [blockerIssueId],
         blockedTransitionAt: null,

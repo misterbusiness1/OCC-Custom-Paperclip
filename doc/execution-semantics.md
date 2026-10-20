@@ -135,6 +135,13 @@ The work is complete and terminal.
 
 The work will not continue and is terminal.
 
+A human terminal decision supersedes that same person's older queued task
+comments. The decision and its status-version receipt commit together; draining
+the queue cannot reopen the task solely for those comments. Newer comments,
+another person's input, and independent approval or interaction continuations
+retain their existing delivery rules. A receipt from an earlier close/reopen
+cycle does not suppress input after a later decision.
+
 ## 4. Agent-Owned vs User-Owned Execution
 
 The execution model differs depending on assignee type.
@@ -186,6 +193,8 @@ Stale-lock recovery is crash recovery, not a retry loop. Paperclip must not clea
 ### Known execution waits at admission
 
 A known execution hold is a waiting condition, not a new execution attempt. Every issue wake must read the current effective reconciliation hold under the issue admission lock before creating a run. Resolved recovery bookkeeping can still carry a no-replay hold; only clearing the effective hold makes admission eligible again. The final dispatch gate remains required for changes after admission.
+
+When a scheduled legacy retry is cancelled by its dispatch gate before launch, the locked cancellation records that no provider work started. That receipt prevents the cancelled retry from creating an action-reconciliation hold, including at the retry limit. Contradictory start, process, output, usage, or execution-identity evidence prevents this receipt; native safe replacements keep their coordinator's recovery rules. The classifier also requires the persisted start timestamp to remain empty. The proof describes only the cancelled retry; any predecessor's unknown-action hold and all current dependency, approval, and pause gates remain effective.
 
 Repeated automatic signals for an unchanged gate share one durable skipped-wake diagnostic, scoped to company, agent, issue, gate code, and condition identity. The diagnostic retains the first request and counts later observations. This applies to execution reconciliation, dependencies, pause holds, company and agent availability, budget blocks, and disabled heartbeats. These diagnostics do not consume provider attempts and are never proof that a future wake was delivered. All current gates are checked again on the next wake, including the periodic dependency reconciliation sweep. Clearing one gate does not bypass another.
 
@@ -241,6 +250,8 @@ Use it for:
 - automatic wakeups when all blockers resolve
 
 Blocked issues should stay idle while blockers remain unresolved. Paperclip should not create a queued heartbeat run for that issue until the final blocker is done and the `issue_blockers_resolved` wake can start real work.
+
+Checkout may temporarily execute an issue that is waiting on an external owner/action. If execution reasserts the same structured owner/action, it retains the existing blocked wait cycle and its owner-notification receipt. An already-delivered dependency wake must not repeat merely because the issue was checked out and blocked again. A changed blocker set or a blocker completing in a new generation still permits a fresh dependency wake. Changing the owner/action, including a descriptor-only edit while blocked, starts a new wait cycle. Explicitly leaving the wait through a lifecycle transition also starts a new wait when the issue is blocked again.
 
 `cancelled` is terminal for the blocker issue itself, but it does not satisfy the dependency. A cancelled blocker edge remains unresolved until the edge is removed or replaced, and Paperclip must surface blocker attention on the dependent regardless of whether that dependent is currently displayed as `blocked`, `todo`, `backlog`, or another non-terminal agent-owned status.
 
@@ -998,6 +1009,32 @@ the run without retrying the admission check.
 An interrupted conversation does not permanently block its task. For local conversational adapters, Paperclip starts a new bounded turn with the existing session when compatible, or the full task conversation when the session is unavailable. The prompt says: “Your previous run was interrupted. Continue from where you left off.” The agent decides what remains from the history and latest user request. Paperclip never automatically replays recorded tool calls. Unknown past action outcomes are not a task-wide execution gate, and no action-reconciliation questionnaire is required.
 
 Shutdown, process loss, and provider failure use the existing durable failure retry counter and delay. Ordinary failure recovery permits at most two automatic retries in a failure chain. Accepted-interaction infrastructure recovery retains its existing bounded policy. Repeated scheduler visits reuse the same successor; restarting the server does not reset the counter. After exhaustion, automatic attempts stop. A new explicit user message can start a fresh run and failure budget. Productive max-turn continuation and confirmed workspace waits keep their separate existing semantics.
+
+Legacy local ACP Codex subscription runs also share HTTP 429 recovery within their company
+when the selected credential identifies the same provider account.
+The server stores an opaque account key and trusted numeric HTTP status with
+the run. Home paths, adapter types, token contents, and diagnostic text do not
+establish account equality. Unknown identities retain the existing per-agent
+policy. The prepared credential is checked again before provider startup, and
+account changes invalidate incompatible warm-session reuse. A legacy shared
+authentication file is sampled before startup. An external account switch
+after that sample is outside this admission contract.
+
+During a known account wait, fresh work and retry children stay queued. The
+deadline comes from the persisted recovery contract; when the provider gives
+no deadline, the existing bounded retry policy supplies one and records its
+source. After that deadline, an atomic admission decision lets one eligible
+queued run test recovery. Other runs wait for its outcome. A successful run
+that started before the throttle cannot clear it. Healthy account concurrency
+is unchanged. This uses persisted run evidence across server restarts and
+does not add a provider retry loop or reset a task's failure budget.
+
+HTTP 429 is a temporary throttle, not evidence that a weekly allowance is
+exhausted. Authentication failures keep precedence, and HTTP 5xx failures do
+not create an account-wide 429 hold. Provider wait decisions preserve normal
+ownership, cleanup, pause, dependency, approval, and budget gates.
+
+When an `in_progress` conversation remains stranded after that failure budget is exhausted, recovery atomically records a board-owned recovery action, moves the source issue to `blocked`, and marks its originating routine run failed with a completion timestamp. This disposition preserves the assignee and requires an explicit continuation after inspection or repair; it does not enqueue another attempt or impose an unknown-action-outcome hold. A newer run, explicit user input, changed issue decision, existing recovery action, or durable waiting path keeps its own lifecycle authority. An idle blocked routine execution does not count as live overlap, so the next scheduled occurrence still follows the existing routine concurrency policy.
 
 Real gates still apply: company and task ownership, active provider ownership, budget limits, agent availability, dependencies, pending approval/review paths, and explicit pause holds. Native runner reattachment and finalization retain their existing ownership protocol. Process, HTTP, and gateway adapters retain their recovery rules because invoking those adapters can itself repeat an external action rather than start a conversation turn.
 

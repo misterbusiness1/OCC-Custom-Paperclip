@@ -26,6 +26,8 @@ Every Company has a **Board** that governs high-impact decisions. The Board is t
 #### Board Approval Gates (V1)
 
 - New Agent hires (creating new Agents)
+- Hire decisions that reference an existing Agent apply only to a pending Agent
+  in the same company, and commit atomically with that Agent's activation or rejection.
 - CEO's initial strategic breakdown (CEO proposes, Board approves before execution begins)
 - [TBD: other governance-gated actions — goal changes, firing Agents?]
 
@@ -56,6 +58,10 @@ A Board status inquiry does not itself pause unfinished task execution. Native
 ordinary tasks that report blocking remaining work must continue, register a
 real wait, or surface a bounded recovery failure. Recorded approvals, questions,
 dependencies, and pauses remain authoritative; obsolete requests must not replay.
+
+Agent-authenticated configuration updates cannot directly set agent lifecycle
+status. Agents use the dedicated lifecycle routes, including the direct-grant
+requirement for resume, so configuration access cannot bypass lifecycle control.
 
 #### Budget Delegation
 

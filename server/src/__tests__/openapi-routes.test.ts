@@ -229,6 +229,34 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents board-only approval retirement with its strict request contract", () => {
+    const { spec } = loadSpecRoutes();
+    const operation = spec.paths["/api/approvals/{id}/retire"].post;
+
+    expect(operation.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(operation.requestBody.content["application/json"].schema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: ["decisionNote", "expectedUpdatedAt"],
+      properties: {
+        decisionNote: { type: "string" },
+        expectedUpdatedAt: { type: "string", format: "date-time" },
+      },
+    });
+    expect(Object.keys(operation.responses).sort()).toEqual([
+      "200",
+      "400",
+      "403",
+      "404",
+      "409",
+      "422",
+    ]);
+  });
+
   it("documents exact startup release authority and content-free Board request status", () => {
     const { spec } = loadSpecRoutes();
     const protocol = spec.paths["/api/board-comment-request-protocol"].get;

@@ -1,5 +1,5 @@
 diff --git a/dist/client-DwNyFauq.d.ts b/dist/client-DwNyFauq.d.ts
-index 2b869bf..dc5152f 100644
+index 2b869bf31d76cef38876340eb473d3f0c939bda9..dc5152f080ad0214c4ebd6fc670e7ccde149ddef 100644
 --- a/dist/client-DwNyFauq.d.ts
 +++ b/dist/client-DwNyFauq.d.ts
 @@ -102,6 +102,7 @@ declare class AcpClient {
@@ -18,7 +18,7 @@ index 2b869bf..dc5152f 100644
 \ No newline at end of file
 +//# sourceMappingURL=client-DwNyFauq.d.ts.map
 diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
-index 243c9d1..12a15d9 100644
+index 243c9d13bcba520923b63adfddad75cf2d94362d..12a15d92f5d63d063f16f523adb7d51744e639c2 100644
 --- a/dist/live-checkpoint-ClPCSdrW.js
 +++ b/dist/live-checkpoint-ClPCSdrW.js
 @@ -1532,7 +1532,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
@@ -276,7 +276,7 @@ index 243c9d1..12a15d9 100644
 \ No newline at end of file
 +//# sourceMappingURL=live-checkpoint-ClPCSdrW.js.map
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index ccdbe5b..743df98 100644
+index ccdbe5b032521518022223733049b8b38793473b..cfa060127ab23f423b200f36464afd459dec5d64 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
 @@ -45,6 +45,7 @@ type AcpRuntimeTurnAttachment = {
@@ -287,7 +287,24 @@ index ccdbe5b..743df98 100644
    handle: AcpRuntimeHandle;
    text: string;
    attachments?: AcpRuntimeTurnAttachment[];
-@@ -236,6 +237,7 @@ interface AcpRuntime {
+@@ -180,12 +181,16 @@ type AcpRuntimeEvent = {
+ | {
+   type: "error";
+   message: string;
++  /** Trusted numeric provider status; raw provider error data is never exposed. */
++  providerHttpStatus?: number;
+   code?: string;
+   detailCode?: string;
+   retryable?: boolean;
+ };
+ type AcpRuntimeTurnResultError = {
+   message: string;
++  /** Trusted numeric provider status; raw provider error data is never exposed. */
++  providerHttpStatus?: number;
+   code?: string;
+   detailCode?: string;
+   retryable?: boolean;
+@@ -236,6 +241,7 @@ interface AcpRuntime {
      key: string;
      value: string;
    }): Promise<void>;
@@ -295,7 +312,7 @@ index ccdbe5b..743df98 100644
    doctor?(): Promise<AcpRuntimeDoctorReport>;
    cancel(input: {
      handle: AcpRuntimeHandle;
-@@ -266,6 +268,11 @@ type AcpRuntimeOptions = {
+@@ -266,6 +272,11 @@ type AcpRuntimeOptions = {
    timeoutMs?: number;
    probeAgent?: string;
    verbose?: boolean;
@@ -307,7 +324,7 @@ index ccdbe5b..743df98 100644
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
    }) => Promise<AcpPermissionDecision | undefined>;
-@@ -286,6 +293,7 @@ declare class AcpRuntimeManager {
+@@ -286,6 +297,7 @@ declare class AcpRuntimeManager {
    private readonly closingActiveRecords;
    constructor(options: AcpRuntimeOptions, deps?: AcpRuntimeManagerDeps);
    private createClient;
@@ -315,7 +332,7 @@ index ccdbe5b..743df98 100644
    private readPendingPersistentClient;
    private closePendingPersistentClient;
    private refreshClosedState;
-@@ -302,6 +310,7 @@ declare class AcpRuntimeManager {
+@@ -302,6 +314,7 @@ declare class AcpRuntimeManager {
    private createAndSaveRuntimeRecord;
    private keepPersistentClient;
    startTurn(input: {
@@ -323,7 +340,7 @@ index ccdbe5b..743df98 100644
      handle: AcpRuntimeHandle;
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
-@@ -334,6 +343,7 @@ declare class AcpRuntimeManager {
+@@ -334,6 +347,7 @@ declare class AcpRuntimeManager {
    private finalizeRuntimeTurn;
    private finalizeRuntimeTurnRecord;
    runTurn(input: {
@@ -331,7 +348,7 @@ index ccdbe5b..743df98 100644
      handle: AcpRuntimeHandle;
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
-@@ -442,6 +452,7 @@ declare class AcpxRuntime implements AcpxRuntimeLike {
+@@ -442,6 +456,7 @@ declare class AcpxRuntime implements AcpxRuntimeLike {
      key: string;
      value: string;
    }): Promise<void>;
@@ -339,7 +356,7 @@ index ccdbe5b..743df98 100644
    cancel(input: {
      handle: AcpRuntimeHandle;
      reason?: string;
-@@ -462,4 +473,4 @@ declare function createRuntimeStore(options: {
+@@ -462,4 +477,4 @@ declare function createRuntimeStore(options: {
  }): AcpSessionStore;
  //#endregion
  export { ACPX_BACKEND_ID, type AcpAgentRegistry, type AcpFileSessionStoreOptions, type AcpPermissionDecision, type AcpPermissionRequest, type AcpRuntime, type AcpRuntimeAvailableCommand, type AcpRuntimeCapabilities, type AcpRuntimeDoctorReport, type AcpRuntimeEnsureInput, AcpRuntimeError, type AcpRuntimeErrorCode, type AcpRuntimeEvent, type AcpRuntimeHandle, type AcpRuntimeOptions, type AcpRuntimePromptMode, type AcpRuntimeSessionMode, type AcpRuntimeSessionModels, type AcpRuntimeSessionUsage, type AcpRuntimeStatus, type AcpRuntimeTurn, type AcpRuntimeTurnAttachment, type AcpRuntimeTurnInput, type AcpRuntimeTurnResult, type AcpRuntimeTurnResultError, type AcpRuntimeUsageBreakdown, type AcpRuntimeUsageCost, type AcpSessionRecord, type AcpSessionStore, type AcpSessionUpdateTag, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, type RequestedModelUnsupportedErrorCode, type RequestedModelUnsupportedReason, type SessionAgentOptions, type SystemPromptOption, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
@@ -347,10 +364,43 @@ index ccdbe5b..743df98 100644
 \ No newline at end of file
 +//# sourceMappingURL=runtime.d.ts.map
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc99..776ba71 100644
+index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..15f05fd7f61e92e96eeceef8931daac34082e957 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
-@@ -744,7 +744,12 @@ var AcpRuntimeManager = class {
+@@ -580,10 +580,32 @@ function createRecordId(sessionKey, mode) {
+ function resumePolicyForSessionMode(mode) {
+ 	return mode === "persistent" ? "same-session-only" : "allow-new";
+ }
++// Keep provider diagnostics on a closed, numeric allowlist. Raw ACP data can
++// contain credentials, request bodies or additional private provider details.
++function providerHttpStatusFromError(error) {
++	const acp = extractAcpError(error);
++	if (!acp || (acp.code !== -32603 && acp.code !== -32000)) return;
++	const data = acp.data;
++	if (!data || typeof data !== "object" || Array.isArray(data)) return;
++	const info = data.codexErrorInfo;
++	if (!info || typeof info !== "object" || Array.isArray(info)) return;
++	const variants = [
++		"httpConnectionFailed",
++		"responseStreamConnectionFailed",
++		"responseStreamDisconnected",
++		"responseTooManyFailedAttempts"
++	].filter((key) => Object.hasOwn(info, key));
++	if (variants.length !== 1) return;
++	const detail = info[variants[0]];
++	if (!detail || typeof detail !== "object" || Array.isArray(detail)) return;
++	const status = detail.httpStatusCode;
++	return Number.isInteger(status) && status >= 400 && status <= 599 ? status : void 0;
++}
+ function legacyTerminalEventFromTurnResult(result) {
+ 	if (result.status === "failed") return {
+ 		type: "error",
+ 		message: result.error.message,
++		...result.error.providerHttpStatus !== void 0 ? { providerHttpStatus: result.error.providerHttpStatus } : {},
+ 		...result.error.code ? { code: result.error.code } : {},
+ 		...result.error.detailCode ? { detailCode: result.error.detailCode } : {},
+ 		...result.error.retryable === void 0 ? {} : { retryable: result.error.retryable }
+@@ -744,7 +766,12 @@ var AcpRuntimeManager = class {
  		this.deps = deps;
  	}
  	createClient(options) {
@@ -364,7 +414,7 @@ index 6c9cc99..776ba71 100644
  	}
  	async readPendingPersistentClient(record, options) {
  		const pendingClient = this.pendingPersistentClients.get(record.acpxRecordId);
-@@ -982,6 +987,7 @@ var AcpRuntimeManager = class {
+@@ -982,6 +1009,7 @@ var AcpRuntimeManager = class {
  				client: turn.client,
  				sessionId,
  				prompt: task.promptInput,
@@ -372,7 +422,20 @@ index 6c9cc99..776ba71 100644
  				timeoutMs: task.input.timeoutMs ?? this.options.timeoutMs,
  				conversation: turn.conversation,
  				promptMessageId: turn.promptMessageId
-@@ -1586,6 +1592,7 @@ var AcpxRuntime = class {
+@@ -1208,10 +1236,12 @@ var AcpRuntimeManager = class {
+ 	failRuntimeTurn(task, error) {
+ 		task.sessionReady.reject(error);
+ 		const normalized = normalizeOutputError(error, { origin: "runtime" });
++		const providerHttpStatus = providerHttpStatusFromError(error);
+ 		task.settleResult({
+ 			status: "failed",
+ 			error: {
+ 				message: normalized.message,
++				...providerHttpStatus !== void 0 ? { providerHttpStatus } : {},
+ 				...normalized.code ? { code: normalized.code } : {},
+ 				...normalized.detailCode ? { detailCode: normalized.detailCode } : {},
+ 				...normalized.retryable !== void 0 ? { retryable: normalized.retryable } : {}
+@@ -1586,6 +1616,7 @@ var AcpxRuntime = class {
  		const turnPromise = this.getManager().then((manager) => manager.startTurn({
  			handle,
  			text: input.text,
@@ -380,7 +443,7 @@ index 6c9cc99..776ba71 100644
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -1614,6 +1621,7 @@ var AcpxRuntime = class {
+@@ -1614,6 +1645,7 @@ var AcpxRuntime = class {
  		yield* (await this.getManager()).runTurn({
  			handle,
  			text: input.text,
@@ -388,7 +451,7 @@ index 6c9cc99..776ba71 100644
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -1645,6 +1653,9 @@ var AcpxRuntime = class {
+@@ -1645,6 +1677,9 @@ var AcpxRuntime = class {
  		const { handle, state } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
  	}
@@ -398,7 +461,7 @@ index 6c9cc99..776ba71 100644
  	async cancel(input) {
  		const { handle } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).cancel(handle);
-@@ -1704,4 +1715,4 @@ function createRuntimeStore(options) {
+@@ -1704,4 +1739,4 @@ function createRuntimeStore(options) {
  //#endregion
  export { ACPX_BACKEND_ID, AcpRuntimeError, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
  
@@ -406,7 +469,7 @@ index 6c9cc99..776ba71 100644
 \ No newline at end of file
 +//# sourceMappingURL=runtime.js.map
 diff --git a/dist/session-options-jkYbBxGE.d.ts b/dist/session-options-jkYbBxGE.d.ts
-index 9d37f37..cb8104e 100644
+index 9d37f377fb6a0828e0d2bc5a48754f3aa71509a4..cb8104e97b37dc21d8b47f953d5e33de7e9a9e71 100644
 --- a/dist/session-options-jkYbBxGE.d.ts
 +++ b/dist/session-options-jkYbBxGE.d.ts
 @@ -84,6 +84,11 @@ type AcpClientOptions = {

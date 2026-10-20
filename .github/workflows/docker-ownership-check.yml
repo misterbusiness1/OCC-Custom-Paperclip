@@ -1,0 +1,34 @@
+name: Docker ownership check
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/docker-ownership-check.yml
+      - Dockerfile
+      - .dockerignore
+      - scripts/docker-entrypoint.sh
+      - scripts/docker-ownership-repair.py
+      - scripts/tests/docker-entrypoint-ownership.test.py
+
+permissions: {}
+
+concurrency:
+  group: docker-ownership-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ownership:
+    name: Verify real Docker ownership repair
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build the shared runtime base
+        run: docker build --target base --tag paperclip-ownership-test .
+      - name: Verify real bind mounts and ownership repair
+        run: python3 scripts/tests/docker-entrypoint-ownership.test.py --image paperclip-ownership-test

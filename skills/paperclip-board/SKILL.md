@@ -363,6 +363,17 @@ Pending Approvals
 
 For batch approval: list all pending, let the user approve all or review individually.
 
+For an explicit request to retire obsolete closed work, use
+`POST /api/approvals/{id}/retire` with the freshly read `expectedUpdatedAt` and a
+nonempty `decisionNote`. This board-only operation accepts `request_board_approval`
+only when it has linked tasks, all are same-company `done`/`cancelled`, and every
+checkout/execution owner field is clear. It records rejection and a visible
+retirement audit without launching requester work. Normal rejection retains its
+notification behavior. On `409`, re-read the approval and its links before acting.
+This operation is available through the API and typed client; there is no UI
+retirement button. See [the approval API](../../docs/api/approvals.md#retire-an-obsolete-closed-request)
+for eligibility and retry semantics.
+
 ## Task Management
 
 ```bash
@@ -608,6 +619,7 @@ All web UI links must include the company prefix:
 | List approvals | GET | `/api/companies/:companyId/approvals` |
 | Approve | POST | `/api/approvals/:id/approve` |
 | Reject | POST | `/api/approvals/:id/reject` |
+| Retire obsolete closed request | POST | `/api/approvals/:id/retire` |
 | Request revision | POST | `/api/approvals/:id/request-revision` |
 | Cost summary | GET | `/api/companies/:companyId/costs/summary` |
 | Costs by agent | GET | `/api/companies/:companyId/costs/by-agent` |

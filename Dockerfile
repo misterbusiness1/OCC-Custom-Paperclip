@@ -204,6 +204,7 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
   && chown node:node /paperclip
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
+COPY scripts/docker-ownership-repair.py /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 COPY --chown=node:node --from=build /app /app
@@ -233,6 +234,12 @@ ENV NODE_ENV=production \
   GEMINI_SANDBOX=false
 
 EXPOSE 3100
+
+# Restored homes can need several minutes of ownership repair before Node starts.
+# Successful probes still mark the container healthy immediately; the grace only
+# prevents cold-start failures from consuming the normal failure budget.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=6m --retries=5 \
+  CMD wget -qO- --timeout=8 --tries=1 http://127.0.0.1:3100/api/health >/dev/null || exit 1
 
 # tini, not node, is PID 1. The entrypoint ends in `exec`, so without an init
 # node inherits PID 1 and never wait()s the orphans the kernel re-parents onto

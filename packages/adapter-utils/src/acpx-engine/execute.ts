@@ -371,6 +371,8 @@ export type AcpxTerminalFailureClassification = Pick<
 
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
+  /** Resolve metadata from the prepared credential route, before any transport or warm-session reuse. */
+  resolveProviderAccountKey?: (input: { ctx: AdapterExecutionContext; env: Record<string, string> }) => Promise<string | null>;
   /**
    * Fail-closed recognizer for a provider-owned terminal diagnostic. ACPX
    * 0.12 does not expose diagnostic provenance, so the engine invokes this
@@ -1300,6 +1302,30 @@ async function reconcileManagedCodexSkills(input: {
   }
 }
 
+/** Use the same API-key precedence for preparation and optional account metadata. */
+export function resolveCodexAcpApiKey(env: Record<string, unknown>): string | undefined {
+  const configuredOpenAi = typeof env.OPENAI_API_KEY === "string" ? env.OPENAI_API_KEY.trim() : "";
+  const configuredCodex = typeof env.CODEX_API_KEY === "string" ? env.CODEX_API_KEY.trim() : "";
+  return configuredOpenAi || configuredCodex || process.env.OPENAI_API_KEY?.trim() || process.env.CODEX_API_KEY?.trim();
+}
+
+/** Shared by admission metadata and preparation; configured homes deliberately bypass shared seeding. */
+export function resolveCodexAcpHomePaths(companyId: string, config: Record<string, unknown>) {
+  const env = parseObject(config.env);
+  return {
+    configuredHome: typeof env.CODEX_HOME === "string" && env.CODEX_HOME.trim()
+      ? path.resolve(env.CODEX_HOME.trim()) : null,
+    sourceHome: process.env.CODEX_HOME?.trim() ? path.resolve(process.env.CODEX_HOME.trim()) : path.join(os.homedir(), ".codex"),
+    targetHome: resolveManagedCodexHomeDir(companyId),
+  };
+}
+
+export async function resolveCodexAcpAuthHome(companyId: string, config: Record<string, unknown>) {
+  const selection = resolveCodexAcpHomePaths(companyId, config);
+  if (selection.configuredHome) return selection.configuredHome;
+  return await pathExists(path.join(selection.sourceHome, "auth.json")) ? selection.sourceHome : selection.targetHome;
+}
+
 async function prepareCodexSkillRuntime(input: {
   companyId: string;
   agentId: string;
@@ -1321,26 +1347,15 @@ async function prepareCodexSkillRuntime(input: {
   stepMetrics?: StartupStepMeasureOptions;
 }): Promise<{ identity: Record<string, unknown>; commandNotes: string[] }> {
   const now = input.now ?? (() => Date.now());
-  const envConfig = parseObject(input.config.env);
-  const configuredCodexHome =
-    typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
-      ? path.resolve(envConfig.CODEX_HOME.trim())
-      : null;
-  const sourceCodexHome =
-    typeof process.env.CODEX_HOME === "string" && process.env.CODEX_HOME.trim().length > 0
-      ? path.resolve(process.env.CODEX_HOME.trim())
-      : path.join(os.homedir(), ".codex");
-  const apiKey = input.env.OPENAI_API_KEY?.trim() || input.env.CODEX_API_KEY?.trim()
-    || process.env.OPENAI_API_KEY?.trim() || process.env.CODEX_API_KEY?.trim();
-  // Keep API-key auth separate from the company home used by subscription
-  // agents, so one agent cannot switch another agent's login on its next turn.
+  const selection = resolveCodexAcpHomePaths(input.companyId, input.config);
+  const apiKey = resolveCodexAcpApiKey(input.env);
   const managedCodexHome = apiKey
     ? resolveManagedCodexApiKeyHomeDir(input.companyId, input.agentId)
-    : resolveManagedCodexHomeDir(input.companyId);
-  const effectiveCodexHome = configuredCodexHome ??
+    : selection.targetHome;
+  const effectiveCodexHome = selection.configuredHome ??
     await prepareManagedCodexHome({
       companyId: input.companyId,
-      sourceHome: sourceCodexHome,
+      sourceHome: selection.sourceHome,
       targetHome: managedCodexHome,
       apiKey,
       onLog: input.onLog,
@@ -2189,6 +2204,11 @@ async function buildRuntime(input: {
       skillCommandNotes.push("Selected Paperclip skills are tracked only; ACPX custom commands do not expose a runtime skill contract yet.");
     }
   }
+
+  const providerAccountKey = input.deps.resolveProviderAccountKey
+    ? await input.deps.resolveProviderAccountKey({ ctx: input.ctx, env }) : null;
+  await input.ctx.onProviderAccount?.(providerAccountKey);
+  if (providerAccountKey) skillsIdentity = { ...skillsIdentity, providerAccountKey };
 
   const configuredCommand = asString(config.agentCommand, "").trim();
   const builtInCommand = await resolveBuiltInAgentCommand({
@@ -4185,6 +4205,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // (the cancel-before-close order). The turn wrapper assigns it in `turnStart`.
       let activeTurn: AcpRuntimeTurn | null = null;
       let terminalFailureClassification: AcpxTerminalFailureClassification | null = null;
+      let terminalSessionFailureClassified = false;
       let terminalSessionFailure: AcpxTerminalSessionFailureDiagnostic | null = null;
       // How the settlement `endSession` step must release the runtime for the path
       // this run took. Each exit path that acquired the runtime records it before it
@@ -4886,7 +4907,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             terminalSessionFailure = sanitizeTerminalSessionFailure(
               failure, prepared.env, ctx.authToken, parseObject(ctx.config.env),
             );
-            terminalFailureClassification = deps.classifyTerminalSessionFailure?.(failure, new Date(now())) ?? null;
+            if (deps.classifyTerminalSessionFailure) {
+              terminalFailureClassification = deps.classifyTerminalSessionFailure(failure, new Date(now()));
+              terminalSessionFailureClassified = true;
+            }
           },
         });
         activeTurn = turn;
@@ -5127,19 +5151,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? channelLostMessage
             : formatTerminalSessionFailure(resultErrorMessage(terminal), failureDiagnostic);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
-        // A typed terminal session failure is classified by the adapter's
-        // structured classifier (upstream), whose null is a deliberate "not
-        // quota". An adapter without one (kimi_local and other plugins) keeps
-        // the fork's message classifier (Kimi wrapped five-hour quota #120,
-        // auth, 429; #136), typed failure or not.
         const typedTerminalFailureReported = terminalSessionFailure !== null;
-        const classifiedFailure = !timedOut && !channelLost && terminal.status === "failed"
-          ? typedTerminalFailureReported && deps.classifyTerminalSessionFailure
-            ? terminalFailureClassification
-            // The fork classifier anchors its patterns to one message, so a
-            // typed failure is classified by its own title.
-            : classifyAcpTerminalFailure(terminalSessionFailure?.title ?? terminal.error.message, now())
+        const terminalFailure = terminal.status === "failed" && !timedOut && !channelLost
+          ? classifyAcpTerminalFailure(terminalSessionFailure?.title ?? terminal.error.message, now(), terminal.error.providerHttpStatus)
           : null;
+        // Preserve upstream's provider-specific typed quota decision. Trusted
+        // authentication/HTTP throttle evidence still takes precedence.
+        const classifiedFailure = typedTerminalFailureReported && deps.classifyTerminalSessionFailure
+          && terminalFailure?.errorCode !== "acpx_auth_required"
+          && terminalFailure?.providerHttpStatus !== 429
+          && !(terminalFailure?.providerHttpStatus !== undefined && terminalFailure.providerHttpStatus >= 500)
+          ? terminalFailureClassification
+          : terminalFailure;
         // Typed failures keep upstream's omit-when-absent fields; every other
         // result keeps the fork's explicit null recovery fields.
         const classifiedFailureFields: Pick<AdapterExecutionResult, "errorFamily" | "retryNotBefore"> =
@@ -5187,6 +5210,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             status: channelLost ? "failed" : terminal.status,
             ...activityDiagnostics,
             ...(failureDiagnostic ? { terminalSessionFailure: failureDiagnostic } : {}),
+            ...(failureDiagnostic && terminalSessionFailureClassified ? { terminalSessionFailureClassified: true } : {}),
             ...(classifiedFailure?.errorFamily ? { errorFamily: classifiedFailure.errorFamily } : {}),
             ...(classifiedFailure?.retryNotBefore
               ? {
@@ -5203,6 +5227,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             requestedModel: prepared.requestedModel || null,
             requestedThinkingEffort: prepared.requestedThinkingEffort || null,
             fastMode: prepared.fastMode,
+            ...(terminalFailure?.providerHttpStatus !== undefined
+              ? { providerHttpStatus: terminalFailure.providerHttpStatus }
+              : {}),
             ...(turnUsage.usageDetail ? { usage: turnUsage.usageDetail } : {}),
             ...(turnUsage.cumulativeCostUsd != null
               ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }

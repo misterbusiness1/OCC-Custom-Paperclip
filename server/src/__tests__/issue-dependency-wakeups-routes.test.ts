@@ -228,10 +228,21 @@ describe("issue dependency wakeups in issue routes", () => {
         blockerIssueIds: ["issue-1", "issue-3"],
       },
     ]);
+    mockFindExistingIssueBlockersResolvedWakeForReadyState.mockImplementation(
+      async (_db, input) =>
+        input.agentId === "agent-prior-owner" ? ({ id: "prior-owner-receipt" } as any) : null,
+    );
 
     const res = await request(app).patch("/api/issues/issue-1").send({ status: "done" });
     expect(res.status).toBe(200);
     await vi.waitFor(() => {
+      expect(mockFindExistingIssueBlockersResolvedWakeForReadyState).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          dependentIssueId: "issue-2",
+          agentId: "agent-2",
+        }),
+      );
       expect(mockWakeup).toHaveBeenCalledWith(
         "agent-2",
         expect.objectContaining({
@@ -463,6 +474,7 @@ describe("issue dependency wakeups in issue routes", () => {
         expect.anything(),
         expect.objectContaining({
           companyId: "company-1",
+          agentId: "agent-release",
           dependentIssueId: releaseIssueId,
           blockerIssueIds: [reviewIssueId],
           blockedTransitionAt: releaseBlockedAt,

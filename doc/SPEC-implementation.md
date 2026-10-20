@@ -528,6 +528,12 @@ Side effects:
 - entering `in_progress` sets `started_at` if null
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
+- Metadata updates to an already terminal issue reconcile historical pending interaction
+  cards to expired without reopening the issue or changing its status version,
+  completion time, or cancellation time. Repeated metadata updates do not repeat
+  interaction resolution. Existing linked-action revocation and terminal-card
+  publication rules apply; summary, status-card, and workspace transition effects
+  still require an actual status change.
 - A comment included in an update that leaves the issue `done` or `cancelled`
   is a completion report and does not wake its unchanged assignee. Comment-wake
   eligibility uses the saved status, so a deferred wake cannot undo that same
@@ -552,6 +558,9 @@ V1 non-terminal liveness rule:
 - explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
 - recovery-action ownership is separate from source-task ownership: automatic repair and board escalation preserve both source assignee fields; reassignment requires an explicit board decision or a policy-defined serious failure
 - source-scoped recovery routing is cause-keyed: bounded continuity and disposition repair may retry only the original agent; provider-quota failures create/reuse a scheduled wait-recovery monitor; every other exhausted or unsafe path creates/reuses a board-owned recovery action with `routingPolicy: board_escalation_no_takeover_v1` and no substitute-agent wake
+- a generic ACP terminal-limit failure is a provider-quota failure even when the ACP server omits provider-specific detail; credential and revoked-token failures remain authentication failures and never enter quota recovery
+- an approved, issue-linked approval cannot silently outlive its authorized continuation: reconciliation requeues the original requester when no post-decision run exists, or opens a visible source-scoped recovery action when that continuation terminates unsuccessfully
+- approval creation responses include the normalized linked `issueIds`; the durable `issue_approvals` relation remains authoritative for recovery and approval history
 - legacy active agent-owned recovery actions remain readable, resolvable, and API-compatible after upgrade, but reconciliation does not enqueue another takeover wake for them
 - active-run output silence is an informational board UI signal at one hour (`suspicious`) and four hours (`critical`); it does not create or update issues or recovery actions, comment on or block source work, change assignments, or wake an agent
 - board snooze and continue decisions suppress the run signal until their stored re-arm time; a false-positive decision suppresses it permanently for that run; open legacy evaluation issues remain readable and manually resolvable without automatic refresh
@@ -615,6 +624,13 @@ agent actor calling `POST /agents/:agentId/resume` must pass the protected
 access does not bypass that decision, and `agents:suggest-changes` alone cannot
 apply the lifecycle change. Pause, clear-error, terminate, approval, and
 key-management routes remain board-only.
+
+Agent-authenticated `PATCH /agents/:agentId` requests cannot include `status`,
+including self updates and callers with `agents:configure`. Status changes use
+the dedicated lifecycle routes and their authorization checks. A mixed status
+and configuration patch is rejected in full after the company-scoped resource
+lookup; ordinary authorized configuration patches and board status patches
+remain supported.
 
 ### 9.3.1 Shared default-open issue writes
 
@@ -1166,6 +1182,7 @@ Allowed states are `joined` and `left`. Endpoints require a concrete board user 
 - `POST /companies/:companyId/approvals`
 - `POST /approvals/:approvalId/approve`
 - `POST /approvals/:approvalId/reject`
+- `POST /approvals/:approvalId/retire` — explicit board-only retirement of a version-matched obsolete `request_board_approval` linked exclusively to closed, same-company tasks without execution ownership; records rejection and no-execution audit atomically, without requester or plugin decision work. Ordinary rejection retains its notification contract.
 
 ## 10.8 Cost and Budgets
 
@@ -1258,6 +1275,24 @@ explicit selection. Environment tests report the same engine availability error
 as execution. Codex CLI defaults permit workspace writes and network access for
 Paperclip coordination without disabling its sandbox; explicit operator
 restrictions and execution-target network denials remain effective.
+
+### Provider quota waits
+
+Typed terminal ACP limit failures from Codex and Claude use the shared provider
+quota classification. A future provider reset also holds an agent's other queued
+work for the same declared provider scope. The wait survives service restarts and
+ends after the persisted reset or a successful turn in that scope. Admission and
+execution preserve the existing company, pause, budget, dependency and ownership
+gates. Recovery retains the scope of an already admitted native turn.
+
+Provider scope contains adapter and authorized account selection, environment,
+project and routine bindings. Only a fingerprint is persisted. Account switches
+and explicit reconnects permit a new probe. Automatic OAuth refresh keeps the
+same managed-account scope. Optional absent user secrets do not disable a wait.
+Historical runs without a provider scope keep their existing per-issue retry
+schedule. They do not establish an account-wide wait; the next newly stamped
+failure can establish one. The server must not infer historical account identity
+from an agent's current adapter or credentials.
 
 ## 11.2 Process Adapter
 
@@ -1369,6 +1404,18 @@ issue.
 2. Board approves or rejects.
 3. On approval, server creates agent row and initial API key (optional).
 4. Decision is logged in `activity_log`.
+
+When a hire request names an existing `agentId`, approval or rejection requires
+that agent to belong to the approval's company and still be `pending_approval`.
+The approval decision and target transition commit together, including approved
+configuration, secret bindings and budget policy, or rejection's key revocation.
+A missing, malformed, foreign, or nonpending target returns `409` without
+deciding the request. The guarded decision uses the payload actually stored by
+its update; expected-version checks and retries of an already stored decision
+retain their existing behavior. Hire requests without an agent target still
+create an agent in the approval's company. Adapter notification and the hire's
+secret-binding and budget activity publications follow commit; rollback discards
+those publications along with their audit rows.
 
 Board can bypass request flow and create agents directly via UI; direct create is still logged as a governance action.
 

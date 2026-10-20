@@ -1,19 +1,18 @@
 import { agentAppearanceSchema } from "@paperclipai/shared";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvalComments, approvals } from "@paperclipai/db";
+import { activityLog, approvalComments, approvals, issueApprovals, issues } from "@paperclipai/db";
 import { approvalChangeRequestCommentBody, isUuidLike } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { nextApprovalUpdatedAt } from "./approval-version.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
 export function approvalService(db: Db) {
-  const agentsSvc = agentService(db);
-  const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
@@ -48,6 +47,14 @@ export function approvalService(db: Db) {
     return sql`date_trunc('milliseconds', ${approvals.updatedAt}) = ${expected.toISOString()}::timestamptz`;
   }
 
+  function hireTargetAgentId(payload: Record<string, unknown>) {
+    if (payload.agentId == null) return null;
+    if (typeof payload.agentId !== "string" || !isUuidLike(payload.agentId)) {
+      throw conflict("Hire approval target must be a pending approval agent in this company");
+    }
+    return payload.agentId;
+  }
+
   function redactApprovalComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
     return {
       ...comment,
@@ -79,6 +86,7 @@ export function approvalService(db: Db) {
     decidedByUserId: string,
     decisionNote: string | null | undefined,
     options?: DecisionOptions,
+    applyDecision?: (approval: ApprovalRecord, txDb: Db) => Promise<void>,
   ): Promise<ResolutionResult> {
     const expected = options?.expectedUpdatedAt;
     const existing = await getExistingApproval(id);
@@ -95,25 +103,31 @@ export function approvalService(db: Db) {
     }
 
     const now = new Date();
-    const updated = await db
-      .update(approvals)
-      .set({
-        status: targetStatus,
-        decidedByUserId,
-        decisionNote: decisionNote ?? null,
-        decidedAt: now,
-        updatedAt: nextApprovalUpdatedAt(now),
-      })
-      .where(
-        and(
-          eq(approvals.id, id),
-          inArray(approvals.status, resolvableStatuses),
-          // The version is checked again in the write, so a change between the read and the write is caught.
-          ...(expected ? [versionIs(expected)] : []),
-        ),
-      )
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    const updated = await db.transaction(async (tx) => {
+      const row = await tx.update(approvals)
+        .set({
+          status: targetStatus,
+          decidedByUserId,
+          decisionNote: decisionNote ?? null,
+          decidedAt: now,
+          updatedAt: nextApprovalUpdatedAt(now),
+        })
+        .where(
+          and(
+            eq(approvals.id, id),
+            inArray(approvals.status, resolvableStatuses),
+            // The version is checked again in the write, so a change between the read and the write is caught.
+            ...(expected ? [versionIs(expected)] : []),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      // Use the payload returned by the guarded write: an unversioned decision
+      // may race with resubmission, and must act on the payload it actually decided.
+      // Target/config/budget failures roll back the approval as well.
+      if (row && applyDecision) await applyDecision(row, tx as unknown as Db);
+      return row;
+    });
 
     if (updated) {
       return { approval: updated, applied: true };
@@ -131,6 +145,89 @@ export function approvalService(db: Db) {
   }
 
   return {
+    // A retirement is a board disposition of obsolete closed work, not an
+    // instruction for the requester to act on a normal rejection.
+    retire: async (
+      id: string,
+      companyId: string,
+      decidedByUserId: string,
+      decisionNote: string,
+      options: { expectedUpdatedAt: Date },
+    ): Promise<ResolutionResult> => {
+      if (!isUuidLike(id)) throw notFound("Approval not found");
+      if (!options?.expectedUpdatedAt || !Number.isFinite(options.expectedUpdatedAt.getTime()) || !decisionNote?.trim()) {
+        throw unprocessable("Retirement requires the exact approval version and a reason");
+      }
+      const publications: ActivityPublication[] = [];
+      const result = await db.transaction(async (tx) => {
+        // FOR UPDATE (not the ordinary status UPDATE's NO KEY UPDATE) also
+        // fences new issue_approvals inserts through their immediate parent FK.
+        const [current] = await tx.select().from(approvals).where(and(
+          eq(approvals.id, id), eq(approvals.companyId, companyId),
+        )).for("update");
+        if (!current) throw notFound("Approval not found");
+        assertExpectedVersion(current, options.expectedUpdatedAt);
+        if (current.type !== "request_board_approval") {
+          throw unprocessable("Only closed-work board requests can be retired");
+        }
+        if (current.status === "rejected") {
+          const [priorRetirement] = await tx.select({ details: activityLog.details }).from(activityLog).where(and(
+            eq(activityLog.companyId, companyId), eq(activityLog.entityType, "approval"),
+            eq(activityLog.entityId, id), eq(activityLog.action, "approval.retired_closed_request"),
+          )).limit(1);
+          if (priorRetirement?.details?.approvalUpdatedAt === current.updatedAt.toISOString()
+            && current.decisionNote === decisionNote) return { approval: current, applied: false };
+          throw conflict("This approval was already decided outside this retirement");
+        }
+        if (!canResolveStatuses.has(current.status)) {
+          throw unprocessable("Only pending or revision requested approvals can be retired");
+        }
+        // Lock existing links against unlink/reassignment, then the tasks in a
+        // stable order. All eligibility checks use these locked rows, not the
+        // route's earlier access check or a caller-provided list of task IDs.
+        const links = await tx.select().from(issueApprovals).where(eq(issueApprovals.approvalId, id))
+          .orderBy(asc(issueApprovals.issueId)).for("update");
+        if (links.length === 0 || links.some((link) => link.companyId !== companyId)) {
+          throw conflict("Retirement requires same-company closed linked tasks");
+        }
+        const linkedIssues = await tx.select().from(issues).where(inArray(issues.id, links.map((link) => link.issueId)))
+          .orderBy(asc(issues.id)).for("update");
+        if (linkedIssues.length !== links.length || linkedIssues.some((issue) =>
+          issue.companyId !== companyId || !["done", "cancelled"].includes(issue.status)
+          || issue.executionRunId !== null || issue.checkoutRunId !== null
+          || issue.executionAgentNameKey !== null || issue.executionLockedAt !== null)) {
+          throw conflict("Retirement requires same-company closed linked tasks without execution ownership");
+        }
+        const now = new Date();
+        const [approval] = await tx.update(approvals).set({
+          status: "rejected", decidedByUserId, decisionNote, decidedAt: now,
+          updatedAt: nextApprovalUpdatedAt(now),
+        }).where(and(eq(approvals.id, id), eq(approvals.companyId, companyId), versionIs(options.expectedUpdatedAt)))
+          .returning();
+        if (!approval) throw versionConflict(current, options.expectedUpdatedAt);
+        const details = {
+          type: approval.type, approvalStatus: "rejected", requestedByAgentId: approval.requestedByAgentId,
+          // Approval cards read requestedByAgentId; wake audit consumers read requesterAgentId.
+          requesterAgentId: approval.requestedByAgentId,
+          linkedIssueIds: linkedIssues.map((issue) => issue.id),
+          linkedIssueStatuses: linkedIssues.map((issue) => ({ id: issue.id, status: issue.status })),
+          reason: "closed_request_retired", executionSuppressed: true,
+          approvalUpdatedAt: approval.updatedAt.toISOString(),
+        };
+        // Neither action maps to approval.decided/plugin execution. Persist
+        // both before commit; publish only the committed, non-executable audit.
+        // The skipped wake record explicitly distinguishes this intentional
+        // no-execution disposition from a missing or failed decision delivery.
+        for (const action of ["approval.retired_closed_request", "approval.requester_wakeup_skipped"]) {
+          await logActivity(tx as unknown as Db, { companyId, actorType: "user", actorId: decidedByUserId,
+            action, entityType: "approval", entityId: id, details }, publications);
+        }
+        return { approval, applied: true };
+      });
+      for (const publication of publications) publishActivity(publication);
+      return result;
+    },
+
     list: (companyId: string, status?: string) => {
       const conditions = [eq(approvals.companyId, companyId)];
       if (status) conditions.push(eq(approvals.status, status));
@@ -194,72 +291,85 @@ export function approvalService(db: Db) {
       decisionNote?: string | null,
       options?: DecisionOptions,
     ) => {
+      let hireApprovedAgentId: string | null = null;
+      const postCommitPublications: ActivityPublication[] = [];
       const { approval: updated, applied } = await resolveApproval(
         id,
         "approved",
         decidedByUserId,
         decisionNote,
         options,
-      );
-
-      let hireApprovedAgentId: string | null = null;
-      const now = new Date();
-      if (applied && updated.type === "hire_agent") {
-        const payload = updated.payload as Record<string, unknown>;
-        const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
-        if (payloadAgentId) {
-          await agentsSvc.activatePendingApproval(payloadAgentId, payload);
-          await reconcileApprovedBuiltInAgent(updated.companyId, payload);
-          hireApprovedAgentId = payloadAgentId;
-        } else {
-          const created = await agentsSvc.create(updated.companyId, {
-            name: String(payload.name ?? "New Agent"),
-            appearance: payload.appearance == null ? undefined : agentAppearanceSchema.parse(payload.appearance),
-            role: String(payload.role ?? "general"),
-            title: typeof payload.title === "string" ? payload.title : null,
-            reportsTo: typeof payload.reportsTo === "string" ? payload.reportsTo : null,
-            capabilities: typeof payload.capabilities === "string" ? payload.capabilities : null,
-            adapterType: String(payload.adapterType ?? "process"),
-            adapterConfig:
-              typeof payload.adapterConfig === "object" && payload.adapterConfig !== null
-                ? (payload.adapterConfig as Record<string, unknown>)
-                : {},
-            budgetMonthlyCents:
-              typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0,
-            metadata:
-              typeof payload.metadata === "object" && payload.metadata !== null
-                ? (payload.metadata as Record<string, unknown>)
-                : null,
-            status: "idle",
-            spentMonthlyCents: 0,
-            permissions: undefined,
-            lastHeartbeatAt: null,
-          });
-          hireApprovedAgentId = created?.id ?? null;
-        }
-        if (hireApprovedAgentId) {
-          const budgetMonthlyCents =
-            typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0;
-          if (budgetMonthlyCents > 0) {
-            await budgets.upsertPolicy(
-              updated.companyId,
-              {
-                scopeType: "agent",
-                scopeId: hireApprovedAgentId,
-                amount: budgetMonthlyCents,
-                windowKind: "calendar_month_utc",
-              },
-              decidedByUserId,
+        async (updated, txDb) => {
+          if (updated.type !== "hire_agent") return;
+          const agentsSvc = agentService(txDb);
+          const budgets = budgetService(txDb);
+          const payload = updated.payload as Record<string, unknown>;
+          const payloadAgentId = hireTargetAgentId(payload);
+          if (payloadAgentId) {
+            const activation = await agentsSvc.activatePendingApproval(
+              updated.companyId, payloadAgentId, payload, postCommitPublications,
             );
+            if (!activation?.activated) {
+              throw conflict("Hire approval target must be a pending approval agent in this company");
+            }
+            hireApprovedAgentId = activation.agent.id;
+          } else {
+            const created = await agentsSvc.create(updated.companyId, {
+              name: String(payload.name ?? "New Agent"),
+              appearance: payload.appearance == null ? undefined : agentAppearanceSchema.parse(payload.appearance),
+              role: String(payload.role ?? "general"),
+              title: typeof payload.title === "string" ? payload.title : null,
+              reportsTo: typeof payload.reportsTo === "string" ? payload.reportsTo : null,
+              capabilities: typeof payload.capabilities === "string" ? payload.capabilities : null,
+              adapterType: String(payload.adapterType ?? "process"),
+              adapterConfig:
+                typeof payload.adapterConfig === "object" && payload.adapterConfig !== null
+                  ? (payload.adapterConfig as Record<string, unknown>)
+                  : {},
+              budgetMonthlyCents:
+                typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0,
+              metadata:
+                typeof payload.metadata === "object" && payload.metadata !== null
+                  ? (payload.metadata as Record<string, unknown>)
+                  : null,
+              status: "idle",
+              spentMonthlyCents: 0,
+              permissions: undefined,
+              lastHeartbeatAt: null,
+            }, { postCommitPublications });
+            hireApprovedAgentId = created?.id ?? null;
           }
-          void notifyHireApproved(db, {
-            companyId: updated.companyId,
-            agentId: hireApprovedAgentId,
-            source: "approval",
-            sourceId: id,
-            approvedAt: now,
-          }).catch(() => {});
+          if (hireApprovedAgentId) {
+            const budgetMonthlyCents =
+              typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0;
+            if (budgetMonthlyCents > 0) {
+              await budgets.upsertPolicy(
+                updated.companyId,
+                {
+                  scopeType: "agent",
+                  scopeId: hireApprovedAgentId,
+                  amount: budgetMonthlyCents,
+                  windowKind: "calendar_month_utc",
+                },
+                decidedByUserId,
+                postCommitPublications,
+              );
+            }
+          }
+        },
+      );
+      for (const publication of postCommitPublications) publishActivity(publication);
+      if (applied && hireApprovedAgentId) {
+        if (hireTargetAgentId(updated.payload)) {
+          await reconcileApprovedBuiltInAgent(updated.companyId, updated.payload);
         }
+        void notifyHireApproved(db, {
+          companyId: updated.companyId,
+          agentId: hireApprovedAgentId,
+          source: "approval",
+          sourceId: id,
+          approvedAt: updated.decidedAt ?? new Date(),
+        }).catch(() => {});
       }
 
       return { approval: updated, applied };
@@ -277,15 +387,18 @@ export function approvalService(db: Db) {
         decidedByUserId,
         decisionNote,
         options,
+        async (updated, txDb) => {
+          if (updated.type !== "hire_agent") return;
+          const payload = updated.payload as Record<string, unknown>;
+          const payloadAgentId = hireTargetAgentId(payload);
+          if (payloadAgentId) {
+            const rejected = await agentService(txDb).rejectPendingApproval(updated.companyId, payloadAgentId);
+            if (!rejected) {
+              throw conflict("Hire approval target must be a pending approval agent in this company");
+            }
+          }
+        },
       );
-
-      if (applied && updated.type === "hire_agent") {
-        const payload = updated.payload as Record<string, unknown>;
-        const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
-        if (payloadAgentId) {
-          await agentsSvc.terminate(payloadAgentId);
-        }
-      }
 
       return { approval: updated, applied };
     },

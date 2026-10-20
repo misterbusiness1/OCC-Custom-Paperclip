@@ -31,6 +31,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
 }));
+const mockFindExistingIssueBlockersResolvedWakeForReadyState = vi.hoisted(() =>
+  vi.fn(async () => null),
+);
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -145,6 +148,17 @@ vi.mock("../services/feedback.js", () => ({
 vi.mock("../services/heartbeat.js", () => ({
   heartbeatService: () => mockHeartbeatService,
 }));
+
+vi.mock("../services/issue-dependency-wakeups.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/issue-dependency-wakeups.js")>(
+    "../services/issue-dependency-wakeups.js",
+  );
+  return {
+    ...actual,
+    findExistingIssueBlockersResolvedWakeForReadyState:
+      mockFindExistingIssueBlockersResolvedWakeForReadyState,
+  };
+});
 
 vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
@@ -343,6 +357,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.getActiveRunForAgent.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
+    mockFindExistingIssueBlockersResolvedWakeForReadyState.mockReset();
     mockAgentService.getById.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.resolveByReference.mockReset();
@@ -391,6 +406,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockHeartbeatService.getRun.mockResolvedValue(null);
     mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockFindExistingIssueBlockersResolvedWakeForReadyState.mockResolvedValue(null);
     mockExternalObjectService.syncCommentSafely.mockResolvedValue(undefined);
     mockExternalObjectService.syncIssueSafely.mockResolvedValue(undefined);
     mockObserveCrossIssueInfluence.mockResolvedValue({
@@ -3194,6 +3210,12 @@ describe.sequential("issue comment reopen routes", () => {
         blockerIssueIds: [issue.id],
       },
     ]);
+    mockFindExistingIssueBlockersResolvedWakeForReadyState.mockImplementation(
+      async (_db, input) =>
+        input.agentId === "55555555-5555-4555-8555-555555555555"
+          ? ({ id: "prior-owner-receipt" } as any)
+          : null,
+    );
 
     const res = await request(
       await installActor(createApp(), {
@@ -3212,6 +3234,13 @@ describe.sequential("issue comment reopen routes", () => {
       issue.id,
     );
     await waitForWakeup(() => {
+      expect(mockFindExistingIssueBlockersResolvedWakeForReadyState).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          dependentIssueId: "dependent-1",
+          agentId: dependentAgentId,
+        }),
+      );
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
         dependentAgentId,
         expect.objectContaining({

@@ -20,6 +20,11 @@ describe("activity formatting", () => {
     expect(formatActivityVerb("issue.read_unmarked")).toBe("marked unread");
   });
 
+  it("labels intentional closed-request retirement separately from rejection", () => {
+    expect(formatActivityVerb("approval.retired_closed_request")).toBe("retired");
+    expect(formatIssueActivityAction("approval.retired_closed_request")).toBe("retired");
+  });
+
   it("formats blocker activity using linked issue identifiers", () => {
     const details = {
       addedBlockedByIssues: [

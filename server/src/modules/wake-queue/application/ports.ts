@@ -166,6 +166,12 @@ export interface WakeQueueTransaction {
     finishingRunId: string;
     commentIds: string[];
   }): Promise<{ allSelfAuthored: boolean }>;
+  /** True only when every comment predates the same author's current terminal decision. */
+  areCommentsSupersededByTerminalDecision(input: {
+    companyId: string;
+    issueId: string;
+    commentIds: string[];
+  }): Promise<boolean>;
   /** Proves all candidate comments only report completed child work in the finishing parent's own run. */
   isCompletedDelegationMention(input: {
     companyId: string;
@@ -388,6 +394,7 @@ export type WakeAdmissionHeartbeatHelpers = {
   /** `shouldQueueFollowupForRunningIssueWake` in `heartbeat.ts`. */
   shouldQueueFollowupForRunningIssueWake(input: {
     contextSnapshot: Record<string, unknown> | null | undefined;
+    runningContextSnapshot?: Record<string, unknown> | null | undefined;
     wakeCommentId: string | null;
   }): boolean;
 };

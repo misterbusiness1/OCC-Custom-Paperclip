@@ -85,6 +85,7 @@ describe("classifyProviderQuotaErrorMessage", () => {
     ["Claude AI usage limit reached|1790370000", "usage_limit"],
     ["rate_limit_error: Number of request tokens has exceeded your per-minute rate limit", "usage_limit"],
     ["RESOURCE_EXHAUSTED: Quota exceeded for quota metric 'Generate Content API requests per minute'", "usage_limit"],
+    ["ACP agent reported a terminal limit failure.", "usage_limit"],
   ])("classifies %j as %s", (message, kind) => {
     expect(classifyProviderQuotaErrorMessage(message)).toBe(kind);
   });
@@ -95,6 +96,7 @@ describe("classifyProviderQuotaErrorMessage", () => {
     "Invalid API key · Please run /login",
     "Not logged in · Please run /login",
     "authentication_error: invalid bearer token (rate limit headers omitted)",
+    "ACP agent reported a terminal failure: revoked token",
     "Error: 401 {\"error\":{\"message\":\"Incorrect API key provided\",\"code\":\"insufficient_quota\"}}",
     "Authentication required: 403 quota exceeded; purchase extra usage or upgrade your plan",
     "Authentication required: 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. Contact support.",
@@ -369,4 +371,39 @@ describe("recovery classification of generic adapter quota failures", () => {
       error: "Internal error: Prompt failed",
     })).toMatchObject({ kind: "default" });
   });
+});
+
+// Newer ACP diagnostics explicitly declined quota classification; the historical
+// category-only compatibility rule must not reverse that decision on a sweep.
+it("keeps a typed generic terminal-limit diagnostic out of historical quota fallback", () => {
+  const message = "ACP agent reported a terminal limit failure.";
+  const resultJson = { terminalSessionFailure: { category: "limit", title: message } };
+  expect(normalizeProviderQuotaAdapterResult({
+    exitCode: 1, timedOut: false, errorCode: "acpx_turn_failed", errorMessage: message, resultJson,
+  }).errorCode).toBe("acpx_turn_failed");
+  expect(classifyAdapterFailureForRecovery({ errorCode: "acpx_turn_failed", error: message, resultJson })).toBeNull();
+  expect(classifyContinuationFailure({
+    id: "typed-run", agentId: "agent", status: "failed", contextSnapshot: {}, livenessState: null,
+    startedAt: new Date(), createdAt: new Date(), errorCode: "acpx_turn_failed", error: message, resultJson,
+  }).kind)
+    .not.toBe("provider_quota");
+  expect(classifyProviderQuotaErrorMessage(message)).toBe("usage_limit");
+});
+
+it.each([
+  "ACP agent reported a terminal limit failure.", "Context window limit exceeded",
+  "Workspace storage capacity limit reached", "Maximum number of turns reached",
+  "Configured budget limit reached", "Rate limit exceeded; retry later",
+])("respects an explicit typed non-quota decision during finalization and recovery: %s", (message) => {
+  const resultJson = {
+    terminalSessionFailure: { category: "limit", title: message }, terminalSessionFailureClassified: true,
+  };
+  expect(normalizeProviderQuotaAdapterResult({
+    exitCode: 1, timedOut: false, errorCode: "acpx_turn_failed", errorMessage: message, resultJson,
+  }).errorCode).toBe("acpx_turn_failed");
+  expect(classifyAdapterFailureForRecovery({ errorCode: "acpx_turn_failed", error: message, resultJson })).toBeNull();
+  expect(classifyContinuationFailure({
+    id: "typed-run", agentId: "agent", status: "failed", contextSnapshot: {}, livenessState: null,
+    startedAt: new Date(), createdAt: new Date(), errorCode: "acpx_turn_failed", error: message, resultJson,
+  }).kind).not.toBe("provider_quota");
 });

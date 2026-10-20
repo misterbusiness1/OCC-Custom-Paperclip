@@ -4,7 +4,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { sql } from "drizzle-orm";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
+  approvals,
   companies,
   companyMemberships,
   createDb,
@@ -15,6 +17,7 @@ import {
   goals,
   heartbeatRuns,
   instanceSettings,
+  issueApprovals,
   issueComments,
   issueInboxArchives,
   issueDocuments,
@@ -70,6 +73,91 @@ describe("issue list limit helpers", () => {
     expect(clampIssueListLimit(0)).toBe(1);
     expect(clampIssueListLimit(25.9)).toBe(25);
     expect(clampIssueListLimit(ISSUE_LIST_MAX_LIMIT + 10)).toBe(ISSUE_LIST_MAX_LIMIT);
+  });
+});
+
+describeEmbeddedPostgres("issueService locked review-transition receipt", () => {
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let db!: ReturnType<typeof createDb>;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-review-receipt-race-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("uses the locked status when a concurrent writer changes the transition baseline", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const blockerId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Locked receipt race",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Implementation owner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Move back into review",
+        status: "in_review",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: blockerId,
+        companyId,
+        title: "Already resolved dependency",
+        status: "done",
+      },
+    ]);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      reason: "issue_blockers_resolved",
+      source: "automation",
+      triggerDetail: "system",
+      status: "claimed",
+      payload: { issueId },
+    });
+
+    let racedUpdate!: Promise<unknown>;
+    await db.transaction(async (lockingTx) => {
+      await lockingTx.select({ id: issues.id }).from(issues)
+        .where(eq(issues.id, issueId)).for("update");
+      racedUpdate = issueService(db).update(issueId, {
+        status: "in_review",
+        blockedByIssueIds: [blockerId],
+        actorAgentId: agentId,
+      });
+      // The service's initial unlocked read sees in_review, then its receipt read
+      // waits behind this transaction. The concurrent status change below must be
+      // the baseline used after that row lock is acquired.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await lockingTx.update(issues).set({ status: "in_progress" })
+        .where(eq(issues.id, issueId));
+    });
+
+    await expect(racedUpdate).rejects.toMatchObject({ status: 422 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.status).toBe("in_progress");
+    expect(await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, issueId)))
+      .toHaveLength(0);
   });
 });
 
@@ -4138,6 +4226,8 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
+    await db.delete(issueApprovals);
+    await db.delete(approvals);
     await db.delete(issues);
     await db.delete(workspaceOperations);
     await db.delete(executionWorkspaces);
@@ -4145,6 +4235,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(instanceSettings);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -4965,6 +5056,11 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
     await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
 
+    // The pending interaction above is a review path of its own. Remove it so the
+    // finished blocker is the only thing left to hold the review open.
+    await db
+      .delete(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, dependentId));
     await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, blockerId));
     await expect(
       svc.hasLiveBlockerReviewPath(companyId, [blockerId]),
@@ -5021,6 +5117,377 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       blockedBy: [expect.objectContaining({ id: blockerId })],
     });
   });
+
+  // An agent often re-sends its blocker list when it hands work to review. When every
+  // blocker in that list is already finished, the list holds nothing open, so another
+  // review path has to carry the review.
+  async function seedResolvedBlockerHandoff(
+    blockerStatus: "done" | "cancelled",
+    dependent: Partial<typeof issues.$inferInsert> = {},
+  ) {
+    const companyId = randomUUID();
+    const foreignCompanyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const reviewerUserId = "resolved-blocker-reviewer";
+    const blockerId = randomUUID();
+    const foreignBlockerId = randomUUID();
+    const dependentId = randomUUID();
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: foreignCompanyId,
+        name: "Foreign company",
+        issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: reviewerUserId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Finished blocker",
+        status: blockerStatus,
+        priority: "medium",
+        ...(blockerStatus === "done"
+          ? { completedAt: new Date() }
+          : { cancelledAt: new Date() }),
+      },
+      {
+        id: foreignBlockerId,
+        companyId: foreignCompanyId,
+        title: "Foreign blocker",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: dependentId,
+        companyId,
+        title: "Dependent",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId,
+        ...dependent,
+      },
+    ]);
+    return {
+      companyId,
+      assigneeAgentId,
+      reviewerUserId,
+      blockerId,
+      foreignBlockerId,
+      dependentId,
+    };
+  }
+
+  async function expectResolvedBlockerHandoffStored(
+    dependentId: string,
+    blockerId: string,
+  ) {
+    const [stored] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, dependentId));
+    expect(stored?.status).toBe("in_review");
+    const relations = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, dependentId));
+    expect(relations).toEqual([{ blockerIssueId: blockerId }]);
+  }
+
+  describe.each(["done", "cancelled"] as const)(
+    "agent-authored in_review update that carries only %s blockers",
+    (blockerStatus) => {
+      it("is accepted when the same patch assigns a human reviewer", async () => {
+        const seeded = await seedResolvedBlockerHandoff(blockerStatus);
+
+        const updated = await svc.update(seeded.dependentId, {
+          status: "in_review",
+          assigneeUserId: seeded.reviewerUserId,
+          assigneeAgentId: null,
+          blockedByIssueIds: [seeded.blockerId],
+          actorAgentId: seeded.assigneeAgentId,
+        });
+
+        expect(updated?.status).toBe("in_review");
+        expect(updated?.assigneeUserId).toBe(seeded.reviewerUserId);
+        await expectResolvedBlockerHandoffStored(seeded.dependentId, seeded.blockerId);
+      });
+
+      it("is refused on a move into review when the only other path is the agent's own claimed wake", async () => {
+        const seeded = await seedResolvedBlockerHandoff(blockerStatus);
+        await db.insert(agentWakeupRequests).values({
+          companyId: seeded.companyId,
+          agentId: seeded.assigneeAgentId,
+          source: "assignment",
+          reason: "issue_assigned",
+          status: "claimed",
+          payload: { issueId: seeded.dependentId },
+        });
+
+        await expect(svc.update(seeded.dependentId, {
+          status: "in_review",
+          blockedByIssueIds: [seeded.blockerId],
+          actorAgentId: seeded.assigneeAgentId,
+        })).rejects.toThrow(/live unresolved blocker/);
+        const stored = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, seeded.dependentId));
+        expect(stored[0]?.status).not.toBe("in_review");
+        await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, seeded.companyId));
+      });
+
+      it("is accepted on a move into review when the issue has a monitor check time that is due", async () => {
+        const seeded = await seedResolvedBlockerHandoff(blockerStatus);
+        await db.update(issues)
+          .set({ monitorNextCheckAt: new Date(Date.now() - 60_000) })
+          .where(eq(issues.id, seeded.dependentId));
+
+        const updated = await svc.update(seeded.dependentId, {
+          status: "in_review",
+          blockedByIssueIds: [seeded.blockerId],
+          actorAgentId: seeded.assigneeAgentId,
+        });
+
+        expect(updated?.status).toBe("in_review");
+        await expectResolvedBlockerHandoffStored(seeded.dependentId, seeded.blockerId);
+      });
+
+      it("is accepted on a move into review when the current review participant is a paused agent", async () => {
+        const seeded = await seedResolvedBlockerHandoff(blockerStatus);
+        const reviewerAgentId = randomUUID();
+        await db.insert(agents).values({
+          id: reviewerAgentId,
+          companyId: seeded.companyId,
+          name: "PausedReviewer",
+          role: "qa",
+          status: "paused",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        });
+        await db.update(issues)
+          .set({
+            executionState: {
+              status: "pending",
+              currentStageId: null,
+              currentStageIndex: null,
+              currentStageType: null,
+              currentParticipant: { type: "agent", agentId: reviewerAgentId, userId: null },
+              returnAssignee: null,
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          })
+          .where(eq(issues.id, seeded.dependentId));
+
+        const updated = await svc.update(seeded.dependentId, {
+          status: "in_review",
+          blockedByIssueIds: [seeded.blockerId],
+          actorAgentId: seeded.assigneeAgentId,
+        });
+
+        expect(updated?.status).toBe("in_review");
+        await expectResolvedBlockerHandoffStored(seeded.dependentId, seeded.blockerId);
+      });
+
+      it("is accepted on a move into review when the issue is a conversation", async () => {
+        const seeded = await seedResolvedBlockerHandoff(blockerStatus);
+        await db.update(issues)
+          .set({ conversationAgentId: seeded.assigneeAgentId, conversationUserId: "conversation-user", conversationState: "active" })
+          .where(eq(issues.id, seeded.dependentId));
+
+        const updated = await svc.update(seeded.dependentId, {
+          status: "in_review",
+          blockedByIssueIds: [seeded.blockerId],
+          actorAgentId: seeded.assigneeAgentId,
+        });
+
+        expect(updated?.status).toBe("in_review");
+        await expectResolvedBlockerHandoffStored(seeded.dependentId, seeded.blockerId);
+      });
+
+      it("is accepted when a pending interaction waits on the issue", async () => {
+        const seeded = await seedResolvedBlockerHandoff(blockerStatus);
+        await db.insert(issueThreadInteractions).values({
+          companyId: seeded.companyId,
+          issueId: seeded.dependentId,
+          kind: "request_confirmation",
+          status: "pending",
+          continuationPolicy: "wake_assignee",
+          payload: { version: 1, prompt: "Review?" },
+        });
+
+        const updated = await svc.update(seeded.dependentId, {
+          status: "in_review",
+          blockedByIssueIds: [seeded.blockerId],
+          actorAgentId: seeded.assigneeAgentId,
+        });
+
+        expect(updated?.status).toBe("in_review");
+        await expectResolvedBlockerHandoffStored(seeded.dependentId, seeded.blockerId);
+      });
+
+      it("is accepted when a linked approval is pending", async () => {
+        const seeded = await seedResolvedBlockerHandoff(blockerStatus);
+        const approvalId = randomUUID();
+        await db.insert(approvals).values({
+          id: approvalId,
+          companyId: seeded.companyId,
+          type: "request_board_approval",
+          requestedByAgentId: seeded.assigneeAgentId,
+          status: "pending",
+          payload: { title: "Review the work" },
+        });
+        await db.insert(issueApprovals).values({
+          companyId: seeded.companyId,
+          issueId: seeded.dependentId,
+          approvalId,
+          linkedByAgentId: seeded.assigneeAgentId,
+        });
+
+        const updated = await svc.update(seeded.dependentId, {
+          status: "in_review",
+          blockedByIssueIds: [seeded.blockerId],
+          actorAgentId: seeded.assigneeAgentId,
+        });
+
+        expect(updated?.status).toBe("in_review");
+        await expectResolvedBlockerHandoffStored(seeded.dependentId, seeded.blockerId);
+      });
+
+      it("is accepted when the issue is already in review with a human reviewer and the agent re-sends the list", async () => {
+        const seeded = await seedResolvedBlockerHandoff(blockerStatus, {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: "resolved-blocker-reviewer",
+        });
+
+        const updated = await svc.update(seeded.dependentId, {
+          blockedByIssueIds: [seeded.blockerId],
+          actorAgentId: seeded.assigneeAgentId,
+        });
+
+        expect(updated?.status).toBe("in_review");
+        await expectResolvedBlockerHandoffStored(seeded.dependentId, seeded.blockerId);
+      });
+
+      it("is accepted when the issue is already in review with a pending interaction and the agent re-sends the list", async () => {
+        const seeded = await seedResolvedBlockerHandoff(blockerStatus, {
+          status: "in_review",
+        });
+        await db.insert(issueThreadInteractions).values({
+          companyId: seeded.companyId,
+          issueId: seeded.dependentId,
+          kind: "request_confirmation",
+          status: "pending",
+          continuationPolicy: "wake_assignee",
+          payload: { version: 1, prompt: "Review?" },
+        });
+
+        const updated = await svc.update(seeded.dependentId, {
+          blockedByIssueIds: [seeded.blockerId],
+          actorAgentId: seeded.assigneeAgentId,
+        });
+
+        expect(updated?.status).toBe("in_review");
+        await expectResolvedBlockerHandoffStored(seeded.dependentId, seeded.blockerId);
+      });
+
+      it("is refused when no other review path exists", async () => {
+        const seeded = await seedResolvedBlockerHandoff(blockerStatus);
+
+        await expect(
+          svc.update(seeded.dependentId, {
+            status: "in_review",
+            blockedByIssueIds: [seeded.blockerId],
+            actorAgentId: seeded.assigneeAgentId,
+          }),
+        ).rejects.toMatchObject({
+          status: 422,
+          message:
+            "in_review issues require at least one same-company live unresolved blocker",
+        });
+
+        const [stored] = await db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(eq(issues.id, seeded.dependentId));
+        expect(stored?.status).toBe("in_progress");
+        await expect(
+          db
+            .select({ id: issueRelations.id })
+            .from(issueRelations)
+            .where(eq(issueRelations.relatedIssueId, seeded.dependentId)),
+        ).resolves.toEqual([]);
+      });
+
+      it.each(["unknown", "cross-company"] as const)(
+        "is refused when the list also names a %s issue, even with a human reviewer",
+        async (invalidKind) => {
+          const seeded = await seedResolvedBlockerHandoff(blockerStatus);
+          const invalidBlockerId =
+            invalidKind === "unknown" ? randomUUID() : seeded.foreignBlockerId;
+
+          for (const blockedByIssueIds of [
+            [invalidBlockerId],
+            [seeded.blockerId, invalidBlockerId],
+          ]) {
+            await expect(
+              svc.update(seeded.dependentId, {
+                status: "in_review",
+                assigneeUserId: seeded.reviewerUserId,
+                assigneeAgentId: null,
+                blockedByIssueIds,
+                actorAgentId: seeded.assigneeAgentId,
+              }),
+            ).rejects.toMatchObject({
+              status: 422,
+              message: "Blocked-by issues must belong to the same company",
+            });
+          }
+
+          const [stored] = await db
+            .select({
+              status: issues.status,
+              assigneeUserId: issues.assigneeUserId,
+            })
+            .from(issues)
+            .where(eq(issues.id, seeded.dependentId));
+          expect(stored).toEqual({ status: "in_progress", assigneeUserId: null });
+          await expect(
+            db
+              .select({ id: issueRelations.id })
+              .from(issueRelations)
+              .where(eq(issueRelations.relatedIssueId, seeded.dependentId)),
+          ).resolves.toEqual([]);
+        },
+      );
+    },
+  );
 
   it("rejects execution when unresolved blockers remain", async () => {
     const companyId = randomUUID();

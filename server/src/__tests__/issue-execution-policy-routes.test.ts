@@ -431,6 +431,105 @@ describe("issue execution policy routes", () => {
     },
   );
 
+  // The blocker list here holds only finished (done or cancelled) issues, so the
+  // live-blocker check says no. Another review path must still let the update through
+  // to the issue service with the list intact.
+  it.each([
+    {
+      name: "a human reviewer assigned in the same patch",
+      existing: {},
+      patch: { status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" },
+      interactions: [],
+      approvals: [],
+    },
+    {
+      name: "a pending interaction",
+      existing: {},
+      patch: { status: "in_review" },
+      interactions: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          kind: "request_confirmation",
+          status: "pending",
+          createdByAgentId: "33333333-3333-4333-8333-333333333333",
+          sourceRunId: "55555555-5555-4555-8555-555555555555",
+        },
+      ],
+      approvals: [],
+    },
+    {
+      name: "a linked pending approval",
+      existing: {},
+      patch: { status: "in_review" },
+      interactions: [],
+      approvals: [{ id: "22222222-2222-4222-8222-222222222222", status: "pending" }],
+    },
+    {
+      name: "a linked approval with a requested revision",
+      existing: {},
+      patch: { status: "in_review" },
+      interactions: [],
+      approvals: [
+        { id: "22222222-2222-4222-8222-222222222222", status: "revision_requested" },
+      ],
+    },
+    {
+      name: "an issue already in review that re-sends the list",
+      existing: { status: "in_review" },
+      patch: {},
+      interactions: [],
+      approvals: [],
+    },
+  ])(
+    "allows an agent-authored in_review update that carries only resolved blockers with $name",
+    async ({ existing, patch, interactions, approvals }) => {
+      const blockerId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      const issue = {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "in_progress",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        assigneeUserId: null,
+        createdByUserId: "local-board",
+        identifier: "PAP-1003C",
+        title: "Resolved blockers with another review path",
+        executionPolicy: null,
+        executionState: null,
+        ...existing,
+      };
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.hasLiveBlockerReviewPath.mockResolvedValue(false);
+      mockIssueThreadInteractionService.listForIssue.mockResolvedValue(interactions);
+      mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue(approvals);
+      mockIssueService.update.mockImplementation(
+        async (_id: string, updatePatch: Record<string, unknown>) => ({
+          ...issue,
+          ...updatePatch,
+          updatedAt: new Date(),
+        }),
+      );
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .patch(`/api/issues/${issue.id}`)
+        .send({ ...patch, blockedByIssueIds: [blockerId] });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      const [updatedIssueId, updatePatch] = mockIssueService.update.mock.calls[0] ?? [];
+      expect(updatedIssueId).toBe(issue.id);
+      expect(updatePatch).toMatchObject({
+        ...patch,
+        blockedByIssueIds: [blockerId],
+        actorAgentId: "33333333-3333-4333-8333-333333333333",
+      });
+    },
+  );
+
   it("allows an agent-authored in_review transition with a pending confirmation interaction", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

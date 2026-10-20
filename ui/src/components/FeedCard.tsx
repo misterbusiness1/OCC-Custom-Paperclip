@@ -20,6 +20,7 @@ import {
   MessageCircle,
   LogIn,
   Target,
+  Archive,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Card } from "@/components/ui/card";
@@ -84,6 +85,8 @@ function formatVerb(
       return "approved";
     case "approval.rejected":
       return "rejected";
+    case "approval.retired_closed_request":
+      return "retired";
     case "approval.revision_requested":
       return "requested changes on";
 
@@ -194,6 +197,8 @@ function getIconSpec(
       return { kind: "lucide", Icon: CircleCheck, color: "text-green-600 dark:text-green-400" };
     case "approval.rejected":
       return { kind: "lucide", Icon: CircleSlash, color: "text-red-600 dark:text-red-400" };
+    case "approval.retired_closed_request":
+      return { kind: "lucide", Icon: Archive, color: "text-muted-foreground" };
     case "approval.revision_requested":
       return { kind: "lucide", Icon: PencilLine, color: "text-amber-600 dark:text-amber-400", filled: true };
   }

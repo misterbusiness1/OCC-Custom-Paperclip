@@ -16,7 +16,7 @@ export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
 
 /** Error families describe availability, not whether earlier actions happened. */
 export function legacyExecutionNeedsReconciliation(
-  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot">>,
+  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot" | "startedAt">>,
 ): boolean {
   if (
     run.runtimeMode === "native" ||
@@ -32,6 +32,12 @@ export function legacyExecutionNeedsReconciliation(
   if (normalizeMaxTurnStopReason(run.resultJson?.stopReason) ?? normalizeMaxTurnStopReason(run.errorCode)) return false;
   const evidence = run.resultJson?.executionRecovery as
     Record<string, unknown> | undefined;
+  // A scheduled retry rejected under its dispatch lock never reached the
+  // provider. The retry count cannot turn that proof into unknown actions.
+  // This does not reconcile any predecessor's independently recorded hold.
+  if (run.status === "cancelled" && run.startedAt === null &&
+      run.scheduledRetryReason !== "native_safe_replacement" && evidence?.kind === "bootstrap" &&
+      evidence.providerWorkStarted === false && evidence.cancelledBeforeLaunch === true) return false;
   if (run.status === "cancelled" && evidence?.kind === "interrupted"
       && evidence.providerStopped === true && evidence.sessionPreserved === true
       && evidence.actionOutcomes === "settled"
@@ -60,6 +66,8 @@ export async function terminalizeLegacyExecution(input: {
   status: string;
   patch?: Partial<typeof heartbeatRuns.$inferInsert>;
   fromStatuses?: string[];
+  /** Additional outcome authority, acquired after issue lock and before run write. */
+  beforeRunUpdate?: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<void>;
 }) {
   const { db, run, status, patch } = input;
   const issueId =
@@ -80,6 +88,7 @@ export async function terminalizeLegacyExecution(input: {
           )
           .for("update")
       : [];
+    await input.beforeRunUpdate?.(tx);
     const [updated] = await tx
       .update(heartbeatRuns)
       .set({

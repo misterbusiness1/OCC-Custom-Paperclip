@@ -37,7 +37,7 @@ import {
   collectUserSecretRefs,
   syncAgentAdapterEnvBindings,
 } from "./agent-secret-bindings.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import {
@@ -129,6 +129,7 @@ interface CreateAgentOptions {
   aiConnectionInstall?: { connectionId: string; createdByUserId: string | null };
   allowBuiltInAgentMetadata?: boolean;
   claudeLogin?: ClaudeLoginContext;
+  postCommitPublications?: ActivityPublication[];
 }
 
 interface AgentShortnameRow {
@@ -502,6 +503,7 @@ export function agentService(db: Db) {
     dbClient: Db = db,
     previousAdapterConfig: unknown = null,
     actor: RevisionMetadata = {},
+    postCommitPublications?: ActivityPublication[],
   ) {
     const scopedSecretsSvc = dbClient === db ? secretsSvc : secretService(dbClient);
     await syncAgentAdapterEnvBindings({
@@ -549,7 +551,7 @@ export function agentService(db: Db) {
           secretId: ref.secretId,
           definitionKey: ref.definitionKey,
         },
-      });
+      }, postCommitPublications);
     }
   }
 
@@ -937,7 +939,7 @@ export function agentService(db: Db) {
             createdByUserId: options.aiConnectionInstall.createdByUserId,
           }).onConflictDoNothing();
         }
-        await syncAgentSecretBindings(created, txDb);
+        await syncAgentSecretBindings(created, txDb, null, {}, options?.postCommitPublications);
         const normalizedCreated = await agentService(txDb).getById(created.id);
         if (!normalizedCreated) {
           throw notFound("Agent not found");
@@ -1092,10 +1094,21 @@ export function agentService(db: Db) {
       });
     },
 
-    activatePendingApproval: async (id: string, approvedPayload?: Record<string, unknown> | null) => {
+    activatePendingApproval: async (
+      companyId: string,
+      id: string,
+      approvedPayload?: Record<string, unknown> | null,
+      postCommitPublications?: ActivityPublication[],
+    ) => {
+      if (!isUuidLike(id)) return null;
       const activatedAgent = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
-        const existing = await agentService(txDb).getById(id);
+        // Lock the company-scoped target before normalizing approved config or
+        // checking bindings, so activation uses one stable pending snapshot.
+        const existing = await tx.select().from(agents)
+          .where(and(eq(agents.id, id), eq(agents.companyId, companyId)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
         if (!existing || existing.status !== "pending_approval") return null;
         const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
         let patch = { ...approvedPatch } as Partial<typeof agents.$inferInsert>;
@@ -1137,7 +1150,7 @@ export function agentService(db: Db) {
         const updated = await tx
           .update(agents)
           .set({ ...patch, status: "idle", updatedAt: new Date() })
-          .where(and(eq(agents.id, id), eq(agents.status, "pending_approval")))
+          .where(and(eq(agents.id, id), eq(agents.companyId, companyId), eq(agents.status, "pending_approval")))
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!updated) return null;
@@ -1149,7 +1162,7 @@ export function agentService(db: Db) {
             environmentId: null,
           });
         }
-        await syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
+        await syncAgentSecretBindings(updated, txDb, existing.adapterConfig, {}, postCommitPublications);
         const agent = await agentService(txDb).getById(updated.id);
         if (!agent) {
           throw notFound("Agent not found");
@@ -1162,7 +1175,23 @@ export function agentService(db: Db) {
       }
 
       const existing = await getById(id);
-      return existing ? { agent: existing, activated: false } : null;
+      return existing?.companyId === companyId ? { agent: existing, activated: false } : null;
+    },
+
+    rejectPendingApproval: async (companyId: string, id: string) => {
+      if (!isUuidLike(id)) return null;
+      return db.transaction(async (tx) => {
+        const now = new Date();
+        const rejected = await tx.update(agents)
+          .set({ status: "terminated", pauseReason: null, pausedAt: null, errorReason: null, updatedAt: now })
+          .where(and(eq(agents.id, id), eq(agents.companyId, companyId), eq(agents.status, "pending_approval")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!rejected) return null;
+        await tx.update(agentApiKeys).set({ revokedAt: now })
+          .where(and(eq(agentApiKeys.agentId, id), eq(agentApiKeys.companyId, companyId)));
+        return rejected;
+      });
     },
 
     updatePermissions: async (id: string, permissions: Record<string, unknown> & { canCreateAgents: boolean }) => {

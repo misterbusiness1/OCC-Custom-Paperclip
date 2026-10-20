@@ -2,7 +2,7 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { AGENT_STATUSES, LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 vi.mock("acpx/runtime", () => ({
@@ -697,6 +697,73 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(403);
   });
 
+  const lifecyclePatchActors = [
+    { label: "self", id: agentId, canConfigure: true },
+    { label: "peer", id: "44444444-4444-4444-8444-444444444444", canConfigure: false },
+    { label: "direct-granted peer", id: "55555555-5555-4555-8555-555555555555", canConfigure: true },
+  ];
+  it.each(lifecyclePatchActors.flatMap((actor) => AGENT_STATUSES.map((status) => ({ actor, status }))))(
+    "S1 rejects $actor.label PATCH status=$status without applying mixed configuration",
+    async ({ actor, status }) => {
+      mockAgentService.getById.mockResolvedValue({ ...baseAgent, status: "paused", pauseReason: "manual" });
+      mockAccessService.decide.mockResolvedValue({
+        allowed: actor.canConfigure,
+        reason: actor.label === "self" ? "allow_self" : actor.canConfigure ? "allow_direct_change" : "deny_missing_grant",
+        explanation: actor.canConfigure ? "Configuration allowed." : "Missing configuration grant.",
+        ...(actor.label === "direct-granted peer" ? { grant: { permissionKey: "agents:configure" } } : {}),
+      });
+      const app = createApp({ type: "agent", agentId: actor.id, companyId, runId: "run-s1" });
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ status, title: "Unapproved lifecycle change", runtimeConfig: { heartbeat: { intervalSec: 60 } } }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("dedicated lifecycle endpoints");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+      expect(mockAgentInstructionsService.materializeManagedBundle).not.toHaveBeenCalled();
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["foreign", "missing"])("S1 keeps %s agent status PATCH targets undisclosed", async (target) => {
+    mockAgentService.getById.mockResolvedValue(target === "missing" ? null : {
+      ...baseAgent, companyId: "66666666-6666-4666-8666-666666666666",
+    });
+    const app = createApp({ type: "agent", agentId, companyId, runId: "run-s1" });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`).send({ status: "idle" }));
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Agent not found");
+    expect(mockAccessService.decide).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it.each(lifecyclePatchActors.filter((actor) => actor.canConfigure))(
+    "S1 preserves permitted $label configuration PATCH without status",
+    async (actor) => {
+      const app = createApp({ type: "agent", agentId: actor.id, companyId, runId: "run-s1" });
+      const runtimeConfig = { heartbeat: { intervalSec: 60 } };
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`).send({ runtimeConfig }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalledWith(agentId, { runtimeConfig }, expect.anything());
+    },
+  );
+
+  it("S1 preserves board status and configuration PATCH", async () => {
+    const app = createApp({ type: "board", userId: "board-user", source: "local_implicit", isInstanceAdmin: true, companyIds: [companyId] });
+    const patch = { status: "idle", runtimeConfig: { heartbeat: { intervalSec: 60 } } };
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).patch(`/api/agents/${agentId}`).send(patch));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(agentId, patch, expect.anything());
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "agent.updated" }));
+  });
+
   it("requires instance administration to enable agent-scoped raw provider traces", async () => {
     const app = await createApp({
       type: "board",
@@ -1322,7 +1389,7 @@ describe.sequential("agent permission routes", () => {
       .send({}));
 
     expect(res.status).toBe(200);
-    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith(agentId);
+    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith(companyId, agentId);
     expect(mockApprovalService.approve).not.toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       companyId,

@@ -1515,6 +1515,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/approvals/:approvalId/comments`        | Add approval comment               |
 | POST   | `/api/approvals/:approvalId/approve`         | Approve approval request           |
 | POST   | `/api/approvals/:approvalId/reject`          | Reject approval request            |
+| POST   | `/api/approvals/:approvalId/retire`          | Board retires obsolete closed request without execution ([eligibility and retries](../../../docs/api/approvals.md#retire-an-obsolete-closed-request)) |
 | POST   | `/api/approvals/:approvalId/request-revision`| Board asks for revision            |
 | POST   | `/api/approvals/:approvalId/resubmit`        | Resubmit revised approval          |
 | POST   | `/api/companies/:companyId/cost-events`      | Report cost event                  |
@@ -1523,7 +1524,6 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/companies/:companyId/costs/by-project` | Costs by project                   |
 | GET    | `/api/companies/:companyId/activity`         | Activity log                       |
 | GET    | `/api/companies/:companyId/dashboard`        | Company health summary             |
-
 ### Secrets
 
 | Method | Path | Description |

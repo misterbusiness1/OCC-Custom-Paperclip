@@ -42,10 +42,14 @@ async function handleRequest(request) {
           "client did not advertise typed session-failure support",
         );
       }
+      const configuredCategory = typedFailure.category ?? process.env.PAPERCLIP_ACPX_TYPED_FAILURE_CATEGORY;
+      const category = ["connection", "access", "limit", "service", "request", "unknown"].includes(configuredCategory)
+        ? configuredCategory
+        : "request";
       const sessionFailure = {
         id: `${request.params.sessionId}:error`,
         revision: 1,
-        category: typedFailure.category ?? process.env.PAPERCLIP_ACPX_TYPED_FAILURE_CATEGORY ?? "request",
+        category,
         severity: "error",
         title: typedFailureCanary,
         ...(typedFailure.details

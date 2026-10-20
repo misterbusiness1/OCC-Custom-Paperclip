@@ -3,7 +3,7 @@ import { isCompletedOnboardingHandoffWake } from "../../../services/chat-complet
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
-import { and, asc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { extractIssueReferenceIdentifiers } from "@paperclipai/shared";
 import {
@@ -381,6 +381,36 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .from(issueComments)
         .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, commentIds)));
       return { allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId) };
+    },
+
+    async areCommentsSupersededByTerminalDecision({ companyId, issueId, commentIds }) {
+      const uniqueIds = [...new Set(commentIds)];
+      if (uniqueIds.length === 0) return false;
+      // The terminal receipt commits under the same issue lock as the status.
+      // Match its version, not updatedAt: unrelated later edits and old close /
+      // reopen cycles must never authorize discarding queued input.
+      const [decision] = await tx.select({ actorId: activityLog.actorId,
+        decidedAt: sql<string | null>`${activityLog.details}->>'decidedAt'`,
+      }).from(activityLog).innerJoin(issues, and(
+        eq(issues.companyId, companyId), eq(issues.id, issueId),
+      )).where(and(
+        eq(activityLog.companyId, companyId), eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, issueId), eq(activityLog.actorType, "user"),
+        eq(activityLog.action, "issue.terminal_decision"),
+        inArray(issues.status, ["done", "cancelled"]),
+        sql`${activityLog.details}->>'status' = ${issues.status}`,
+        sql`${activityLog.details}->>'statusVersion' = ${issues.statusVersion}::text`,
+      )).orderBy(desc(activityLog.createdAt)).limit(1);
+      const decidedAt = decision?.decidedAt ? new Date(decision.decidedAt) : null;
+      if (!decision || !decidedAt || !Number.isFinite(decidedAt.getTime())) return false;
+      const comments = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+        eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+        inArray(issueComments.id, uniqueIds), eq(issueComments.authorUserId, decision.actorId),
+        isNull(issueComments.authorAgentId), isNull(issueComments.deletedAt), currentConversationCommentCondition(),
+        sql`${issueComments.createdAt} < ${decidedAt.toISOString()}::timestamptz`,
+        sql`${issueComments.updatedAt} < ${decidedAt.toISOString()}::timestamptz`,
+      ));
+      return comments.length === uniqueIds.length;
     },
 
     async isCompletedDelegationMention({ companyId, issueId, finishingRunId, wakeAgentId, commentIds }) {

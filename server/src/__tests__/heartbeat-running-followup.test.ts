@@ -19,4 +19,20 @@ describe("shouldQueueFollowupForRunningIssueWake", () => {
       wakeCommentId: null,
     })).toBe(false);
   });
+
+  it("coalesces blocker readiness into the running due-monitor generation", () => {
+    expect(shouldQueueFollowupForRunningIssueWake({
+      contextSnapshot: { wakeReason: "issue_blockers_resolved" },
+      runningContextSnapshot: { wakeReason: "issue_monitor_due" },
+      wakeCommentId: null,
+    })).toBe(false);
+  });
+
+  it("keeps blocker readiness as a follow-up for other running generations", () => {
+    expect(shouldQueueFollowupForRunningIssueWake({
+      contextSnapshot: { wakeReason: "issue_blockers_resolved" },
+      runningContextSnapshot: { wakeReason: "issue_commented" },
+      wakeCommentId: null,
+    })).toBe(true);
+  });
 });

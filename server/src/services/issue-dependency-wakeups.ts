@@ -35,6 +35,10 @@ export type IssueBlockersResolvedWakeCycleInput = Date | string | null | undefin
 export type IssueBlockersResolvedReadyStateInput = {
   dependentIssueId: string;
   blockerIssueIds: string[];
+  blockerGenerations?: Array<{
+    issueId: string;
+    completedAt: Date | string | null | undefined;
+  }>;
   blockedTransitionAt?: IssueBlockersResolvedWakeCycleInput;
 };
 
@@ -63,6 +67,22 @@ function hashBlockerReadyStateDigest(sortedBlockerIssueIds: string[], cycle: str
     ? sortedBlockerIssueIds.join(",")
     : `${sortedBlockerIssueIds.join(",")}\n${cycle}`;
   return createHash("sha256").update(payload).digest("hex").slice(0, 32);
+}
+
+function formatBlockerGenerations(input: IssueBlockersResolvedReadyStateInput) {
+  const byIssueId = new Map(
+    (input.blockerGenerations ?? []).map((generation) => {
+      const parsed = generation.completedAt
+        ? new Date(generation.completedAt)
+        : null;
+      return [
+        generation.issueId,
+        parsed && !Number.isNaN(parsed.getTime()) ? parsed.toISOString() : "none",
+      ];
+    }),
+  );
+  return uniqueSortedBlockerIssueIds(input.blockerIssueIds)
+    .map((issueId) => `${issueId}@${byIssueId.get(issueId) ?? "none"}`);
 }
 
 function buildStateKey(dependentIssueId: string, digest: string, blockerCount: number): string {
@@ -123,7 +143,7 @@ export function buildIssueBlockersResolvedWakeStateKey(input: IssueBlockersResol
   const cycle = formatIssueBlockersResolvedWakeCycle(input.blockedTransitionAt);
   return buildStateKey(
     input.dependentIssueId,
-    hashBlockerReadyStateDigest(sortedBlockerIssueIds, cycle),
+    hashBlockerReadyStateDigest(formatBlockerGenerations(input), cycle),
     sortedBlockerIssueIds.length,
   );
 }
@@ -190,8 +210,10 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
   db: Db,
   input: {
     companyId: string;
+    agentId: string;
     dependentIssueId: string;
     blockerIssueIds: string[];
+    blockerGenerations?: IssueBlockersResolvedReadyStateInput["blockerGenerations"];
     blockedTransitionAt?: IssueBlockersResolvedWakeCycleInput;
   },
 ) {
@@ -216,15 +238,16 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
     .select({
       id: agentWakeupRequests.id,
       status: agentWakeupRequests.status,
-      idempotencyKey: sql<string | null>`case when ${agentWakeupRequests.idempotencyKey} like 'issue-comment-request:%' then coalesce(${agentWakeupRequests.payload}->>'dependencyReadyStateKey', ${agentWakeupRequests.idempotencyKey}) else ${agentWakeupRequests.idempotencyKey} end`,
+      idempotencyKey: sql<string | null>`case when ${agentWakeupRequests.idempotencyKey} like 'issue-comment-request:%' or ${agentWakeupRequests.idempotencyKey} like 'issue-monitor:%' then coalesce(${agentWakeupRequests.payload}->>'dependencyReadyStateKey', ${agentWakeupRequests.idempotencyKey}) else ${agentWakeupRequests.idempotencyKey} end`,
       requestedAt: agentWakeupRequests.requestedAt,
     })
     .from(agentWakeupRequests)
     .where(
       and(
         eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, input.agentId),
         or(inArray(agentWakeupRequests.idempotencyKey, lookupKeys),
-          and(sql`${agentWakeupRequests.idempotencyKey} like 'issue-comment-request:%'`, inArray(sql<string>`${agentWakeupRequests.payload}->>'dependencyReadyStateKey'`, lookupKeys)))!,
+          and(or(sql`${agentWakeupRequests.idempotencyKey} like 'issue-comment-request:%'`, sql`${agentWakeupRequests.idempotencyKey} like 'issue-monitor:%'`)!, inArray(sql<string>`${agentWakeupRequests.payload}->>'dependencyReadyStateKey'`, lookupKeys)))!,
       ),
     );
 

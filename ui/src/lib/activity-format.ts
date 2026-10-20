@@ -75,6 +75,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "approval.created": "requested approval",
   "approval.approved": "approved",
   "approval.rejected": "rejected",
+  "approval.retired_closed_request": "retired",
   // Interaction outcomes (PAP-16506). An agent may now resolve one — including a
   // review of its own work — so these must read as outcomes in the feed instead
   // of falling through to the raw "issue thread interaction accepted" action id.
@@ -173,6 +174,7 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "approval.created": "requested approval",
   "approval.approved": "approved",
   "approval.rejected": "rejected",
+  "approval.retired_closed_request": "retired",
   "issue.thread_interaction_created": "asked for a decision",
   "issue.thread_interaction_accepted": "accepted the request",
   "issue.thread_interaction_rejected": "rejected the request",

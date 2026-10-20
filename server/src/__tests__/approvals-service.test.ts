@@ -5,7 +5,7 @@ import { approvalService } from "../services/approvals.ts";
 const mockAgentService = vi.hoisted(() => ({
   activatePendingApproval: vi.fn(),
   create: vi.fn(),
-  terminate: vi.fn(),
+  rejectPendingApproval: vi.fn(),
 }));
 
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
@@ -41,7 +41,7 @@ function createApproval(status: string): ApprovalRecord {
     companyId: "company-1",
     type: "hire_agent",
     status,
-    payload: { agentId: "agent-1" },
+    payload: { agentId: "22222222-2222-4222-8222-222222222222" },
     requestedByAgentId: "requester-1",
   };
 }
@@ -75,9 +75,9 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
 describe("approvalService resolution idempotency", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockAgentService.activatePendingApproval.mockResolvedValue({ agent: { id: "agent-1" }, activated: true });
-    mockAgentService.create.mockResolvedValue({ id: "agent-1" });
-    mockAgentService.terminate.mockResolvedValue(undefined);
+    mockAgentService.activatePendingApproval.mockResolvedValue({ agent: { id: "22222222-2222-4222-8222-222222222222" }, activated: true });
+    mockAgentService.create.mockResolvedValue({ id: "22222222-2222-4222-8222-222222222222" });
+    mockAgentService.rejectPendingApproval.mockResolvedValue(undefined);
     mockNotifyHireApproved.mockResolvedValue(undefined);
   });
 
@@ -107,7 +107,7 @@ describe("approvalService resolution idempotency", () => {
 
     expect(result.applied).toBe(false);
     expect(result.approval.status).toBe("rejected");
-    expect(mockAgentService.terminate).not.toHaveBeenCalled();
+    expect(mockAgentService.rejectPendingApproval).not.toHaveBeenCalled();
   });
 
   it("still performs side effects when the resolution update is newly applied", async () => {
@@ -118,7 +118,9 @@ describe("approvalService resolution idempotency", () => {
     const result = await svc.approve(APPROVAL_ID, "board", "ship it");
 
     expect(result.applied).toBe(true);
-    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1", approved.payload);
+    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith(
+      "company-1", "22222222-2222-4222-8222-222222222222", approved.payload, expect.any(Array),
+    );
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
   });
 
@@ -149,6 +151,7 @@ describe("approvalService resolution idempotency", () => {
       expect.objectContaining({
         adapterConfig: approved.payload.adapterConfig,
       }),
+      { postCommitPublications: [] },
     );
   });
 
@@ -339,14 +342,14 @@ describe("approvalService.findOpenHireApprovalForAgent", () => {
     const match = {
       ...createApproval("pending"),
       id: "approval-match",
-      payload: { agentId: "agent-1" },
+      payload: { agentId: "22222222-2222-4222-8222-222222222222" },
     };
     // The company, type, open-status and payload->>'agentId' predicates run in
     // SQL, so the DB hands back only the matching row.
     const dbStub = createDbStub([[match]], []);
 
     const svc = approvalService(dbStub.db as any);
-    const result = await svc.findOpenHireApprovalForAgent("company-1", "agent-1");
+    const result = await svc.findOpenHireApprovalForAgent("company-1", "22222222-2222-4222-8222-222222222222");
 
     expect(result?.id).toBe("approval-match");
     expect(dbStub.selectWhere).toHaveBeenCalledTimes(1);
@@ -356,7 +359,7 @@ describe("approvalService.findOpenHireApprovalForAgent", () => {
     const dbStub = createDbStub([[]], []);
 
     const svc = approvalService(dbStub.db as any);
-    const result = await svc.findOpenHireApprovalForAgent("company-1", "agent-1");
+    const result = await svc.findOpenHireApprovalForAgent("company-1", "22222222-2222-4222-8222-222222222222");
 
     expect(result).toBeNull();
   });

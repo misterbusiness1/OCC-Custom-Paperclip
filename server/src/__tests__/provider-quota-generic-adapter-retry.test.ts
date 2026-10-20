@@ -2,8 +2,11 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createCodexAcpExecutor } from "@paperclipai/adapter-codex-local/server";
+import { createClaudeAcpExecutor } from "@paperclipai/adapter-claude-local/server";
 import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   ACP_WRAPPED_QUOTA_RETRY_DELAY_MS,
@@ -18,6 +21,11 @@ import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.j
 const support = await getEmbeddedPostgresTestSupport();
 const describeEmbedded = support.supported ? describe : describe.skip;
 const adapterType = "generic_quota_integration_test";
+const processAdapterTypes = {
+  codex: "codex_process_quota_integration_test",
+  claude: "claude_process_quota_integration_test",
+};
+const fixturePath = fileURLToPath(new URL("../../../scripts/mcp-fixtures/servers/acp-echo-agent.mjs", import.meta.url));
 
 // What each production lane returned before this fix: opencode_local's
 // DeepSeek 402 as adapter_failed, the claude_local ACP lane as acpx_turn_failed.
@@ -26,6 +34,8 @@ let nextFailure: { errorCode: string; errorMessage: string } = {
   errorMessage: "Insufficient Balance (request_id: dc4ac155-3f57-4b2b-98a3-63346b8c7d95)",
 };
 let providerTurns = 0;
+let terminalAdapter: "shared" | "codex" | "claude" = "shared";
+const adapterCallsByAgent = new Map<string, number>();
 
 describeEmbedded("generic adapter provider quota failures", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -38,7 +48,7 @@ describeEmbedded("generic adapter provider quota failures", () => {
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     acpxStateRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-quota-server-test-"));
-    const executeAcpTerminal = createAcpxEngineExecutor({
+    const runtimeOptions = {
       createRuntime: () => ({
         ensureSession: async () => ({
           backendSessionId: "quota-backend-session",
@@ -54,18 +64,29 @@ describeEmbedded("generic adapter provider quota failures", () => {
         }),
         close: async () => {},
       }) as never,
-    });
+    };
+    const executors = {
+      shared: createAcpxEngineExecutor(runtimeOptions),
+      codex: createCodexAcpExecutor(runtimeOptions),
+      claude: createClaudeAcpExecutor(runtimeOptions),
+    };
     registerServerAdapter({
       type: adapterType,
       execute: async (context) => {
         providerTurns += 1;
+        adapterCallsByAgent.set(context.agent.id, (adapterCallsByAgent.get(context.agent.id) ?? 0) + 1);
         if (nextFailure.errorCode === "acpx_turn_failed") {
-          const result = await executeAcpTerminal({
+          const result = await executors[terminalAdapter]({
             ...context,
             config: {
               agent: "custom",
               agentCommand: "node ./synthetic-acp.js",
               stateDir: acpxStateRoot,
+              env: {
+                CODEX_HOME: path.join(acpxStateRoot, "codex-home"),
+                CLAUDE_CONFIG_DIR: path.join(acpxStateRoot, "claude-home"),
+                OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "",
+              },
             },
           } as never);
           return {
@@ -92,16 +113,39 @@ describeEmbedded("generic adapter provider quota failures", () => {
       },
       testEnvironment: async () => ({ adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }),
     });
+    // Exercise the real ACPX process boundary, independently of the in-memory
+    // runtime above. The child is our JSON-RPC fixture, never a provider CLI.
+    const processExecutors = {
+      codex: createCodexAcpExecutor(),
+      claude: createClaudeAcpExecutor(),
+    };
+    for (const lane of ["codex", "claude"] as const) {
+      registerServerAdapter({
+        type: processAdapterTypes[lane],
+        execute: async (context) => {
+          adapterCallsByAgent.set(context.agent.id, (adapterCallsByAgent.get(context.agent.id) ?? 0) + 1);
+          const result = await processExecutors[lane](context);
+          return {
+            ...result,
+            resultJson: { ...(result.resultJson ?? {}), conversationContinuation: "continue_conversation_v1" },
+          };
+        },
+        testEnvironment: async () => ({
+          adapterType: processAdapterTypes[lane], status: "pass", checks: [], testedAt: new Date().toISOString(),
+        }),
+      });
+    }
   }, 30_000);
 
   afterAll(async () => {
     if (db && heartbeat) await drainHeartbeatRunsToQuiescence(db, heartbeat);
     unregisterServerAdapter(adapterType);
+    for (const type of Object.values(processAdapterTypes)) unregisterServerAdapter(type);
     await fs.rm(acpxStateRoot, { recursive: true, force: true });
     await tempDb?.cleanup();
   });
 
-  async function seedAssignedIssue() {
+  async function seedAssignedIssue(type = adapterType, config: Record<string, unknown> = {}) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -112,7 +156,7 @@ describeEmbedded("generic adapter provider quota failures", () => {
     });
     await db.insert(agents).values({
       id: agentId, companyId, name: "Synthetic quota adapter", role: "engineer", status: "idle",
-      adapterType, adapterConfig: {}, permissions: {},
+      adapterType: type, adapterConfig: config, permissions: {},
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
     });
     await db.insert(issues).values({
@@ -120,7 +164,7 @@ describeEmbedded("generic adapter provider quota failures", () => {
       responsibleUserId: "responsible-user", assigneeAgentId: agentId,
       issueNumber: 1, identifier: `${prefix}-1`,
     });
-    return { agentId, issueId };
+    return { companyId, agentId, issueId };
   }
 
   async function runUntilFailed(agentId: string, issueId: string) {
@@ -247,4 +291,106 @@ describeEmbedded("generic adapter provider quota failures", () => {
     );
     expect(retry.scheduledRetryAt!.getTime() - started).toBeLessThan(ACP_WRAPPED_QUOTA_RETRY_DELAY_MS);
   }, 30_000);
+
+  it.each(["codex", "claude"] as const)(
+    "classifies the real %s adapter's typed terminal limit and holds new work",
+    async (lane) => {
+      terminalAdapter = lane;
+      nextFailure = {
+        errorCode: "acpx_turn_failed",
+        errorMessage: "ACP agent reported a terminal limit failure.",
+      };
+      const { companyId, agentId, issueId } = await seedAssignedIssue();
+      const runId = await runUntilFailed(agentId, issueId);
+      await heartbeat.drainActiveRunExecutions();
+      const failed = await heartbeat.getRun(runId);
+      expect(failed?.errorCode).toBe("provider_quota");
+      expect(failed?.resultJson).toMatchObject({ errorFamily: "provider_quota", providerQuotaKind: "usage_limit" });
+      const due = new Date(String(failed?.resultJson?.providerQuotaRetryNotBefore));
+      expect(due.getTime()).toBeGreaterThan(Date.now());
+
+      const nextIssueId = randomUUID();
+      await db.insert(issues).values({
+        id: nextIssueId, companyId, title: "New work during a provider limit",
+        status: "todo", priority: "medium", responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId, issueNumber: 2,
+        identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-2`,
+      });
+      const queued = await heartbeat.wakeup(agentId, {
+        source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+        payload: { issueId: nextIssueId }, requestedByActorType: "user", requestedByActorId: "local-board",
+      });
+      expect(queued).not.toBeNull();
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(adapterCallsByAgent.get(agentId)).toBe(1);
+      expect((await heartbeat.getRun(queued!.id))?.status).toBe("queued");
+      const [retained] = await db.select().from(issues).where(eq(issues.id, nextIssueId));
+      expect(retained.status).toBe("todo");
+      expect(retained.assigneeAgentId).toBe(agentId);
+    }, 30_000,
+  );
+
+  it.each(["codex", "claude"] as const)(
+    "holds new work after the %s adapter receives a typed limit from a real ACP process",
+    async (lane) => {
+      const root = path.join(acpxStateRoot, lane);
+      const cwd = path.join(root, "workspace");
+      const stateDir = path.join(root, "state");
+      await fs.mkdir(cwd, { recursive: true });
+      // The upgrade now receives typed provider wording. Exercise genuine
+      // usage exhaustion while keeping its full diagnostic private/redacted.
+      const resetClock = new Date(Date.now() + 2 * 60 * 60 * 1000).toLocaleTimeString("en-US", {
+        timeZone: "UTC", hour: "numeric", minute: "2-digit", hour12: true,
+      });
+      const canary = lane === "codex"
+        ? `You've hit your usage limit for GPT-5. Switch to another model now, or try again at ${resetClock} (UTC).`
+        : `You've hit your session limit · resets ${resetClock.toLowerCase().replace(" ", "")} (UTC)`;
+      const { companyId, agentId, issueId } = await seedAssignedIssue(processAdapterTypes[lane], {
+        agentCommand: `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(fixturePath.replaceAll("\\", "/"))}`,
+        mode: "oneshot", stateDir, cwd, timeoutSec: 15,
+        env: {
+          HOME: path.join(root, "home"),
+          CODEX_HOME: path.join(root, "codex-home"),
+          CLAUDE_CONFIG_DIR: path.join(root, "claude-home"),
+          XDG_CONFIG_HOME: path.join(root, "config"),
+          OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "",
+          PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: canary,
+          PAPERCLIP_ACPX_TYPED_FAILURE_CATEGORY: "limit",
+        },
+      });
+      const runId = await runUntilFailed(agentId, issueId);
+      await heartbeat.drainActiveRunExecutions();
+      const failed = await heartbeat.getRun(runId);
+      expect(failed?.error).toContain("ACP agent reported a terminal limit failure.");
+      expect(failed?.errorCode).toBe("provider_quota");
+      expect(failed?.resultJson).toMatchObject({
+        errorFamily: "provider_quota", terminalSessionFailure: { category: "limit" }, terminalSessionFailureClassified: true,
+      });
+      expect(new Date(String(failed?.resultJson?.providerQuotaRetryNotBefore)).getTime()).toBeGreaterThan(Date.now());
+      expect(JSON.stringify({ error: failed?.error, result: failed?.resultJson })).not.toContain(canary);
+      const stderr = await fs.readFile(path.join(stateDir, "run-stderr", `${runId}.log`), "utf8");
+      expect(stderr).toContain("paperclip-acp-echo-agent started");
+
+      const nextIssueId = randomUUID();
+      await db.insert(issues).values({
+        id: nextIssueId, companyId, title: "Queued behind a real ACP limit",
+        status: "todo", priority: "medium", responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId, issueNumber: 2,
+        identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-2`,
+      });
+      const queued = await heartbeat.wakeup(agentId, {
+        source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+        payload: { issueId: nextIssueId }, requestedByActorType: "user", requestedByActorId: "local-board",
+      });
+      expect(queued).not.toBeNull();
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(adapterCallsByAgent.get(agentId)).toBe(1);
+      expect((await heartbeat.getRun(queued!.id))?.status).toBe("queued");
+      const [retained] = await db.select().from(issues).where(eq(issues.id, nextIssueId));
+      expect(retained.status).toBe("todo");
+      expect(retained.assigneeAgentId).toBe(agentId);
+    }, 30_000,
+  );
 });

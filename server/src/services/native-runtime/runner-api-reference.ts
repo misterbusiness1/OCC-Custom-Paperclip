@@ -739,6 +739,10 @@ export const runnerApiReference: Record<string, { section: string; description?:
     "section": "Approvals, Costs, Activity, Dashboard",
     "description": "Reject approval request"
   },
+  "POST /api/approvals/{}/retire": {
+    "section": "Approvals, Costs, Activity, Dashboard",
+    "description": "Board retires obsolete closed request without execution ([eligibility and retries](../../../docs/api/approvals.md#retire-an-obsolete-closed-request))"
+  },
   "POST /api/approvals/{}/request-revision": {
     "section": "Approvals, Costs, Activity, Dashboard",
     "description": "Board asks for revision"

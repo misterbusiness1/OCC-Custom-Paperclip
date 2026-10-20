@@ -48,6 +48,20 @@ All data is persisted under the bind mount (`./data/docker-paperclip`):
 - Local secrets key
 - Agent workspace data
 
+## Startup and health
+
+When started as root, the entrypoint repairs ownership of writable data before
+launching Paperclip as the `node` user. Large restored homes can take several
+minutes. Container logs report ownership-scan progress and elapsed time; wait
+for the scan to complete before treating a cold start as stalled.
+
+The image allows six minutes of startup health grace. Probes run during that
+period and can mark the container healthy as soon as Paperclip responds.
+Compose deployments that override the image healthcheck should also set
+`start_period: 6m`. The normal probe interval, timeout, and failure budget still
+apply after startup. This grace does not release startup work holds or bypass
+recovery checks.
+
 ## Local Adapter CLIs in Docker
 
 The Docker image pre-installs these agent CLIs so their `*_local` adapters can run inside the container:

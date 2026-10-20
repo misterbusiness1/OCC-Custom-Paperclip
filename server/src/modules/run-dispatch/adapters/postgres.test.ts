@@ -24,6 +24,7 @@ import {
 import { createPostgresRunDispatchAdapter } from "./postgres.js";
 import { settleUnrecoverableExecutions } from "../../../services/execution-recovery-resolution.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { legacyExecutionNeedsReconciliation } from "../../../services/legacy-execution-recovery.js";
 
 // Proves the DB-to-facts mapping this adapter owns for each state the two
 // run-dispatch gates decide on. `application/use-cases.test.ts` and
@@ -715,6 +716,128 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         createdAt: input.now,
       });
     }
+
+    it.each([1, 2])("preserves proof that a suppressed retry never launched (attempt %s)", async (attempt) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      const blockerId = randomUUID();
+      const runId = randomUUID();
+      const now = new Date();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      await seedIssue({ companyId, issueId: blockerId, status: "todo" });
+      await db.insert(issueRelations).values({
+        companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks",
+      });
+      await seedScheduledRetryRun({ runId, companyId, agentId, issueId, now });
+      await db.update(heartbeatRuns).set({
+        scheduledRetryAttempt: attempt,
+        scheduledRetryReason: "transient_failure",
+        resultJson: { retainedDiagnostic: "retry was scheduled" },
+      }).where(eq(heartbeatRuns.id, runId));
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+
+      const outcome = await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({
+        runId, companyId, now,
+      });
+      expect(outcome).toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_dependencies_blocked" });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run?.status).toBe("cancelled");
+      expect(legacyExecutionNeedsReconciliation(run!)).toBe(false);
+      expect(run?.resultJson).toMatchObject({
+        retainedDiagnostic: "retry was scheduled",
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      });
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue?.executionRunId).toBeNull();
+      expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+    });
+
+    it.each([
+      { label: "start timestamp", evidence: { startedAt: new Date() } },
+      { label: "provider process", evidence: { processPid: 12345 } },
+      { label: "provider output", evidence: { lastOutputSeq: 1 } },
+      { label: "external execution", evidence: { externalRunId: "provider-run" } },
+      { label: "native session", evidence: { nativeSessionId: randomUUID() } },
+      { label: "native replacement delivery", evidence: { executionStatusDeliveryId: randomUUID() } },
+      { label: "controller lease", evidence: { controllerBootId: randomUUID() } },
+      { label: "execution stage", evidence: { executionStage: "provider" } },
+      { label: "output stream", evidence: { lastOutputStream: "stdout" } },
+      { label: "empty output receipt", evidence: { lastOutputBytes: 0 } },
+      { label: "log receipt", evidence: { logBytes: 0 } },
+      { label: "usage", evidence: { usageJson: { inputTokens: 10 } } },
+      { label: "contradictory recovery", evidence: {
+        resultJson: { executionRecovery: { kind: "interrupted", actionOutcomes: "unknown" } },
+      } },
+    ])("does not invent prelaunch proof when a scheduled row has $label", async ({ evidence }) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID(), runId = randomUUID();
+      const now = new Date();
+      await seedIssue({ companyId, issueId, status: "done", assigneeAgentId: agentId });
+      await seedScheduledRetryRun({ runId, companyId, agentId, issueId, now });
+      await db.update(heartbeatRuns).set({
+        ...evidence, scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure",
+      }).where(eq(heartbeatRuns.id, runId));
+      const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+
+      const result = await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({
+        runId, companyId, now,
+      });
+      expect(result.outcome).toBe("gate_suppressed");
+      const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(after?.resultJson).toEqual(before?.resultJson);
+      expect(legacyExecutionNeedsReconciliation(after!)).toBe(true);
+    });
+
+    it.each(["legacy", "native"])("does not issue legacy prelaunch proof for a native replacement with runtime mode %s", async (runtimeMode) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID(), runId = randomUUID();
+      const now = new Date();
+      await seedIssue({ companyId, issueId, status: "done", assigneeAgentId: agentId });
+      await seedScheduledRetryRun({ runId, companyId, agentId, issueId, now });
+      await db.update(heartbeatRuns).set({
+        runtimeMode, scheduledRetryReason: "native_safe_replacement", scheduledRetryAttempt: 2,
+      }).where(eq(heartbeatRuns.id, runId));
+      const result = await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({ runId, companyId, now });
+      expect(result.outcome).toBe("gate_suppressed");
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run?.resultJson).toBeNull();
+      if (runtimeMode === "legacy") expect(legacyExecutionNeedsReconciliation(run!)).toBe(true);
+    });
+
+    it("keeps a predecessor's unknown-action hold after a retry is cancelled before launch", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID(), previousRunId = randomUUID(), runId = randomUUID();
+      const now = new Date();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      await db.insert(heartbeatRuns).values({
+        id: previousRunId, companyId, agentId, status: "failed", startedAt: now,
+        errorCode: "process_lost", contextSnapshot: { issueId },
+      });
+      const [action] = await db.insert(issueRecoveryActions).values({
+        companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board",
+        cause: "uncertain_external_action", status: "resolved", fingerprint: previousRunId,
+        evidence: { runId: previousRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+        nextAction: "Verify the previous external action before continuing.",
+      }).returning();
+      await db.insert(issueTreeHolds).values({
+        companyId, rootIssueId: issueId, mode: "pause", status: "active",
+        reason: "Manual pause while inspecting the previous action", releasePolicy: { strategy: "manual" },
+      });
+      await seedScheduledRetryRun({ runId, companyId, agentId, issueId, now });
+      await db.update(heartbeatRuns).set({
+        retryOfRunId: previousRunId, scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure",
+      }).where(eq(heartbeatRuns.id, runId));
+
+      const result = await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry({
+        runId, companyId, now,
+      });
+      expect(result).toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_paused" });
+      const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(legacyExecutionNeedsReconciliation(retry!)).toBe(false);
+      expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({
+        recoveryActionId: action!.id, runId: previousRunId, cause: "uncertain_external_action",
+      });
+    });
 
     it("promotes an allowed due retry", async () => {
       const { companyId, agentId } = await seedCompanyAndAgent();

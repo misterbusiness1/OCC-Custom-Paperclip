@@ -335,6 +335,25 @@ async function promoteDeferredWake(
     workingCandidate.deferredCommentIds.length > 0 &&
     (currentIssue.status === "done" || currentIssue.status === "cancelled")
   ) {
+    if (
+      workingCandidate.requestedByActorType === "user" &&
+      !workingCandidate.preservesIndependentContinuation &&
+      workingCandidate.payload.mutation !== "interaction" &&
+      ["issue_commented", "issue_reopened_via_comment"].includes(workingCandidate.wakeReason ?? workingCandidate.reason ?? "") &&
+      await ports.transaction.areCommentsSupersededByTerminalDecision({
+        companyId: run.companyId,
+        issueId: currentIssue.id,
+        commentIds: [...new Set([...workingCandidate.queuedCommentIds, ...workingCandidate.deferredCommentIds])],
+      })
+    ) {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: workingCandidate.id,
+        reason: "Queued comments were superseded by their author's later terminal decision",
+        now: input.now,
+      });
+      return null;
+    }
     const selfAuthorship = await ports.transaction.getCommentSelfAuthorship({
       companyId: run.companyId,
       issueId: currentIssue.id,
@@ -822,6 +841,12 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       issueExecutionAgentNameKey: input.issueExecutionAgentNameKey,
       agentNameKey: input.agentNameKey,
     });
+    const activeContextSnapshot =
+      input.activeExecutionRun.contextSnapshot &&
+      typeof input.activeExecutionRun.contextSnapshot === "object" &&
+      !Array.isArray(input.activeExecutionRun.contextSnapshot)
+        ? input.activeExecutionRun.contextSnapshot as Record<string, unknown>
+        : {};
 
     // A manual click establishes a fresh execution identity. Even a matching
     // requester can have a different originating identity on an exact retry.
@@ -835,6 +860,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     const shouldQueueFollowupForRunningWake =
       deps.helpers.shouldQueueFollowupForRunningIssueWake({
         contextSnapshot: input.contextSnapshot,
+        runningContextSnapshot: activeContextSnapshot,
         wakeCommentId: input.wakeCommentId,
       }) &&
       input.activeExecutionRun.status === "running" &&
@@ -846,7 +872,14 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         )
       : input.activeExecutionRun;
 
+    const coalescesMonitorReadyGeneration =
+      readNonEmptyString(input.contextSnapshot.wakeReason) ===
+        "issue_blockers_resolved" &&
+      readNonEmptyString(activeContextSnapshot.wakeReason) ===
+        "issue_monitor_due" &&
+      !input.wakeCommentId;
     const sameDurableActor =
+      coalescesMonitorReadyGeneration ||
       !input.durableReceipt ||
       (await deps.reader.matchesActiveWakeActor(scope, {
         companyId: input.companyId,
@@ -871,7 +904,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
 
     if (decision.kind === "coalesce") {
       const target = availableActiveExecutionRun!;
-      const mergedContextSnapshot = deps.helpers.mergeCoalescedContextSnapshot(
+      let mergedContextSnapshot = deps.helpers.mergeCoalescedContextSnapshot(
         target.contextSnapshot,
         input.contextSnapshot,
         {
@@ -879,6 +912,16 @@ export function createAdmitWakeBehindIssueExecution(deps: {
             target.status === "queued" || target.status === "scheduled_retry",
         },
       );
+      if (coalescesMonitorReadyGeneration) {
+        // The monitor turn remains the effective execution generation. Keep its
+        // provenance so finalization does not reinterpret the merged readiness
+        // signal as a second blockers-resolved turn.
+        mergedContextSnapshot = {
+          ...mergedContextSnapshot,
+          wakeReason: "issue_monitor_due",
+          dependencyReadyWakeCoalesced: true,
+        };
+      }
       const run = await deps.writer.coalesceIntoActiveExecutionRun(scope, {
         companyId: input.companyId,
         activeExecutionRunId: target.id,

@@ -41,6 +41,7 @@ import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from
 import { isCancelledLegacyPrelaunch } from "./cancelled-native-startup.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { managedAiSessionFingerprintConfig, prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
+import { createProviderCooldownKey, declaredCodexProviderAccountKey, managedProviderCooldownMetadata, resolveProviderCooldownSecretVersions } from "./provider-cooldown-scope.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_ADAPTER_TYPES, CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
@@ -448,7 +449,10 @@ import {
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
+import {
+  buildIssueBlockersResolvedWakeStateKey,
+  ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+} from "./issue-dependency-wakeups.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -503,6 +507,7 @@ import {
   parseProjectExecutionWorkspacePolicy,
   resolveEffectiveWorkspaceStrategyType,
   resolveExecutionWorkspaceEnvironmentId,
+  ManagedSandboxUnavailableError,
   resolveExecutionWorkspaceMode,
   resolveSharedWorkspaceConcurrency,
   selectEnvironmentExecutionWorkspaceSettings,
@@ -618,7 +623,7 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
-import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import { evaluateCodexCredentialReadiness, resolveCodexAcpProviderAccountKey } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
@@ -664,6 +669,7 @@ import {
 } from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { serverVersion } from "../version.js";
+import { agentProviderCooldownUntil, lockProviderAccountAdmission, providerAccountRecoveryAdmission } from "./agent-provider-cooldown.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -5606,6 +5612,9 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
     ...(previousSessionParams ?? {}),
     cwd: projectCwd,
   };
+  // OpenCode qualification belongs to the provider session's original directory.
+  // Migrating our metadata does not move that provider session to the project.
+  delete migratedSessionParams.explicitDirectory;
   if (resolvedWorkspace.workspaceId)
     migratedSessionParams.workspaceId = resolvedWorkspace.workspaceId;
   if (resolvedWorkspace.repoUrl)
@@ -7051,6 +7060,7 @@ export function resolvedInteractionCheckoutExpectedStatuses() {
 
 export function shouldQueueFollowupForRunningIssueWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
+  runningContextSnapshot?: Record<string, unknown> | null | undefined;
   wakeCommentId: string | null;
 }) {
   if (input.wakeCommentId) return true;
@@ -7065,6 +7075,30 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
   }
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (wakeReason === "issue_children_completed" && input.contextSnapshot?.onboardingCompletion === true) return true;
+  const runningWakeReason = readNonEmptyString(
+    input.runningContextSnapshot?.wakeReason,
+  );
+  // A due monitor is already the issue's scheduled opportunity to handle the
+  // dependency-ready generation. If the final blocker resolves while that turn
+  // is running, merge the readiness context into the monitor turn instead of
+  // starting a second provider execution for the same ready state. Explicit
+  // comments and interaction responses returned above still require a follow-up.
+  if (
+    wakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON &&
+    runningWakeReason === "issue_monitor_due"
+  ) {
+    const incomingGeneration = readNonEmptyString(
+      input.contextSnapshot?.dependencyReadyStateKey,
+    );
+    const runningGeneration = readNonEmptyString(
+      input.runningContextSnapshot?.dependencyReadyStateKey,
+    );
+    return Boolean(
+      incomingGeneration &&
+      runningGeneration &&
+      incomingGeneration !== runningGeneration,
+    );
+  }
   return Boolean(
     wakeReason && RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP.has(wakeReason),
   );
@@ -9368,6 +9402,8 @@ export type HeartbeatEnvironmentRuntime = ReturnType<
 export interface HeartbeatServiceOptions {
   /** Test seam before the atomic native runtime handoff. */
   beforeNativeRuntimeSelection?: (runId: string) => Promise<void>;
+  /** Test seam after a provider-wait executor settles, before releasing its claim. */
+  beforeProviderCooldownClaimRelease?: (runId: string) => Promise<void>;
   /** Test seam before the serialized legacy adapter dispatch transition. */
   beforeLegacyAdapterDispatch?: (runId: string) => Promise<void>;
   /** Test seam immediately before the locked queued-wake claim. */
@@ -9635,14 +9671,10 @@ export function heartbeatService(
       const agent = await getAgent(run.agentId);
       if (!agent || agent.companyId !== run.companyId) return null;
       const result = await scheduleBoundedRetryForRun(run, agent);
-      return result.outcome === "scheduled" ? result.run : null;
+      return result.outcome === "scheduled" || result.outcome === "retry_exhausted"
+        ? result
+        : null;
     },
-    // Mirrors scheduleBoundedRetryForRun's transient budget check: a failed
-    // or interrupted run that has already consumed every bounded transient
-    // attempt cannot be retried again through this lane.
-    transientRetryBudgetSpent: (run) =>
-      executionFailureRetryCount(run) >=
-      BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   });
   const runDispatch = createRunDispatch(db);
 
@@ -11277,6 +11309,92 @@ export function heartbeatService(
       .then((rows) => rows[0] ?? null);
   }
 
+  // Resolve declared scope without provisioning workspaces or reading credentials.
+  // Execution uses the same environment policy and stamps its sampled inputs.
+  async function providerCooldownKeyForRun(
+    agent: typeof agents.$inferSelect,
+    context: Record<string, unknown>,
+    issueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null,
+    responsibleUserId: string | null,
+    routineContext: Awaited<ReturnType<typeof getRoutineEnvForExecutionIssue>>,
+  ): Promise<{ providerCooldownKey: string; providerAccountKey: string | null } | null> {
+    const projectId = issueContext?.projectId ?? readNonEmptyString(context.projectId);
+    const project = projectId ? await db.select({ env: projects.env }).from(projects)
+      .where(and(eq(projects.companyId, agent.companyId), eq(projects.id, projectId)))
+      .then((rows) => rows[0] ?? null) : null;
+    const settings = await instanceSettings.get();
+    const managedSandboxOnly = (await instanceSettings.getExperimental()).enableManagedSandboxOnly === true;
+    const [localEnvironment] = await environmentsSvc.list({ driver: "local" });
+    // No existing local row means there cannot be a previously executed local
+    // scope to match. Leave provisioning and its errors to normal execution.
+    if (!localEnvironment) return null;
+    const managed = managedSandboxOnly
+      ? await environmentsSvc.findManagedSandboxEnvironment(agent.companyId) : null;
+    let selectedEnvironmentId: string;
+    try {
+      selectedEnvironmentId = resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: agent.defaultEnvironmentId,
+        instanceDefaultEnvironmentId: settings.defaultEnvironmentId ?? null,
+        localDefaultEnvironmentId: localEnvironment.id,
+        managedSandboxOnly,
+        managedSandboxEnvironmentId: managed?.id ?? null,
+      }).environmentId;
+    } catch (error) {
+      if (error instanceof ManagedSandboxUnavailableError) return null;
+      throw error;
+    }
+    if (isExecutionForcedToKubernetes({ executionMode: settings.general.executionMode, managedSandboxOnly })) {
+      const kubernetes = await environmentsSvc.findKubernetesEnvironment(agent.companyId);
+      if (!kubernetes) return null;
+      selectedEnvironmentId = kubernetes.id;
+    }
+    const environment = selectedEnvironmentId === localEnvironment.id
+      ? localEnvironment : await environmentsSvc.getById(selectedEnvironmentId);
+    if (!environment) return null;
+    const overrides = issueContext?.assigneeAgentId === agent.id
+      ? parseIssueAssigneeAdapterOverrides(issueContext.assigneeAdapterOverrides) : null;
+    const adapterConfig = { ...parseObject(agent.adapterConfig), ...(overrides?.adapterConfig ?? {}) };
+    const parsedAiConnection = agent.runtimeConfig?.aiConnection
+      ? aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection) : null;
+    if (parsedAiConnection && !parsedAiConnection.success) return null;
+    const aiConnection = parsedAiConnection?.data;
+    const providerEnv = (env: unknown) => parseObject(stripForbiddenEnvBindings(
+      aiConnection ? stripAiAuthBindings(env) : env, true,
+    ));
+    const environmentEnv = providerEnv(environment.envVars);
+    const projectEnv = providerEnv(project?.env);
+    const routineEnv = providerEnv(routineContext.env);
+    const scopedAdapterConfig = { ...adapterConfig, env: providerEnv(adapterConfig.env) };
+    try {
+      const credentialMetadata = aiConnection ? await managedProviderCooldownMetadata(db, {
+        companyId: agent.companyId, agentId: agent.id, responsibleUserId,
+        adapterType: agent.adapterType, binding: aiConnection, config: scopedAdapterConfig,
+      }) : null;
+      const secretVersions = await resolveProviderCooldownSecretVersions(secretsSvc, agent.companyId, [
+        { consumerType: "agent", consumerId: agent.id, env: scopedAdapterConfig.env, responsibleUserId },
+        { consumerType: "environment", consumerId: environment.id, env: environmentEnv, responsibleUserId },
+        ...(projectId ? [{ consumerType: "project" as const, consumerId: projectId, env: projectEnv, responsibleUserId }] : []),
+        ...(routineContext.routineId ? [{ consumerType: "routine" as const, consumerId: routineContext.routineId, env: routineEnv, responsibleUserId }] : []),
+      ]);
+      const providerCooldownKey = createProviderCooldownKey({
+        adapterType: agent.adapterType, adapterConfig: scopedAdapterConfig,
+        aiConnection, responsibleUserId,
+        environment: { ...environment, envVars: environmentEnv },
+        projectEnv, routineEnv, credentialMetadata, secretVersions,
+      });
+      const providerAccountKey = await declaredCodexProviderAccountKey({
+        companyId: agent.companyId, adapterType: agent.adapterType, adapterConfig: scopedAdapterConfig,
+        environmentDriver: environment.driver, environmentEnv, projectEnv, routineEnv, managed: Boolean(aiConnection),
+      });
+      return { providerCooldownKey, providerAccountKey };
+    } catch (error) {
+      // An invalid/revoked binding must receive the normal configuration error,
+      // rather than inherit a wait belonging to its previous valid account.
+      if (error instanceof HttpError) return null;
+      throw error;
+    }
+  }
+
   async function getTaskSession(
     companyId: string,
     agentId: string,
@@ -11341,6 +11459,7 @@ export function heartbeatService(
     monitorAttemptCount: issues.monitorAttemptCount,
     monitorNotes: issues.monitorNotes,
     monitorScheduledBy: issues.monitorScheduledBy,
+    blockedTransitionAt: issues.blockedTransitionAt,
   };
 
   interface IssueMonitorDispatchRow {
@@ -11363,6 +11482,7 @@ export function heartbeatService(
     monitorAttemptCount: number | null;
     monitorNotes: string | null;
     monitorScheduledBy: string | null;
+    blockedTransitionAt: Date | null;
   }
 
   function parseMonitorDate(value: string | null | undefined) {
@@ -11784,6 +11904,20 @@ export function heartbeatService(
             "The previous reviewer run reached provider quota. Resume this execution-review stage now that the quota wait has elapsed.",
         }
       : {};
+    const dependencyReadiness = !isProviderQuotaReviewMonitor
+      ? (await issuesSvc.listDependencyReadiness(claimed.companyId, [claimed.id]))
+          .get(claimed.id)
+      : null;
+    const dependencyReadyStateKey =
+      dependencyReadiness?.isDependencyReady === true &&
+      dependencyReadiness.blockerIssueIds.length > 0
+        ? buildIssueBlockersResolvedWakeStateKey({
+            dependentIssueId: claimed.id,
+            blockerIssueIds: dependencyReadiness.blockerIssueIds,
+            blockerGenerations: dependencyReadiness.blockerGenerations,
+            blockedTransitionAt: claimed.blockedTransitionAt,
+          })
+        : null;
 
     if (clearReason) {
       return clearIssueMonitorAndRecover({
@@ -11873,6 +12007,7 @@ export function heartbeatService(
             monitorNotes: claimed.monitorNotes ?? null,
             ...monitorMetadata,
             ...reviewRecoveryContext,
+            ...(dependencyReadyStateKey ? { dependencyReadyStateKey } : {}),
             source: input.activitySource,
           },
           requestedByActorType: input.actorType,
@@ -11888,6 +12023,7 @@ export function heartbeatService(
             monitorNotes: claimed.monitorNotes ?? null,
             ...monitorMetadata,
             ...reviewRecoveryContext,
+            ...(dependencyReadyStateKey ? { dependencyReadyStateKey } : {}),
             manualTrigger: input.activitySource === "manual",
           },
         });
@@ -12939,6 +13075,22 @@ export function heartbeatService(
     void reportRunFailure(db, updated, failureReport);
   }
 
+  function providerAccountKeyForOutcome(run: typeof heartbeatRuns.$inferSelect | null, status: string,
+    result: Record<string, unknown> | null | undefined) {
+    return status === "failed" && result?.providerHttpStatus === 429 && result.errorFamily === "transient_upstream"
+      ? readNonEmptyString(parseObject(parseObject(run?.runnerProfileJson).adapterDispatch).providerAccountKey) : null;
+  }
+
+  async function writeAccountOutcome<T>(run: typeof heartbeatRuns.$inferSelect | null, status: string,
+    result: Record<string, unknown> | null | undefined, write: (writer: Pick<Db, "update">) => Promise<T>): Promise<T> {
+    const accountKey = providerAccountKeyForOutcome(run, status, result);
+    if (!accountKey || !run) return write(db);
+    return db.transaction(async tx => {
+      await lockProviderAccountAdmission(tx, run.companyId, accountKey);
+      return write(tx);
+    });
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -12968,6 +13120,7 @@ export function heartbeatService(
         },
       };
     }
+    const providerAccountKey = providerAccountKeyForOutcome(previousStatus, status, patch?.resultJson);
     const updated =
       previousStatus &&
       legacyExecutionNeedsReconciliation({
@@ -12980,8 +13133,10 @@ export function heartbeatService(
             run: previousStatus,
             status,
             patch,
+            beforeRunUpdate: providerAccountKey
+              ? (tx) => lockProviderAccountAdmission(tx, previousStatus.companyId, providerAccountKey) : undefined,
           })
-        : await db
+        : await writeAccountOutcome(previousStatus, status, patch?.resultJson, (writer) => writer
             .update(heartbeatRuns)
             .set({
               status,
@@ -12991,7 +13146,7 @@ export function heartbeatService(
             })
             .where(eq(heartbeatRuns.id, runId))
             .returning()
-            .then((rows) => rows[0] ?? null);
+            .then((rows) => rows[0] ?? null));
 
     if (updated) {
       publishLiveEvent({
@@ -13054,6 +13209,13 @@ export function heartbeatService(
         },
       };
     }
+    const providerAccountKey = providerAccountKeyForOutcome(previousStatus, status, patch?.resultJson);
+    const writeRunStatus = (writer: Pick<Db, "update">) => writer
+      .update(heartbeatRuns)
+      .set({ status, ...patch, executionStatusDeliveryId: randomUUID(), updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status, fromStatuses),
+        ...(isHeartbeatRunTerminalStatus(status) ? [nativeRunnerOwnershipNotHeldCondition()] : [])))
+      .returning().then((rows) => rows[0] ?? null);
     const updated =
       previousStatus &&
       legacyExecutionNeedsReconciliation({
@@ -13067,26 +13229,10 @@ export function heartbeatService(
             status,
             patch,
             fromStatuses,
+            beforeRunUpdate: providerAccountKey
+              ? (tx) => lockProviderAccountAdmission(tx, previousStatus.companyId, providerAccountKey) : undefined,
           })
-        : await db
-            .update(heartbeatRuns)
-            .set({
-              status,
-              ...patch,
-              executionStatusDeliveryId: randomUUID(),
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(heartbeatRuns.id, runId),
-                inArray(heartbeatRuns.status, fromStatuses),
-                ...(isHeartbeatRunTerminalStatus(status)
-                  ? [nativeRunnerOwnershipNotHeldCondition()]
-                  : []),
-              ),
-            )
-            .returning()
-            .then((rows) => rows[0] ?? null);
+        : await writeAccountOutcome(previousStatus, status, patch?.resultJson, writeRunStatus);
 
     if (updated) {
       publishLiveEvent({
@@ -15502,6 +15648,13 @@ export function heartbeatService(
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
+    if (baseSchedule && transientRetryNotBefore && run.resultJson?.providerAccountWaitSource === "bounded_retry" &&
+        run.resultJson.providerHttpStatus === 429 && transientRecovery?.errorFamily === "transient_upstream") {
+      // The outcome already sampled and persisted this policy delay once.
+      // Repeated scheduling/restart must reuse it rather than sample jitter again.
+      baseSchedule.dueAt = transientRetryNotBefore;
+      baseSchedule.delayMs = Math.max(0, transientRetryNotBefore.getTime() - now.getTime());
+    }
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
 
@@ -17611,19 +17764,27 @@ export function heartbeatService(
       }
     }
 
-    const claimedAt = new Date();
+    const cooldownIssueContext = issueId
+      ? await getIssueExecutionContext(run.companyId, issueId) : null;
+    const cooldownRoutineContext = await getRoutineEnvForExecutionIssue(run.companyId, cooldownIssueContext);
     const responsibleUserId = await resolveResponsibleUserIdForRun({
       run,
       contextSnapshot: context,
-      issueContext: issueId
-        ? await getIssueExecutionContext(run.companyId, issueId)
-        : null,
-      routineEnvContext: {
-        routineId: null,
-        env: null,
-        responsibleUserId: null,
-      },
+      issueContext: cooldownIssueContext,
+      routineEnvContext: cooldownRoutineContext,
     });
+    const providerScope = await providerCooldownKeyForRun(
+      agent, context, cooldownIssueContext, responsibleUserId, cooldownRoutineContext,
+    );
+    const providerCooldownKey = providerScope?.providerCooldownKey ?? null;
+    const providerAccountKey = providerScope?.providerAccountKey ?? null;
+    if (providerCooldownKey && await agentProviderCooldownUntil(db, agent.companyId, agent.id, providerCooldownKey)) {
+      // Keep the same durable queued run. The normal scheduler rechecks it;
+      // no provider call, failure, retry lineage or timer is created here.
+      return null;
+    }
+    if (providerAccountKey && !(await providerAccountRecoveryAdmission(db, agent.companyId, providerAccountKey, run.id)).allowed) return null;
+    const claimedAt = new Date();
     // All ordinary and comment claims use the same company-scoped issue
     // lock. A batch may claim several runs before executeRun tracks any owner.
     async function lockIssueExecutionClaim(tx: Db) {
@@ -17712,6 +17873,15 @@ export function heartbeatService(
     // execution pointer. The fork additionally commits the wake receipt and
     // the shutdown fence in the same claim transaction.
     async function bindClaimOwnership(tx: Db, ownsIssue: boolean, claimed: typeof heartbeatRuns.$inferSelect) {
+      if (providerAccountKey) {
+        await lockProviderAccountAdmission(tx, claimed.companyId, providerAccountKey);
+        const admission = await providerAccountRecoveryAdmission(tx, claimed.companyId, providerAccountKey, claimed.id);
+        if (!admission.allowed) throw claimDeferred;
+        const adapterDispatch = { ...parseObject(parseObject(claimed.runnerProfileJson).adapterDispatch), providerAccountKey,
+          providerAccountRecoveryOf: admission.recoveryOf };
+        claimed.runnerProfileJson = { ...parseObject(claimed.runnerProfileJson), adapterDispatch };
+        await tx.update(heartbeatRuns).set({ runnerProfileJson: claimed.runnerProfileJson }).where(eq(heartbeatRuns.id, claimed.id));
+      }
       await bindClaimedIssueExecution(tx, ownsIssue, claimed);
       if (claimed.wakeupRequestId) await tx.update(agentWakeupRequests)
         .set({ status: "claimed", claimedAt, updatedAt: claimedAt })
@@ -17879,7 +18049,7 @@ export function heartbeatService(
                   .update(heartbeatRuns)
                   .set({
                     status: "running",
-                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType, providerCooldownKey } })}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                     responsibleUserId,
                     startedAt: lockedRun.startedAt ?? claimedAt,
@@ -17979,7 +18149,7 @@ export function heartbeatService(
                 .update(heartbeatRuns)
                 .set({
                   status: "running",
-                  runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                  runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType, providerCooldownKey } })}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                   responsibleUserId,
                   startedAt: lockedRun.startedAt ?? claimedAt,
@@ -18047,7 +18217,7 @@ export function heartbeatService(
       : await withChatControlRecoveryGate(run, "claim", async (tx) => {
           const claimValues = {
             status: "running",
-            runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+            runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType, providerCooldownKey } })}::jsonb`,
             ...legacyControllerClaim(run.runtimeMode),
             responsibleUserId,
             startedAt: run.startedAt ?? claimedAt,
@@ -21429,6 +21599,8 @@ export function heartbeatService(
     let githubLauncherLocation:
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
+    let providerCooldownDeferralRequested = false;
+    let providerAccountPreparationDeferralRequested = false;
     let nativeOwnershipHeld = false;
     let nativeInstructionReservation: Awaited<ReturnType<typeof reserveWarmNativeInstructionDirectory>> = null;
     let nativeDispatchStarted = false;
@@ -22607,7 +22779,7 @@ export function heartbeatService(
         legacyUseProjectWorkspace:
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
       });
-      const mergedConfig = {
+      const mergedConfig: Record<string, unknown> = {
         ...workspaceManagedConfig,
         ...(issueAssigneeOverrides?.adapterConfig ?? {}),
         // The base below is already task-owned. Keep directory transport while
@@ -22703,6 +22875,61 @@ export function heartbeatService(
         for (const key of AI_AUTH_ENV_KEYS) secretKeys.add(key);
         context.aiConnection = { ...managedAiRuntime.attribution, identity: managedAiRuntime.identity };
         await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiConnection: context.aiConnection })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
+      }
+      // A recovered native turn keeps the provider scope admitted with its
+      // immutable input. Fresh turns use the exact environment/project/routine
+      // samples and resolved credential version used to prepare this execution.
+      const admitPreparedProviderAccount = async (providerAccountKey: string | null): Promise<boolean> => {
+        if (persistedNativeExecutionInput || runOptions.nativeRestartRecovery || runOptions.nativeLeaseOwner) return true;
+        return db.transaction(async (tx) => {
+          if (providerAccountKey) await lockProviderAccountAdmission(tx, agent.companyId, providerAccountKey);
+          const admission = providerAccountKey
+            ? await providerAccountRecoveryAdmission(tx, agent.companyId, providerAccountKey, run.id)
+            : { allowed: true, recoveryOf: null };
+          if (!admission.allowed) return false;
+          const patch = { providerAccountKey, providerAccountRecoveryOf: admission.recoveryOf };
+          const [stamped] = await tx.update(heartbeatRuns).set({
+            runnerProfileJson: sql`jsonb_set(coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb), '{adapterDispatch}', coalesce(${heartbeatRuns.runnerProfileJson}->'adapterDispatch', '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb, true)`,
+          }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.status, "running")))
+            .returning({ runnerProfileJson: heartbeatRuns.runnerProfileJson });
+          if (!stamped) throw new Error("Provider account admission lost run ownership");
+          run = { ...run, runnerProfileJson: stamped.runnerProfileJson };
+          return true;
+        });
+      };
+      if (!persistedNativeExecutionInput) {
+        const providerEnv = (env: unknown) => parseObject(stripForbiddenEnvBindings(
+          aiBinding ? stripAiAuthBindings(env) : env, true,
+        ));
+        const executedProviderCooldownKey = createProviderCooldownKey({
+          adapterType: agent.adapterType,
+          adapterConfig: { ...parseObject(agent.adapterConfig), ...(issueAssigneeOverrides?.adapterConfig ?? {}),
+            env: providerEnv(mergedConfig.env) },
+          aiConnection: aiBinding, responsibleUserId,
+          environment: selectedEnvironmentForConfig ? {
+            ...selectedEnvironmentForConfig, envVars: providerEnv(selectedEnvironmentForConfig.envVars),
+          } : null,
+          projectEnv: providerEnv(projectContext?.env), routineEnv: providerEnv(routineEnvContext.env),
+          credentialMetadata: managedAiRuntime?.cooldownMetadata ?? null,
+          secretVersions: secretManifest.flatMap((entry) =>
+            typeof entry.version === "number" ? [{ secretId: entry.secretId, version: entry.version, envKey: entry.envKey }] : []),
+        });
+        // A declaration can change after claim. Recheck the sampled route
+        // before provider work and return the same undispatched claim to queue.
+        if (!runOptions.nativeRestartRecovery && !runOptions.nativeLeaseOwner &&
+            await agentProviderCooldownUntil(db, agent.companyId, agent.id, executedProviderCooldownKey)) {
+          providerCooldownDeferralRequested = true;
+          return;
+        }
+        await db.update(heartbeatRuns).set({
+          runnerProfileJson: sql`jsonb_set(coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb), '{adapterDispatch}', coalesce(${heartbeatRuns.runnerProfileJson}->'adapterDispatch', '{}'::jsonb) || ${JSON.stringify({ adapterType: agent.adapterType, providerCooldownKey: executedProviderCooldownKey })}::jsonb, true)`,
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, agent.companyId)));
+        const actualAccountKey = agent.adapterType === "codex_local" && selectedEnvironmentForConfig?.driver === "local"
+          ? await resolveCodexAcpProviderAccountKey(agent.companyId, resolvedConfig) : null;
+        if (!await admitPreparedProviderAccount(actualAccountKey)) {
+          providerCooldownDeferralRequested = true;
+          return;
+        }
       }
       if (secretManifest.length > 0) {
         context.paperclipSecrets = {
@@ -26013,6 +26240,15 @@ export function heartbeatService(
                         : undefined,
                     onLog,
                     onMeta: onAdapterMeta,
+                    onProviderAccount: async (providerAccountKey) => {
+                      await controllerLease.assertOwned();
+                      await authorizeFailedChatRetryExecution();
+                      if (!await admitPreparedProviderAccount(providerAccountKey)) {
+                        providerCooldownDeferralRequested = true;
+                        providerAccountPreparationDeferralRequested = true;
+                        throw new Error("Provider account recovery is pending");
+                      }
+                    },
                     onEvent: onAdapterEvent,
                     startupTraceContext: getStartupTraceContext(),
                     onRuntimeProgress: async (progress) => {
@@ -26071,6 +26307,7 @@ export function heartbeatService(
             if (!guardedDispatch.dispatched) return;
             adapterResult = await guardedDispatch.resultPromise;
           }
+          if (providerCooldownDeferralRequested) return;
           if (instructionSave) adapterResult.resultJson = { ...adapterResult.resultJson, instructionSave };
           adapterResult = applyWorkspaceRestoreFailure(adapterResult);
           // A returned result can include a failed restore. Keep the workspace
@@ -26145,6 +26382,7 @@ export function heartbeatService(
             await completeWorkspace();
           }
         } catch (adapterErr) {
+          if (providerCooldownDeferralRequested) return;
           if (adapterErr instanceof NativeWorkspaceFinalizationBusyError
             || adapterErr instanceof NativeWorkspaceFinalizationOwnershipLostError) {
             nativeWorkspaceFinalizeScheduled = true;
@@ -26592,8 +26830,21 @@ export function heartbeatService(
           adapterResult.summary ?? null,
         );
 
+        const finishedAt = new Date();
+        if (status === "failed" && persistedResultJson?.providerHttpStatus === 429 &&
+            persistedResultJson.errorFamily === "transient_upstream" &&
+            readNonEmptyString(parseObject(parseObject(run.runnerProfileJson).adapterDispatch).providerAccountKey) &&
+            !readTransientRetryNotBeforeFromRun({ resultJson: persistedResultJson })) {
+          // One durable timing contract for this outcome, including exhausted
+          // lineages. This is existing bounded policy, not a provider reset.
+          const attempt = Math.min(executionFailureRetryCount(run) + 1, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS);
+          const schedule = computeBoundedTransientHeartbeatRetrySchedule(attempt, finishedAt)!;
+          persistedResultJson.retryNotBefore = schedule.dueAt.toISOString();
+          persistedResultJson.transientRetryNotBefore = schedule.dueAt.toISOString();
+          persistedResultJson.providerAccountWaitSource = "bounded_retry";
+        }
         const finalRunPatch: Partial<typeof heartbeatRuns.$inferInsert> = {
-          finishedAt: new Date(),
+          finishedAt,
           error: runErrorMessage,
           errorCode: runErrorCode,
           exitCode: adapterResult.exitCode,
@@ -26631,7 +26882,7 @@ export function heartbeatService(
               (processCancellation && !processCancellation.failed && status === "cancelled")) &&
             persistedRunWrite.run?.status === status
           ) {
-            persistedRun = await db
+            const writeLateResult = (writer: Pick<Db, "update">) => writer
               .update(heartbeatRuns)
               .set({
                 ...finalRunPatch,
@@ -26647,6 +26898,7 @@ export function heartbeatService(
               )
               .returning()
               .then((rows) => rows[0] ?? null);
+            persistedRun = await writeAccountOutcome(persistedRunWrite.run, status, finalRunPatch.resultJson, writeLateResult);
           }
           if (!persistedRun) {
             logger.info(
@@ -27673,6 +27925,8 @@ export function heartbeatService(
         // released, so the UI never shows a finished task as "Live".
         if (
           latestRun &&
+          // This fresh claim remains owned until pre-provider cleanup settles.
+          !providerCooldownDeferralRequested &&
           !nativeSessionResumeScheduled &&
           !nativeWorkspaceFinalizeScheduled &&
           !nativeOwnershipHeld
@@ -27845,9 +28099,18 @@ export function heartbeatService(
           adapterExecutionControls.delete(run.id);
         }
       }
+      if (providerCooldownDeferralRequested) {
+        // Keep the claim unclaimable throughout cleanup. An old executor must
+        // never release a successor's resources or terminalize its new attempt.
+        await options.beforeProviderCooldownClaimRelease?.(run.id);
+        await releaseRunClaimedJustBeforeSuppression(db, run.id, legacyControllerBootId, {
+          adapterPreparationOnly: providerAccountPreparationDeferralRequested,
+        });
+        latestRun = await getRun(run.id);
+      }
       // Terminalization precedes lease and adapter cleanup. Only now is the
       // owner gone; retry pending input for ordinary completions as well as Stop.
-      if (latestRun?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(latestRun.status)) {
+      if (!providerCooldownDeferralRequested && latestRun?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(latestRun.status)) {
         const [pending] = await db.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
           eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
           eq(agentWakeupRequests.status, "deferred_issue_execution"),
@@ -27864,7 +28127,7 @@ export function heartbeatService(
         !nativeWorkspaceFinalizeScheduled &&
         !isHeartbeatShuttingDown()
       ) {
-        if (latestRun) await resumeRemoteStopComments(latestRun).catch(err => {
+        if (latestRun && !providerCooldownDeferralRequested) await resumeRemoteStopComments(latestRun).catch(err => {
           logger.warn({ err, runId: run.id }, "failed to resume user messages after remote Stop");
         });
         if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
@@ -27923,6 +28186,7 @@ export function heartbeatService(
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
+    const wakeRequestedAt = new Date();
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
@@ -29243,6 +29507,64 @@ export function heartbeatService(
             activeExecutionRun = null;
           }
 
+          // Issue admission serializes on the issue row. A blockers-resolved
+          // wake can therefore arrive while a due-monitor adapter is running,
+          // wait for that run to release the row, and only then observe that no
+          // execution is active. Treat the overlapping terminal monitor run as
+          // the consumer of this same ready generation instead of starting a
+          // second provider turn after the lock wait.
+          if (
+            !activeExecutionRun &&
+            readNonEmptyString(enrichedContextSnapshot.wakeReason) ===
+              ISSUE_BLOCKERS_RESOLVED_WAKE_REASON &&
+            !wakeCommentId &&
+            !hasInteractionContinuationWakeContext(enrichedContextSnapshot)
+          ) {
+            const overlappingMonitorRun = await tx
+              .select()
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.companyId, agent.companyId),
+                  eq(heartbeatRuns.agentId, agentId),
+                  inArray(heartbeatRuns.status, [
+                    "succeeded",
+                    "failed",
+                    "timed_out",
+                    "cancelled",
+                  ]),
+                  gte(heartbeatRuns.finishedAt, wakeRequestedAt),
+                  sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                  sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'issue_monitor_due'`,
+                ),
+              )
+              .orderBy(desc(heartbeatRuns.finishedAt))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+            if (overlappingMonitorRun) {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason,
+                payload,
+                status: "coalesced",
+                coalescedCount: 1,
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                runId: overlappingMonitorRun.id,
+                finishedAt: new Date(),
+              });
+              return {
+                kind: "coalesced" as const,
+                run: overlappingMonitorRun,
+              };
+            }
+          }
+
           if (
             activeExecutionRun &&
             (await cancelStaleScheduledRetry(activeExecutionRun))
@@ -30114,6 +30436,7 @@ export function heartbeatService(
       !sameScopeQueuedRun &&
       shouldQueueFollowupForRunningIssueWake({
         contextSnapshot: enrichedContextSnapshot,
+        runningContextSnapshot: sameScopeRunningRun?.contextSnapshot,
         wakeCommentId,
       });
     // Unscoped manual wakes need their own receipt and execution identity too.

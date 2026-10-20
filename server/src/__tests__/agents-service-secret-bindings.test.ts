@@ -357,7 +357,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       .where(eq(companySecretBindings.targetId, agentId));
     expect(beforeBindings).toHaveLength(0);
 
-    const approved = await agentService(db).activatePendingApproval(agentId);
+    const approved = await agentService(db).activatePendingApproval(companyId, agentId);
 
     expect(approved).toMatchObject({
       activated: true,
@@ -481,7 +481,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       permissions: {},
     });
 
-    await expect(agentService(db).activatePendingApproval(agentId)).rejects.toBeTruthy();
+    await expect(agentService(db).activatePendingApproval(companyId, agentId)).rejects.toBeTruthy();
 
     const reloaded = await agentService(db).getById(agentId);
     expect(reloaded?.status).toBe("pending_approval");
