@@ -157,17 +157,19 @@ describe.each([
   { name: "Claude", create: createClaudeAcpExecutor },
 ])("$name adapter finalization with a real local ACP child", ({ name, create }) => {
   it.each([
-    { status: 429, message: "Internal error", family: "transient_upstream", code: "acpx_transient_upstream" },
+    { status: 429, message: "Internal error", family: "transient_upstream", code: "acpx_transient_upstream", route: "subscription" },
+    { status: 429, message: "Internal error", family: "transient_upstream", code: "acpx_transient_upstream", route: "api" },
+    { status: 429, message: "Internal error", family: "transient_upstream", code: "acpx_transient_upstream", route: "unknown" },
     { status: 503, message: "Internal error", family: "transient_upstream", code: "acpx_transient_upstream" },
     { status: 401, message: "Internal error", family: null, code: "acpx_auth_required" },
     { status: 429, message: "Authorization failed: missing API key", family: null, code: "acpx_auth_required" },
-  ])("projects $status / $message and reaps the runtime child", async ({ status, message, family, code }) => {
+  ])("projects $status / $message and reaps the runtime child", async ({ status, message, family, code, route }) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-provider-status-engine-"));
     tempRoots.push(root);
     const codexHome = path.join(root, "codex-home");
     await fs.mkdir(codexHome);
     const accountCanary = "synthetic-account-not-an-actual-provider-account";
-    await fs.writeFile(path.join(codexHome, "auth.json"), JSON.stringify({
+    if (route !== "unknown") await fs.writeFile(path.join(codexHome, "auth.json"), JSON.stringify({
       tokens: { account_id: accountCanary, access_token: "synthetic-noncredential" },
     }));
     const child = path.join(root, "fixture.mjs");
@@ -187,7 +189,8 @@ describe.each([
         agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(child)}`,
         env: {
           HOME: root, CODEX_HOME: codexHome, CLAUDE_CONFIG_DIR: path.join(root, "claude-home"),
-          OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "",
+          OPENAI_API_KEY: route === "api" && name === "Codex" ? "synthetic-api-key" : "",
+          ANTHROPIC_API_KEY: route === "api" && name === "Claude" ? "synthetic-api-key" : "",
         },
         promptTemplate: "Synthetic provider status fixture",
       },
@@ -202,7 +205,8 @@ describe.each([
     expect(result.resultJson).toMatchObject({ providerHttpStatus: status });
     expect(JSON.stringify({ result, logs })).not.toContain(privateCanary);
     expect(JSON.stringify({ result, logs })).not.toContain(accountCanary);
-    if (name === "Codex") expect(accountKeys).toEqual([expect.stringMatching(/^[a-f0-9]{64}$/)]);
+    if (name === "Codex" && route !== "api" && route !== "unknown") expect(accountKeys).toEqual([expect.stringMatching(/^[a-f0-9]{64}$/)]);
+    else expect(accountKeys).toEqual([null]);
     const pids = (await fs.readFile(pidFile, "utf8")).trim().split("\n").map(Number);
     expect(pids.length).toBeGreaterThan(0);
     await expect.poll(() => pids.some((pid) => {

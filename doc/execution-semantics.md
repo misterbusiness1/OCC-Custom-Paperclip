@@ -1014,24 +1014,37 @@ Legacy local ACP Codex subscription runs also share HTTP 429 recovery within the
 when the selected credential identifies the same provider account.
 The server stores an opaque account key and trusted numeric HTTP status with
 the run. Home paths, adapter types, token contents, and diagnostic text do not
-establish account equality. Unknown identities retain the existing per-agent
-policy. The prepared credential is checked again before provider startup, and
+establish account equality. API-key and unknown identities use a separate
+company, agent and sampled-provider scope; they never establish account equality
+or hold another agent. A scope records which kind owns its recovery probe, and
+actual preparation clears incompatible account/agent probe markers. The
+prepared credential is checked again before provider startup, and
 account changes invalidate incompatible warm-session reuse. A legacy shared
 authentication file is sampled before startup. An external account switch
 after that sample is outside this admission contract.
 
-During a known account wait, fresh work and retry children stay queued. The
-deadline comes from the persisted recovery contract; when the provider gives
-no deadline, the existing bounded retry policy supplies one and records its
-source. After that deadline, an atomic admission decision lets one eligible
+During either scope's wait, fresh work (including comments, assignments and
+manual fresh sessions) and retry children stay queued. The canonical deadline
+is the later of the provider hint and the existing bounded retry policy. It is
+sampled once before the terminal write, including exhausted attempts, and the
+retry child uses that same deadline. The greatest matching persisted deadline
+wins regardless of failure finish or commit order, and that exact failure anchors
+the recovery probe. A child's own earlier schedule remains queued behind a
+stronger scope wait. Historical explicitly sampled null-account
+runs can use their existing child's deadline; unassociated runs or old failures
+with neither deadline nor child do not invent a hold. After the deadline, an
+atomic admission decision lets one eligible
 queued run test recovery. Other runs wait for its outcome. A successful run
-that started before the throttle cannot clear it. Healthy account concurrency
+that started before the throttle or only resets a conversation cannot clear it.
+Only a successful ordinary probe linked to the exact failure clears it. Healthy
+concurrency
 is unchanged. This uses persisted run evidence across server restarts and
 does not add a provider retry loop or reset a task's failure budget.
 
 HTTP 429 is a temporary throttle, not evidence that a weekly allowance is
 exhausted. Authentication failures keep precedence, and HTTP 5xx failures do
-not create an account-wide 429 hold. Provider wait decisions preserve normal
+not create a 429 hold. Native-runner-originating HTTP-status propagation remains
+separately unqualified. Provider wait decisions preserve normal
 ownership, cleanup, pause, dependency, approval, and budget gates.
 
 When an `in_progress` conversation remains stranded after that failure budget is exhausted, recovery atomically records a board-owned recovery action, moves the source issue to `blocked`, and marks its originating routine run failed with a completion timestamp. This disposition preserves the assignee and requires an explicit continuation after inspection or repair; it does not enqueue another attempt or impose an unknown-action-outcome hold. A newer run, explicit user input, changed issue decision, existing recovery action, or durable waiting path keeps its own lifecycle authority. An idle blocked routine execution does not count as live overlap, so the next scheduled occurrence still follows the existing routine concurrency policy.
