@@ -281,7 +281,7 @@ describeEmbeddedPostgres(
       const mismatchedRun = await service.create(
         { id: fixture.issueId, companyId: fixture.companyId },
         { ...question, sourceRunId: foreignRunId },
-        { agentId: fixture.agentId },
+        { agentId: foreignAgentId },
       );
 
       await expect(
@@ -1010,7 +1010,11 @@ describeEmbeddedPostgres(
         { id: fixture.issueId, companyId: fixture.companyId },
         {
           kind: "request_confirmation",
-          payload: { version: 1, prompt: "Proceed with the release?" },
+          payload: {
+            version: 1,
+            prompt: "Proceed with the release?",
+            supersedeOnUserComment: true,
+          },
         },
         { agentId: fixture.agentId },
       );
@@ -1054,6 +1058,7 @@ describeEmbeddedPostgres(
           kind: "ask_user_questions",
           payload: {
             version: 1,
+            supersedeOnUserComment: true,
             questions: [
               {
                 id: "priority",

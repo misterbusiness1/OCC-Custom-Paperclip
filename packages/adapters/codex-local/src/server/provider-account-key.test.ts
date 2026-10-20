@@ -46,6 +46,18 @@ describe("Codex selected account metadata", () => {
     expect(await resolveCodexAcpProviderAccountKey("company", {})).toBe(createCodexProviderAccountKey("company", "source-account"));
     expect(JSON.parse(await fs.readFile(path.join(target, "auth.json"), "utf8")).tokens.account_id).toBe("prior-managed-account");
   });
+  it("does not attribute either configured or ambient API-key route to a subscription home", async () => {
+    const selected = await home("subscription-account");
+    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("CODEX_API_KEY", "");
+    expect(await resolveCodexAcpProviderAccountKey("company", {
+      env: { CODEX_HOME: selected, CODEX_API_KEY: "synthetic-api-key" },
+    })).toBeNull();
+    vi.stubEnv("CODEX_API_KEY", "synthetic-ambient-api-key");
+    expect(await resolveCodexAcpProviderAccountKey("company", {
+      env: { CODEX_HOME: selected },
+    })).toBeNull();
+  });
   it("leaves API-key, missing and malformed credentials ungrouped", async () => {
     const selected = await home("account-a");
     expect(await readCodexProviderAccountKey("company", selected, "synthetic-api-key")).toBeNull();

@@ -25,7 +25,6 @@ const apiMocks = vi.hoisted(() => ({
   agentsList: vi.fn(),
 }));
 
-const generalSettingsMock = vi.hoisted(() => ({ keyboardShortcutsEnabled: true }));
 const companyMock = vi.hoisted(() => ({ selectedCompanyId: "company-1" }));
 const toastMock = vi.hoisted(() => ({ pushToast: vi.fn() }));
 
@@ -36,9 +35,6 @@ vi.mock("../context/CompanyContext", () => ({
 }));
 vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
-}));
-vi.mock("../context/GeneralSettingsContext", () => ({
-  useGeneralSettings: () => generalSettingsMock,
 }));
 vi.mock("../context/ToastContext", () => ({
   useOptionalToastActions: () => toastMock,
@@ -154,7 +150,6 @@ describe("Approvals", () => {
     routerMock.location.hash = "";
     routerMock.searchChanges.length = 0;
     window.localStorage.clear();
-    generalSettingsMock.keyboardShortcutsEnabled = true;
     companyMock.selectedCompanyId = "company-1";
     approvals = [
       createApproval("newest", "2026-10-05T00:00:00.000Z"),
@@ -555,7 +550,6 @@ describe("Approvals", () => {
 
     it("sends a request only one decision at a time", async () => {
       const sent = holdOpen(apiMocks.approve);
-      generalSettingsMock.keyboardShortcutsEnabled = true;
       await render();
 
       // Two presses before the page has drawn the busy state, then the shortcut once it has.
@@ -2219,22 +2213,6 @@ describe("Approvals", () => {
       });
       expect(idle.defaultPrevented).toBe(false);
 
-      await advance(APPROVE_HOLD_MS * 3);
-      expect(apiMocks.approve).not.toHaveBeenCalled();
-    });
-
-    it("leaves Shift+Z alone when shortcuts are disabled; the Undo button still works", async () => {
-      generalSettingsMock.keyboardShortcutsEnabled = false;
-      approveAtOnce();
-      await render();
-      expect(container.textContent).not.toContain("Shift+Z");
-
-      await click(button(rows()[0], "Approve"));
-      await press("Z", document, { shiftKey: true });
-      expect(heldRows()).toHaveLength(1);
-
-      await click(undoButton(rows()[0])!);
-      expect(heldRows()).toHaveLength(0);
       await advance(APPROVE_HOLD_MS * 3);
       expect(apiMocks.approve).not.toHaveBeenCalled();
     });
@@ -5687,35 +5665,4 @@ describe("Approvals", () => {
     expect(container.textContent).toContain("Shift+A approve");
   });
 
-  it("leaves the keyboard alone when shortcuts are disabled", async () => {
-    generalSettingsMock.keyboardShortcutsEnabled = false;
-    await render();
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true }));
-    });
-    expect(rows().includes(document.activeElement as HTMLElement)).toBe(false);
-    expect(openIds()).toEqual(["oldest"]);
-    expect(container.textContent).not.toContain("Shift+A approve");
-    await act(async () => {
-      rows()[0].dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true, bubbles: true }));
-    });
-    expect(container.querySelectorAll("[data-approval-held-row]")).toHaveLength(0);
-    expect(apiMocks.approve).not.toHaveBeenCalled();
-
-    // The page still keeps the reader's place after a decision: the next card opens and takes focus,
-    // and the compact row left behind can take focus too.
-    apiMocks.approve.mockImplementation(async (id: string) => (
-      { ...approvals.find((approval) => approval.id === id)!, status: "approved" } as Approval
-    ));
-    await click(button(rows()[0], "Approve"));
-    // Without the shortcuts there is no Shift+Z to name: the way back is the Undo in the held row.
-    expect(container.querySelector("[data-approval-announcements]")!.textContent).toBe(
-      "Approving in 5 seconds. Undo is in its row. Request oldest",
-    );
-    await endHold();
-    await vi.waitFor(() => expect(rows()[0].textContent).toContain("approved"));
-    expect(rows()[0].tabIndex).toBe(-1);
-    expect(openIds()).toEqual(["email"]);
-    expect(document.activeElement).toBe(rows()[1]);
-  });
 });

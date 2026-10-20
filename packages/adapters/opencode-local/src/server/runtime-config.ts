@@ -151,12 +151,9 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
 
   const existingConfig = await readJsonObject(runtimeConfigPath);
-  const existingPermission = isPlainObject(existingConfig.permission) ? existingConfig.permission : {};
   const notes: string[] = [];
   if (skipPermissions) {
-    notes.push(
-      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
-    );
+    notes.push("Injected runtime OpenCode config with permission=allow for all tools and connections.");
   }
 
   // Merge gateway/custom provider definitions supplied via PAPERCLIP_OPENCODE_PROVIDERS
@@ -212,10 +209,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 
   const nextConfig: Record<string, unknown> = { ...existingConfig };
   if (skipPermissions) {
-    nextConfig.permission = {
-      ...existingPermission,
-      external_directory: "allow",
-    };
+    nextConfig.permission = "allow";
   }
   if (Object.keys(nextProvider).length > 0) {
     nextConfig.provider = nextProvider;

@@ -17,7 +17,6 @@ import { approvalsApi } from "../api/approvals";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { useOptionalToastActions } from "../context/ToastContext";
 import {
   hasBlockingShortcutDialog,
@@ -399,7 +398,9 @@ function SentBackApprovalRow({ approval, detailsState }: { approval: Approval; d
 export function Approvals() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { keyboardShortcutsEnabled } = useGeneralSettings();
+  // Upstream v2026.1005.0 removed the shortcut setting; shortcuts are always on
+  // (production had them enabled instance-wide before the upgrade).
+  const keyboardShortcutsEnabled = true;
   const toasts = useOptionalToastActions();
   const queryClient = useQueryClient();
   const navigate = useNavigate();

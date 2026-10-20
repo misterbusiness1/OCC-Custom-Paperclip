@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Identity } from "./Identity";
+import { AgentIdentity } from "./AgentIdentity";
 import {
   approvalAskLine,
   APPROVAL_TITLE_LENGTH,
@@ -293,7 +293,7 @@ export function ApprovalCard({
     >
       {requesterAgent && (
         <span className="inline-flex min-w-0 items-center gap-1.5">
-          Requested by <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
+          Requested by <AgentIdentity agent={requesterAgent} size="sm" className="inline-flex" />
         </span>
       )}
       {waiting ? (

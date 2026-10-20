@@ -267,9 +267,26 @@ async function startNetworkAllowlistProxy(
       upstreamResponse.pipe(response);
     });
     upstream.on("error", (error) => response.destroy(error));
+    // A client that goes away before its request (for example an upload) is
+    // complete, or before the proxied response is delivered, must not leave
+    // the upstream connection open (paperclipai/paperclip#15531).
+    const abortUpstream = () => {
+      if (!upstream.destroyed) upstream.destroy();
+    };
+    request.on("error", abortUpstream);
+    request.on("close", () => {
+      if (!request.complete) abortUpstream();
+    });
+    response.on("close", () => {
+      if (!response.writableFinished) abortUpstream();
+    });
     request.pipe(upstream);
   });
   server.on("connect", (request, clientSocket, head) => {
+    // After CONNECT the HTTP server no longer owns the socket's error
+    // handling. ECONNRESET/EPIPE on a dropped tunnel would otherwise be an
+    // uncaught exception that exits the server (paperclipai/paperclip#15531).
+    clientSocket.on("error", () => clientSocket.destroy());
     const separator = request.url?.lastIndexOf(":") ?? -1;
     const hostname = separator > 0 ? request.url!.slice(0, separator).replace(/^\[|\]$/g, "") : "";
     const port = separator > 0 ? request.url!.slice(separator + 1) : "443";

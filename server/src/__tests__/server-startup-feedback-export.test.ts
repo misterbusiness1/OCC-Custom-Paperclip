@@ -10,6 +10,7 @@ const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 
 const {
+  completionSweepMock,
   createAppMock,
   createBetterAuthInstanceMock,
   createDbMock,
@@ -33,6 +34,7 @@ const {
   routineServiceFactoryMock,
   routineServiceMock,
 } = vi.hoisted(() => {
+  const completionSweepMock = vi.fn(async () => undefined);
   const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
       toolGateway: { sweepActionReviews: vi.fn(async () => ({ scanned: 0 })) },
@@ -136,6 +138,7 @@ const {
   const loadConfigMock = vi.fn();
 
   return {
+    completionSweepMock,
     createAppMock,
     createBetterAuthInstanceMock,
     createDbMock,
@@ -349,6 +352,8 @@ vi.mock("../services/index.js", () => ({
   })),
 }));
 
+vi.mock("../services/chat-completion-delivery.js", () => ({ chatCompletionDeliveryService: () => ({ sweepPending: completionSweepMock }) }));
+
 vi.mock("../services/connection-intent-delivery.js", () => ({
   connectionIntentDeliveryService: vi.fn(() => ({
     sweepPending: vi.fn(async () => ({ scanned: 0, failed: 0 })),
@@ -557,14 +562,23 @@ describe("startServer feedback export wiring", () => {
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
       const app = createAppMock.mock.results[0]?.value;
       expect((await app).locals.toolActionDeliveries.sweepPending).not.toHaveBeenCalled();
+      expect(completionSweepMock).not.toHaveBeenCalled();
       const boot = barrier.snapshot();
       barrier.release({ expectedBootId: boot.bootId, expectedGeneration: boot.generation,
         qualificationSha256: "a".repeat(64) });
       await vi.waitFor(() => expect(heartbeatServiceMock.resumeQueuedRuns).toHaveBeenCalledTimes(1));
       await vi.waitFor(() => expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(1));
       expect((await app).locals.toolActionDeliveries.sweepPending).toHaveBeenCalledTimes(1);
+      expect(completionSweepMock).toHaveBeenCalled();
       expect(createAppMock).toHaveBeenCalledTimes(1);
     } finally { heldStartupControl.barrier = null; intervals.mockRestore(); }
+  });
+
+  it("keeps startup available when completion delivery recovery fails", async () => {
+    completionSweepMock.mockRejectedValueOnce(new Error("temporary delivery failure"));
+    const { startServer } = await import("../index.js");
+    await expect(startServer()).resolves.toBeDefined();
+    expect(completionSweepMock).toHaveBeenCalled();
   });
 
   it("never invokes the retired review detector at startup or on periodic recovery", async () => {

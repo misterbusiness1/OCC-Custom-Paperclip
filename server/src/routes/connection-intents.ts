@@ -104,6 +104,19 @@ export function runtimeConnectionIntentRoutes(db: Db) {
   const service = connectionIntentService(db);
   const typeSafe = typeSafeRuntimeToolService(db);
 
+  async function searchConnections(claims: ReturnType<typeof runtimeClaims>, args: unknown) {
+    const input = connectionsSearchInputSchema.parse(args ?? {});
+    return service.search(claims, input.query, { retryProviderChoice: input.retryProviderChoice });
+  }
+
+  async function requestConnection(claims: ReturnType<typeof runtimeClaims>, args: unknown) {
+    const input = connectionRequestInputSchema.parse(args ?? {});
+    return service.request(claims, input.service, {
+      selectionInteractionId: input.selectionInteractionId,
+      targetService: input.targetService,
+    });
+  }
+
   router.post("/runtime-tools/github/credentials", async (req, res) => {
     // This capability is never accepted as board/session authentication.
     // Node fetch sends Sec-Fetch-Mode too; browsers additionally send Origin or Sec-Fetch-Site.
@@ -187,8 +200,8 @@ export function runtimeConnectionIntentRoutes(db: Db) {
       if (name === "connections_search" || name === "connection_request") {
         try {
           const result = name === "connections_search"
-            ? await service.search(claims, connectionsSearchInputSchema.parse(params.arguments ?? {}).query)
-            : await service.request(claims, connectionRequestInputSchema.parse(params.arguments ?? {}).service);
+            ? await searchConnections(claims, params.arguments)
+            : await requestConnection(claims, params.arguments);
           res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
         } catch (err) {
           const failure = toolCallFailure(err);
@@ -243,11 +256,11 @@ export function runtimeConnectionIntentRoutes(db: Db) {
 
   router.post("/runtime-tools/connections/search", async (req, res) => {
     const input = connectionsSearchInputSchema.parse(req.body ?? {});
-    res.json(await service.search(runtimeClaims(req), input.query));
+    res.json(await service.search(runtimeClaims(req), input.query, { retryProviderChoice: input.retryProviderChoice }));
   });
   router.post("/runtime-tools/connections/request", async (req, res) => {
     const input = connectionRequestInputSchema.parse(req.body ?? {});
-    res.json(await service.request(runtimeClaims(req), input.service));
+    res.json(await service.request(runtimeClaims(req), input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService }));
   });
   router.post("/runtime-tools/typesafe/judge", async (req, res) => {
     res.json(await typeSafe.judge(runtimeClaims(req), typeSafeJudgeInputSchema.parse(req.body ?? {})));

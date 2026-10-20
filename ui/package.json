@@ -74,6 +74,7 @@
     "yjs": "13.6.32"
   },
   "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
     "@sentry/browser": "10.71.0",
     "@storybook/addon-a11y": "10.5.10",
     "@storybook/addon-docs": "10.5.10",
@@ -86,7 +87,7 @@
     "storybook": "10.5.10",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
-    "vite": "^8.2.2",
+    "vite": "^8.2.4",
     "vitest": "^4.1.11"
   },
   "engines": {

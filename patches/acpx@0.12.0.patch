@@ -1,5 +1,5 @@
 diff --git a/dist/client-DwNyFauq.d.ts b/dist/client-DwNyFauq.d.ts
-index 2b869bf..dc5152f 100644
+index 2b869bf31d76cef38876340eb473d3f0c939bda9..dc5152f080ad0214c4ebd6fc670e7ccde149ddef 100644
 --- a/dist/client-DwNyFauq.d.ts
 +++ b/dist/client-DwNyFauq.d.ts
 @@ -102,6 +102,7 @@ declare class AcpClient {
@@ -18,7 +18,7 @@ index 2b869bf..dc5152f 100644
 \ No newline at end of file
 +//# sourceMappingURL=client-DwNyFauq.d.ts.map
 diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
-index 243c9d1..c6697bc 100644
+index 243c9d13bcba520923b63adfddad75cf2d94362d..12a15d92f5d63d063f16f523adb7d51744e639c2 100644
 --- a/dist/live-checkpoint-ClPCSdrW.js
 +++ b/dist/live-checkpoint-ClPCSdrW.js
 @@ -1532,7 +1532,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
@@ -247,17 +247,28 @@ index 243c9d1..c6697bc 100644
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt);
-@@ -6079,6 +6131,9 @@ async function runPromptTurn(params) {
+@@ -6079,6 +6131,20 @@ async function runPromptTurn(params) {
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
 +		const terminalFailureCategory = typedTerminalSessionFailureCategory(response);
-+		if (terminalFailureCategory !== null)
++		if (terminalFailureCategory !== null) {
++			// Pass complete provider text to the diagnostic callback. Consumers redact
++			// before bounding it; truncating here can split and expose a credential.
++			const failure = response._meta.jetbrains.air.sessionFailure;
++			try {
++				params.onTerminalSessionFailure?.({
++					category: terminalFailureCategory,
++					...(typeof failure.title === "string" ? { title: failure.title } : {}),
++					...(typeof failure.details === "string" ? { details: failure.details } : {})
++				});
++			} catch {}
 +			throw new Error(`ACP agent reported a terminal ${terminalFailureCategory} failure.`);
++		}
  		recordPromptResponseUsage(params.conversation, response.usage, params.promptMessageId);
  		return {
  			stopReason: response.stopReason,
-@@ -6153,4 +6208,4 @@ var LiveSessionCheckpoint = class {
+@@ -6153,4 +6219,4 @@ var LiveSessionCheckpoint = class {
  //#endregion
  export { getPerfMetricsSnapshot as $, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE as A, listBuiltInAgents as At, absolutePath as B, AUTH_POLICIES as Bt, mergeSessionOptions as C, promptToDisplayText as Ct, applyLifecycleSnapshotToRecord as D, withInterrupt as Dt, applyConversation as E, TimeoutError as Et, modelStateFromConfigOptions as F, isRetryablePromptError as Ft, listSessions as G, OUTPUT_FORMATS as Gt, findSession as H, NON_INTERACTIVE_PERMISSION_POLICIES as Ht, splitCommandLine as I, normalizeOutputError as It, pruneSessions as J, SESSION_RECORD_SCHEMA as Jt, listSessionsForAgent as K, PERMISSION_MODES as Kt, getAcpxVersion as L, extractAcpError as Lt, RequestedModelUnsupportedError as M, resolveAgentCommand as Mt, assertRequestedModelSupported as N, exitCodeForOutputErrorCode as Nt, reconcileAgentSessionId as O, withTimeout as Ot, isRequestedModelUnsupportedError as P, formatErrorMessage as Pt, formatPerfMetric as Q, QueueProtocolError as Qt, permissionModeSatisfies as R, isAcpResourceNotFoundError as Rt, advertisedModelState as S, parsePromptSource as St, sessionOptionsFromRecord as T, InterruptedError as Tt, findSessionByDirectoryWalk as U, OUTPUT_ERROR_CODES as Ut, findGitRepositoryRoot as V, EXIT_CODES as Vt, isoNow$2 as W, OUTPUT_ERROR_ORIGINS as Wt, writeSessionRecord as X, AgentSpawnError as Xt, resolveSessionRecord as Y, AcpxOperationalError as Yt, assertPersistedKeyPolicy as Z, QueueConnectionError as Zt, createSessionConversation as _, parseJsonRpcErrorMessage as _t, applyRequestedModelIfAdvertised as a, startPerfTimer as at, recordSessionUpdate as b, isPromptInput as bt, setCurrentModelId as c, normalizeRuntimeSessionId as ct, setDesiredModelId as d, sessionBaseDir$1 as dt, incrementPerfCounter as et, syncAdvertisedModelState as f, sessionEventActivePath as ft, cloneSessionConversation as g, isAcpJsonRpcMessage as gt, cloneSessionAcpxState as h, extractSessionUpdateNotification as ht, connectAndLoadSession as i, setPerfGauge as it, REQUESTED_MODEL_UNSUPPORTED_REASONS as j, normalizeAgentName$1 as jt, AcpClient as k, DEFAULT_AGENT_NAME as kt, setDesiredConfigOption as l, DEFAULT_EVENT_SEGMENT_MAX_BYTES as lt, applyConfigOptionsToState as m, sessionEventSegmentPath as mt, runPromptTurn as n, recordPerfDuration as nt, currentModelIdFromSetModelResponse as o, parseSessionRecord as ot, applyConfigOptionsToRecord as p, sessionEventLockPath as pt, normalizeName as q, PERMISSION_POLICY_ACTIONS as qt, withConnectedSession as r, resetPerfMetrics as rt, clearDesiredConfigOption as s, serializeSessionRecordForDisk as st, LiveSessionCheckpoint as t, measurePerf as tt, setDesiredModeId as u, defaultSessionEventLog as ut, recordClientOperation as v, parsePromptStopReason as vt, persistSessionOptions as w, textPrompt as wt, trimConversationForRuntime as x, mergePromptSourceWithText as xt, recordPromptSubmission as y, PromptInputValidationError as yt, DEFAULT_HISTORY_LIMIT as z, toAcpErrorPayload as zt };
  
@@ -265,10 +276,18 @@ index 243c9d1..c6697bc 100644
 \ No newline at end of file
 +//# sourceMappingURL=live-checkpoint-ClPCSdrW.js.map
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index ccdbe5b..228ff50 100644
+index ccdbe5b032521518022223733049b8b38793473b..cfa060127ab23f423b200f36464afd459dec5d64 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
-@@ -180,12 +180,16 @@ type AcpRuntimeEvent = {
+@@ -45,6 +45,7 @@ type AcpRuntimeTurnAttachment = {
+   data: string;
+ };
+ type AcpRuntimeTurnInput = {
++  onTerminalSessionFailure?: (failure: { category: string; title?: string; details?: string }) => void;
+   handle: AcpRuntimeHandle;
+   text: string;
+   attachments?: AcpRuntimeTurnAttachment[];
+@@ -180,12 +181,16 @@ type AcpRuntimeEvent = {
  | {
    type: "error";
    message: string;
@@ -285,7 +304,7 @@ index ccdbe5b..228ff50 100644
    code?: string;
    detailCode?: string;
    retryable?: boolean;
-@@ -236,6 +240,7 @@ interface AcpRuntime {
+@@ -236,6 +241,7 @@ interface AcpRuntime {
      key: string;
      value: string;
    }): Promise<void>;
@@ -293,7 +312,7 @@ index ccdbe5b..228ff50 100644
    doctor?(): Promise<AcpRuntimeDoctorReport>;
    cancel(input: {
      handle: AcpRuntimeHandle;
-@@ -266,6 +271,11 @@ type AcpRuntimeOptions = {
+@@ -266,6 +272,11 @@ type AcpRuntimeOptions = {
    timeoutMs?: number;
    probeAgent?: string;
    verbose?: boolean;
@@ -305,7 +324,7 @@ index ccdbe5b..228ff50 100644
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
    }) => Promise<AcpPermissionDecision | undefined>;
-@@ -286,6 +296,7 @@ declare class AcpRuntimeManager {
+@@ -286,6 +297,7 @@ declare class AcpRuntimeManager {
    private readonly closingActiveRecords;
    constructor(options: AcpRuntimeOptions, deps?: AcpRuntimeManagerDeps);
    private createClient;
@@ -313,7 +332,23 @@ index ccdbe5b..228ff50 100644
    private readPendingPersistentClient;
    private closePendingPersistentClient;
    private refreshClosedState;
-@@ -442,6 +453,7 @@ declare class AcpxRuntime implements AcpxRuntimeLike {
+@@ -302,6 +314,7 @@ declare class AcpRuntimeManager {
+   private createAndSaveRuntimeRecord;
+   private keepPersistentClient;
+   startTurn(input: {
++    onTerminalSessionFailure?: (failure: { category: string; title?: string; details?: string }) => void;
+     handle: AcpRuntimeHandle;
+     text: string;
+     attachments?: AcpRuntimeTurnAttachment[];
+@@ -334,6 +347,7 @@ declare class AcpRuntimeManager {
+   private finalizeRuntimeTurn;
+   private finalizeRuntimeTurnRecord;
+   runTurn(input: {
++    onTerminalSessionFailure?: (failure: { category: string; title?: string; details?: string }) => void;
+     handle: AcpRuntimeHandle;
+     text: string;
+     attachments?: AcpRuntimeTurnAttachment[];
+@@ -442,6 +456,7 @@ declare class AcpxRuntime implements AcpxRuntimeLike {
      key: string;
      value: string;
    }): Promise<void>;
@@ -321,7 +356,7 @@ index ccdbe5b..228ff50 100644
    cancel(input: {
      handle: AcpRuntimeHandle;
      reason?: string;
-@@ -462,4 +474,4 @@ declare function createRuntimeStore(options: {
+@@ -462,4 +477,4 @@ declare function createRuntimeStore(options: {
  }): AcpSessionStore;
  //#endregion
  export { ACPX_BACKEND_ID, type AcpAgentRegistry, type AcpFileSessionStoreOptions, type AcpPermissionDecision, type AcpPermissionRequest, type AcpRuntime, type AcpRuntimeAvailableCommand, type AcpRuntimeCapabilities, type AcpRuntimeDoctorReport, type AcpRuntimeEnsureInput, AcpRuntimeError, type AcpRuntimeErrorCode, type AcpRuntimeEvent, type AcpRuntimeHandle, type AcpRuntimeOptions, type AcpRuntimePromptMode, type AcpRuntimeSessionMode, type AcpRuntimeSessionModels, type AcpRuntimeSessionUsage, type AcpRuntimeStatus, type AcpRuntimeTurn, type AcpRuntimeTurnAttachment, type AcpRuntimeTurnInput, type AcpRuntimeTurnResult, type AcpRuntimeTurnResultError, type AcpRuntimeUsageBreakdown, type AcpRuntimeUsageCost, type AcpSessionRecord, type AcpSessionStore, type AcpSessionUpdateTag, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, type RequestedModelUnsupportedErrorCode, type RequestedModelUnsupportedReason, type SessionAgentOptions, type SystemPromptOption, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
@@ -329,7 +364,7 @@ index ccdbe5b..228ff50 100644
 \ No newline at end of file
 +//# sourceMappingURL=runtime.d.ts.map
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc99..9568b17 100644
+index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..15f05fd7f61e92e96eeceef8931daac34082e957 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -580,10 +580,32 @@ function createRecordId(sessionKey, mode) {
@@ -379,7 +414,15 @@ index 6c9cc99..9568b17 100644
  	}
  	async readPendingPersistentClient(record, options) {
  		const pendingClient = this.pendingPersistentClients.get(record.acpxRecordId);
-@@ -1208,10 +1235,12 @@ var AcpRuntimeManager = class {
+@@ -982,6 +1009,7 @@ var AcpRuntimeManager = class {
+ 				client: turn.client,
+ 				sessionId,
+ 				prompt: task.promptInput,
++				onTerminalSessionFailure: task.input.onTerminalSessionFailure,
+ 				timeoutMs: task.input.timeoutMs ?? this.options.timeoutMs,
+ 				conversation: turn.conversation,
+ 				promptMessageId: turn.promptMessageId
+@@ -1208,10 +1236,12 @@ var AcpRuntimeManager = class {
  	failRuntimeTurn(task, error) {
  		task.sessionReady.reject(error);
  		const normalized = normalizeOutputError(error, { origin: "runtime" });
@@ -392,7 +435,23 @@ index 6c9cc99..9568b17 100644
  				...normalized.code ? { code: normalized.code } : {},
  				...normalized.detailCode ? { detailCode: normalized.detailCode } : {},
  				...normalized.retryable !== void 0 ? { retryable: normalized.retryable } : {}
-@@ -1645,6 +1674,9 @@ var AcpxRuntime = class {
+@@ -1586,6 +1616,7 @@ var AcpxRuntime = class {
+ 		const turnPromise = this.getManager().then((manager) => manager.startTurn({
+ 			handle,
+ 			text: input.text,
++			onTerminalSessionFailure: input.onTerminalSessionFailure,
+ 			attachments: input.attachments,
+ 			mode: input.mode,
+ 			sessionMode: state.mode,
+@@ -1614,6 +1645,7 @@ var AcpxRuntime = class {
+ 		yield* (await this.getManager()).runTurn({
+ 			handle,
+ 			text: input.text,
++			onTerminalSessionFailure: input.onTerminalSessionFailure,
+ 			attachments: input.attachments,
+ 			mode: input.mode,
+ 			sessionMode: state.mode,
+@@ -1645,6 +1677,9 @@ var AcpxRuntime = class {
  		const { handle, state } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
  	}
@@ -402,7 +461,7 @@ index 6c9cc99..9568b17 100644
  	async cancel(input) {
  		const { handle } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).cancel(handle);
-@@ -1704,4 +1736,4 @@ function createRuntimeStore(options) {
+@@ -1704,4 +1739,4 @@ function createRuntimeStore(options) {
  //#endregion
  export { ACPX_BACKEND_ID, AcpRuntimeError, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
  
@@ -410,7 +469,7 @@ index 6c9cc99..9568b17 100644
 \ No newline at end of file
 +//# sourceMappingURL=runtime.js.map
 diff --git a/dist/session-options-jkYbBxGE.d.ts b/dist/session-options-jkYbBxGE.d.ts
-index 9d37f37..cb8104e 100644
+index 9d37f377fb6a0828e0d2bc5a48754f3aa71509a4..cb8104e97b37dc21d8b47f953d5e33de7e9a9e71 100644
 --- a/dist/session-options-jkYbBxGE.d.ts
 +++ b/dist/session-options-jkYbBxGE.d.ts
 @@ -84,6 +84,11 @@ type AcpClientOptions = {

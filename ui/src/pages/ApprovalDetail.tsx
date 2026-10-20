@@ -1,3 +1,4 @@
+import { AgentIdentity } from "@/components/AgentIdentity";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -229,8 +230,8 @@ export function ApprovalDetail() {
     agents ? (agentNameById.get(agentId) ?? null) : undefined;
   /** An agent as the page names it: by its name, or as "An agent" (with a neutral avatar) when the name is not known. */
   const agentIdentity = (agentId: string) => {
-    const name = agentNameById.get(agentId);
-    return name ? <Identity name={name} size="sm" /> : <Identity name={UNKNOWN_AGENT_NAME} initials="?" size="sm" />;
+    const agent = agents?.find((candidate) => candidate.id === agentId);
+    return agent ? <AgentIdentity agent={agent} size="sm" /> : <Identity name={UNKNOWN_AGENT_NAME} initials="?" size="sm" />;
   };
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";

@@ -1,5 +1,8 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createProviderCooldownKey, resolveProviderCooldownSecretVersions } from "../services/provider-cooldown-scope.js";
+import { createProviderCooldownKey, declaredCodexProviderAccountKey, resolveProviderCooldownSecretVersions } from "../services/provider-cooldown-scope.js";
 
 const base = {
   adapterType: "codex_local",
@@ -145,4 +148,28 @@ describe("provider cooldown scope", () => {
     }])).rejects.toThrow("metadata is unavailable");
     expect(secrets.resolveSecretVersion).not.toHaveBeenCalled();
   });
+});
+
+it("keeps declared CODEX_API_KEY secret routes unknown before credential resolution", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-declared-account-"));
+  vi.stubEnv("OPENAI_API_KEY", "");
+  vi.stubEnv("CODEX_API_KEY", "");
+  try {
+    await fs.writeFile(path.join(root, "auth.json"), JSON.stringify({ tokens: {
+      account_id: "synthetic-subscription", access_token: "synthetic-token",
+    } }), { mode: 0o600 });
+    const input = {
+      companyId: "company", adapterType: "codex_local", adapterConfig: { env: { CODEX_HOME: root } },
+      environmentDriver: "local", environmentEnv: {}, projectEnv: {}, routineEnv: {}, managed: false,
+    };
+    expect(await declaredCodexProviderAccountKey(input)).toMatch(/^[a-f0-9]{64}$/);
+    for (const scope of ["environmentEnv", "projectEnv", "routineEnv"] as const) {
+      expect(await declaredCodexProviderAccountKey({ ...input, [scope]: {
+        CODEX_API_KEY: { type: "secret_ref", secretId: "synthetic-api-secret", version: "latest" },
+      } })).toBeNull();
+    }
+  } finally {
+    vi.unstubAllEnvs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
