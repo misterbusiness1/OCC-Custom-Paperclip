@@ -92,19 +92,26 @@ describe("run liveness classifier", () => {
   });
 
   it.each([undefined, null, "standard", "ask", "skill_test", "planning"])(
-    "title and description cannot change liveness in explicit mode %s",
+    "fork rule: a planning or document task by title or description is exempt in mode %s",
     (workMode) => {
+      // Production exempts plan/research/report tasks by their wording, not
+      // only by explicit planning mode (owner decision 2026-10-21).
       const input = {
         ...baseInput,
         issue: { ...baseInput.issue, workMode },
         resultJson: { summary: "I will inspect the repo next." },
       };
-      const expected = classifyRunLiveness(input);
-      expect(expected.livenessState).toBe(workMode === "planning" ? "advanced" : "plan_only");
-      for (const text of ["plan", "planning", "analysis", "investigation", "research", "report", "proposal", "design doc", "write-up", "making a plan", "No plan requested", "Preparar un plan"]) {
-        for (const prose of [{ title: `Implement ${text} export` }, { description: `Create a ${text} exporter.` }]) {
-          expect(classifyRunLiveness({ ...input, issue: { ...input.issue, ...prose } })).toEqual(expected);
-        }
+      expect(classifyRunLiveness(input).livenessState).toBe(workMode === "planning" ? "advanced" : "plan_only");
+      for (const text of ["plan", "planning", "analysis", "investigation", "research", "report", "proposal", "design doc", "write-up"]) {
+        expect(classifyRunLiveness({ ...input, issue: { ...input.issue, title: `Implement ${text} export` } }).livenessState).toBe("advanced");
+      }
+      for (const description of ["Create a plan for the rollout.", "Write the report.", "Prepare a proposal.", "Draft a design doc."]) {
+        expect(classifyRunLiveness({ ...input, issue: { ...input.issue, description } }).livenessState).toBe("advanced");
+      }
+      // Wording that does not ask for a plan or document keeps the classifier.
+      for (const description of ["No plan requested.", "Preparar un plan.", "Fix the planner crash."]) {
+        expect(classifyRunLiveness({ ...input, issue: { ...input.issue, description } }).livenessState)
+          .toBe(workMode === "planning" ? "advanced" : "plan_only");
       }
     },
   );

@@ -94,7 +94,9 @@ describeEmbeddedPostgres("activity service", () => {
     }
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", contextSnapshot: { issueId: task.id }, resultJson: { summary: "I will inspect the repository next." } });
-    const expected = workMode === "planning" ? "advanced" : "plan_only";
+    // Fork rule: the task's plan wording exempts it in every mode (see
+    // isPlanningOrDocumentTask); the mode itself still persists below.
+    const expected = "advanced";
     await waitForIssueRun(activityService(db), companyId, task.id, run => run.runId === runId && run.livenessState === expected);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].livenessState).toBe(expected);
     if (workMode === "standard") {
