@@ -1,3 +1,4 @@
+import { revisionReconciliation } from "./revision-reconciliation.js";
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
@@ -1264,6 +1265,7 @@ export function recoveryService(
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
   const budgets = budgetService(db);
+  const revisions = revisionReconciliation(db, deps.enqueueWakeup);
   let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
 
   async function getAgent(agentId: string) {
@@ -4785,6 +4787,7 @@ export function recoveryService(
   async function reconcileStrandedAssignedIssues(opts?: {
     issueCreatedAtGte?: Date | null;
   }) {
+    await revisions.reconcile(opts);
     const candidates = await db
       .select()
       .from(issues)
@@ -4795,6 +4798,13 @@ export function recoveryService(
             where recovery_company.id = ${issues.companyId}
               and recovery_company.status = 'active'
           )`,
+          // Revision recovery owns domain follow-through. Generic run-success recovery
+          // must not create a competing retry chain for the same linked issue.
+          sql`not exists (select 1 from issue_approvals revision_link
+            join approvals revision_card on revision_card.id = revision_link.approval_id
+              and revision_card.company_id = ${issues.companyId}
+            where revision_link.issue_id = ${issues.id} and revision_link.company_id = ${issues.companyId}
+              and revision_card.status = 'revision_requested')`,
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress", "in_review"]),
           or(
