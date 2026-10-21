@@ -1,3 +1,5 @@
+import { approvalQueueMissingOwner, approvalQueueNextFollowUp } from "../lib/approval-queue-attention";
+import { ApprovalQueueAttention } from "../components/ApprovalQueueAttention";
 import {
   startTransition,
   useCallback,
@@ -377,7 +379,7 @@ function DecidedApprovalRow({
  * the version on record is the one the board asked to change, and the detail
  * page still offers Approve and Reject for it.
  */
-function SentBackApprovalRow({ approval, detailsState }: { approval: Approval; detailsState?: ApprovalQueueLinkState }) {
+function SentBackApprovalRow({ approval, detailsState, agentNames }: { approval: Approval; detailsState?: ApprovalQueueLinkState; agentNames: ReadonlyMap<string, string> }) {
   return (
     <li
       className={cn(
@@ -402,6 +404,7 @@ function SentBackApprovalRow({ approval, detailsState }: { approval: Approval; d
       >
         View details
       </Link>
+      <ApprovalQueueAttention approval={approval} agentNames={agentNames} />
       <ApprovalChangesAskedFor note={approval.decisionNote} className="basis-full" />
     </li>
   );
@@ -1087,6 +1090,17 @@ export function Approvals() {
   const sentBack = (data ?? [])
     .filter((a) => statusFilter === "pending" && isSentBack(a) && !listedIds.has(a.id))
     .sort((a, b) => timeOf(approvalSentBackAt(a)) - timeOf(approvalSentBackAt(b)));
+  const revisionAgentNames = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent.name])), [agents]);
+  const revisionAttention = sentBack.reduce((summary, approval) => {
+    const attention = approval.queueAttention;
+    if (!attention) return summary;
+    if (approvalQueueMissingOwner(attention)) summary.missingOwner += 1;
+    const next = approvalQueueNextFollowUp(attention);
+    if (!next) summary.unscheduled += 1;
+    else if (next.getTime() <= Date.now()) summary.overdue += 1;
+    if (attention.staleReasons.length) summary.stale += 1;
+    return summary;
+  }, { missingOwner: 0, unscheduled: 0, overdue: 0, stale: 0 });
   const kinds = Array.from(new Set(inTab.map(approvalKind)));
   const activeKind = kinds.includes(kindFilter) ? kindFilter : "all";
   // The requests the search term is found in, whatever the case: in the subject, the requester's
@@ -1906,6 +1920,11 @@ export function Approvals() {
               Waiting on the requester ({sentBack.length})
             </Button>
           </h2>
+          {(revisionAttention.missingOwner > 0 || revisionAttention.unscheduled > 0 || revisionAttention.overdue > 0 || revisionAttention.stale > 0) && (
+            <p className="px-2 text-xs font-medium text-foreground" data-approval-revision-attention-summary>
+              Revision attention: {revisionAttention.overdue} overdue follow-ups · {revisionAttention.unscheduled} without scheduled follow-up · {revisionAttention.missingOwner} missing owners · {revisionAttention.stale} stale approvals to review
+            </p>
+          )}
           {showSentBack && (
             <div className="space-y-3">
               <p className="px-2 text-xs leading-5 text-muted-foreground">
@@ -1914,7 +1933,7 @@ export function Approvals() {
               </p>
               <ul className="grid grid-cols-1 gap-3" ref={sentBackListRef}>
                 {sentBack.map((approval) => (
-                  <SentBackApprovalRow key={approval.id} approval={approval} detailsState={detailsState} />
+                  <SentBackApprovalRow key={approval.id} approval={approval} detailsState={detailsState} agentNames={revisionAgentNames} />
                 ))}
               </ul>
             </div>

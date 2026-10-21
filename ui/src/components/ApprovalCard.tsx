@@ -1,3 +1,4 @@
+import { ApprovalQueueAttention } from "./ApprovalQueueAttention";
 import { useId, useMemo, useRef, type KeyboardEvent } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Link } from "@/lib/router";
@@ -316,6 +317,7 @@ export function ApprovalCard({
         <ApprovalTerms payload={approval.payload} compact />
       )}
       {missingSourceNote && <span>{missingSourceNote}</span>}
+      <ApprovalQueueAttention approval={approval} />
       {/* A closed row has no notice and no buttons, so it says these two things itself. */}
       {!isOpen && revision.revised && (
         <span className="font-medium text-amber-700 dark:text-amber-300">Revised while this page was open</span>

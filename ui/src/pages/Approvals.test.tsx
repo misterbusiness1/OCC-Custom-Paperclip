@@ -692,6 +692,57 @@ describe("Approvals", () => {
     const sectionToggle = () => section()!.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
     const sentBackRows = () => [...container.querySelectorAll<HTMLElement>("[data-approval-sent-back-row]")];
 
+    it("surfaces missing follow-up and ownership before the revision section is expanded", async () => {
+      approvals = [...approvals, sentBackApproval({ queueAttention: {
+        revisionRequestedAt: new Date(Date.now() - HOUR_MS),
+        owner: { agentId: null, userId: null, name: null, status: null },
+        tasks: [], staleReasons: ["linked_task_closed"], supersededByApprovalId: null,
+      } })];
+      await render();
+      expect(sectionToggle().getAttribute("aria-expanded")).toBe("false");
+      const summary = container.querySelector("[data-approval-revision-attention-summary]")!.textContent;
+      expect(summary).toContain("1 without scheduled follow-up");
+      expect(summary).toContain("1 missing owners");
+      expect(summary).toContain("1 stale approvals to review");
+      await click(sectionToggle());
+      expect(sentBackRows()[0].textContent).toContain("Revision still outstanding; resubmission or disposition required.");
+    });
+
+    it("flags unassigned linked work despite a requester and renders every original task link", async () => {
+      approvals = [...approvals, sentBackApproval({ queueAttention: {
+        revisionRequestedAt: new Date(),
+        owner: { agentId: "requester-A", userId: null, name: "Requester A", status: "idle" },
+        tasks: [
+          { id: "task-B", identifier: "QA-123", status: "todo", assigneeAgentId: "owner-B", assigneeUserId: null, blockerAction: null, nextFollowUpAt: null },
+          { id: "task-unassigned", identifier: "QA-124", status: "todo", assigneeAgentId: null, assigneeUserId: null, blockerAction: null, nextFollowUpAt: null },
+        ], staleReasons: [], supersededByApprovalId: null,
+      } })];
+      await render();
+      expect(container.querySelector("[data-approval-revision-attention-summary]")!.textContent).toContain("1 missing owners");
+      await click(sectionToggle());
+      const row = sentBackRows()[0];
+      expect(row.textContent).toContain("Requester: Requester A");
+      expect(row.textContent).toContain("Current owner: agent owner-B");
+      expect(row.textContent).toContain("Current owner: missing owner (unassigned task)");
+      expect([...row.querySelectorAll("a")].map((link) => link.getAttribute("href"))).toEqual(expect.arrayContaining([
+        "/approvals/sent-back", "/issues/QA-123", "/issues/QA-124",
+      ]));
+    });
+
+    it("counts a current revision outcome follow-up without requiring a task monitor", async () => {
+      approvals = [...approvals, sentBackApproval({ queueAttention: {
+        revisionRequestedAt: new Date(Date.now() - HOUR_MS),
+        owner: { agentId: "requester", userId: null, name: "Requester", status: "idle" },
+        tasks: [], staleReasons: [], supersededByApprovalId: null,
+        revisionOutcome: { outcome: "durable_blocker", blocker: "Board action", nextAction: "Recheck",
+          nextFollowUpAt: new Date(Date.now() - HOUR_MS), recordedAt: new Date(), attemptCount: 1, executionActive: false },
+      } })];
+      await render();
+      const summary = container.querySelector("[data-approval-revision-attention-summary]")!.textContent;
+      expect(summary).toContain("1 overdue follow-ups");
+      expect(summary).toContain("0 without scheduled follow-up");
+    });
+
     it("lists and counts only pending requests under To decide", async () => {
       approvals = [...approvals, sentBackApproval()];
       await render();

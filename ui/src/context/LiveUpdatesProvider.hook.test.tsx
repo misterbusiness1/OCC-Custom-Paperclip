@@ -3,7 +3,7 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { act as reactAct } from "react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
@@ -195,6 +195,28 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
       }) })));
     }
     expect(received.mock.calls.map(([event]) => event.payload.activityId)).toEqual(["audit-a", "audit-b"]);
+  });
+
+  it("refreshes a mounted approval queue query on blocker-only revision outcome activity", async () => {
+    let blocker = "none recorded";
+    const loadQueue = vi.fn(async () => ({ blocker }));
+    function Queue() {
+      const { data } = useQuery({ queryKey: queryKeys.approvals.list("company-1"), queryFn: loadQueue, staleTime: Infinity });
+      return <span>{data?.blocker}</span>;
+    }
+    await reactAct(async () => {
+      root!.render(<QueryClientProvider client={queryClient}><LiveUpdatesProvider><Queue /></LiveUpdatesProvider></QueryClientProvider>);
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("none recorded"));
+    blocker = "Await board review";
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    await reactAct(async () => sockets[0]!.onmessage!(new MessageEvent("message", { data: JSON.stringify({
+      id: 1, companyId: "company-1", type: "activity.logged", createdAt: "2026-10-21T00:00:00Z",
+      payload: { activityId: "revision-audit", action: "approval.revision_outcome", entityType: "approval", entityId: "approval-1",
+        actorType: "system", details: { outcome: "durable_blocker", blocker } },
+    }) })));
+    await vi.waitFor(() => expect(container.textContent).toContain("Await board review"));
+    expect(loadQueue).toHaveBeenCalledTimes(2);
   });
 
   it("disconnects while hidden and reconciles active queries once on return", async () => {

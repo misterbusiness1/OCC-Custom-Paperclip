@@ -804,6 +804,7 @@ export type {
   ApprovalLinkedIssue,
   ApprovalLinkedIssuesByApproval,
   ApprovalQueue,
+  ApprovalQueueAttention,
 } from "./approval.js";
 export type {
   BudgetPolicy,
