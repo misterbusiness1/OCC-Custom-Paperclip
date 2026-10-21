@@ -1293,6 +1293,11 @@ function invalidateActivityQueries(
       // An ancestor hold or reparenting changes descendants' effective pause.
       queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state"] });
     }
+    if (action === "issue.deleted") {
+      // Deleting a task removes its approval links (cascade) without a link event: the queue's
+      // chips are read again so none points at the deleted task.
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.linkedIssuesOfCompany(companyId) });
+    }
     if (action === "issue.approval_linked" || action === "issue.approval_unlinked") {
       // The approval queue shows each request's linked tasks; a task linked or unlinked changes them.
       // Only a mounted queue refetches, as one batch read.

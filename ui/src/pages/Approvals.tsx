@@ -1616,7 +1616,9 @@ export function Approvals() {
     // answer still cached from before it.
     queryKey: [...queryKeys.approvals.linkedIssues(selectedCompanyId ?? "", linkedIssueIdsKey), linkedGenerationAt],
     queryFn: () => approvalsApi.listLinkedIssues(selectedCompanyId!, linkedIssueIdsKey.split(",")),
-    enabled: !!selectedCompanyId && linkedIssueIdsKey.length > 0,
+    // Waits for the marker, whose time is part of the key: a read started before it loaded would be
+    // read again under the new key.
+    enabled: !!selectedCompanyId && linkedIssueIdsKey.length > 0 && linkedGenerationAt > 0,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });

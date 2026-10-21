@@ -356,6 +356,13 @@ describe("Approvals", () => {
       expect(apiMocks.listLinkedIssues).toHaveBeenCalledTimes(1);
     });
 
+    it("reads the chips once when the approvals list is already cached (as the inbox badge leaves it)", async () => {
+      queryClient.setQueryData(queryKeys.approvals.list("company-1"), approvals);
+      await render();
+      await vi.waitFor(() => expect(rows()[0].textContent).toContain("DEMO-7"));
+      expect(apiMocks.listLinkedIssues).toHaveBeenCalledTimes(1);
+    });
+
     it("re-reads every row after a live update of linked tasks, keeping the chips shown until the answer lands", async () => {
       await render();
       await vi.waitFor(() => expect(rows()[0].textContent).toContain("DEMO-7"));
