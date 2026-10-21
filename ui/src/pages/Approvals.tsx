@@ -1590,7 +1590,7 @@ export function Approvals() {
   // Live updates invalidate the company's linked-task reads (LiveUpdatesProvider). This always-active
   // marker under the same prefix is refetched by every such invalidation; its new time means "re-read".
   const { dataUpdatedAt: linkedGenerationAt } = useQuery({
-    queryKey: [...queryKeys.approvals.linkedIssuesOfCompany(selectedCompanyId ?? ""), "generation"],
+    queryKey: queryKeys.approvals.linkedIssuesGeneration(selectedCompanyId ?? ""),
     queryFn: async () => Date.now(),
     enabled: !!selectedCompanyId,
     staleTime: Infinity,
