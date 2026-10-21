@@ -976,6 +976,15 @@ not create a 429 hold. Native-runner-originating HTTP-status propagation remains
 separately unqualified. Provider wait decisions preserve normal
 ownership, cleanup, pause, dependency, approval, and budget gates.
 
+Quota recovery retains an absolute deadline recorded by the failed attempt,
+including a default backoff, across scheduler scans and server restarts. When
+several recorded deadline aliases are valid, the latest wins; an expired or
+malformed alias cannot shorten another valid wait. An expired receipt stays
+due instead of moving forward on every scan. A genuinely new quota failure
+owns its own reset or default backoff; an old continuation-context hint does
+not resurrect the previous wait. Expiry only removes that quota wait and
+preserves the existing bounded recovery policy and other admission gates.
+
 When an `in_progress` conversation remains stranded after that failure budget is exhausted, recovery atomically records a board-owned recovery action, moves the source issue to `blocked`, and marks its originating routine run failed with a completion timestamp. This disposition preserves the assignee and requires an explicit continuation after inspection or repair; it does not enqueue another attempt or impose an unknown-action-outcome hold. A newer run, explicit user input, changed issue decision, existing recovery action, or durable waiting path keeps its own lifecycle authority. An idle blocked routine execution does not count as live overlap, so the next scheduled occurrence still follows the existing routine concurrency policy.
 
 Real gates still apply: company and task ownership, active provider ownership, budget limits, agent availability, dependencies, pending approval/review paths, and explicit pause holds. Native runner reattachment and finalization retain their existing ownership protocol. Process, HTTP, and gateway adapters retain their recovery rules because invoking those adapters can itself repeat an external action rather than start a conversation turn.
