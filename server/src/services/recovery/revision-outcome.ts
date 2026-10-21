@@ -18,13 +18,24 @@ export function decideRevisionRecovery(input: {
   blocker: string | null;
   activeExecution: boolean;
   invokable: boolean;
+  operatorHeld?: boolean;
 }): { outcome: RevisionOutcome; action: "none" | "retry" | "escalate";
   blocker: string | null; nextFollowUpAt: string | null } {
   const result = (outcome: RevisionOutcome, action: "none" | "retry" | "escalate", blocker: string | null = null,
     nextFollowUpAt: string | null = null) => ({ outcome, action, blocker, nextFollowUpAt });
   if (input.status === "pending") return result("resubmitted", "none");
-  if (["approved", "rejected"].includes(input.status)) return result("disposed", "none");
-  if (input.blocker) return result("durable_blocker", "none", input.blocker);
+  if (["approved", "rejected", "cancelled"].includes(input.status)) return result("disposed", "none");
+  if (input.blocker) {
+    // An existing recovery action already supplies board attention. Other blockers
+    // retain their gate, but cannot silently suppress attention past the age bound.
+    if (input.operatorHeld || input.activeExecution || input.blocker.startsWith("recovery_action:")) {
+      return result("durable_blocker", "none", input.blocker);
+    }
+    const due = input.decidedAt.getTime() + REVISION_RECOVERY_TIMEOUT_MS;
+    return input.now.getTime() >= due
+      ? result("durable_blocker", "escalate", input.blocker)
+      : result("durable_blocker", "none", input.blocker, new Date(due).toISOString());
+  }
   if (input.activeExecution) return result("unresolved", "none");
   if (!input.invokable) return result("unresolved", "escalate");
   if (input.attemptCount >= REVISION_RECOVERY_MAX_ATTEMPTS ||

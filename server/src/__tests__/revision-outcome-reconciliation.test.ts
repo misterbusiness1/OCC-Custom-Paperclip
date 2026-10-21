@@ -115,6 +115,52 @@ suite("durable adapter-independent revision reconciliation", () => {
     await revisionReconciliation(db, enqueue).reconcile();
     expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(2);
   });
+  it.each([false, true])("settles cancellation after recovery, including exhausted=%s", async exhausted => {
+    const x = await seed(); const enqueue = vi.fn(async () => null);
+    if (exhausted) await db.update(approvals).set({ decidedAt: new Date(Date.now() - 25 * 60 * 60_000) })
+      .where(eq(approvals.id, x.approvalId));
+    await revisionReconciliation(db, enqueue).reconcile();
+    const attempts = (await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).length;
+    await db.update(approvals).set({ status: "cancelled", decidedAt: new Date() }).where(eq(approvals.id, x.approvalId));
+    await revisionReconciliation(db, enqueue).reconcile();
+    await revisionReconciliation(db, enqueue).reconcile();
+    expect(await latest(x.approvalId)).toMatchObject({ outcome: "disposed", blocker: null });
+    expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(attempts);
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, x.issueId));
+    expect(actions.every(action => action.status === "resolved")).toBe(true);
+  });
+  it.each([1, 48])("does not strand a %s-hour revision behind an unrelated pending card", async hours => {
+    const x = await seed(); const enqueue = vi.fn(async () => null); const unrelated = randomUUID();
+    await db.update(approvals).set({ decidedAt: new Date(Date.now() - hours * 60 * 60_000) }).where(eq(approvals.id, x.approvalId));
+    await db.insert(approvals).values({ id: unrelated, companyId: x.companyId, type: "request_board_approval",
+      requestedByAgentId: x.agentId, status: "pending", payload: { title: "Separate spend approval" } });
+    await db.insert(issueApprovals).values({ companyId: x.companyId, issueId: x.issueId, approvalId: unrelated });
+    await revisionReconciliation(db, enqueue).reconcile();
+    const outcome = await latest(x.approvalId);
+    expect(outcome.blocker).not.toBe(`approval:${unrelated}`);
+    if (hours === 1) expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(1);
+    else {
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, x.issueId));
+      expect(action).toMatchObject({ ownerType: "board", cause: "approval_revision_unresolved", status: "escalated" });
+    }
+    const [card] = await db.select().from(approvals).where(eq(approvals.id, unrelated));
+    expect(card.status).toBe("pending");
+  });
+  it("gives an overdue human blocker accountable attention without resolving it", async () => {
+    const x = await seed(); const interactionId = randomUUID();
+    await db.update(approvals).set({ decidedAt: new Date(Date.now() - 48 * 60 * 60_000) }).where(eq(approvals.id, x.approvalId));
+    await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: x.companyId, issueId: x.issueId,
+      kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee", payload: { title: "Human decision" } });
+    const enqueue = vi.fn(async () => null);
+    await revisionReconciliation(db, enqueue).reconcile();
+    await revisionReconciliation(db, enqueue).reconcile();
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, x.issueId));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ ownerType: "board", cause: "approval_revision_unresolved" });
+    expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(0);
+    const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
+    expect(interaction.status).toBe("pending");
+  });
   it("preserves human-only pending interactions and unchanged durable blockers", async () => {
     const x = await seed(); const enqueue = vi.fn(async () => null); const interactionId = randomUUID();
     await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: x.companyId, issueId: x.issueId,

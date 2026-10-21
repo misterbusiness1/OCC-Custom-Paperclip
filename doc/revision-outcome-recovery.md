@@ -2,7 +2,7 @@
 
 The existing stranded-assignment sweep now also reconciles approval revisions. It uses the normal wake admission path for every adapter, including external adapters. It does not add a timer, change decisions, send messages, reassign tasks, or reopen completed tasks.
 
-A successful provider run is execution evidence only. Domain outcomes come from the same approval card: `pending` means resubmitted; `approved` or `rejected` means disposed. A persisted human interaction, named dependency, other pending approval, current human owner, future monitor, paused agent or recovery action is a durable blocker. Otherwise the revision remains unresolved.
+A successful provider run is execution evidence only. Domain outcomes come from the same approval card: `pending` means resubmitted; `approved`, `rejected`, or `cancelled` means disposed. A persisted human interaction, named dependency, current human owner, future monitor, paused agent or recovery action can block continuation. Another pending approval merely sharing the task does not block editing this revision; its business execution gate remains intact. Otherwise the revision remains unresolved.
 
 ## Persistence and integration
 
@@ -18,7 +18,7 @@ The queue integration can consume these events without treating runtime success 
 
 ## Bounds and failure behavior
 
-The sweep uses a rotating keyset cursor and at most 100 approval candidates per pass. PostgreSQL advisory locks serialize the same approval across independent server instances. Each revision permits at most three reserved recovery attempts, separated by 15, 30 and 60 minutes. A revision unresolved for 24 hours requires intervention. Active execution and explicit operator holds are preserved. Paused and archived companies are excluded.
+The sweep uses a rotating keyset cursor and at most 100 approval candidates per pass. PostgreSQL advisory locks serialize the same approval across independent server instances. Each revision permits at most three reserved recovery attempts, separated by 15, 30 and 60 minutes. A revision unresolved for 24 hours requires intervention, including a revision waiting on a named blocker. Before that bound the outcome records its next attention check. Escalation preserves the actual blocker and creates board-owned attention rather than resolving the human question or executing the proposal. Existing recovery actions already provide an accountable attention path. Active execution and explicit operator holds are preserved. Paused and archived companies are excluded.
 
 A reservation commits before admission. A process crash, skipped wake, or admission exception therefore consumes a bounded attempt rather than losing the retry budget. A later sweep tries again after the recorded delay. Admission rechecks the exact decision and active company under shared row locks. The normal issue-state guard checks ownership and actionable status. Normal admission still enforces budgets, holds, dependencies, and runtime concurrency. No adapter-specific bypass exists.
 

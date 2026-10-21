@@ -1,12 +1,32 @@
 # Oxford production source provenance
 
 Every future Oxford production candidate must be available from GitHub **before
-its first drain or deployment mutation**. Use the maintained entrypoint:
+its first drain or deployment mutation**. Install the reviewed entrypoint from a
+clean checkout whose HEAD is the approved full commit SHA:
 
 ```sh
-python3 /path/to/reviewed-checkout/scripts/production/deploy.py \
+python3 /path/to/reviewed-checkout/scripts/production/install.py \
+  --source /path/to/reviewed-checkout --source-commit <full-reviewed-commit-sha>
+```
+
+The installer only writes the local launcher, pinned helper and adoption receipt;
+it never invokes the deployment guard. It verifies the helper bytes against the
+chosen Git commit, refuses dirty/hidden-index source, and refuses to overwrite an
+unrelated or modified existing command. It installs:
+
+- `~/.local/bin/paperclip-production-deploy`: canonical operator command.
+- `~/.local/share/paperclip/production-launcher/<helper-sha256>/deploy.py`: immutable selected helper.
+- `~/.local/share/paperclip/production-launcher-adoption.json`: source commit, helper hash,
+  launcher hash and installation time. No credentials are recorded.
+
+The command verifies the pinned helper hash and executes those exact verified bytes
+on every invocation. Keep `~/.local/bin` on the operator PATH. Use this canonical
+command for each future release phase:
+
+```sh
+~/.local/bin/paperclip-production-deploy \
   --manifest /absolute/path/to/release-provenance.json
-python3 /path/to/reviewed-checkout/scripts/production/deploy.py \
+~/.local/bin/paperclip-production-deploy \
   --manifest /absolute/path/to/release-provenance.json --phase prepare --execute
 # Then invoke each existing phased guard operation separately through this entrypoint.
 # For example: --phase drain --execute, --phase apply --execute, --phase release --execute.
@@ -65,9 +85,13 @@ The current historical guard and its frozen qualification evidence live outside
 Git under the release directory. Preserve them unchanged. Promote the command above
 as the **canonical production launcher** in the operator's maintained deployment
 policy/launcher, and route **every** future phase (including rollback phases)
-through it. Before promotion, review this entrypoint and pin its repository commit
-in that launcher. A fixed trusted checkout prevents an operator accidentally using
-a modified copy of the gate.
+through it. Before promotion, review this entrypoint and run the installer at the approved
+repository commit. Record its adoption receipt in the release handoff. To update,
+repeat installation from the next clean reviewed commit; the installer only
+replaces a command that still matches its previous adoption receipt. Old helper
+copies are retained for inspection. To reverse adoption, remove the managed command
+only after verifying it against the receipt and restore the previously approved
+operator launcher; do not remove a command modified independently by another owner.
 
 The wrapper cannot prevent an administrator directly running the historical guard
 or Docker. Therefore deployment provenance is enforced only for the adopted launch

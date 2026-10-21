@@ -10,7 +10,7 @@ describe("revision domain outcomes", () => {
   it("a successful no-op remains unresolved and requires follow-through", () => {
     expect(decideRevisionRecovery(base)).toMatchObject({ outcome: "unresolved", action: "retry" });
   });
-  it.each(["pending", "approved", "rejected"])("uses actual same-card %s status", status => {
+  it.each(["pending", "approved", "rejected", "cancelled"])("uses actual same-card %s status", status => {
     expect(decideRevisionRecovery({ ...base, status })).toMatchObject({
       outcome: status === "pending" ? "resubmitted" : "disposed", action: "none",
     });
@@ -31,6 +31,14 @@ describe("revision domain outcomes", () => {
   it("ages unresolved revisions to named intervention even without retries", () => {
     expect(decideRevisionRecovery({ ...base, decidedAt: new Date(now.getTime() - 24 * 60 * 60_000) }))
       .toMatchObject({ action: "escalate" });
+  });
+  it("bounds attention for a named blocker while preserving explicit holds", () => {
+    const blocked = { ...base, blocker: "interaction:human-1" };
+    expect(decideRevisionRecovery(blocked)).toMatchObject({ outcome: "durable_blocker", action: "none",
+      nextFollowUpAt: "2026-10-22T17:00:00.000Z" });
+    const overdue = { ...blocked, decidedAt: new Date(now.getTime() - 48 * 60 * 60_000) };
+    expect(decideRevisionRecovery(overdue)).toMatchObject({ action: "escalate" });
+    expect(decideRevisionRecovery({ ...overdue, operatorHeld: true })).toMatchObject({ action: "none" });
   });
   it("never resets revision identity on payload edits and distinguishes repeated decisions", () => {
     expect(revisionIdentity("a", now)).toBe(revisionIdentity("a", now));

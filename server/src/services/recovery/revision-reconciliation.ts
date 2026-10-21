@@ -87,20 +87,22 @@ export function revisionReconciliation(db: Db, enqueueWakeup: Wake) {
             await actions.resolveActiveForIssue({ companyId: approval.companyId, sourceIssueId: recovery.sourceIssueId,
               actionId: recovery.id, status: "resolved", outcome: "restored",
               resolutionNote: "Same-card revision was resubmitted/disposed or a later decision superseded this revision." }, tx);
-          } else if (!blocker && recovery) blocker = `recovery_action:${recovery.id}`;
+          } else if (recovery && (!blocker || (recovery.cause === "approval_revision_unresolved"
+            && recovery.evidence?.approvalId === approval.id && recovery.fingerprint === revisionKey))) {
+            blocker = `recovery_action:${recovery.id}`;
+          }
           const [dependency] = await tx.select({ id: issues.id }).from(issueRelations).innerJoin(issues,
             and(eq(issues.id, issueRelations.issueId), eq(issues.companyId, approval.companyId)))
             .where(and(eq(issueRelations.companyId, approval.companyId), inArray(issueRelations.relatedIssueId, issueIds),
               eq(issueRelations.type, "blocks"), sql`(${issues.assigneeAgentId} is not null or ${issues.assigneeUserId} is not null)`, inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]))).limit(1);
           if (!blocker && dependency) blocker = `issue:${dependency.id}`;
-          const [otherApproval] = await tx.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals,
-            and(eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, approval.companyId)))
-            .where(and(eq(issueApprovals.companyId, approval.companyId), inArray(issueApprovals.issueId, issueIds),
-              sql`${approvals.id} <> ${approval.id}`, eq(approvals.status, "pending"))).limit(1);
-          if (!blocker && otherApproval) blocker = `approval:${otherApproval.id}`;
+          // Sharing a task with another approval does not make that proposal a
+          // dependency of editing this revision. Business execution remains gated
+          // by normal admission and each proposal's independent board decision.
           const human = linkedIssues.find(issue => issue.assigneeUserId);
           if (!blocker && human) blocker = `user:${human.assigneeUserId}:issue:${human.id}`;
-          const monitor = linkedIssues.find(issue => issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now());
+          const monitor = linkedIssues.find(issue => !["done", "cancelled"].includes(issue.status)
+            && issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now());
           if (!blocker && monitor) blocker = `monitor:${monitor.id}:${monitor.monitorNextCheckAt!.toISOString()}`;
           const [liveRun] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
             eq(heartbeatRuns.companyId, approval.companyId),
@@ -123,10 +125,11 @@ export function revisionReconciliation(db: Db, enqueueWakeup: Wake) {
         const unsafe = !target || !requester || !agent || target.assigneeAgentId !== requester ||
           !["todo", "in_progress"].includes(target.status) || Boolean(target.hiddenAt);
         const held = target && await isAutomaticRecoverySuppressedByPauseHold(db, approval.companyId, target.id, tree);
+        const operatorHeld = Boolean(held) || agent?.status === "paused";
         const invokable = !unsafe && !held && (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
         const decision = decideRevisionRecovery({ status: approval.status, decidedAt, now: new Date(),
           attemptCount: attempts.length, lastAttemptAt: attempts[0]?.createdAt ?? null,
-          blocker, activeExecution: activeExecution || Boolean(held), invokable });
+          blocker, activeExecution: activeExecution || operatorHeld, invokable, operatorHeld });
         const nextAction = decision.action === "retry" ? "Resubmit this same approval or record a durable named blocker." :
           decision.action === "escalate" ? "Board: resolve revision ownership or exhausted follow-through; do not infer disposition from run success." :
           blocker ? `Wait for ${blocker}.` : activeExecution || held ? "Preserve the current execution or operator hold; recheck domain outcome on the existing sweep." :
@@ -151,8 +154,9 @@ export function revisionReconciliation(db: Db, enqueueWakeup: Wake) {
           blocker, recoveryActionId, requestedByAgentId: requester, ownerAgentId: target?.assigneeAgentId ?? null,
           ownerUserId: target?.assigneeUserId ?? null, linkedIssueIds: issueIds,
           attemptCount: attempts.length + (decision.action === "retry" ? 1 : 0), nextFollowUpAt: decision.nextFollowUpAt, nextAction,
-          executionActive: activeExecution, operatorHold: Boolean(held),
-          missingOwner: unsafe, missingFollowUp: !blocker && !activeExecution && !held && !decision.nextFollowUpAt && decision.outcome === "unresolved" };
+          executionActive: activeExecution, operatorHold: operatorHeld,
+          missingOwner: unsafe, missingFollowUp: !activeExecution && !operatorHeld && !decision.nextFollowUpAt
+            && !blocker?.startsWith("recovery_action:") && ["unresolved", "durable_blocker"].includes(decision.outcome) };
         if (!isDeepStrictEqual(prior?.details, details)) await tx.insert(activityLog).values({
           companyId: approval.companyId, actorType: "system", actorId: "revision-recovery",
           action: REVISION_OUTCOME_ACTIVITY, entityType: "approval", entityId: approval.id, details });
