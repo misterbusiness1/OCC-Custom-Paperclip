@@ -96,7 +96,7 @@ export function revisionReconciliation(db: Db, enqueueWakeup: Wake) {
           const [dependency] = await tx.select({ id: issues.id }).from(issueRelations).innerJoin(issues,
             and(eq(issues.id, issueRelations.issueId), eq(issues.companyId, approval.companyId)))
             .where(and(eq(issueRelations.companyId, approval.companyId), inArray(issueRelations.relatedIssueId, issueIds),
-              eq(issueRelations.type, "blocks"), sql`${issues.status} not in ('done', 'cancelled')`)).limit(1);
+              eq(issueRelations.type, "blocks"), isNull(issues.hiddenAt), sql`${issues.status} not in ('done', 'cancelled')`)).limit(1);
           if (!blocker && dependency) blocker = `issue:${dependency.id}`;
           // Sharing a task with another approval does not make that proposal a
           // dependency of editing this revision. Business execution remains gated

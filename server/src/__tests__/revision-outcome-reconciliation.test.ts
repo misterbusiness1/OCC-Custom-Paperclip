@@ -209,6 +209,15 @@ suite("durable adapter-independent revision reconciliation", () => {
     expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(0);
     expect(await latest(x.approvalId)).toMatchObject({ outcome: "durable_blocker", blocker: `issue:${upstream}` });
   });
+  it("admits revision recovery when an unresolved unassigned upstream is hidden", async () => {
+    const x = await seed(), upstream = randomUUID();
+    await db.insert(issues).values({ id: upstream, companyId: x.companyId, title: "Hidden upstream", status: "todo", hiddenAt: new Date() });
+    await db.insert(issueRelations).values({ companyId: x.companyId, issueId: upstream, relatedIssueId: x.issueId, type: "blocks" });
+    const enqueue = vi.fn(async () => null);
+    await revisionReconciliation(db, enqueue).reconcile();
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(1);
+  });
   it("does not reopen linked-done issues or steal a changed owner", async () => {
     for (const status of ["done", "cancelled"] as const) {
       const x = await seed(); await db.update(issues).set({ status }).where(eq(issues.id, x.issueId));
