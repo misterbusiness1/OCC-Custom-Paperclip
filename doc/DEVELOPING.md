@@ -762,6 +762,11 @@ Agent, project, environment, secret, skill, and workspace config edits are sampl
 
 When effective run config changes, Paperclip may intentionally skip a saved adapter session, refresh persisted workspace runtime config, replace a reused execution workspace, or avoid reusing a sandbox/environment lease. Fresh execution can lose adapter-specific session, workspace, or sandbox state; correctness of the next run's config takes priority over continuity. Plain environment values affect freshness through value hashes; run result JSON and workspace operation logs expose only the non-sensitive freshness decision categories, without storing secret values, full env maps, provider credentials, or private path details.
 
+ACP backend session cleanup uses the session's saved command, working directory,
+and launch environment. A cleanup process uses the same client construction as a
+turn, including the assigned Codex or Claude configuration directory. It does
+not select credentials from the server's ambient environment.
+
 ## Workspace Git Scan Protection
 
 Paperclip applies one process-wide scheduler to expensive host-side workspace Git enumeration, including changed-file browsing, runtime/finalization cleanliness guards, and adapter sandbox-sync snapshots. The scheduler defaults to two active scans and a bounded queue of 32. Identical buffered scans of the same canonical worktree share one subprocess, while successful changed-file listings are cached for 10 seconds. Streaming snapshot scans have caller-owned sinks, so they use separate jobs in the same queue and are never cached or coalesced. Correctness-sensitive runtime guards bypass the result cache.
@@ -1192,6 +1197,16 @@ requests, and S3 response streams. The listing stops waiting at the deadline
 even if filesystem I/O delays cancellation. Late results cannot add evidence
 or start another page. Each listing retains its existing batches of eight reads;
 concurrent listings do not skip healthy logs because another listing is busy.
+
+### Local Codex ACP runtime
+
+The local Codex adapter keeps its patched ACP bridge at `1.1.7` and pins that
+bridge's native `@openai/codex` dependency to `0.163.0`. Install the complete
+official platform package so the matching code-mode tool host and sandbox
+resources remain beside the native executable. The release-registry tests check
+normal package resolution, the launcher version, and the Linux x64 tool resources.
+Explicit model settings retain their normal precedence. An omitted model follows
+the native release's default and may advance when that release changes.
 
 ### Preinstalled remote runner runtime
 

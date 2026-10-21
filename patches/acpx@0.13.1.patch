@@ -761,7 +761,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..cc2a3527e1e7ed043d3a66e3484b3d43
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
 diff --git a/dist/runtime.js b/dist/runtime.js
-index a1f4a70a003792c6eacf68b6b038f37bfec1db53..7fd35345153524ef0747580f79ecdd832ea7cf68 100644
+index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5ed7a4b741b9bbd0516269b02d5a5434ceeabea9 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -371,7 +371,7 @@ const PROMPT_EVENT_PARSERS = {
@@ -981,7 +981,27 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..7fd35345153524ef0747580f79ecdd83
  	async cancel(handle) {
  		await this.activeControllers.get(handle.acpxRecordId ?? handle.sessionKey)?.requestCancelActivePrompt();
  	}
-@@ -2055,6 +2156,7 @@ var AcpxRuntime = class {
+@@ -1763,18 +1864,7 @@ var AcpRuntimeManager = class {
+ 			client: owner.client,
+ 			owner
+ 		};
+-		return { client: this.createClient({
+-			agentCommand: record.agentCommand,
+-			agentArgv: record.agentArgv,
+-			cwd: record.cwd,
+-			mcpServers: [...this.options.mcpServers ?? []],
+-			permissionMode: this.options.permissionMode,
+-			nonInteractivePermissions: this.options.nonInteractivePermissions,
+-			permissionPolicy: this.options.permissionPolicy,
+-			onPermissionRequest: this.options.onPermissionRequest,
+-			elicitationModes: this.options.elicitationModes,
+-			verbose: this.options.verbose
+-		}) };
++		return { client: this.createTurnClient(record) };
+ 	}
+ 	async requestBackendSessionClose(record, connection) {
+ 		if (!connection.owner) await withTimeout(connection.client.start(), this.options.timeoutMs);
+@@ -2055,6 +2145,7 @@ var AcpxRuntime = class {
  		const turnPromise = this.getManager().then((manager) => manager.startTurn({
  			handle,
  			text: input.text,
@@ -989,7 +1009,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..7fd35345153524ef0747580f79ecdd83
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -2087,6 +2189,7 @@ var AcpxRuntime = class {
+@@ -2087,6 +2178,7 @@ var AcpxRuntime = class {
  		yield* (await this.getManager()).runTurn({
  			handle,
  			text: input.text,
@@ -997,7 +1017,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..7fd35345153524ef0747580f79ecdd83
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -2119,6 +2222,14 @@ var AcpxRuntime = class {
+@@ -2119,6 +2211,14 @@ var AcpxRuntime = class {
  		const { handle, state } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
  	}
