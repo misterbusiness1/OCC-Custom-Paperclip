@@ -329,7 +329,7 @@ index ccdbe5b..228ff50 100644
 \ No newline at end of file
 +//# sourceMappingURL=runtime.d.ts.map
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc99..9568b17 100644
+index 6c9cc99..a3d993b 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -580,10 +580,32 @@ function createRecordId(sessionKey, mode) {
@@ -392,7 +392,24 @@ index 6c9cc99..9568b17 100644
  				...normalized.code ? { code: normalized.code } : {},
  				...normalized.detailCode ? { detailCode: normalized.detailCode } : {},
  				...normalized.retryable !== void 0 ? { retryable: normalized.retryable } : {}
-@@ -1645,6 +1674,9 @@ var AcpxRuntime = class {
+@@ -1314,15 +1343,7 @@ var AcpRuntimeManager = class {
+ 	}
+ 	async closeBackendSession(record) {
+ 		const pendingClient = await this.readPendingPersistentClient(record, { consume: true });
+-		const client = pendingClient ?? this.createClient({
+-			agentCommand: record.agentCommand,
+-			cwd: record.cwd,
+-			mcpServers: [...this.options.mcpServers ?? []],
+-			permissionMode: this.options.permissionMode,
+-			nonInteractivePermissions: this.options.nonInteractivePermissions,
+-			onPermissionRequest: this.options.onPermissionRequest,
+-			verbose: this.options.verbose
+-		});
++		const client = pendingClient ?? this.createTurnClient(record);
+ 		try {
+ 			if (!pendingClient) await withTimeout(client.start(), this.options.timeoutMs);
+ 			if (!client.supportsCloseSession()) throw new AcpRuntimeError("ACP_BACKEND_UNSUPPORTED_CONTROL", `Agent does not support session/close for ${record.acpxRecordId}.`);
+@@ -1645,6 +1666,9 @@ var AcpxRuntime = class {
  		const { handle, state } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
  	}
@@ -402,7 +419,7 @@ index 6c9cc99..9568b17 100644
  	async cancel(input) {
  		const { handle } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).cancel(handle);
-@@ -1704,4 +1736,4 @@ function createRuntimeStore(options) {
+@@ -1704,4 +1728,4 @@ function createRuntimeStore(options) {
  //#endregion
  export { ACPX_BACKEND_ID, AcpRuntimeError, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
  

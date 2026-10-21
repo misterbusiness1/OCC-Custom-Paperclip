@@ -366,7 +366,7 @@ index e8102ac..7678b6d 100644
  type AcpFileSessionStoreOptions = {
    stateDir: string;
 diff --git a/dist/runtime.js b/dist/runtime.js
-index a1f4a70..270bc70 100644
+index a1f4a70..53a7c49 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -371,7 +371,7 @@ const PROMPT_EVENT_PARSERS = {
@@ -574,7 +574,27 @@ index a1f4a70..270bc70 100644
  	async cancel(handle) {
  		await this.activeControllers.get(handle.acpxRecordId ?? handle.sessionKey)?.requestCancelActivePrompt();
  	}
-@@ -2119,6 +2215,14 @@ var AcpxRuntime = class {
+@@ -1763,18 +1859,7 @@ var AcpRuntimeManager = class {
+ 			client: owner.client,
+ 			owner
+ 		};
+-		return { client: this.createClient({
+-			agentCommand: record.agentCommand,
+-			agentArgv: record.agentArgv,
+-			cwd: record.cwd,
+-			mcpServers: [...this.options.mcpServers ?? []],
+-			permissionMode: this.options.permissionMode,
+-			nonInteractivePermissions: this.options.nonInteractivePermissions,
+-			permissionPolicy: this.options.permissionPolicy,
+-			onPermissionRequest: this.options.onPermissionRequest,
+-			elicitationModes: this.options.elicitationModes,
+-			verbose: this.options.verbose
+-		}) };
++		return { client: this.createTurnClient(record) };
+ 	}
+ 	async requestBackendSessionClose(record, connection) {
+ 		if (!connection.owner) await withTimeout(connection.client.start(), this.options.timeoutMs);
+@@ -2119,6 +2204,14 @@ var AcpxRuntime = class {
  		const { handle, state } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
  	}
