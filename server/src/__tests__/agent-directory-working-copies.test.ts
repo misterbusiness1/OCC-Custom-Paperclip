@@ -15,6 +15,7 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionWorkingCopyService, instructionWorkingCopyGuidance } from "../services/agent-instruction-working-copies.js";
 import { resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
+import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-context.js";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
@@ -430,6 +431,37 @@ describe("persistent agent directories", () => {
     expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe("new directory contents");
     await expect(revisions.commit({ ...target(), entryFile, content: "stale legacy run", baseRevisionId: id, source: "cleanup" }, board())).rejects.toMatchObject({ status: 409 });
     expect(await db.select().from(agentInstructionRevisions).where(eq(agentInstructionRevisions.agentId, agentId))).toHaveLength(1);
+  });
+
+  it("copies notes from the former agent home once at adoption, without overwriting or following links", async () => {
+    const legacyHome = resolveDefaultAgentWorkspaceDir(agentId);
+    await fs.mkdir(path.join(legacyHome, "memory"), { recursive: true });
+    await fs.mkdir(path.join(legacyHome, "life", "areas"), { recursive: true });
+    await fs.writeFile(path.join(legacyHome, "memory", "2026-10-20.md"), "## Today's Plan\nship it\n");
+    await fs.writeFile(path.join(legacyHome, "memory", "keep.md"), "legacy copy");
+    await fs.writeFile(path.join(legacyHome, "life", "areas", "ops.md"), "durable fact");
+    await fs.writeFile(path.join(legacyHome, "task-only.txt"), "not a note");
+    await fs.writeFile(path.join(home, "outside.txt"), "outside");
+    await fs.symlink(path.join(home, "outside.txt"), path.join(legacyHome, "memory", "linked.md"));
+    await fs.mkdir(path.join(root, "memory"), { recursive: true });
+    await fs.writeFile(path.join(root, "memory", "keep.md"), "agent directory copy");
+
+    const first = await run();
+    expect(await fs.readFile(path.join(first.localRoot, "memory", "2026-10-20.md"), "utf8")).toBe("## Today's Plan\nship it\n");
+    expect(await fs.readFile(path.join(first.localRoot, "life", "areas", "ops.md"), "utf8")).toBe("durable fact");
+    expect(await fs.readFile(path.join(first.localRoot, "memory", "keep.md"), "utf8")).toBe("agent directory copy");
+    await expect(fs.lstat(path.join(first.localRoot, "memory", "linked.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(path.join(first.localRoot, "task-only.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(path.join(legacyHome, "memory", "keep.md"), "utf8")).toBe("legacy copy");
+
+    // Adoption happens once: later changes in the former home are not copied again.
+    await fs.rm(path.join(first.localRoot, "memory", "2026-10-20.md"));
+    expect((await copies.collectStopped({ companyId, runId: first.runId }))?.state).toBe("saved");
+    await fs.writeFile(path.join(legacyHome, "memory", "2026-10-21.md"), "later");
+    copies = agentInstructionWorkingCopyService(db);
+    const next = await run();
+    await expect(fs.stat(path.join(next.localRoot, "memory", "2026-10-20.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(path.join(next.localRoot, "memory", "2026-10-21.md"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("ordinary file edits leave the loaded instruction digest unchanged", async () => {

@@ -12,6 +12,7 @@ import { authorizeInstructionCommit, authorizeInstructionRead } from "./agent-in
 import { assertInstructionPathSafe, instructionPath, instructionBytes, materializeInstructionBytes, readInstructionBytes, MAX_INSTRUCTION_BYTES } from "./agent-instruction-files.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import type { AuthorizationActor } from "./authorization.js";
+import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Agent = typeof agents.$inferSelect;
@@ -82,8 +83,35 @@ export async function adoptAgentFiles(tx: Tx, agent: Agent): Promise<string> {
     .from(agentInstructionHeads).innerJoin(agentInstructionRevisions, eq(agentInstructionHeads.revisionId, agentInstructionRevisions.id))
     .where(and(eq(agentInstructionHeads.companyId, agent.companyId), eq(agentInstructionHeads.agentId, agent.id)));
   for (const entry of legacy) await materializeInstructionBytes(root, entry.entryFile, Buffer.from(entry.contentBase64, "base64"));
-  await materializeInstructionBytes(markerRoot, marker, Buffer.from(JSON.stringify({ schema: AGENT_FILES_CONTRACT })));
+  await adoptLegacyAgentHomeNotes(root, agent.id);
+  await materializeInstructionBytes(markerRoot, marker,Buffer.from(JSON.stringify({ schema: AGENT_FILES_CONTRACT })));
   return root;
+}
+
+/** Fork: before agent files, AGENT_HOME was the agent's default workspace, and
+ * agents kept their notes in `memory/` and `life/` there. Copy those notes into
+ * the agent directory once, at adoption, so they stay visible under the new
+ * AGENT_HOME. Files already in the agent directory win; links, special files and
+ * oversized files are left behind; the old folder is not changed. */
+export const LEGACY_AGENT_HOME_NOTE_DIRS = ["memory", "life"] as const;
+async function adoptLegacyAgentHomeNotes(root: string, agentId: string) {
+  const legacyHome = resolveDefaultAgentWorkspaceDir(agentId);
+  async function copyTree(relative: string) {
+    const entries = await fs.readdir(path.join(legacyHome, relative), { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      const child = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) { await copyTree(child); continue; }
+      if (!entry.isFile() || entry.name.startsWith(".instruction-")) continue;
+      const source = await fs.lstat(path.join(legacyHome, child));
+      if (!source.isFile() || source.nlink !== 1 || source.size > MAX_AGENT_FILE_BYTES) continue;
+      if (await inspectAgentFile(root, child, 0)) continue;
+      await materializeInstructionBytes(root, child, await fs.readFile(path.join(legacyHome, child)));
+    }
+  }
+  for (const dir of LEGACY_AGENT_HOME_NOTE_DIRS) await copyTree(dir);
 }
 
 async function openAgentFile(root: string, relative: string) {
