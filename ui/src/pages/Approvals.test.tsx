@@ -708,6 +708,27 @@ describe("Approvals", () => {
       expect(sentBackRows()[0].textContent).toContain("Revision still outstanding; resubmission or disposition required.");
     });
 
+    it("flags unassigned linked work despite a requester and renders every original task link", async () => {
+      approvals = [...approvals, sentBackApproval({ queueAttention: {
+        revisionRequestedAt: new Date(),
+        owner: { agentId: "requester-A", userId: null, name: "Requester A", status: "idle" },
+        tasks: [
+          { id: "task-B", identifier: "QA-123", status: "todo", assigneeAgentId: "owner-B", assigneeUserId: null, blockerAction: null, nextFollowUpAt: null },
+          { id: "task-unassigned", identifier: "QA-124", status: "todo", assigneeAgentId: null, assigneeUserId: null, blockerAction: null, nextFollowUpAt: null },
+        ], staleReasons: [], supersededByApprovalId: null,
+      } })];
+      await render();
+      expect(container.querySelector("[data-approval-revision-attention-summary]")!.textContent).toContain("1 missing owners");
+      await click(sectionToggle());
+      const row = sentBackRows()[0];
+      expect(row.textContent).toContain("Requester: Requester A");
+      expect(row.textContent).toContain("Current owner: agent owner-B");
+      expect(row.textContent).toContain("Current owner: missing owner (unassigned task)");
+      expect([...row.querySelectorAll("a")].map((link) => link.getAttribute("href"))).toEqual(expect.arrayContaining([
+        "/approvals/sent-back", "/issues/QA-123", "/issues/QA-124",
+      ]));
+    });
+
     it("counts a current revision outcome follow-up without requiring a task monitor", async () => {
       approvals = [...approvals, sentBackApproval({ queueAttention: {
         revisionRequestedAt: new Date(Date.now() - HOUR_MS),

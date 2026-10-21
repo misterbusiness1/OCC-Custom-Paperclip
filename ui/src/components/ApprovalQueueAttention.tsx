@@ -1,9 +1,10 @@
+import { Link } from "@/lib/router";
 import type { Approval } from "@paperclipai/shared";
 import { approvalQueueNextFollowUp } from "../lib/approval-queue-attention";
 import { timeAgo } from "../lib/timeAgo";
 
 /** Diagnostics are advisory. Only the approval's explicit status proves its disposition. */
-export function ApprovalQueueAttention({ approval }: { approval: Approval }) {
+export function ApprovalQueueAttention({ approval, agentNames }: { approval: Approval; agentNames?: ReadonlyMap<string, string> }) {
   const attention = approval.queueAttention;
   if (!attention) return null;
   const revision = approval.status === "revision_requested";
@@ -21,9 +22,19 @@ export function ApprovalQueueAttention({ approval }: { approval: Approval }) {
         {outcome?.nextAction && <p>Next action: {outcome.nextAction}</p>}
         <p>
           Revision age: {attention.revisionRequestedAt ? <span title={new Date(attention.revisionRequestedAt).toLocaleString()}>{timeAgo(attention.revisionRequestedAt)}</span> : "decision time not recorded"}
-          {" · "}Requester / revision owner: {attention.owner.name ?? (attention.owner.userId ? "requesting board user" : "missing owner")}
+          {" · "}Requester: {attention.owner.name ?? (attention.owner.userId ? "requesting board user" : "missing owner")}
           {attention.owner.status ? ` (${attention.owner.status})` : ""}
         </p>
+        {attention.tasks.length ? <ul aria-label="Linked task ownership">
+          {attention.tasks.map((task) => <li key={task.id}>
+            <Link to={`/issues/${task.identifier ?? task.id}`} className="underline" disableIssueQuicklook>
+              {task.identifier ?? task.id}
+            </Link>
+            {" · "}{task.status}{" · "}Current owner: {task.assigneeAgentId
+              ? agentNames?.get(task.assigneeAgentId) ?? (task.assigneeAgentId === attention.owner.agentId ? attention.owner.name : null) ?? `agent ${task.assigneeAgentId}`
+              : task.assigneeUserId ? `board user ${task.assigneeUserId}` : "missing owner (unassigned task)"}
+          </li>)}
+        </ul> : <p>Linked tasks: none recorded; current task owner unavailable.</p>}
         <p>Blocker: {outcome?.blocker ?? (blocked.length
           ? blocked.map((task) => `${task.identifier ?? "Linked task"}: ${task.blockerAction ?? "blocked; reason not recorded"}`).join("; ")
           : "none recorded on linked tasks")}</p>

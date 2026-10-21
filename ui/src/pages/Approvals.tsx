@@ -1,4 +1,4 @@
-import { approvalQueueNextFollowUp } from "../lib/approval-queue-attention";
+import { approvalQueueMissingOwner, approvalQueueNextFollowUp } from "../lib/approval-queue-attention";
 import { ApprovalQueueAttention } from "../components/ApprovalQueueAttention";
 import {
   startTransition,
@@ -379,7 +379,7 @@ function DecidedApprovalRow({
  * the version on record is the one the board asked to change, and the detail
  * page still offers Approve and Reject for it.
  */
-function SentBackApprovalRow({ approval, detailsState }: { approval: Approval; detailsState?: ApprovalQueueLinkState }) {
+function SentBackApprovalRow({ approval, detailsState, agentNames }: { approval: Approval; detailsState?: ApprovalQueueLinkState; agentNames: ReadonlyMap<string, string> }) {
   return (
     <li
       className={cn(
@@ -404,7 +404,7 @@ function SentBackApprovalRow({ approval, detailsState }: { approval: Approval; d
       >
         View details
       </Link>
-      <ApprovalQueueAttention approval={approval} />
+      <ApprovalQueueAttention approval={approval} agentNames={agentNames} />
       <ApprovalChangesAskedFor note={approval.decisionNote} className="basis-full" />
     </li>
   );
@@ -1090,10 +1090,11 @@ export function Approvals() {
   const sentBack = (data ?? [])
     .filter((a) => statusFilter === "pending" && isSentBack(a) && !listedIds.has(a.id))
     .sort((a, b) => timeOf(approvalSentBackAt(a)) - timeOf(approvalSentBackAt(b)));
+  const revisionAgentNames = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent.name])), [agents]);
   const revisionAttention = sentBack.reduce((summary, approval) => {
     const attention = approval.queueAttention;
     if (!attention) return summary;
-    if (!attention.owner.agentId && !attention.owner.userId) summary.missingOwner += 1;
+    if (approvalQueueMissingOwner(attention)) summary.missingOwner += 1;
     const next = approvalQueueNextFollowUp(attention);
     if (!next) summary.unscheduled += 1;
     else if (next.getTime() <= Date.now()) summary.overdue += 1;
@@ -1932,7 +1933,7 @@ export function Approvals() {
               </p>
               <ul className="grid grid-cols-1 gap-3" ref={sentBackListRef}>
                 {sentBack.map((approval) => (
-                  <SentBackApprovalRow key={approval.id} approval={approval} detailsState={detailsState} />
+                  <SentBackApprovalRow key={approval.id} approval={approval} detailsState={detailsState} agentNames={revisionAgentNames} />
                 ))}
               </ul>
             </div>
