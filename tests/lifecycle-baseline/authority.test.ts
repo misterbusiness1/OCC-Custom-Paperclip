@@ -105,6 +105,9 @@ describe("LCA narrative authority baseline", () => {
       },
     );
   }
+  // Fork rule (owner decision 2026-10-21): plan/document wording exempts a run
+  // from plan-only classification, as in production. It still grants no
+  // continuation authority: the continuation effect is unchanged.
   it.each(["report", "plan", "research"])(
     "LCA-05 legacy title %s is not work-mode authority",
     (word) => {
@@ -115,7 +118,7 @@ describe("LCA narrative authority baseline", () => {
       });
       observe("LCA-05", word, { before, after });
       expect(after.effect).toEqual(before.effect);
-      expect(after.classification).toEqual(before.classification);
+      expect(after.classification.livenessState).toBe("advanced");
     },
   );
   it("LCA-05 legacy description is not work-mode authority", () => {
@@ -126,7 +129,7 @@ describe("LCA narrative authority baseline", () => {
     });
     observe("LCA-05", "description", { before, after });
     expect(after.effect).toEqual(before.effect);
-    expect(after.classification).toEqual(before.classification);
+    expect(after.classification.livenessState).toBe("advanced");
   });
   it("LCA-09 additional commentary cannot manufacture progress or reset an attempt", () => {
     const before = continuation({ ...legacyBase, continuationAttempt: 2 });

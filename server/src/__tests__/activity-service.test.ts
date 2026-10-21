@@ -92,11 +92,14 @@ describeEmbeddedPostgres("activity service", () => {
       await service.update(task.id, prose);
       expect((await service.getById(task.id))?.workMode).toBe(workMode);
     }
+    // Neutral wording, so only the persisted mode decides the backfilled
+    // classification (plan wording would exempt every mode: fork rule, see
+    // isPlanningOrDocumentTask in run-liveness).
+    await service.update(task.id, { title: "Implement exporter", description: "Change the code now." });
+    expect((await service.getById(task.id))?.workMode).toBe(workMode);
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", contextSnapshot: { issueId: task.id }, resultJson: { summary: "I will inspect the repository next." } });
-    // Fork rule: the task's plan wording exempts it in every mode (see
-    // isPlanningOrDocumentTask); the mode itself still persists below.
-    const expected = "advanced";
+    const expected = workMode === "planning" ? "advanced" : "plan_only";
     await waitForIssueRun(activityService(db), companyId, task.id, run => run.runId === runId && run.livenessState === expected);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].livenessState).toBe(expected);
     if (workMode === "standard") {

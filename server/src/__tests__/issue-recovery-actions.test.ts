@@ -1110,6 +1110,92 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     }));
   });
 
+  it.each(["clear", "pending_approval"])("fork default (legacy repair off): keeps the approval recovery gates for a legacy run with %s gates", async (gate) => {
+    // With PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED off, a successful
+    // legacy run must still reach approved-approval recovery only through the
+    // legacy authority's gates, never through the ungated scan path.
+    const previousRepair = process.env.PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED;
+    delete process.env.PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED;
+    try {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const olderDecidedAt = new Date("2026-10-15T19:55:00.000Z");
+    const newerDecidedAt = new Date("2026-10-15T19:57:00.000Z");
+    const [olderApproval, newerApproval] = await db.insert(approvals).values([
+      {
+        companyId,
+        type: "request_board_approval",
+        status: "approved",
+        payload: { title: "Older authorized action" },
+        requestedByAgentId: coderId,
+        decidedByUserId: "board-user",
+        decidedAt: olderDecidedAt,
+        updatedAt: olderDecidedAt,
+      },
+      {
+        companyId,
+        type: "request_board_approval",
+        status: "approved",
+        payload: { title: "Newer authorized action" },
+        requestedByAgentId: coderId,
+        decidedByUserId: "board-user",
+        decidedAt: newerDecidedAt,
+        updatedAt: newerDecidedAt,
+      },
+    ]).returning();
+    await db.insert(issueApprovals).values([
+      { companyId, issueId: sourceIssueId, approvalId: olderApproval!.id, linkedByAgentId: coderId },
+      { companyId, issueId: sourceIssueId, approvalId: newerApproval!.id, linkedByAgentId: coderId },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "succeeded",
+      startedAt: new Date("2026-10-15T19:57:20.000Z"),
+      finishedAt: new Date("2026-10-15T19:57:30.000Z"),
+      createdAt: new Date("2026-10-15T19:57:20.000Z"),
+      contextSnapshot: { issueId: sourceIssueId, approvalId: newerApproval!.id },
+    });
+    if (gate === "paused") {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, coderId));
+    } else if (gate === "pending_approval") {
+      const [pending] = await db.insert(approvals).values({
+        companyId,
+        type: "request_board_approval",
+        status: "pending",
+        payload: { title: "Another action still requires approval" },
+        requestedByAgentId: coderId,
+      }).returning();
+      await db.insert(issueApprovals).values({
+        companyId, issueId: sourceIssueId, approvalId: pending!.id,
+      });
+    }
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() }));
+
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+
+    if (gate !== "clear") {
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.escalated).toBe(0);
+      expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(issue).toMatchObject({ status: "in_progress", assigneeAgentId: coderId });
+      return;
+    }
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.dispositionRepairRequeued).toBe(0);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+      contextSnapshot: expect.objectContaining({ approvalId: olderApproval!.id }),
+    }));
+      } finally {
+      if (previousRepair === undefined) delete process.env.PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED;
+      else process.env.PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED = previousRepair;
+    }
+  });
+
   it("correlates a multi-issue approval by id while repairing its unfinished source disposition", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const secondIssueId = randomUUID();
