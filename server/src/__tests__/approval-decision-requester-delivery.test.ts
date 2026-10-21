@@ -25,6 +25,7 @@ import { errorHandler } from "../middleware/index.js";
 import { approvalRoutes } from "../routes/approvals.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { revisionReconciliation } from "../services/recovery/revision-reconciliation.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
 // Fork (PR #97 / PR #104) acceptance test with real services: a board decision
@@ -508,6 +509,18 @@ describeEmbeddedPostgres("approval decisions reach the requesting agent (fork PR
       .where(eq(issues.id, fixture.issueId));
     expect(issue).toEqual({ status: "done", assigneeAgentId: fixture.requesterAgentId });
 
+  });
+
+  it.each([false, true])("recovery delivers a real requester heartbeat (conversation=%s)", async conversation => {
+    const fixture = await seed({ issueStatus: "todo", conversation });
+    await db.update(approvals).set({ status: "revision_requested", decidedByUserId: BOARD_USER_ID,
+      decidedAt: new Date(Date.now() - 60 * 60_000) }).where(eq(approvals.id, fixture.approvalId));
+    const heartbeat = heartbeatService(db);
+    await revisionReconciliation(db, (agentId, options) => heartbeat.wakeup(agentId, options)).reconcile();
+    const run = await waitForDecisionRun(fixture.requesterAgentId, "approval_revision_requested");
+    expect(run).toMatchObject({ status: "succeeded", errorCode: null });
+    const [card] = await db.select().from(approvals).where(eq(approvals.id, fixture.approvalId));
+    expect(card.status).toBe("revision_requested");
   });
 
   it("request-revision runs as a bounded interaction on a dependency-blocked issue", async () => {
