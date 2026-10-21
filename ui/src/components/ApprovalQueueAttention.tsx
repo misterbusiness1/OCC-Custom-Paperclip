@@ -14,7 +14,7 @@ export function ApprovalQueueAttention({ approval }: { approval: Approval }) {
   return (
     <div className="basis-full space-y-1 text-xs text-muted-foreground" data-approval-queue-attention>
       {revision && <>
-        <p className="font-medium text-foreground">Revision still outstanding; resubmission required.</p>
+        <p className="font-medium text-foreground">Revision still outstanding; resubmission or disposition required.</p>
         <p>Work outcome: {outcome
           ? `${outcome.outcome === "durable_blocker" ? "blocked" : "unresolved"}${outcome.executionActive ? "; agent execution active" : ""}`
           : "not recorded for this revision"}. Successful execution alone does not complete a revision.</p>

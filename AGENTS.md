@@ -179,6 +179,17 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
+## Oxford production deployment
+
+Before preparing, draining, promoting, or reconciling an Oxford production release,
+read [the source provenance runbook](doc/PRODUCTION-SOURCE-PROVENANCE.md) and use
+the reviewed `scripts/production/deploy.py` launcher with sealed release evidence.
+The exact candidate commit must be retrievable from the configured GitHub ref,
+and its source, test, review, and image identities must match before promotion.
+Use the launcher's dedicated verified rollback path for recovery during an outage.
+Keep historical guard receipts unchanged; record launcher adoption and the final
+remote commit in the release evidence before calling a deployment qualified.
+
 ## 8. API and Auth Expectations
 
 - Base path: `/api`

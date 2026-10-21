@@ -43,7 +43,7 @@ describe("approval queue attention", () => {
       outcome: "durable_blocker", blocker: "Recipient contract needs board action", nextAction: "Check board response",
       nextFollowUpAt: new Date("2099-01-01T00:00:00.000Z"), executionActive: true, attemptCount: 1, recordedAt: new Date(),
     } });
-    expect(text).toContain("Revision still outstanding; resubmission required.");
+    expect(text).toContain("Revision still outstanding; resubmission or disposition required.");
     expect(text).toContain("Work outcome: blocked; agent execution active");
     expect(text).toContain("Successful execution alone does not complete a revision");
     expect(text).toContain("Recipient contract needs board action");

@@ -705,7 +705,7 @@ describe("Approvals", () => {
       expect(summary).toContain("1 missing owners");
       expect(summary).toContain("1 stale approvals to review");
       await click(sectionToggle());
-      expect(sentBackRows()[0].textContent).toContain("Revision still outstanding; resubmission required.");
+      expect(sentBackRows()[0].textContent).toContain("Revision still outstanding; resubmission or disposition required.");
     });
 
     it("counts a current revision outcome follow-up without requiring a task monitor", async () => {
