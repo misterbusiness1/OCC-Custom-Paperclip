@@ -5250,12 +5250,20 @@ export function recoveryService(
         continue;
       }
 
-      // Fork: with legacy disposition repair off, fall through to the
-      // productive-work recovery production ran before the upgrade.
-      if (legacyDispositionRepairEnabled() && latestRun?.status === "succeeded" && issue.status !== "in_review") {
+      // A successful non-native run outside review: upstream's legacy lane.
+      // Its approved-approval recovery keeps the legacy authority's pause,
+      // budget, wait, owner and lifecycle gates in both modes. Fork: with
+      // legacy disposition repair off, the run then falls through to the
+      // productive-work recovery production ran before the upgrade, and must
+      // not reach the ungated approved-approval recovery below.
+      let legacyLaneRun = false;
+      if (latestRun?.status === "succeeded" && issue.status !== "in_review") {
         const [source] = await db.select({ runtimeMode: heartbeatRuns.runtimeMode }).from(heartbeatRuns).where(eq(heartbeatRuns.id, latestRun.id)).limit(1);
-        if (source?.runtimeMode !== "native") {
+        legacyLaneRun = source?.runtimeMode !== "native";
+        if (legacyLaneRun) {
           if (await reconcileApprovedIssueContinuations(issue, agentId, latestRun, latestRun)) continue;
+        }
+        if (legacyLaneRun && legacyDispositionRepairEnabled()) {
           const outcome = await reconcileLegacyContinuation(latestRun.id);
           if (outcome === "queued") {
             result.continuationRequeued += 1;
@@ -5566,7 +5574,7 @@ export function recoveryService(
         }
       }
 
-      if (await reconcileApprovedIssueContinuations(issue, agentId, latestRun)) continue;
+      if (!legacyLaneRun && await reconcileApprovedIssueContinuations(issue, agentId, latestRun)) continue;
 
       const acceptedContinuationInteraction =
         await getLatestAcceptedContinuationInteraction(
