@@ -44,6 +44,11 @@ class ProvenanceTests(unittest.TestCase):
         self.manifest["testsReceipt"] = self.write("tests", receipt)
         self.manifest["reviewReceipt"] = self.write("review", receipt)
         self.path = self.root / "manifest.json"
+        self.preparation = {"schema": "paperclip.codex-native.preparation.v1",
+                            "helperSha256": self.manifest["guard"]["sha256"],
+                            "framePath": self.manifest["candidateFrame"]["path"],
+                            "frameSha256": self.manifest["candidateFrame"]["sha256"]}
+        (self.root / "preparation.json").write_text(json.dumps(self.preparation))
 
     def seal(self, path):
         return {"path": str(path), "sha256": deploy.sha256(path)}
@@ -157,6 +162,46 @@ class ProvenanceTests(unittest.TestCase):
                 path.write_bytes(original + b"\n")
                 self.rejects()
                 path.write_bytes(original)
+
+    def test_other_prepared_candidate_never_dispatches(self):
+        other = self.write("other-frame", {**self.frame, "candidateImageId": "sha256:" + "2" * 64})
+        (self.root / "preparation.json").write_text(json.dumps({
+            "schema": "paperclip.codex-native.preparation.v1",
+            "helperSha256": self.manifest["guard"]["sha256"],
+            "framePath": other["path"], "frameSha256": other["sha256"],
+        }))
+        for phase in (p for p in deploy.ACTIONS if p != "prepare" and p not in deploy.ROLLBACK_ACTIONS):
+            with self.subTest(phase=phase), self.assertRaises(ValueError):
+                self.run_gate(phase, True)
+        self.assertFalse(self.marker.exists(), "a different prepared release must never dispatch")
+
+    def test_missing_unknown_and_changed_preparation_refused(self):
+        path = self.root / "preparation.json"
+        path.unlink()
+        with self.assertRaises(OSError):
+            self.run_gate("apply", True)
+        for key, bad in (("schema", "unknown"), ("helperSha256", "0" * 64),
+                         ("frameSha256", "0" * 64), ("framePath", "relative.json")):
+            with self.subTest(key=key):
+                path.write_text(json.dumps({**self.preparation, key: bad}))
+                self.rejects()
+        self.assertFalse(self.marker.exists())
+
+    def test_prepare_does_not_require_an_existing_preparation(self):
+        (self.root / "preparation.json").unlink()
+        self.assertTrue(self.run_gate("prepare", True)["guardCompleted"])
+
+    def test_preparation_change_during_proof_never_dispatches(self):
+        from unittest.mock import patch
+        verify = deploy.verify
+        def change_after_proof(*args, **kwargs):
+            proof = verify(*args, **kwargs)
+            path = self.root / "preparation.json"
+            path.write_bytes(path.read_bytes() + b"\n")
+            return proof
+        with patch.object(deploy, "verify", side_effect=change_after_proof), self.assertRaises(ValueError):
+            self.run_gate("apply", True)
+        self.assertFalse(self.marker.exists())
 
     def test_public_cli_cannot_use_local_remotes(self):
         with self.assertRaises(ValueError):

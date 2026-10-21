@@ -79,6 +79,22 @@ responsible for checking actual GitHub CI and native approval evidence. Do not p
 the manifest at an unreviewed helper that omits those checks. Never place credentials
 in this manifest. Use the normal Git credential helper for repository access.
 
+## Bind forward phases to the prepared release
+
+For every forward phase after `prepare`, the launcher reads `preparation.json`
+from the selected guard's resolved directory. The reviewed guard must itself consume
+that exact file. The supported receipt schema is
+`paperclip.production.preparation.v1` (the frozen native guard uses
+`paperclip.codex-native.preparation.v1`). Its `helperSha256` must match the selected
+guard; `framePath` and `frameSha256` must identify the exact manifest candidate frame.
+Missing, unknown, changed or different-release preparation stops before dispatch.
+The launcher checks receipt bytes again immediately before dispatch. A different
+candidate requires its own preparation through the normal guard lifecycle; do not
+rewrite frozen receipts to force a match. Guards using another preparation contract
+require a reviewed integration before this launcher can dispatch their forward phases.
+`prepare` receives the selected frame directly and does not require prior preparation.
+The offline rollback exception below retains the guard's own recovery authority.
+
 ## Adopt at the operator boundary
 
 The current historical guard and its frozen qualification evidence live outside

@@ -99,6 +99,26 @@ def verify(manifest, *, allow_local_remote=False):
             "githubRepository": remote, "githubRef": ref, "productionMutations": 0}
 
 
+def prepared_binding(manifest):
+    # Reviewed Oxford guards consume this exact neighboring receipt. A manifest
+    # cannot substitute another receipt for the release the guard will execute.
+    guard = sealed_file(manifest["guard"]).resolve()
+    path = guard.parent / "preparation.json"
+    original = path.read_bytes()
+    receipt = json.loads(original)
+    require(receipt.get("schema") in ("paperclip.codex-native.preparation.v1",
+            "paperclip.production.preparation.v1"), "unsupported guard preparation contract")
+    require(receipt.get("helperSha256") == manifest["guard"]["sha256"],
+            "prepared guard differs from selected guard")
+    frame = sealed_file(manifest["candidateFrame"])
+    prepared_path = receipt.get("framePath")
+    require(isinstance(prepared_path, str) and Path(prepared_path).is_absolute()
+            and Path(prepared_path).resolve() == frame.resolve()
+            and receipt.get("frameSha256") == manifest["candidateFrame"]["sha256"],
+            "guard is prepared for a different candidate")
+    return path, original
+
+
 def run(manifest_path, action=None, execute=False, *, allow_local_remote=False):
     manifest_path = Path(manifest_path).resolve()
     original = manifest_path.read_bytes()
@@ -115,6 +135,7 @@ def run(manifest_path, action=None, execute=False, *, allow_local_remote=False):
         return {"passed": True, "phase": action, "guardCompleted": True,
                 "rollbackEvidence": "existing-guard-owned", "githubContacted": False,
                 "productionMutations": "guard-owned"}
+    preparation = prepared_binding(manifest) if action is not None and action != "prepare" else None
     proof = verify(manifest, allow_local_remote=allow_local_remote)
     if action is None:
         return proof
@@ -130,6 +151,10 @@ def run(manifest_path, action=None, execute=False, *, allow_local_remote=False):
     require(command(["git", "rev-parse", "HEAD"], source) == proof["sourceCommit"],
             "candidate source changed before dispatch")
     require_clean_checkout(source)
+    if preparation is not None:
+        path, original_preparation = preparation
+        require(path.read_bytes() == original_preparation, "guard preparation changed during verification")
+        prepared_binding(manifest)
     argv = [sys.executable, str(sealed_file(manifest["guard"])), action, "--execute"]
     if action == "prepare":
         argv.extend(["--frame", str(sealed_file(manifest["candidateFrame"]))])
