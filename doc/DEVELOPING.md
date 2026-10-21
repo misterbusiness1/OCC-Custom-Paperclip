@@ -1198,6 +1198,16 @@ even if filesystem I/O delays cancellation. Late results cannot add evidence
 or start another page. Each listing retains its existing batches of eight reads;
 concurrent listings do not skip healthy logs because another listing is busy.
 
+### Local Codex ACP runtime
+
+The local Codex adapter keeps its patched ACP bridge at `1.1.7` and pins that
+bridge's native `@openai/codex` dependency to `0.163.0`. Install the complete
+official platform package so the matching code-mode tool host and sandbox
+resources remain beside the native executable. The release-registry tests check
+normal package resolution, the launcher version, and the Linux x64 tool resources.
+Explicit model settings retain their normal precedence. An omitted model follows
+the native release's default and may advance when that release changes.
+
 ### Preinstalled remote runner runtime
 
 For fast sandbox startup, bake `paperclip-runnerd` and the latest stable agent
