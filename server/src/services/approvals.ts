@@ -6,6 +6,7 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
+import { approvalQueueAttention } from "./approval-queue-attention.js";
 import { approvalContentVersion, isSameRequestStatusMove, nextApprovalUpdatedAt } from "./approval-version.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
@@ -312,8 +313,10 @@ export function approvalService(db: Db) {
       // decided row is the newer one; the open copy is dropped.
       const window = decided.slice(0, decidedLimit);
       const decidedIds = new Set(decided.map((approval) => approval.id));
+      const queueRows = [...open.filter((approval) => !decidedIds.has(approval.id)), ...window];
+      const attention = await approvalQueueAttention(db, companyId, queueRows);
       return {
-        approvals: [...open.filter((approval) => !decidedIds.has(approval.id)), ...window],
+        approvals: queueRows.map((approval) => ({ ...approval, queueAttention: attention.get(approval.id) })),
         decidedHasMore: decided.length > decidedLimit,
       };
     },

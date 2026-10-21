@@ -20,6 +20,8 @@ export interface Approval {
    * Absent from servers older than this field.
    */
   contentVersion?: string;
+  /** Read-only queue diagnostics; never authorizes a disposition or a wake. */
+  queueAttention?: ApprovalQueueAttention;
 }
 
 /**
@@ -58,3 +60,30 @@ export interface ApprovalLinkedIssue {
  * linked tasks, and an id that is not an approval of the company, has no key.
  */
 export type ApprovalLinkedIssuesByApproval = Record<string, ApprovalLinkedIssue[]>;
+
+export interface ApprovalQueueAttention {
+  revisionRequestedAt: Date | null;
+  /** Latest validated outcome for the exact current board revision; absent on older servers. */
+  revisionOutcome?: {
+    outcome: "unresolved" | "durable_blocker";
+    blocker: string | null;
+    nextAction: string | null;
+    nextFollowUpAt: Date | null;
+    executionActive: boolean;
+    attemptCount: number;
+    recordedAt: Date;
+  } | null;
+  owner: { agentId: string | null; userId: string | null; name: string | null; status: string | null };
+  tasks: Array<{
+    id: string;
+    identifier: string | null;
+    status: string;
+    assigneeAgentId: string | null;
+    assigneeUserId: string | null;
+    blockerAction: string | null;
+    nextFollowUpAt: Date | null;
+  }>;
+  /** Review flags only: closed tasks do not mean an approval was decided. */
+  staleReasons: Array<"linked_task_closed" | "explicitly_superseded">;
+  supersededByApprovalId: string | null;
+}

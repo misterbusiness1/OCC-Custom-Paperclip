@@ -11,8 +11,8 @@ const labelClass =
 export const APPROVAL_CHANGES_ASKED_LABEL = "Changes you asked for";
 
 /** When the board sent the request back: the time of that decision, or of the last change when none is recorded. */
-export function approvalSentBackAt(approval: Pick<Approval, "decidedAt" | "updatedAt">): Date | string {
-  return approval.decidedAt ?? approval.updatedAt;
+export function approvalSentBackAt(approval: Pick<Approval, "decidedAt" | "updatedAt" | "queueAttention">): Date | string {
+  return approval.queueAttention?.revisionRequestedAt ?? approval.decidedAt ?? approval.updatedAt;
 }
 
 /** "Sent back 2h ago", with the exact time on hover. */

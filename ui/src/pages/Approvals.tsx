@@ -1,3 +1,5 @@
+import { approvalQueueNextFollowUp } from "../lib/approval-queue-attention";
+import { ApprovalQueueAttention } from "../components/ApprovalQueueAttention";
 import {
   startTransition,
   useCallback,
@@ -402,6 +404,7 @@ function SentBackApprovalRow({ approval, detailsState }: { approval: Approval; d
       >
         View details
       </Link>
+      <ApprovalQueueAttention approval={approval} />
       <ApprovalChangesAskedFor note={approval.decisionNote} className="basis-full" />
     </li>
   );
@@ -1087,6 +1090,16 @@ export function Approvals() {
   const sentBack = (data ?? [])
     .filter((a) => statusFilter === "pending" && isSentBack(a) && !listedIds.has(a.id))
     .sort((a, b) => timeOf(approvalSentBackAt(a)) - timeOf(approvalSentBackAt(b)));
+  const revisionAttention = sentBack.reduce((summary, approval) => {
+    const attention = approval.queueAttention;
+    if (!attention) return summary;
+    if (!attention.owner.agentId && !attention.owner.userId) summary.missingOwner += 1;
+    const next = approvalQueueNextFollowUp(attention);
+    if (!next) summary.unscheduled += 1;
+    else if (next.getTime() <= Date.now()) summary.overdue += 1;
+    if (attention.staleReasons.length) summary.stale += 1;
+    return summary;
+  }, { missingOwner: 0, unscheduled: 0, overdue: 0, stale: 0 });
   const kinds = Array.from(new Set(inTab.map(approvalKind)));
   const activeKind = kinds.includes(kindFilter) ? kindFilter : "all";
   // The requests the search term is found in, whatever the case: in the subject, the requester's
@@ -1906,6 +1919,11 @@ export function Approvals() {
               Waiting on the requester ({sentBack.length})
             </Button>
           </h2>
+          {(revisionAttention.missingOwner > 0 || revisionAttention.unscheduled > 0 || revisionAttention.overdue > 0 || revisionAttention.stale > 0) && (
+            <p className="px-2 text-xs font-medium text-foreground" data-approval-revision-attention-summary>
+              Revision attention: {revisionAttention.overdue} overdue follow-ups · {revisionAttention.unscheduled} without scheduled follow-up · {revisionAttention.missingOwner} missing owners · {revisionAttention.stale} stale approvals to review
+            </p>
+          )}
           {showSentBack && (
             <div className="space-y-3">
               <p className="px-2 text-xs leading-5 text-muted-foreground">

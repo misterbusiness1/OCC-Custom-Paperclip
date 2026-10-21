@@ -191,3 +191,33 @@ pending -> approved
         -> rejected
         -> revision_requested -> resubmitted -> pending
 ```
+
+### Queue attention
+
+The company approval queue includes optional `queueAttention` on open requests.
+It is read-only diagnostic context, never an approval decision or permission to
+wake an agent. `revisionRequestedAt` is the latest `approval.revision_requested`
+audit time, with the recorded decision time as a legacy fallback; payload edits
+do not reset revision age. A missing decision time is reported as unknown.
+The revision owner is the requesting agent or board user, following the existing
+revision delivery contract. Linked tasks retain their own assignees and statuses.
+`tasks[].blockerAction` is a recorded blocked-task unblock action, and
+`nextFollowUpAt` is an open task's recorded monitor check time; completed and
+cancelled tasks do not contribute historical checks. No deadline is invented
+when none exists. A heartbeat succeeding does not complete or resubmit a revision.
+
+`staleReasons` flags open approvals with a completed/cancelled linked task, or an
+explicit `payload.supersededByApprovalId` naming a distinct existing approval in
+the same company. Similar titles, shared tasks and prose do not establish
+supersession. These flags request board review; they never close, reject or
+reopen records. Foreign or invalid replacement IDs are not returned as pointers.
+
+Optional `queueAttention.revisionOutcome` consumes the latest internal
+`approval.revision_outcome` record only when its company, approval and exact
+`revisionDecidedAt` match the current card's recorded `decidedAt`. Audit-log
+insertion time is not the revision cycle key. Missing or invalid legacy records
+are shown as unknown; an older cycle can never cover a newer change request.
+While the card remains `revision_requested`, only `unresolved` or
+`durable_blocker` diagnostics are admitted. Logged completion claims cannot
+replace the approval's actual status. Valid outcome blockers, next actions and
+follow-up times are displayed separately from agent execution success.

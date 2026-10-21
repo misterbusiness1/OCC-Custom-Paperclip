@@ -1243,6 +1243,7 @@ export type {
   ApprovalLinkedIssue,
   ApprovalLinkedIssuesByApproval,
   ApprovalQueue,
+  ApprovalQueueAttention,
   BudgetPolicy,
   BudgetPolicySummary,
   BudgetIncident,
