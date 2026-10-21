@@ -185,3 +185,45 @@ describe("approvalsApi.listLinkedIssues", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("approvalsApi.listQueue", () => {
+  it("reads the open approvals and a window of decided ones from the queue route", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ approvals: [{ id: "a1" }], decidedLimit: 100, decidedHasMore: true }));
+
+    const result = await approvalsApi.listQueue("co-1", 100);
+
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/companies/co-1/approvals/queue?decidedLimit=100");
+    expect(result).toEqual({ approvals: [{ id: "a1" }], decidedLimit: 100, decidedHasMore: true });
+  });
+
+  it("reads the whole list from a server without the queue route, as one window", async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url.includes("/approvals/queue") ? jsonResponse({ error: "API route not found" }, 404) : jsonResponse([{ id: "a1" }, { id: "a2" }]));
+
+    const result = await approvalsApi.listQueue("co-1", 100);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/companies/co-1/approvals/queue?decidedLimit=100",
+      "/api/companies/co-1/approvals",
+    ]);
+    expect(result).toEqual({ approvals: [{ id: "a1" }, { id: "a2" }], decidedLimit: 100, decidedHasMore: false });
+  });
+
+  it("fails on any other error of the queue route", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: "boom" }, 500));
+    const error = await approvalsApi.listQueue("co-1", 100).catch((caught: unknown) => caught);
+    expect((error as ApiError).status).toBe(500);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("approvalsApi decisions with a content version", () => {
+  it("sends the content version and status the page held", async () => {
+    const version = { updatedAt: new Date(VERSION), status: "pending" as const, contentVersion: "e".repeat(32) };
+    await approvalsApi.approve("a1", "ok", { expectedUpdatedAt: version });
+    await approvalsApi.requestRevision("a1", "Quote", { expectedUpdatedAt: version });
+
+    expect(sent(0).body).toEqual({ decisionNote: "ok", expectedUpdatedAt: VERSION, expectedContentVersion: "e".repeat(32), expectedStatus: "pending" });
+    expect(sent(1).body).toEqual({ decisionNote: "Quote", expectedUpdatedAt: VERSION, expectedContentVersion: "e".repeat(32), expectedStatus: "pending" });
+  });
+});

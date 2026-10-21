@@ -590,6 +590,12 @@ export const queryKeys = {
     /** Prefix of every `linkedIssues` key of one company. */
     linkedIssuesOfCompany: (companyId: string) =>
       ["approvals", "linked-issues", companyId] as const,
+    /**
+     * Under that prefix: the queue's marker that a live update of links happened (its data is the
+     * time of the last one). Refetched by every invalidation of the prefix that does not leave it out.
+     */
+    linkedIssuesGeneration: (companyId: string) =>
+      ["approvals", "linked-issues", companyId, "generation"] as const,
   },
   access: {
     invites: (companyId: string, state: string = "all", limit: number = 20) =>

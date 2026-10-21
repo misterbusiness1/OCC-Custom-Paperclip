@@ -1302,6 +1302,11 @@ function invalidateActivityQueries(
       // An ancestor hold or reparenting changes descendants' effective pause.
       queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state"] });
     }
+    if (action === "issue.deleted") {
+      // Deleting a task removes its approval links (cascade) without a link event: the queue's
+      // chips are read again so none points at the deleted task.
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.linkedIssuesOfCompany(companyId) });
+    }
     if (action === "issue.approval_linked" || action === "issue.approval_unlinked") {
       // The approval queue shows each request's linked tasks; a task linked or unlinked changes them.
       // Only a mounted queue refetches, as one batch read.
@@ -1500,9 +1505,14 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({
       queryKey: ISSUE_APPROVALS_QUERY_KEY_FAMILY,
     });
-    // The queue's linked-task chips are read for the rows shown, in one batch; they follow too.
+    // The queue's linked-task chips: an approval event does not change the links of rows already
+    // read (links to an existing approval arrive as issue.approval_linked / unlinked, handled above,
+    // and an approval created with links is a new row, read when it comes onto the page). So only a
+    // read in progress follows; the queue's re-read-everything marker is left alone, or every
+    // decision would re-read every row on the page.
     queryClient.invalidateQueries({
       queryKey: queryKeys.approvals.linkedIssuesOfCompany(companyId),
+      predicate: (query) => query.queryKey[3] !== queryKeys.approvals.linkedIssuesGeneration(companyId)[3],
     });
     // An open approval page follows a resubmission, another member's decision and new comments too.
     if (entityId) {

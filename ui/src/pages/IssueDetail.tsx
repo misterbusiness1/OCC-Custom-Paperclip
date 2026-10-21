@@ -178,7 +178,7 @@ import {
 import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
 import type { ApprovalDecisionKind } from "../components/ApprovalDecisionActions";
-import { isApprovalVersionConflict, type ApprovalVersion } from "../lib/approval-version";
+import { approvalVersionOf, isApprovalVersionConflict, type ApprovalVersion } from "../lib/approval-version";
 import { ProjectTile } from "../components/ProjectTile";
 import { InlineEditor } from "../components/InlineEditor";
 import {
@@ -2863,10 +2863,10 @@ function IssueDetailActivityTab({
               resolveAgentName={(agentId) =>
                 agentMap.size > 0 ? (agentMap.get(agentId)?.name ?? null) : undefined
               }
-              onApprove={(note) => onApprovalAction(approval.id, "approve", note, approval.updatedAt)}
-              onReject={(note) => onApprovalAction(approval.id, "reject", note, approval.updatedAt)}
+              onApprove={(note) => onApprovalAction(approval.id, "approve", note, approvalVersionOf(approval))}
+              onReject={(note) => onApprovalAction(approval.id, "reject", note, approvalVersionOf(approval))}
               // The card hides the button when the request has no requesting agent or is not pending.
-              onRequestRevision={(note) => onApprovalAction(approval.id, "revision", note, approval.updatedAt)}
+              onRequestRevision={(note) => onApprovalAction(approval.id, "revision", note, approvalVersionOf(approval))}
               detailLink={`/approvals/${approval.id}`}
               isPending={pendingApprovalAction?.approvalId === approval.id}
               pendingAction={

@@ -1,3 +1,4 @@
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { approvals } from "@paperclipai/db";
 
@@ -9,4 +10,60 @@ import { approvals } from "@paperclipai/db";
  */
 export function nextApprovalUpdatedAt(now: Date) {
   return sql<Date>`greatest(${now.toISOString()}::timestamptz, date_trunc('milliseconds', ${approvals.updatedAt}) + interval '1 millisecond')`;
+}
+
+/** JSON with object keys in a fixed order, so equal content always gives equal text. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item === undefined ? null : item)).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+/**
+ * What the board reads when it decides an approval: its type, the stored payload and the
+ * board's change request (`decisionNote`). Two versions of an approval with the same content
+ * version show the same request. Computed from the stored (not the redacted) payload, so only the
+ * server computes it; clients send back the value the API gave them.
+ */
+export function approvalContentVersion(approval: {
+  type: string;
+  payload: Record<string, unknown>;
+  decisionNote: string | null;
+}): string {
+  return createHmac("sha256", contentVersionKey())
+    .update(stableJson({ type: approval.type, payload: approval.payload, decisionNote: approval.decisionNote ?? null }))
+    .digest("hex")
+    .slice(0, 32);
+}
+
+let cachedContentVersionKey: Buffer | null = null;
+
+/**
+ * The key of the content version. It is keyed so that the value, which is computed from the
+ * unredacted payload and returned next to the redacted one, cannot be used to test guesses for a
+ * redacted secret. Derived from the instance's auth secret, so it is the same across restarts;
+ * without one, a key random to this process (versions then change at a restart, and a decision on
+ * a version read before it falls back to the plain 409).
+ */
+function contentVersionKey(): Buffer {
+  if (cachedContentVersionKey) return cachedContentVersionKey;
+  const secret = process.env.BETTER_AUTH_SECRET || process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  cachedContentVersionKey = secret
+    ? createHash("sha256").update(`paperclip-approval-content-version:${secret}`).digest()
+    : randomBytes(32);
+  return cachedContentVersionKey;
+}
+
+/**
+ * Whether an approval that moved from the status the reader saw to its current status still asks
+ * the same thing. Only the requester's resubmission (sent back, then pending again) qualifies;
+ * any other move (sent back by someone else, decided, cancelled) changes what a decision means.
+ */
+export function isSameRequestStatusMove(seenStatus: string, currentStatus: string): boolean {
+  return seenStatus === currentStatus || (seenStatus === "revision_requested" && currentStatus === "pending");
 }

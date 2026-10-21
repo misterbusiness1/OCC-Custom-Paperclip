@@ -11,8 +11,8 @@ import {
   type PointerEvent,
 } from "react";
 import { Link, useNavigate, useLocation, useSearchParams } from "@/lib/router";
-import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Approval } from "@paperclipai/shared";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { APPROVAL_QUEUE_DECIDED_LIMIT_MAX, type Approval, type ApprovalLinkedIssuesByApproval } from "@paperclipai/shared";
 import { approvalsApi } from "../api/approvals";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
@@ -25,6 +25,8 @@ import {
   shouldBlurPageSearchOnEscape,
 } from "../lib/keyboardShortcuts";
 import { queryKeys } from "../lib/queryKeys";
+import { approvalListQuery, useApprovalQueueWindow, widenDecidedWindow } from "../lib/approval-queue";
+import { approvalCost, approvalDecideBy, compareByCost, compareByDecideBy } from "../lib/approval-terms";
 import { isBareApprovalsPath } from "../lib/shell-navigation";
 import { cn } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
@@ -63,14 +65,23 @@ import {
   createApprovalRevisionMemory,
 } from "../components/ApprovalRevision";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { approvalVersionConflict, type ApprovalVersion, type ApprovalVersionConflict } from "../lib/approval-version";
+import { approvalVersionConflict, approvalVersionOf, type ApprovalVersion, type ApprovalVersionConflict } from "../lib/approval-version";
 import { StatusBadge } from "../components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 type StatusFilter = "pending" | "all";
-type SortOrder = "oldest" | "newest";
+type SortOrder = "oldest" | "newest" | "due" | "cost";
+
+/** The orders the sort button steps through, and what it says for each. */
+const SORT_LABELS: Record<SortOrder, string> = {
+  oldest: "Oldest first",
+  newest: "Newest first",
+  due: "Deadline soonest",
+  cost: "Highest cost",
+};
+const SORT_ORDERS = Object.keys(SORT_LABELS) as SortOrder[];
 /** A decision as it is sent. `companyId` is the request's own company: the reader may have changed company by the time it lands. */
 type Decision = {
   id: string;
@@ -439,9 +450,17 @@ export function Approvals() {
   // The oldest request has waited longest, so it leads the queue; history reads newest first.
   const defaultSort: SortOrder = statusFilter === "pending" ? "oldest" : "newest";
   const sortParam = searchParams.get("sort");
-  const sortOrder: SortOrder = sortParam === "oldest" || sortParam === "newest" ? sortParam : defaultSort;
+  const sortOrder: SortOrder = SORT_ORDERS.includes(sortParam as SortOrder) ? (sortParam as SortOrder) : defaultSort;
   // The search term is not part of the address: it is typed to find one request, not to keep a view.
   const [searchText, setSearchText] = useState("");
+  // The linked tasks this page has read, per approval, for the selected company (see the read below).
+  // `byId` is what the page shows; `fresh` holds the ids read since the last live update of linked
+  // tasks, so a live update re-reads every row while the chips already shown stay on screen.
+  const [linkedKnownState, setLinkedKnown] = useState<{
+    companyId: string | null;
+    byId: ApprovalLinkedIssuesByApproval;
+    fresh: ReadonlySet<string>;
+  }>({ companyId: null, byId: {}, fresh: new Set() });
   const searchTerm = searchText.trim().toLowerCase();
   // Approvals decided on this visit stay listed as a compact row, so deciding
   // one request does not move the rest of the queue or leave the page.
@@ -621,8 +640,7 @@ export function Approvals() {
   }, [keyboardShortcutsEnabled]);
 
   const { data, isLoading, isFetching, error } = useQuery({
-    queryKey: queryKeys.approvals.list(selectedCompanyId!),
-    queryFn: () => approvalsApi.list(selectedCompanyId!),
+    ...approvalListQuery(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -1031,7 +1049,7 @@ export function Approvals() {
       subject: approvalDisplaySubject(approval),
       companyId: approval.companyId,
       // The request as this card draws it now. A hold keeps this value until it is sent.
-      expectedUpdatedAt: approval.updatedAt,
+      expectedUpdatedAt: approvalVersionOf(approval),
     };
     if (action === "reject") rejectMutation.mutate(decision);
     else if (action === "revision") revisionMutation.mutate(decision);
@@ -1109,15 +1127,31 @@ export function Approvals() {
   // it was decided elsewhere: the reader stays on the decided row, and no row moves under their hands.
   const keepsPlace = (a: Approval) =>
     Boolean(decidedHere[a.id] || leftHere[a.id] || decisions.inFlight[a.id] || decisions.errors[a.id]);
+  const byDeadline = (a: Approval) =>
+    needsBoard(a) || a.status === "revision_requested" || keepsPlace(a) || Boolean(heldApprovals[a.id]);
   const sortTime = (a: Approval) =>
     statusFilter === "all" && !needsBoard(a) && a.decidedAt && !keepsPlace(a)
       ? timeOf(a.decidedAt)
       : timeOf(a.createdAt);
+  // Whether any request of this tab carries a typed deadline or cost (see `approval-terms`).
+  const hasTerms = inTab.some((a) => approvalDecideBy(a.payload) !== null || approvalCost(a.payload) !== null);
   const filtered = inTab
     .filter((a) => (inActiveKind(a) && matchesSearch(a)) || staysListed(a))
     .sort((a, b) => {
+      // A request without a deadline or a cost keeps the tab's own order after those that have one.
+      // A deadline orders only requests still open (pending or sent back), and the ones the reader is
+      // working on here, which keep their place; a request decided earlier follows in the time order.
+      const byTerms = sortOrder === "due"
+        ? (byDeadline(a) === byDeadline(b)
+          ? (byDeadline(a) ? compareByDecideBy(a.payload, b.payload) : 0)
+          : byDeadline(a) ? -1 : 1)
+        : sortOrder === "cost"
+          ? compareByCost(a.payload, b.payload)
+          : 0;
+      if (byTerms !== 0) return byTerms;
       const delta = sortTime(a) - sortTime(b);
-      return sortOrder === "oldest" ? delta : -delta;
+      const timeOrder: SortOrder = sortOrder === "due" || sortOrder === "cost" ? defaultSort : sortOrder;
+      return timeOrder === "oldest" ? delta : -delta;
     });
 
   /** The compact row a request is shown as (decided on this visit, or decided elsewhere under the reader), or null while it is a card. */
@@ -1511,6 +1545,21 @@ export function Approvals() {
   // Carried by every "View details" link, so the request's own page can link back to this view.
   const detailsState: ApprovalQueueLinkState = { queue: `${location.pathname}${location.search}` };
 
+  // The list holds every open request and only the most recent decisions; older ones are read on request.
+  const queueWindow = useApprovalQueueWindow(selectedCompanyId);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const loadOlderDecisions = async () => {
+    const companyId = selectedCompanyId;
+    if (!companyId || loadingOlder || !widenDecidedWindow(companyId)) return;
+    setLoadingOlder(true);
+    try {
+      await queryClient.refetchQueries({ queryKey: queryKeys.approvals.list(companyId), exact: true });
+      setVisibleCount((count) => count + PAGE_SIZE);
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
   const showMore = () => {
     // The first card the page does not show yet is the first one the press brings in.
     const shownIds = new Set(visible.map((a) => a.id));
@@ -1532,18 +1581,63 @@ export function Approvals() {
     }
   };
 
-  // The linked-task chips of every row on the page come from one read, not one per card. The key is
-  // the set of rows shown, so a row the page brings in is read with the others; the rows already
-  // shown keep their chips while that read is on its way. Returning to the browser tab reads nothing.
-  const linkedIssueIdsKey = visible.map((approval) => approval.id).sort().join(",");
-  const { data: linkedIssuesByApproval } = useQuery({
-    queryKey: queryKeys.approvals.linkedIssues(selectedCompanyId ?? "", linkedIssueIdsKey),
+  // The linked-task chips come from batch reads, never one per card. A read covers only the rows on
+  // the page that were not read since the last live update; the rows already shown keep their chips
+  // while it is on its way. A focus change reads nothing. A live update of linked tasks or approvals,
+  // and a return to a tab that was hidden, read every row on the page again.
+  const linkedKnown = linkedKnownState.companyId === selectedCompanyId
+    ? linkedKnownState
+    : { companyId: selectedCompanyId ?? null, byId: {} as ApprovalLinkedIssuesByApproval, fresh: new Set<string>() };
+  // Live updates invalidate the company's linked-task reads (LiveUpdatesProvider). This always-active
+  // marker under the same prefix is refetched by every such invalidation; its new time means "re-read".
+  const { dataUpdatedAt: linkedGenerationAt } = useQuery({
+    queryKey: queryKeys.approvals.linkedIssuesGeneration(selectedCompanyId ?? ""),
+    queryFn: async () => Date.now(),
+    enabled: !!selectedCompanyId,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+  const lastLinkedGeneration = useRef(0);
+  useEffect(() => {
+    if (!linkedGenerationAt) return;
+    const first = lastLinkedGeneration.current === 0;
+    lastLinkedGeneration.current = linkedGenerationAt;
+    if (first) return;
+    setLinkedKnown((prev) => ({ ...prev, fresh: new Set() }));
+  }, [linkedGenerationAt]);
+  // Only the rows whose linked tasks this page has not read yet are read: a decision changes the
+  // rows on the page, and re-reading every row each time would repeat the read for unchanged rows.
+  const missingLinkedIds = visible
+    .map((approval) => approval.id)
+    .filter((id) => !linkedKnown.fresh.has(id))
+    .sort();
+  const linkedIssueIdsKey = missingLinkedIds.join(",");
+  const { data: fetchedLinkedIssues } = useQuery({
+    // The generation is part of the key: a re-read after a live update is a new read, never an
+    // answer still cached from before it.
+    queryKey: [...queryKeys.approvals.linkedIssues(selectedCompanyId ?? "", linkedIssueIdsKey), linkedGenerationAt],
     queryFn: () => approvalsApi.listLinkedIssues(selectedCompanyId!, linkedIssueIdsKey.split(",")),
-    enabled: !!selectedCompanyId && linkedIssueIdsKey.length > 0,
+    // Waits for the marker, whose time is part of the key: a read started before it loaded would be
+    // read again under the new key.
+    enabled: !!selectedCompanyId && linkedIssueIdsKey.length > 0 && linkedGenerationAt > 0,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
-    placeholderData: keepPreviousData,
   });
+  useEffect(() => {
+    if (!fetchedLinkedIssues || !linkedIssueIdsKey) return;
+    setLinkedKnown((prev) => {
+      const same = prev.companyId === selectedCompanyId;
+      const byId: ApprovalLinkedIssuesByApproval = same ? { ...prev.byId } : {};
+      const fresh = new Set(same ? prev.fresh : []);
+      // An approval without linked tasks has no key in the answer: it is known to have none.
+      for (const id of linkedIssueIdsKey.split(",")) {
+        byId[id] = fetchedLinkedIssues[id] ?? [];
+        fresh.add(id);
+      }
+      return { companyId: selectedCompanyId ?? null, byId, fresh };
+    });
+  }, [fetchedLinkedIssues, linkedIssueIdsKey, selectedCompanyId]);
+  const linkedIssuesByApproval = linkedKnown.byId;
 
   if (!selectedCompanyId) {
     return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
@@ -1653,12 +1747,29 @@ export function Approvals() {
               size="sm"
               className="h-7 px-2 text-xs text-muted-foreground"
               onClick={() => {
-                const next: SortOrder = sortOrder === "oldest" ? "newest" : "oldest";
+                // From a deadline or cost order this goes back to the tab's time order, reversed.
+                const time: SortOrder = sortOrder === "due" || sortOrder === "cost" ? defaultSort : sortOrder;
+                const next: SortOrder = time === "oldest" ? "newest" : "oldest";
                 changeView("sort", next === defaultSort ? null : next);
               }}
             >
-              Sort: {sortOrder === "oldest" ? "Oldest first" : "Newest first"}
+              Sort: {SORT_LABELS[sortOrder === "due" || sortOrder === "cost" ? defaultSort : sortOrder]}
             </Button>
+            {/* Offered only when a request here carries a deadline or a cost: otherwise it would change nothing. */}
+            {(hasTerms || sortOrder === "due" || sortOrder === "cost") && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground"
+                data-approval-order-by=""
+                onClick={() => {
+                  const next: SortOrder | null = sortOrder === "due" ? "cost" : sortOrder === "cost" ? null : "due";
+                  changeView("sort", next);
+                }}
+              >
+                Order: {sortOrder === "due" ? "Deadline" : sortOrder === "cost" ? "Cost" : "Time"}
+              </Button>
+            )}
           </div>
         </div>
       )}
@@ -1757,6 +1868,25 @@ export function Approvals() {
             </div>
           )}
         </>
+      )}
+
+      {statusFilter === "all" && queueWindow.decidedHasMore && remaining <= 0 && (
+        queueWindow.decidedLimit >= APPROVAL_QUEUE_DECIDED_LIMIT_MAX ? (
+          <p className="pt-2 text-center text-xs text-muted-foreground" data-approval-older-decisions="cap">
+            {`These are the ${queueWindow.decidedLimit} most recent decisions. Open an older one from its task.`}
+          </p>
+        ) : (
+        <div className="flex flex-col items-center gap-2 pt-2 text-center" data-approval-older-decisions="">
+          <p className="text-xs text-muted-foreground">
+            {searchTerm || kindFilter !== "all"
+              ? `Searched the ${queueWindow.decidedLimit} most recent decisions. Older ones are not loaded yet.`
+              : `These are the ${queueWindow.decidedLimit} most recent decisions.`}
+          </p>
+          <Button variant="outline" size="sm" onClick={() => void loadOlderDecisions()} disabled={loadingOlder}>
+            {loadingOlder ? "Loading older decisions…" : "Load older decisions"}
+          </Button>
+        </div>
+        )
       )}
 
       {sentBack.length > 0 && (

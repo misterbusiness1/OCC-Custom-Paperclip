@@ -20,9 +20,14 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 
-const mockApprovalsApi = vi.hoisted(() => ({
-  list: vi.fn(),
-}));
+const mockApprovalsApi = vi.hoisted(() => {
+  const list = vi.fn();
+  return {
+    list,
+  // The queue read the list query now uses; it serves what the `list` mock serves, as one window.
+  listQueue: vi.fn(async (companyId: string, decidedLimit: number) => ({ approvals: (await list(companyId)) ?? [], decidedLimit, decidedHasMore: false })),
+  };
+});
 
 /** The page the sidebar is drawn on, and the company prefix `@/lib/router` puts before every target. */
 const mockLocation = vi.hoisted(() => ({ pathname: "/", search: "", hash: "", companyPrefix: "" }));

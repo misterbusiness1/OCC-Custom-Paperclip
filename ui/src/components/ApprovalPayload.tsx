@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -6,6 +6,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { ApprovalSectionLabel } from "./ApprovalSectionLabel";
 import { formatCents } from "../lib/utils";
 import { approvalReadableText } from "../lib/approval-readable-text";
+import { approvalCost, approvalDecideBy, decideByState, decideByText, formatApprovalCost, formatDecideBy } from "../lib/approval-terms";
 
 export { approvalReadableText };
 
@@ -755,6 +756,78 @@ export function BoardApprovalPayload({
  */
 export function stripLeadingListMarker(value: string): string {
   return value.replace(/^(?:[-*•]|\d{1,3}[.)])[^\S\n]+/, "");
+}
+
+/** The time now, moved on every minute while `live`, so a deadline's wording and color stay current. */
+function useMinuteClock(live: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, [live]);
+  return now;
+}
+
+/**
+ * The request's typed terms, when it has them: what approving costs and when the board must decide.
+ * While the request is open a passed deadline is said in words and in the destructive color; once
+ * it is decided the deadline is only its date.
+ */
+export function ApprovalTerms({
+  payload,
+  open = true,
+  compact = false,
+  className,
+}: {
+  payload: Record<string, unknown>;
+  /** Whether the request still waits on the board (pending or sent back). */
+  open?: boolean;
+  compact?: boolean;
+  className?: string;
+}) {
+  const cost = approvalCost(payload);
+  const decideBy = approvalDecideBy(payload);
+  const now = useMinuteClock(open && decideBy !== null);
+  if (!cost && !decideBy) return null;
+  const state = decideBy && open ? decideByState(decideBy, now) : null;
+  const deadlineText = decideBy ? (open ? decideByText(decideBy, now) : `Decide by ${formatDecideBy(decideBy)}`) : null;
+  const deadlineClass =
+    state === "overdue"
+      ? "text-destructive font-medium"
+      : state === "soon"
+        ? "text-amber-700 dark:text-amber-300 font-medium"
+        : "text-muted-foreground";
+  if (compact) {
+    return (
+      <span className={cn("inline-flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs", className)} data-approval-terms="compact">
+        {cost && <span className="text-foreground/80" data-approval-cost="">{formatApprovalCost(cost)}</span>}
+        {decideBy && deadlineText && (
+          <span className={deadlineClass} data-approval-decide-by={state ?? "decided"} title={formatDecideBy(decideBy)}>
+            {deadlineText}
+          </span>
+        )}
+      </span>
+    );
+  }
+  return (
+    <dl className={cn("grid gap-x-6 gap-y-2 sm:grid-cols-2", className)} data-approval-terms="">
+      {cost && (
+        <div className="space-y-0.5">
+          <dt className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Cost</dt>
+          <dd className="font-medium text-foreground" data-approval-cost="">{formatApprovalCost(cost)}</dd>
+        </div>
+      )}
+      {decideBy && deadlineText && (
+        <div className="space-y-0.5">
+          <dt className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Decide by</dt>
+          <dd className={deadlineClass} data-approval-decide-by={state ?? "decided"}>
+            <time dateTime={decideBy.toISOString()} title={formatDecideBy(decideBy)}>{deadlineText}</time>
+          </dd>
+        </div>
+      )}
+    </dl>
+  );
 }
 
 function BoardApprovalPayloadContent({

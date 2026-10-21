@@ -17,6 +17,7 @@ import {
   approvalTextPreview,
   OriginalRequestBlock,
   stripLeadingListMarker,
+  ApprovalTerms,
 } from "./ApprovalPayload";
 
 /**
@@ -596,6 +597,10 @@ export function ApprovalDecisionSummary({
   return (
     <div className={cn("space-y-3", className)}>
       <DecisionField label="Summary" value={summary} {...SUMMARY_PREVIEW} full={full} />
+      {/* What approving costs and when the board must decide, where the decision is made. */}
+      {isBoardApproval && payload && (
+        <ApprovalTerms payload={payload} open={status === "pending" || status === "revision_requested"} />
+      )}
       <DecisionField
         label="Recommendation"
         value={brief.recommendation}

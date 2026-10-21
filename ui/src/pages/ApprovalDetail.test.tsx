@@ -931,3 +931,96 @@ describe("ApprovalDetail", () => {
     });
   });
 });
+
+describe("ApprovalDetail, a decided request and the changes asked for before it", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    for (const mock of Object.values(apiMocks)) mock.mockReset();
+    routerMock.navigate.mockReset();
+    routerMock.location.state = null;
+    breadcrumbMock.setBreadcrumbs.mockReset();
+    apiMocks.listIssues.mockResolvedValue([]);
+    apiMocks.agentsList.mockResolvedValue([{ id: "agent-requester", name: "Operations Lead" }, { id: MANAGER_ID, name: "Chief Executive" }]);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    queryClient.clear();
+    container.remove();
+  });
+
+  const renderDecided = async (approval: Approval) => {
+    apiMocks.get.mockResolvedValue(approval);
+    await act(async () => {
+      root.render(
+        <ThemeProvider>
+          <QueryClientProvider client={queryClient}>
+            <ApprovalDetail />
+          </QueryClientProvider>
+        </ThemeProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Approve staging hosting spend"));
+  };
+  const block = () => container.querySelector<HTMLElement>("[data-approval-decided-change-requests]");
+
+  const comments = [
+    { id: "c1", authorAgentId: null, authorUserId: "user-1", body: "Changes requested:\n\nQuote the date.", createdAt: new Date("2026-10-05T13:00:00.000Z") },
+    { id: "c2", authorAgentId: MANAGER_ID, authorUserId: null, body: "Changes requested:\n\nNot the board.", createdAt: new Date("2026-10-05T13:30:00.000Z") },
+    { id: "c3", authorAgentId: null, authorUserId: "user-1", body: "A plain comment.", createdAt: new Date("2026-10-05T13:40:00.000Z") },
+    { id: "c4", authorAgentId: null, authorUserId: "user-1", body: "Changes requested:\n\n1. Name the price.\n2. Keep it monthly.", createdAt: new Date("2026-10-05T14:00:00.000Z") },
+    // Written after the decision: not part of what it was decided on.
+    { id: "c5", authorAgentId: null, authorUserId: "user-1", body: "Changes requested:\n\nToo late.", createdAt: new Date("2026-10-05T16:00:00.000Z") },
+  ];
+
+  it("lists every round of the board's change requests, oldest first, on an approved request", async () => {
+    apiMocks.listComments.mockResolvedValue(comments);
+    await renderDecided(createApproval({ status: "approved", decisionNote: "Ship it.", decidedAt: new Date("2026-10-05T15:00:00.000Z") }));
+
+    await vi.waitFor(() => expect(block()).not.toBeNull());
+    expect(block()!.textContent).toContain("Changes asked for before this decision (2 rounds)");
+    const notes = [...block()!.querySelectorAll("li")].map((item) => item.querySelector("p:last-child")!.textContent);
+    expect(notes).toEqual(["Quote the date.", "1. Name the price.\n2. Keep it monthly."]);
+    // The decision note is still shown as the decision note.
+    expect(container.querySelector("[data-approval-decision-note]")?.textContent).toBe("Ship it.");
+  });
+
+  it("shows cost and deadline in the panel the board decides from, above the buttons", async () => {
+    apiMocks.listComments.mockResolvedValue([]);
+    const base = createApproval();
+    await renderDecided(createApproval({
+      payload: { ...base.payload, cost: { amount: 42, currency: "USD", period: "month" }, decideBy: new Date(Date.now() - 3_600_000).toISOString() },
+    }));
+    const panel = container.querySelector<HTMLElement>("section[aria-labelledby='approval-title']")!;
+    const terms = panel.querySelector<HTMLElement>("dl[data-approval-terms]");
+    expect(terms).not.toBeNull();
+    expect(terms!.textContent).toContain("$42.00 / month");
+    expect(terms!.querySelector("[data-approval-decide-by]")?.getAttribute("data-approval-decide-by")).toBe("overdue");
+    const approve = [...panel.querySelectorAll("button")].find((button) => button.textContent === "Approve")!;
+    expect(Boolean(terms!.compareDocumentPosition(approve) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    // Not inside the collapsed full request only.
+    expect(terms!.closest("details")).toBeNull();
+  });
+
+  it("shows nothing extra for an open request or one decided without change requests", async () => {
+    apiMocks.listComments.mockResolvedValue(comments);
+    await renderDecided(createApproval({ status: "pending", decisionNote: "Name the price." }));
+    await vi.waitFor(() => expect(apiMocks.listComments).toHaveBeenCalled());
+    expect(block()).toBeNull();
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    queryClient.clear();
+    apiMocks.listComments.mockResolvedValue([comments[2]]);
+    await renderDecided(createApproval({ status: "rejected", decidedAt: new Date("2026-10-05T15:00:00.000Z") }));
+    await vi.waitFor(() => expect(apiMocks.listComments).toHaveBeenCalledTimes(2));
+    expect(block()).toBeNull();
+  });
+});

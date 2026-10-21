@@ -634,6 +634,8 @@ export {
   createApprovalInputSchema,
   createApprovalSchema,
   approvalOriginalRequestSchema,
+  approvalCostSchema,
+  approvalDecideBySchema,
   decisionReadyApprovalPayloadSchema,
   resolveApprovalSchema,
   retireApprovalSchema,

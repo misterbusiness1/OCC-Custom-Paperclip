@@ -706,6 +706,16 @@ export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 /** The most approval ids one linked-issues batch read accepts (`?ids=`). */
 export const APPROVAL_LINKED_ISSUES_MAX_IDS = 100;
 
+/** How many decided approvals the board's queue read (`GET /companies/:id/approvals/queue`) returns by default. */
+export const APPROVAL_QUEUE_DECIDED_PAGE_SIZE = 100;
+
+/** The largest `decidedLimit` the queue read accepts. */
+export const APPROVAL_QUEUE_DECIDED_LIMIT_MAX = 2000;
+
+/** Billing periods an approval's `cost` can name. */
+export const APPROVAL_COST_PERIODS = ["one_time", "month", "year"] as const;
+export type ApprovalCostPeriod = (typeof APPROVAL_COST_PERIODS)[number];
+
 /**
  * First line of the approval comment that keeps the board's change request.
  * The request-revision route writes that comment, so the request stays in the

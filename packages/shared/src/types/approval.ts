@@ -13,6 +13,24 @@ export interface Approval {
   decidedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * What the board reads when it decides: a hash of the type, the stored payload and the change
+   * request. Send it back with `expectedUpdatedAt` and `expectedStatus` when deciding, so a newer
+   * version that asks the same thing (an unchanged resubmission) is decided instead of refused.
+   * Absent from servers older than this field.
+   */
+  contentVersion?: string;
+}
+
+/**
+ * `GET /api/companies/:companyId/approvals/queue?decidedLimit=`: every open approval (pending or
+ * sent back) and the `decidedLimit` most recently decided ones. `decidedHasMore` says whether older
+ * decided approvals exist; read them by asking again with a larger `decidedLimit`.
+ */
+export interface ApprovalQueue {
+  approvals: Approval[];
+  decidedLimit: number;
+  decidedHasMore: boolean;
 }
 
 /** The create response normalizes the approval's durable issue links. */

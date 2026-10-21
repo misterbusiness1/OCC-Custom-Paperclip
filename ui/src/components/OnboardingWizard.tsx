@@ -141,6 +141,7 @@ import {
   Loader2,
   ChevronDown,
 } from "lucide-react";
+import { approvalVersionOf } from "../lib/approval-version";
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
 // Plugin/external adapters use arbitrary type ids, so this mirrors the master
@@ -2215,7 +2216,7 @@ function OnboardingWizardInner({
           "Approved during onboarding first-agent setup.",
           // A hire approval that changed since it was returned is refused
           // (409); the catch below then shows the error instead of step 5.
-          { expectedUpdatedAt: hire.approval.updatedAt }
+          { expectedUpdatedAt: approvalVersionOf(hire.approval) }
         );
         queryClient.invalidateQueries({
           queryKey: queryKeys.approvals.list(createdCompanyId)

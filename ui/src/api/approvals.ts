@@ -4,11 +4,12 @@ import {
   type ApprovalComment,
   type ApprovalLinkedIssue,
   type ApprovalLinkedIssuesByApproval,
+  type ApprovalQueue,
   type Issue,
   type RetireApproval,
 } from "@paperclipai/shared";
 import { ApiError, api, type RequestOptions } from "./client";
-import { expectedUpdatedAtField, type ApprovalVersion } from "../lib/approval-version";
+import { expectedVersionFields, type ApprovalVersion } from "../lib/approval-version";
 
 /**
  * `expectedUpdatedAt` is the `updatedAt` of the approval the reader decided on. The server then
@@ -18,8 +19,7 @@ export type ApprovalDecisionOptions = { expectedUpdatedAt?: ApprovalVersion | nu
 
 /** The body of a decision. The version is in it only when one was given. */
 function decisionBody(decisionNote: string | undefined, options?: ApprovalDecisionOptions) {
-  const expectedUpdatedAt = expectedUpdatedAtField(options?.expectedUpdatedAt);
-  return expectedUpdatedAt === undefined ? { decisionNote } : { decisionNote, expectedUpdatedAt };
+  return { decisionNote, ...expectedVersionFields(options?.expectedUpdatedAt) };
 }
 
 /**
@@ -59,6 +59,22 @@ export const approvalsApi = {
     api.get<Approval[]>(
       `/companies/${companyId}/approvals${status ? `?status=${encodeURIComponent(status)}` : ""}`,
     ),
+  /**
+   * The board's queue: every open approval and the `decidedLimit` most recently decided ones. A
+   * server without the queue route (an older one, which answers 404) is read with the full list
+   * instead, as one window that holds everything.
+   */
+  listQueue: async (companyId: string, decidedLimit: number): Promise<ApprovalQueue> => {
+    try {
+      return await api.get<ApprovalQueue>(
+        `/companies/${encodeURIComponent(companyId)}/approvals/queue?decidedLimit=${decidedLimit}`,
+      );
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 404)) throw error;
+      const approvals = await api.get<Approval[]>(`/companies/${companyId}/approvals`);
+      return { approvals, decidedLimit, decidedHasMore: false };
+    }
+  },
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Approval>(`/companies/${companyId}/approvals`, data),
   get: (id: string) => api.get<Approval>(`/approvals/${id}`),
