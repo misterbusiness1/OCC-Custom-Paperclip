@@ -445,8 +445,22 @@ describe("persistent agent directories", () => {
     await fs.symlink(path.join(home, "outside.txt"), path.join(legacyHome, "memory", "linked.md"));
     await fs.mkdir(path.join(root, "memory"), { recursive: true });
     await fs.writeFile(path.join(root, "memory", "keep.md"), "agent directory copy");
+    // Entries that cannot be copied are skipped, never fatal to the run.
+    await fs.mkdir(path.join(legacyHome, "memory", ".paperclip-runtime"), { recursive: true });
+    await fs.writeFile(path.join(legacyHome, "memory", ".paperclip-runtime", "state"), "reserved");
+    await fs.writeFile(path.join(legacyHome, "memory", "back\\slash.md"), "unsafe name");
+    await fs.mkdir(path.join(legacyHome, "memory", "clash"), { recursive: true });
+    await fs.writeFile(path.join(legacyHome, "memory", "clash", "inner.md"), "folder on one side");
+    await fs.writeFile(path.join(root, "memory", "clash"), "file on the other");
+    await fs.mkdir(path.join(home, "outside-tree"), { recursive: true });
+    await fs.writeFile(path.join(home, "outside-tree", "secret.md"), "outside");
+    await fs.symlink(path.join(home, "outside-tree"), path.join(legacyHome, "memory", "linked-dir"));
 
     const first = await run();
+    await expect(fs.stat(path.join(first.localRoot, "memory", ".paperclip-runtime"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(path.join(first.localRoot, "memory", "back\\slash.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.lstat(path.join(first.localRoot, "memory", "linked-dir"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(path.join(first.localRoot, "memory", "clash"), "utf8")).toBe("file on the other");
     expect(await fs.readFile(path.join(first.localRoot, "memory", "2026-10-20.md"), "utf8")).toBe("## Today's Plan\nship it\n");
     expect(await fs.readFile(path.join(first.localRoot, "life", "areas", "ops.md"), "utf8")).toBe("durable fact");
     expect(await fs.readFile(path.join(first.localRoot, "memory", "keep.md"), "utf8")).toBe("agent directory copy");
@@ -462,6 +476,16 @@ describe("persistent agent directories", () => {
     const next = await run();
     await expect(fs.stat(path.join(next.localRoot, "memory", "2026-10-20.md"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.stat(path.join(next.localRoot, "memory", "2026-10-21.md"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("skips a linked notes folder in the former agent home", async () => {
+    const legacyHome = resolveDefaultAgentWorkspaceDir(agentId);
+    await fs.mkdir(path.join(home, "outside-life"), { recursive: true });
+    await fs.writeFile(path.join(home, "outside-life", "secret.md"), "outside");
+    await fs.mkdir(legacyHome, { recursive: true });
+    await fs.symlink(path.join(home, "outside-life"), path.join(legacyHome, "life"));
+    const first = await run();
+    await expect(fs.stat(path.join(first.localRoot, "life"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("ordinary file edits leave the loaded instruction digest unchanged", async () => {

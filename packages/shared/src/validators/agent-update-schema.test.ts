@@ -17,16 +17,22 @@ describe("updateAgentSchema", () => {
     expect(result.envRemovedKeys).toEqual(["AGENTMAIL_API_KEY"]);
   });
 
-  it("does not strip an unknown top-level field before the route sees it", () => {
-    // The update schema is rebuilt through `objectWithoutDefaults`, which used
-    // to build a fresh object without the base schema's catchall. Every
-    // unknown top-level field was then dropped by the parse, so a new field a
-    // caller sent reached the handler as if it had never been sent.
+  it("drops fields a caller may not edit instead of passing them to the agent write", () => {
+    // The update writes every agent column it receives, so the schema is the
+    // allow-list. A caller must not move an agent to another company, change
+    // its id, or forge its pause, error and heartbeat state.
     const result = updateAgentSchema.parse({
-      someFieldTheSchemaDoesNotKnowAbout: "kept",
-    });
+      name: "Renamed",
+      companyId: "00000000-0000-4000-8000-000000000001",
+      id: "00000000-0000-4000-8000-000000000002",
+      pausedAt: "2026-10-21T00:00:00.000Z",
+      pauseReason: "forged",
+      errorReason: "forged",
+      lastHeartbeatAt: "2026-10-21T00:00:00.000Z",
+      someFieldTheSchemaDoesNotKnowAbout: "dropped",
+    }) as Record<string, unknown>;
 
-    expect((result as Record<string, unknown>).someFieldTheSchemaDoesNotKnowAbout).toBe("kept");
+    expect(result).toEqual({ name: "Renamed" });
   });
 
   it("still rejects a malformed removal list", () => {
