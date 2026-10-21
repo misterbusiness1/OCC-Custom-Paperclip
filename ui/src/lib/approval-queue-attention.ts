@@ -14,7 +14,7 @@ export function approvalQueueNextFollowUp(attention: ApprovalQueueAttention): Da
 
 /** Count approvals needing ownership attention, without mistaking their requester for a task assignee. */
 export function approvalQueueMissingOwner(attention: ApprovalQueueAttention): boolean {
-  return (!attention.owner.agentId && !attention.owner.userId)
+  return attention.tasks.length === 0 || (!attention.owner.agentId && !attention.owner.userId)
     || attention.tasks.some((task) => task.status !== "done" && task.status !== "cancelled"
       && !task.assigneeAgentId && !task.assigneeUserId);
 }

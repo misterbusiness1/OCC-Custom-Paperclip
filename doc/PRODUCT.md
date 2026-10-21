@@ -58,7 +58,7 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
-Sent-back approval rows show the requester separately from each linked task’s current owner, status, and original task link. Unassigned active tasks remain visible as missing owners even when the approval has a requester. Closed linked tasks remain visible for review and do not prove that the approval revision is complete.
+Sent-back approval rows show the requester separately from each linked task’s current owner, status, and original task link. Linkless revisions and unassigned active tasks remain visible as missing owners even when the approval has a requester. Changed revision outcomes refresh mounted queues after their transaction commits. Settled revision histories leave the bounded recovery sweep; later board revisions remain eligible. Closed linked tasks remain visible for review and do not prove that the approval revision is complete.
 
 ### Company Skills and Policy
 

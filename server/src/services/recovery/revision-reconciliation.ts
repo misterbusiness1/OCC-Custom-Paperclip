@@ -1,3 +1,4 @@
+import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import { logger } from "../../middleware/logger.js";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
 import { isDeepStrictEqual } from "node:util";
@@ -26,19 +27,26 @@ export function revisionReconciliation(db: Db, enqueueWakeup: Wake) {
   const tree = issueTreeControlService(db);
 
   async function reconcile(opts?: { issueCreatedAtGte?: Date | null }) {
+    // Settled history must not consume bounded slots forever. A later board revision
+    // always re-enters; a resubmitted card gets one final pass after terminal disposition.
     const candidates = await db.select({ id: approvals.id, companyId: approvals.companyId })
       .from(approvals).innerJoin(companies, eq(companies.id, approvals.companyId))
       .where(and(eq(companies.status, "active"), cursor ? gt(approvals.id, cursor) : undefined,
-        sql`(${approvals.status} = 'revision_requested' or exists (
-          select 1 from activity_log revision_history where revision_history.company_id = ${approvals.companyId}
+        sql`(${approvals.status} = 'revision_requested' or (
+          select (revision_history.details->>'outcome' in ('unresolved', 'durable_blocker')
+            or (revision_history.details->>'outcome' = 'resubmitted'
+              and ${approvals.status} in ('approved', 'rejected', 'cancelled')))
+          from activity_log revision_history where revision_history.company_id = ${approvals.companyId}
             and revision_history.entity_type = 'approval' and revision_history.entity_id = ${approvals.id}::text
             and revision_history.action = ${REVISION_OUTCOME_ACTIVITY}
-            and revision_history.details->>'outcome' in ('unresolved', 'durable_blocker')
+          order by revision_history.created_at desc, revision_history.id desc limit 1
         ))`)).orderBy(asc(approvals.id)).limit(100);
     cursor = candidates.length === 100 ? candidates[candidates.length - 1]!.id : null;
     const handledIssueIds = new Set<string>();
     for (const candidate of candidates) {
       try {
+      // Publish only after this transaction commits, including outcomes with no retry reservation.
+      const publications: ActivityPublication[] = [];
       const reservation = await db.transaction(async tx => {
         // Cross-process reservation. Commit before queue admission: a crash consumes one bounded
         // attempt, whose lease expires on the next sweep; admission never holds this row lock.
@@ -161,9 +169,9 @@ export function revisionReconciliation(db: Db, enqueueWakeup: Wake) {
           executionActive: activeExecution, operatorHold: operatorHeld,
           missingOwner: unsafe, missingFollowUp: !activeExecution && !operatorHeld && !decision.nextFollowUpAt
             && !blocker?.startsWith("recovery_action:") && ["unresolved", "durable_blocker"].includes(decision.outcome) };
-        if (!isDeepStrictEqual(prior?.details, details)) await tx.insert(activityLog).values({
+        if (!isDeepStrictEqual(prior?.details, details)) await logActivity(tx as unknown as Db, {
           companyId: approval.companyId, actorType: "system", actorId: "revision-recovery",
-          action: REVISION_OUTCOME_ACTIVITY, entityType: "approval", entityId: approval.id, details });
+          action: REVISION_OUTCOME_ACTIVITY, entityType: "approval", entityId: approval.id, details }, publications);
         if (approval.status !== "revision_requested" || decision.action !== "retry" || !target || !requester) return null;
         const attempt = attempts.length + 1;
         await tx.insert(activityLog).values({ companyId: approval.companyId, actorType: "system", actorId: "revision-recovery",
@@ -172,6 +180,7 @@ export function revisionReconciliation(db: Db, enqueueWakeup: Wake) {
         return { companyId: approval.companyId, approvalId: approval.id, requester, issueId: target.id,
           revisionKey, attempt, decidedAt: decidedAt.toISOString() };
       });
+      for (const publication of publications) publishActivity(publication);
       if (!reservation) continue;
       const context = { approvalId: reservation.approvalId, approvalStatus: "revision_requested",
         revisionKey: reservation.revisionKey, revisionDecidedAt: reservation.decidedAt,

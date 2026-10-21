@@ -7,6 +7,7 @@ import { activityLog, agentWakeupRequests, agents, approvals, companies, createD
   issueRecoveryActions, issueRelations, issueThreadInteractions, issues } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "./helpers/embedded-postgres.js";
 import { revisionReconciliation } from "../services/recovery/revision-reconciliation.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { REVISION_ATTEMPT_ACTIVITY, REVISION_OUTCOME_ACTIVITY } from "../services/recovery/revision-outcome.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -35,6 +36,111 @@ suite("durable adapter-independent revision reconciliation", () => {
     await db.update(activityLog).set({ createdAt: new Date(Date.now() - 2 * 60 * 60_000) })
       .where(and(eq(activityLog.entityId, id), eq(activityLog.action, REVISION_ATTEMPT_ACTIVITY)));
   }
+  it("excludes 105 settled histories from the bounded sweep and admits a repeated revision", async () => {
+    const x = await seed();
+    const at = new Date(Date.now() - 60_000), settledAt = new Date(Date.now() - 30_000);
+    const cards = Array.from({ length: 105 }, (_, i) => ({
+      id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`, companyId: x.companyId,
+      type: "request_board_approval" as const, status: i % 2 ? "pending" as const : "cancelled" as const,
+      requestedByAgentId: x.agentId, payload: {}, decidedAt: null,
+    }));
+    const settledIssueId = randomUUID();
+    await db.insert(issues).values({ id: settledIssueId, companyId: x.companyId, title: "Settled history", status: "todo", assigneeAgentId: x.agentId });
+    await db.insert(approvals).values(cards);
+    await db.insert(issueApprovals).values(cards.map(card => ({ companyId: x.companyId, approvalId: card.id, issueId: settledIssueId })));
+    await db.insert(activityLog).values(cards.flatMap(card => [
+      { companyId: x.companyId, actorType: "system", actorId: "test", entityType: "approval", entityId: card.id,
+        action: REVISION_OUTCOME_ACTIVITY, createdAt: at,
+        details: { revisionKey: `${card.id}:${at.toISOString()}`, revisionDecidedAt: at.toISOString(), outcome: "unresolved" } },
+      { companyId: x.companyId, actorType: "system", actorId: "test", entityType: "approval", entityId: card.id,
+        action: REVISION_OUTCOME_ACTIVITY, createdAt: settledAt,
+        details: { revisionKey: `${card.id}:${at.toISOString()}`, revisionDecidedAt: at.toISOString(), outcome: card.status === "pending" ? "resubmitted" : "disposed" } },
+    ]));
+    const enqueue = vi.fn(async () => null);
+    const handled = await revisionReconciliation(db, enqueue).reconcile();
+    expect(handled.has(settledIssueId)).toBe(false);
+    expect(handled.has(x.issueId)).toBe(true);
+    expect(enqueue.mock.calls.some(call => call[0] === x.agentId)).toBe(true);
+    await db.update(approvals).set({ status: "revision_requested", decidedAt: new Date(Date.now() - 60 * 60_000) }).where(eq(approvals.id, cards[0].id));
+    await db.delete(issueApprovals).where(eq(issueApprovals.approvalId, cards[0].id));
+    await db.insert(issueApprovals).values({ companyId: x.companyId, approvalId: cards[0].id, issueId: x.issueId });
+    await revisionReconciliation(db, enqueue).reconcile();
+    expect(await events(cards[0].id, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(1);
+  });
+  it("publishes committed blocker-only outcomes and suppresses unchanged outcomes", async () => {
+    const x = await seed();
+    await db.update(issues).set({ assigneeAgentId: null, assigneeUserId: "board-reviewer" }).where(eq(issues.id, x.issueId));
+    const observed: Array<Record<string, unknown>> = [];
+    const committedRows: Array<Promise<unknown[]>> = [];
+    const unsubscribe = subscribeCompanyLiveEvents(x.companyId, event => {
+      if (event.type !== "activity.logged" || event.payload.action !== REVISION_OUTCOME_ACTIVITY) return;
+      observed.push(event.payload);
+      committedRows.push(events(x.approvalId));
+    });
+    try {
+      const enqueue = vi.fn(async () => null);
+      await revisionReconciliation(db, enqueue).reconcile();
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(observed).toHaveLength(1);
+      expect(observed[0]).toMatchObject({ entityType: "approval", entityId: x.approvalId, details: { outcome: "durable_blocker" } });
+      expect((await Promise.all(committedRows))[0]).toHaveLength(1);
+      await revisionReconciliation(db, enqueue).reconcile();
+      expect(observed).toHaveLength(1);
+      await db.update(issues).set({ assigneeUserId: "different-reviewer" }).where(eq(issues.id, x.issueId));
+      await revisionReconciliation(db, enqueue).reconcile();
+      expect(observed).toHaveLength(2);
+      expect(observed[1].details).toMatchObject({ blocker: `user:different-reviewer:issue:${x.issueId}` });
+    } finally { unsubscribe(); }
+  });
+  it("publishes board escalation outcomes without requiring a wake", async () => {
+    const x = await seed();
+    await db.update(approvals).set({ decidedAt: new Date(Date.now() - 48 * 60 * 60_000) }).where(eq(approvals.id, x.approvalId));
+    const observed: Array<Record<string, unknown>> = [];
+    const unsubscribe = subscribeCompanyLiveEvents(x.companyId, event => {
+      if (event.type === "activity.logged" && event.payload.action === REVISION_OUTCOME_ACTIVITY) observed.push(event.payload);
+    });
+    try {
+      const enqueue = vi.fn(async () => null);
+      await revisionReconciliation(db, enqueue).reconcile();
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(observed).toHaveLength(1);
+      expect(observed[0].details).toMatchObject({ outcome: "durable_blocker", recoveryActionId: expect.any(String) });
+    } finally { unsubscribe(); }
+  });
+  it("does not publish an outcome rolled back by a later reservation failure", async () => {
+    const x = await seed();
+    const observed: unknown[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(x.companyId, event => observed.push(event));
+    let injectedFailure = false;
+    const failingDb = new Proxy(db, { get(target, property, receiver) {
+      if (property !== "transaction") return Reflect.get(target, property, receiver);
+      return (callback: Parameters<typeof db.transaction>[0]) => target.transaction(async tx => {
+        const guardedTx = new Proxy(tx, { get(inner, key, innerReceiver) {
+          if (key !== "insert") return Reflect.get(inner, key, innerReceiver);
+          return (table: typeof activityLog) => {
+            const insertion = inner.insert(table);
+            return new Proxy(insertion, { get(builder, method, builderReceiver) {
+              if (method !== "values") return Reflect.get(builder, method, builderReceiver);
+              return (values: typeof activityLog.$inferInsert) => {
+                if (table === activityLog && values.action === REVISION_ATTEMPT_ACTIVITY && values.entityId === x.approvalId) {
+                  injectedFailure = true;
+                  throw new Error("reservation rollback");
+                }
+                return builder.values(values);
+              };
+            } });
+          };
+        } });
+        return callback(guardedTx);
+      });
+    } });
+    try {
+      await revisionReconciliation(failingDb, vi.fn(async () => null)).reconcile();
+      expect(injectedFailure).toBe(true);
+      expect(await events(x.approvalId)).toHaveLength(0);
+      expect(observed).toHaveLength(0);
+    } finally { unsubscribe(); }
+  });
   it.each([...AGENT_ADAPTER_TYPES, "external_test_adapter"])
     ("recovers skipped/failed delivery and successful no-op for %s without adapter branches", async adapter => {
       const x = await seed(adapter);
