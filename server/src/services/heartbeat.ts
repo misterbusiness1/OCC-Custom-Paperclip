@@ -421,6 +421,8 @@ import {
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
+  buildStrandedIssueMonitorRearmPatch,
+  issueMonitorFallbackNextCheckAt,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
@@ -9422,6 +9424,11 @@ export function heartbeatService(
   options: HeartbeatServiceOptions = {},
 ) {
   const instanceSettings = instanceSettingsService(db);
+  // The stranded-monitor repair pass scans for monitors that lost their
+  // schedule. It is throttled because the scan is not index-backed, and the
+  // repair it performs is idempotent.
+  const STRANDED_MONITOR_REPAIR_INTERVAL_MS = 5 * 60 * 1000;
+  let lastStrandedMonitorRepairAt: Date | null = null;
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
   });
@@ -11754,8 +11761,27 @@ export function heartbeatService(
       });
     }
 
+    // The fire must not consume the issue's continuation path. The woken run
+    // normally re-arms the monitor for the next check, but it can fail, be
+    // cancelled or crash before it does. Keeping the monitor armed here means
+    // a failed woken run still leaves a scheduled check behind instead of
+    // silently ending every future wake.
+    //
+    // The provider-quota monitor is the one exception: it is a server-owned
+    // one-shot device that hands over to the bounded retry chain, so it keeps
+    // the consume-on-fire behaviour.
+    const isProviderQuotaRecoveryMonitor =
+      monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME;
+    const fallbackNextCheckAt = isProviderQuotaRecoveryMonitor
+      ? null
+      : issueMonitorFallbackNextCheckAt({
+          triggeredAt: input.now,
+          scheduledNextCheckAt: claimed.monitorNextCheckAt,
+          lastTriggeredAt: claimed.monitorLastTriggeredAt,
+        });
+
     try {
-      if (monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
+      if (isProviderQuotaRecoveryMonitor) {
         // Normalized monitor projections redact externalRef. Read the claimed
         // persisted policy only on this server-owned quota recovery path.
         const sourceRunId = readNonEmptyString(
@@ -11851,7 +11877,9 @@ export function heartbeatService(
           ...buildIssueMonitorTriggeredPatch({
             issue: claimed,
             policy,
+            persistedPolicy: claimed.executionPolicy,
             triggeredAt: input.now,
+            fallbackNextCheckAt,
           }),
           updatedAt: new Date(),
         })
@@ -11869,6 +11897,7 @@ export function heartbeatService(
         details: {
           identifier: claimed.identifier,
           nextCheckAt: scheduledAtIso,
+          fallbackNextCheckAt: fallbackNextCheckAt?.toISOString() ?? null,
           lastTriggeredAt: input.now.toISOString(),
           attemptCount: nextAttemptCount,
           notes: claimed.monitorNotes ?? null,
@@ -12099,6 +12128,110 @@ export function heartbeatService(
       triggered,
       skipped,
     };
+  }
+
+  /**
+   * Re-arm monitors that lost their schedule.
+   *
+   * The scheduler only selects rows that still have a `monitorNextCheckAt`, so
+   * a monitor that fired without a following check leaves the issue with no
+   * continuation path at all: nothing re-derives a check from the persisted
+   * monitor state and no recovery issue is created. This pass re-arms those
+   * monitors from the persisted monitor state and says so on the issue, so a
+   * lost schedule is never silent.
+   */
+  async function repairStrandedIssueMonitors(now = new Date()) {
+    const stranded = await db
+      .select(issueMonitorDispatchColumns)
+      .from(issues)
+      .innerJoin(companies, eq(companies.id, issues.companyId))
+      .where(
+        and(
+          eq(companies.status, "active"),
+          isNull(issues.monitorNextCheckAt),
+          isNull(issues.assigneeUserId),
+          sql`${issues.assigneeAgentId} is not null`,
+          inArray(issues.status, ["in_progress", "in_review"]),
+          sql`${issues.executionState}->'monitor' is not null`,
+          sql`${issues.executionState}->'monitor'->>'status' in ('triggered','scheduled')`,
+        ),
+      )
+      .orderBy(asc(issues.updatedAt))
+      .limit(50);
+
+    let repaired = 0;
+    for (const row of stranded) {
+      const monitorState =
+        parseIssueExecutionState(row.executionState)?.monitor ?? null;
+      // The provider-quota monitor is consumed by its fire on purpose: it is a
+      // one-shot device that hands over to the bounded retry chain, and its
+      // continuation is that chain, not another scheduled check.
+      if (monitorState?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
+        continue;
+      }
+      const policy = normalizeIssueExecutionPolicy(row.executionPolicy ?? null);
+      const stateNextCheckAt = parseMonitorDate(monitorState?.nextCheckAt ?? null);
+      const nextCheckAt =
+        stateNextCheckAt && stateNextCheckAt.getTime() > now.getTime()
+          ? stateNextCheckAt
+          : issueMonitorFallbackNextCheckAt({
+              triggeredAt: now,
+              lastTriggeredAt: row.monitorLastTriggeredAt,
+            });
+
+      const patch = buildStrandedIssueMonitorRearmPatch({
+        issue: row,
+        policy,
+        persistedPolicy: row.executionPolicy,
+        nextCheckAt,
+      });
+
+      // Only one writer may re-arm a given issue.
+      const claimed = await db
+        .update(issues)
+        .set({ ...patch, updatedAt: now })
+        .where(and(eq(issues.id, row.id), isNull(issues.monitorNextCheckAt)))
+        .returning({ id: issues.id });
+      if (!claimed.length) continue;
+
+      repaired += 1;
+
+      await db.insert(issueComments).values({
+        companyId: row.companyId,
+        issueId: row.id,
+        body: [
+          "Paperclip restored the scheduled monitor for this issue.",
+          "",
+          "- The monitor fired but no next check was scheduled, so the issue had no continuation path.",
+          `- Next check: ${nextCheckAt.toISOString()}`,
+          `- Attempt count: ${String(patch.monitorAttemptCount ?? 0)}`,
+          "",
+          "The monitor stays armed until it is explicitly re-armed or cleared.",
+        ].join("\n"),
+      });
+
+      await logActivity(db, {
+        companyId: row.companyId,
+        actorType: "system",
+        actorId: "heartbeat_scheduler",
+        action: "issue.monitor_rearmed",
+        entityType: "issue",
+        entityId: row.id,
+        details: {
+          identifier: row.identifier,
+          reason: "stranded_monitor_repair",
+          previousStatus: monitorState?.status ?? null,
+          nextCheckAt: nextCheckAt.toISOString(),
+          attemptCount: patch.monitorAttemptCount ?? 0,
+          notes: row.monitorNotes ?? null,
+          serviceName: monitorState?.serviceName ?? null,
+          maxAttempts: monitorState?.maxAttempts ?? null,
+          timeoutAt: monitorState?.timeoutAt ?? null,
+        },
+      });
+    }
+
+    return { checked: stranded.length, repaired };
   }
 
   async function getOldestRunForSession(agentId: string, sessionId: string) {
@@ -31003,6 +31136,19 @@ export function heartbeatService(
       }
 
       const issueMonitors = await tickDueIssueMonitors(now);
+
+      if (
+        !lastStrandedMonitorRepairAt ||
+        now.getTime() - lastStrandedMonitorRepairAt.getTime() >=
+          STRANDED_MONITOR_REPAIR_INTERVAL_MS
+      ) {
+        lastStrandedMonitorRepairAt = now;
+        try {
+          await repairStrandedIssueMonitors(now);
+        } catch (err) {
+          logger.error({ err }, "stranded issue monitor repair failed");
+        }
+      }
 
       return {
         checked: checked + issueMonitors.checked,

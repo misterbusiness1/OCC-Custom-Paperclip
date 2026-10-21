@@ -104,6 +104,11 @@ import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingC
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { isFixedClaudeOAuthBinding, secretService } from "../services/secrets.js";
+import {
+  assertValidEnvRemovalRequest,
+  isFixedClaudeOAuthEnvBinding,
+  mergeAgentEnvBindings,
+} from "../services/agent-env-config.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
 import {
@@ -5165,6 +5170,15 @@ export function agentRoutes(
     // from the patch so it never reaches the update values.
     const applyStoredClaudeLogin = patchData.applyStoredClaudeLogin === true;
     delete patchData.applyStoredClaudeLogin;
+    // Explicit environment-binding removals. `adapterConfig.env` merges per
+    // key, so a binding the request omits keeps its stored value. Removing a
+    // binding is a deliberate act and must name the keys it removes.
+    const envRemovedKeys = Array.isArray(patchData.envRemovedKeys)
+      ? (patchData.envRemovedKeys as unknown[]).filter(
+        (key): key is string => typeof key === "string" && key.trim().length > 0,
+      )
+      : [];
+    delete patchData.envRemovedKeys;
     if (hasOwn(patchData, "adapterConfig")) {
       const adapterConfig = asRecord(patchData.adapterConfig);
       if (!adapterConfig) {
@@ -5206,6 +5220,10 @@ export function agentRoutes(
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
       hasOwn(patchData, "adapterConfig");
+    // Env bindings the request explicitly asked to remove. They are passed to
+    // the service, which merges the environment map per key and records the
+    // removal in the activity log.
+    let envRemovals: string[] = [];
     if (touchesAdapterConfiguration) {
       assertExternalInstructionsAdmin(req, existing);
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
@@ -5249,6 +5267,57 @@ export function agentRoutes(
           previousAdapterConfig: existingAdapterConfig,
           nextAdapterConfig: rawEffectiveAdapterConfig,
         });
+      }
+      // Environment bindings merge per key. A request that carries an env map
+      // no longer replaces the stored map, so a binding the request omits keeps
+      // its stored value. Before this, a one-field adapter-config edit deleted
+      // every other binding, including the secret_ref bindings that hold an
+      // agent's credentials. Removing a binding requires an explicit
+      // `envRemovedKeys` entry.
+      const existingEnv = asRecord(existingAdapterConfig.env);
+      // Read the requested env from the effective config, so the redacted
+      // placeholder values the server already restored are the ones that merge.
+      const effectiveRequestedEnv = asRecord(rawEffectiveAdapterConfig.env);
+      envRemovals = assertValidEnvRemovalRequest({
+        existingEnv,
+        requestedEnv: effectiveRequestedEnv,
+        removedKeys: envRemovedKeys,
+        invalidNameError: (key) => unprocessable(`Invalid environment variable name: ${key}`),
+        unknownKeyError: (key) => unprocessable(
+          `Cannot remove unknown environment variable: ${key}. It is not bound on this agent.`,
+        ),
+        conflictingKeyError: (key) => unprocessable(
+          `Environment variable ${key} cannot be set and removed in the same request`,
+        ),
+      });
+      const envMerge = mergeAgentEnvBindings({
+        existingEnv,
+        requestedEnv: effectiveRequestedEnv,
+        removedKeys: envRemovals,
+      });
+      if (existingEnv || effectiveRequestedEnv) {
+        rawEffectiveAdapterConfig = { ...rawEffectiveAdapterConfig };
+        const mergedEnv = { ...envMerge.env };
+        // The fixed Claude Code OAuth binding belongs to the claude_local
+        // harness. When an agent moves to another harness, the binding has to
+        // go with it: the service releases the stored session claim only when
+        // it sees the binding removed. A binding the request set explicitly is
+        // forwarded as sent, so the service decides on it.
+        if (
+          changingAdapterType
+          && requestedAdapterType !== "claude_local"
+          && !isFixedClaudeOAuthEnvBinding(effectiveRequestedEnv?.CLAUDE_CODE_OAUTH_TOKEN)
+          && isFixedClaudeOAuthEnvBinding(mergedEnv.CLAUDE_CODE_OAUTH_TOKEN)
+        ) {
+          delete mergedEnv.CLAUDE_CODE_OAUTH_TOKEN;
+          envRemovals = [...envRemovals, "CLAUDE_CODE_OAUTH_TOKEN"];
+          envMerge.removedKeys = [...envMerge.removedKeys, "CLAUDE_CODE_OAUTH_TOKEN"];
+        }
+        if (Object.keys(mergedEnv).length > 0) {
+          rawEffectiveAdapterConfig.env = mergedEnv;
+        } else {
+          delete rawEffectiveAdapterConfig.env;
+        }
       }
       if (requestedAdapterType === "paperclip_runner") {
         rawEffectiveAdapterConfig = normalizePaperclipRunnerAdapterConfig(requestedAdapterType, rawEffectiveAdapterConfig);
@@ -5335,6 +5404,15 @@ export function agentRoutes(
         applyExistingWithoutClaim:
           req.actor.type !== "agent" && applyStoredClaudeLogin,
       },
+      // The removal keys this request explicitly authorized. The service
+      // refuses a secret binding that disappears without one, and records the
+      // removal in the activity log.
+      envUpdate: { removals: envRemovals },
+      // Run context for the activity events the service records.
+      activityContext: {
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+      },
     });
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -5353,6 +5431,12 @@ export function agentRoutes(
       entityId: agent.id,
       details: summarizeAgentUpdateDetails(patchData),
     });
+
+    // The removal of an environment binding is recorded by the service, in the
+    // same transaction as the write. An explicit removal is the only way a
+    // binding can leave an agent, and the record names the removed keys and
+    // their binding kinds, never a value. Keeping the record in the service
+    // means every write path is audited, not only the HTTP route.
 
     res.json(redactAgentRowForResponse(agent));
   });

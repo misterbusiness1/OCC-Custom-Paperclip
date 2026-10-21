@@ -142,9 +142,21 @@ export const updateAgentSchema = objectWithoutDefaults(
   .extend({
     permissions: z.never().optional(),
     replaceAdapterConfig: z.boolean().optional(),
+    // Explicit environment-binding removals. `adapterConfig.env` merges per
+    // key, so a request that omits a binding keeps the stored one. Removing a
+    // binding is a deliberate act and must name the keys it removes.
+    envRemovedKeys: z.array(z.string().min(1)).optional(),
     status: z.enum(AGENT_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
-  });
+  })
+  // Keep the base schema's catchall. `objectWithoutDefaults` carries it over,
+  // but `.partial()` and `.extend()` build a fresh object and drop it again,
+  // and without it the parse strips every top-level field the schema does not
+  // name. A field a caller sends then reaches the handler as if it had never
+  // been sent - which is how the `envRemovedKeys` removal request became a
+  // silent no-op on the agent update route. The service ignores a field the
+  // agent table has no column for, so an unknown field is not fatal.
+  .catchall(z.unknown());
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
 

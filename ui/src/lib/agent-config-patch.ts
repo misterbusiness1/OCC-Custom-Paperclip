@@ -45,6 +45,19 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
 
     patch.adapterConfig = omitUndefinedEntries(nextAdapterConfig);
     patch.replaceAdapterConfig = true;
+
+    // The server merges `adapterConfig.env` per key, so a binding the request
+    // omits keeps its stored value. A binding the editor removed must be
+    // named explicitly, otherwise the merge would keep it.
+    const envTouched = Object.prototype.hasOwnProperty.call(overlay.adapterConfig, "env");
+    if (envTouched) {
+      const existingEnv = (existing.env ?? {}) as Record<string, unknown>;
+      const nextEnv = (overlay.adapterConfig.env ?? {}) as Record<string, unknown>;
+      const removedEnvKeys = Object.keys(existingEnv).filter((key) => !(key in nextEnv));
+      if (removedEnvKeys.length > 0) {
+        patch.envRemovedKeys = removedEnvKeys;
+      }
+    }
   }
 
   if (

@@ -355,6 +355,29 @@ describe("automatic readiness wakes while an interaction is pending", () => {
     expect(adapterState.sideEffects).toBe(1);
     expect(finalRuns).toHaveLength(1);
 
+    // The monitor stays armed after its turn: a scheduled monitor owns the
+    // assignee's next automatic wake, so the same-blocker cycle is parked
+    // instead of opening a second run.
+    await db.update(issues).set({ status: "in_review" })
+      .where(eq(issues.id, f.issueId));
+    await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });
+    await db.update(issues).set({ status: "in_progress" })
+      .where(eq(issues.id, f.issueId));
+    await heartbeat.drainActiveRunExecutions();
+    const parkedRuns = await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, f.companyId));
+    expect(parkedRuns).toHaveLength(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(adapterState.sideEffects).toBe(1);
+    const parkedWakes = await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(parkedWakes.filter((wake) => wake.reason === "issue_monitor_pending"))
+      .toHaveLength(1);
+
+    // Once the monitor is no longer scheduled, the parked readiness signal is
+    // admitted exactly once.
+    await db.update(issues).set({ monitorNextCheckAt: null })
+      .where(eq(issues.id, f.issueId));
     await db.update(issues).set({ status: "in_review" })
       .where(eq(issues.id, f.issueId));
     await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });

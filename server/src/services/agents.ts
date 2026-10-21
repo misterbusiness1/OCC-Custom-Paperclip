@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -48,6 +48,13 @@ import {
   secretService,
   type ClaudeOAuthBindingInvariantDecision,
 } from "./secrets.js";
+import {
+  CLAUDE_CODE_OAUTH_TOKEN_ENV_KEY,
+  envBindingKind,
+  findSilentSecretBindingRemovals,
+  isFixedClaudeOAuthEnvBinding,
+  mergeAgentEnvBindings,
+} from "./agent-env-config.js";
 import { createDbSetupTokenCleanupStore } from "./setup-token-session.js";
 import {
   builtInAgentMarkersEqual,
@@ -62,6 +69,13 @@ function hashToken(token: string) {
 function createToken() {
   return `pcp_${randomBytes(24).toString("hex")}`;
 }
+
+// The agent table's own columns. An update payload may carry fields the table
+// does not define - the request schema keeps unknown top-level fields so a new
+// one is never silently stripped - and persisting such a key would fail the
+// write. This set is the boundary between "a field the agent record has" and
+// "a field the request happened to include".
+const AGENT_COLUMN_KEYS = new Set(Object.keys(getTableColumns(agents)));
 
 const CONFIG_REVISION_FIELDS = [
   "name",
@@ -121,6 +135,27 @@ interface UpdateAgentOptions {
   allowBuiltInAgentMetadata?: boolean;
   allowPendingApprovalConfigUpdate?: boolean;
   claudeLogin?: ClaudeLoginContext;
+  /**
+   * Names the environment bindings this update explicitly removes.
+   *
+   * The merge contract itself is unconditional: a stored binding that the
+   * update does not mention keeps its stored value, on every write path. A
+   * binding disappears only when it is named here, so removing a credential
+   * is always a deliberate act. Callers that pass no `envUpdate` remove
+   * nothing - they may still change a binding's value, but never drop it.
+   */
+  envUpdate?: {
+    removals: readonly string[];
+  };
+  /**
+   * Run context for the activity events this write records. The route passes
+   * the authenticated actor's run so a recorded environment-binding removal
+   * is traceable to the request that caused it.
+   */
+  activityContext?: {
+    runId?: string | null;
+    agentApiKeyId?: string | null;
+  };
 }
 
 interface CreateAgentOptions {
@@ -188,6 +223,93 @@ function containsRedactedMarker(value: unknown): boolean {
 
 function hasConfigPatchFields(data: Partial<typeof agents.$inferInsert>) {
   return CONFIG_REVISION_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(data, field));
+}
+
+/**
+ * The result of merging an adapter config's environment map over the stored
+ * one.
+ */
+interface AgentEnvBindingMerge {
+  /** The adapter config to persist, with the merged environment map. */
+  adapterConfig: Record<string, unknown>;
+  /** The env keys the write removed. */
+  removedKeys: string[];
+  /** Every removal the write is authorized to make. */
+  authorizedRemovals: string[];
+}
+
+/**
+ * Merge the environment map of an adapter config over the stored one, per key.
+ *
+ * This is the single place the merge contract is enforced, so every writer is
+ * covered: the HTTP route, the platform's own built-in agent reconciliation
+ * (`built-in-agent:ensure`), the approval activation, and the config
+ * rollback.
+ *
+ * The rules:
+ *
+ * - A key the write sets wins.
+ * - A key the write does not mention keeps its stored value. A write that
+ *   carries no environment map at all keeps the whole stored map. This is the
+ *   fix for the silent credential loss: replacing the whole map is what
+ *   destroyed the support inbox credential on 2026-10-14 and dropped managed
+ *   `secret_ref` bindings from two agents on 2026-08-28 and 2026-09-25, both
+ *   times through `built-in-agent:ensure`, with no error raised.
+ * - A binding disappears only when the write names it. `authorizedRemovals` is
+ *   the only authorization; an explicit removal list is required.
+ */
+function mergeAgentEnvBindingsIntoAdapterConfig(input: {
+  existingAdapterConfig: unknown;
+  nextAdapterConfig: Record<string, unknown>;
+  adapterType: string;
+  authorizedRemovals?: readonly string[];
+}): AgentEnvBindingMerge {
+  const nextAdapterConfig = input.nextAdapterConfig;
+  const storedEnv = isPlainRecord(input.existingAdapterConfig)
+    && isPlainRecord(input.existingAdapterConfig.env)
+    ? input.existingAdapterConfig.env
+    : null;
+  const requestedEnv = isPlainRecord(nextAdapterConfig.env) ? nextAdapterConfig.env : null;
+  const authorizedRemovals = new Set(input.authorizedRemovals ?? []);
+  if (!storedEnv) {
+    // Nothing is stored, so there is no binding to preserve and no removal to
+    // authorize. The write's own environment map is persisted as sent.
+    return {
+      adapterConfig: nextAdapterConfig,
+      removedKeys: [],
+      authorizedRemovals: [...authorizedRemovals],
+    };
+  }
+  // The fixed Claude Code OAuth binding belongs to the claude_local harness.
+  // When the agent is on another harness the binding has to go with it: the
+  // stored session claim is released only when the binding disappears. A
+  // binding the write sets explicitly is forwarded as sent, so the service
+  // decides on it.
+  if (
+    input.adapterType !== CLAUDE_LOCAL_ADAPTER_TYPE
+    && isFixedClaudeOAuthEnvBinding(storedEnv[CLAUDE_CODE_OAUTH_TOKEN_ENV_KEY])
+    && !isFixedClaudeOAuthEnvBinding(
+      requestedEnv ? requestedEnv[CLAUDE_CODE_OAUTH_TOKEN_ENV_KEY] : undefined,
+    )
+  ) {
+    authorizedRemovals.add(CLAUDE_CODE_OAUTH_TOKEN_ENV_KEY);
+  }
+  const merge = mergeAgentEnvBindings({
+    existingEnv: storedEnv,
+    requestedEnv,
+    removedKeys: [...authorizedRemovals],
+  });
+  const adapterConfig = { ...nextAdapterConfig };
+  // The merged map is always written back, even when it is empty: the agent
+  // had a stored environment map, and the write either kept it, changed it, or
+  // removed every binding from it on request. Dropping the key instead would
+  // make an emptied map indistinguishable from a map that was never there.
+  adapterConfig.env = merge.env;
+  return {
+    adapterConfig,
+    removedKeys: merge.removedKeys,
+    authorizedRemovals: [...authorizedRemovals],
+  };
 }
 
 function changedPendingApprovalConfigFields(
@@ -549,6 +671,57 @@ export function agentService(db: Db) {
   }
 
   /**
+   * Record an explicit environment-binding removal in the activity log.
+   *
+   * An explicit removal is the only way a binding can leave an agent, so every
+   * removal is recorded: the key names and the binding kinds, never a value.
+   * The record is written in the same transaction as the write, so a dropped
+   * credential is visible in the audit trail whichever path removed it.
+   */
+  async function recordRemovedEnvBindings(
+    txDb: Db,
+    input: {
+      agentId: string;
+      companyId: string;
+      existingAdapterConfig: unknown;
+      removedKeys: readonly string[];
+      revision: RevisionMetadata;
+      activityContext?: { runId?: string | null; agentApiKeyId?: string | null };
+    },
+  ) {
+    if (input.removedKeys.length === 0) return;
+    const storedEnv = isPlainRecord(input.existingAdapterConfig) ? input.existingAdapterConfig.env : null;
+    const actorType = input.revision.createdByUserId
+      ? "user" as const
+      : input.revision.createdByAgentId
+        ? "agent" as const
+        : "system" as const;
+    const actorId = input.revision.createdByUserId ?? input.revision.createdByAgentId ?? "system";
+    await logActivity(txDb, {
+      companyId: input.companyId,
+      actorType,
+      actorId,
+      agentId: input.revision.createdByAgentId ?? null,
+      runId: input.activityContext?.runId ?? null,
+      agentApiKeyId: input.activityContext?.agentApiKeyId ?? null,
+      action: "agent.adapter_config_env_removed",
+      entityType: "agent",
+      entityId: input.agentId,
+      details: {
+        removedKeys: [...input.removedKeys],
+        removedBindings: input.removedKeys.map((key) => ({
+          key,
+          kind: envBindingKind(isPlainRecord(storedEnv) ? storedEnv[key] : undefined),
+        })),
+        removedSecretBindingKeys: input.removedKeys.filter((key) => {
+          const kind = envBindingKind(isPlainRecord(storedEnv) ? storedEnv[key] : undefined);
+          return kind === "secret_ref" || kind === "user_secret_ref";
+        }),
+      },
+    });
+  }
+
+  /**
    * Enforces the Claude OAuth binding claim inside a write transaction. It runs
    * after {@link assertClaudeOAuthBindingInvariant} decided that the write
    * introduces or keeps the fixed binding.
@@ -740,7 +913,19 @@ export function agentService(db: Db) {
       assertBuiltInAgentMetadataMutationAllowed(existing.metadata, data.metadata, options);
     }
 
-    const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
+    // The request schema keeps unknown top-level fields, so a new field is
+    // never silently stripped before the handler sees it. The database only has
+    // columns for the fields the agent table defines, and persisting an
+    // unknown key would fail the whole write, so the patch is limited to the
+    // table's own columns. A field the table does not know about is ignored,
+    // not fatal.
+    const normalizedPatch = Object.fromEntries(
+      Object.entries(data).filter(([key]) => AGENT_COLUMN_KEYS.has(key)),
+    ) as Partial<typeof agents.$inferInsert>;
+    // The env keys this write removed, and every removal it is authorized to
+    // make. Both are filled in by the merge below.
+    let removedEnvKeys: string[] = [];
+    let authorizedEnvRemovals: string[] = [...(options?.envUpdate?.removals ?? [])];
     if (data.permissions !== undefined) {
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);
     }
@@ -757,6 +942,23 @@ export function agentService(db: Db) {
         (normalizedPatch.adapterType ?? existing.adapterType) as string,
         normalizedAdapterConfig,
       );
+      // Environment bindings merge per key, in the service layer, so every
+      // write path is covered. The HTTP route merges as well, but the
+      // platform's own built-in agent reconciliation writes through this
+      // service directly and used to replace the whole env map - that is how
+      // it silently dropped the WooCommerce bindings from two of our agents
+      // (2026-08-28 and 2026-09-25), with no error raised. A binding the
+      // write does not mention keeps its stored value; removing one is always
+      // explicit, through `envUpdate.removals`.
+      const envMerge = mergeAgentEnvBindingsIntoAdapterConfig({
+        existingAdapterConfig: existing.adapterConfig,
+        nextAdapterConfig: normalizedPatch.adapterConfig,
+        adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string,
+        authorizedRemovals: options?.envUpdate?.removals ?? [],
+      });
+      normalizedPatch.adapterConfig = envMerge.adapterConfig;
+      removedEnvKeys = envMerge.removedKeys;
+      authorizedEnvRemovals = envMerge.authorizedRemovals;
     } else if (
       Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterType")
       && isPlainRecord(existing.adapterConfig)
@@ -777,6 +979,25 @@ export function agentService(db: Db) {
           priorConfig: existing.adapterConfig,
         })
       : null;
+
+    // Guard: under the merge contract, a secret environment binding must never
+    // disappear as a side effect of a config write. Only an explicit removal
+    // authorizes it. The guard is unconditional: a caller that does not pass
+    // `envUpdate` cannot drop a stored secret binding either, so the
+    // platform's own reconciliation fails loudly instead of silently
+    // unbinding a credential.
+    if (Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
+      const silentSecretRemovals = findSilentSecretBindingRemovals({
+        existingEnv: isPlainRecord(existing.adapterConfig) ? existing.adapterConfig.env : null,
+        nextEnv: normalizedPatch.adapterConfig?.env,
+        authorizedRemovals: authorizedEnvRemovals,
+      });
+      if (silentSecretRemovals.length > 0) {
+        throw unprocessable(
+          `Refusing to remove secret environment binding(s) without an explicit removal request: ${silentSecretRemovals.join(", ")}`,
+        );
+      }
+    }
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
@@ -819,6 +1040,18 @@ export function agentService(db: Db) {
           existing.adapterConfig,
           options?.recordRevision,
         );
+        // An explicit removal of an environment binding is the only way a
+        // binding can leave an agent. Record it in the activity log so a
+        // dropped credential is visible whichever path removed it. Only key
+        // names and binding kinds are recorded, never a value.
+        await recordRemovedEnvBindings(txDb, {
+          agentId: id,
+          companyId: existing.companyId,
+          existingAdapterConfig: existing.adapterConfig,
+          removedKeys: removedEnvKeys,
+          revision: options?.recordRevision ?? {},
+          activityContext: options?.activityContext,
+        });
       }
 
       const normalizedUpdated = await agentService(txDb).getById(updated.id);
@@ -1105,6 +1338,7 @@ export function agentService(db: Db) {
         const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
         let patch = { ...approvedPatch } as Partial<typeof agents.$inferInsert>;
         let approvalBindingDecision: ClaudeOAuthBindingInvariantDecision | null = null;
+        let approvalRemovedEnvKeys: string[] = [];
         if (
           Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&
           isPlainRecord(patch.adapterConfig)
@@ -1118,6 +1352,16 @@ export function agentService(db: Db) {
             (patch.adapterType ?? existing.adapterType) as string,
             normalizedAdapterConfig,
           );
+          // The approval activation merges the environment map per key, like
+          // every other write path, so an approved config that omits a binding
+          // cannot silently drop it.
+          const envMerge = mergeAgentEnvBindingsIntoAdapterConfig({
+            existingAdapterConfig: existing.adapterConfig,
+            nextAdapterConfig: patch.adapterConfig,
+            adapterType: (patch.adapterType ?? existing.adapterType) as string,
+          });
+          patch.adapterConfig = envMerge.adapterConfig;
+          approvalRemovedEnvKeys = envMerge.removedKeys;
           // The approval activation keeps an existing fixed binding but rejects a
           // newly introduced binding, because it carries no stored-session claim.
           approvalBindingDecision = assertClaudeOAuthBindingInvariant({
@@ -1155,6 +1399,13 @@ export function agentService(db: Db) {
           });
         }
         await syncAgentSecretBindings(updated, txDb, existing.adapterConfig, {}, postCommitPublications);
+        await recordRemovedEnvBindings(txDb, {
+          agentId: id,
+          companyId: existing.companyId,
+          existingAdapterConfig: existing.adapterConfig,
+          removedKeys: approvalRemovedEnvKeys,
+          revision: {},
+        });
         const agent = await agentService(txDb).getById(updated.id);
         if (!agent) {
           throw notFound("Agent not found");
@@ -1240,7 +1491,21 @@ export function agentService(db: Db) {
       }
 
       const patch = configPatchFromSnapshot(revision.afterConfig);
+      // A rollback restores a stored snapshot exactly, so it names the
+      // bindings the snapshot does not carry. Without this the merge contract
+      // would keep them, and the rollback would restore a union instead of the
+      // snapshot. Rolling back is an explicit, deliberate act, so removing a
+      // secret binding here is authorized.
+      const current = await getById(id);
+      const storedEnv = isPlainRecord(current?.adapterConfig) ? current.adapterConfig.env : null;
+      const snapshotEnv = isPlainRecord(patch.adapterConfig) ? patch.adapterConfig.env : null;
+      const removals = isPlainRecord(storedEnv)
+        ? Object.keys(storedEnv).filter(
+          (key) => !(isPlainRecord(snapshotEnv) && key in snapshotEnv),
+        )
+        : [];
       return updateAgent(id, patch, {
+        envUpdate: { removals },
         recordRevision: {
           createdByAgentId: actor.agentId ?? null,
           createdByUserId: actor.userId ?? null,

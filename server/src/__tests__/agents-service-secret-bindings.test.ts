@@ -273,7 +273,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     expect(JSON.stringify(persistedConfig)).not.toContain(literalApiKey);
   });
 
-  it("replaces agent secret bindings when adapterConfig env changes", async () => {
+  it("keeps stored agent secret bindings when adapterConfig env changes", async () => {
     const companyId = await seedCompany();
     const secrets = secretService(db);
     const oldSecret = await secrets.create(companyId, {
@@ -309,6 +309,9 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       },
     });
 
+    // The env map merges per key: a binding the write does not mention keeps
+    // its stored value. Replacing the whole map is what destroyed credentials
+    // on 2026-10-14 and on 2026-08-28 / 2026-09-25.
     const bindings = await db
       .select()
       .from(companySecretBindings)
@@ -318,11 +321,295 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
         eq(companySecretBindings.targetId, created.id),
       ));
 
+    expect(bindings).toHaveLength(2);
+    expect(bindings.map((binding) => binding.configPath).sort()).toEqual([
+      "env.NEW_KEY",
+      "env.OLD_KEY",
+    ]);
+
+    const reloaded = await agentService(db).getById(created.id);
+    expect(reloaded?.adapterConfig).toMatchObject({
+      env: {
+        OLD_KEY: { type: "secret_ref", secretId: oldSecret.id, version: "latest" },
+        NEW_KEY: { type: "secret_ref", secretId: nextSecret.id, version: "latest" },
+      },
+    });
+  });
+
+  it("keeps every stored binding when a service-level write carries a partial env map", async () => {
+    // This is the shape the platform's own built-in agent reconciliation
+    // writes: a whole adapterConfig with an env map that mentions only some of
+    // the agent's bindings, and no explicit removal request. It is the path
+    // that silently dropped the WooCommerce bindings from two agents.
+    const companyId = await seedCompany();
+    const secrets = secretService(db);
+    const secret = await secrets.create(companyId, {
+      name: `storefront-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "storefront-value",
+    });
+
+    const created = await agentService(db).create(companyId, {
+      name: "Partial Env Writer",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          PLAIN_KEY: { type: "plain", value: "plain-value" },
+          SECRET_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        },
+      },
+      runtimeConfig: {},
+      spentMonthlyCents: 0,
+      lastHeartbeatAt: null,
+    });
+
+    await agentService(db).update(created.id, {
+      adapterConfig: {
+        env: {
+          PLAIN_KEY: { type: "plain", value: "plain-value" },
+        },
+      },
+    });
+
+    const reloaded = await agentService(db).getById(created.id);
+    expect(reloaded?.adapterConfig).toMatchObject({
+      env: {
+        PLAIN_KEY: { type: "plain", value: "plain-value" },
+        SECRET_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+      },
+    });
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(
+        eq(companySecretBindings.companyId, companyId),
+        eq(companySecretBindings.targetType, "agent"),
+        eq(companySecretBindings.targetId, created.id),
+      ));
     expect(bindings).toHaveLength(1);
     expect(bindings[0]).toMatchObject({
-      secretId: nextSecret.id,
-      configPath: "env.NEW_KEY",
+      secretId: secret.id,
+      configPath: "env.SECRET_KEY",
     });
+  });
+
+  it("removes a binding only when the update names it", async () => {
+    const companyId = await seedCompany();
+    const secrets = secretService(db);
+    const secret = await secrets.create(companyId, {
+      name: `removable-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "removable-value",
+    });
+
+    const created = await agentService(db).create(companyId, {
+      name: "Binding Remover",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          KEEP_KEY: { type: "plain", value: "keep-value" },
+          DROP_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        },
+      },
+      runtimeConfig: {},
+      spentMonthlyCents: 0,
+      lastHeartbeatAt: null,
+    });
+
+    await agentService(db).update(
+      created.id,
+      {
+        adapterConfig: {
+          env: {
+            KEEP_KEY: { type: "plain", value: "keep-value" },
+          },
+        },
+      },
+      { envUpdate: { removals: ["DROP_KEY"] } },
+    );
+
+    const reloaded = await agentService(db).getById(created.id);
+    expect(reloaded?.adapterConfig).toMatchObject({
+      env: { KEEP_KEY: { type: "plain", value: "keep-value" } },
+    });
+    const env = (reloaded?.adapterConfig as { env?: Record<string, unknown> })?.env ?? {};
+    expect(env.DROP_KEY).toBeUndefined();
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(
+        eq(companySecretBindings.companyId, companyId),
+        eq(companySecretBindings.targetType, "agent"),
+        eq(companySecretBindings.targetId, created.id),
+      ));
+    expect(bindings).toHaveLength(0);
+  });
+
+  it("keeps every stored binding when a service-level write carries no env map at all", async () => {
+    // The shape the platform's own built-in agent reconciliation writes when
+    // the resolved adapter config carries no environment map: the whole
+    // adapter config is replaced. Before the service-layer merge, that
+    // replacement dropped every binding the agent had.
+    const companyId = await seedCompany();
+    const secrets = secretService(db);
+    const secret = await secrets.create(companyId, {
+      name: `no-env-map-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "no-env-map-value",
+    });
+
+    const created = await agentService(db).create(companyId, {
+      name: "No Env Map Writer",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          SECRET_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        },
+      },
+      runtimeConfig: {},
+      spentMonthlyCents: 0,
+      lastHeartbeatAt: null,
+    });
+
+    await agentService(db).update(
+      created.id,
+      { adapterConfig: { model: "gpt-5-codex" } },
+      { recordRevision: { source: "built-in-agent:ensure" } },
+    );
+
+    const reloaded = await agentService(db).getById(created.id);
+    expect((reloaded?.adapterConfig as { env?: Record<string, unknown> })?.env).toMatchObject({
+      SECRET_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+    });
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(
+        eq(companySecretBindings.companyId, companyId),
+        eq(companySecretBindings.targetType, "agent"),
+        eq(companySecretBindings.targetId, created.id),
+      ));
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toMatchObject({
+      secretId: secret.id,
+      configPath: "env.SECRET_KEY",
+    });
+  });
+
+  it("keeps every stored binding when the built-in agent reconciliation writes a partial config", async () => {
+    // Regression for the two silent drops on our instance: Reflection Coach
+    // (2026-08-28) and Summarizer (2026-09-25), both with revision source
+    // `built-in-agent:ensure`. The reconciliation wrote an adapter config
+    // whose env map named only some of the agent's bindings, and every other
+    // binding - including the managed `secret_ref` ones - was deleted.
+    const companyId = await seedCompany();
+    const secrets = secretService(db);
+    const secret = await secrets.create(companyId, {
+      name: `reconcile-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "reconcile-value",
+    });
+
+    const created = await agentService(db).create(companyId, {
+      name: "Reconciled Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          KEPT_KEY: { type: "plain", value: "kept-value" },
+          SECRET_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        },
+      },
+      runtimeConfig: {},
+      spentMonthlyCents: 0,
+      lastHeartbeatAt: null,
+    });
+
+    await agentService(db).update(
+      created.id,
+      {
+        adapterConfig: {
+          env: {
+            KEPT_KEY: { type: "plain", value: "kept-value" },
+          },
+        },
+      },
+      { recordRevision: { source: "built-in-agent:ensure" } },
+    );
+
+    const reloaded = await agentService(db).getById(created.id);
+    expect((reloaded?.adapterConfig as { env?: Record<string, unknown> })?.env).toMatchObject({
+      KEPT_KEY: { type: "plain", value: "kept-value" },
+      SECRET_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+    });
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(
+        eq(companySecretBindings.companyId, companyId),
+        eq(companySecretBindings.targetType, "agent"),
+        eq(companySecretBindings.targetId, created.id),
+      ));
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toMatchObject({
+      secretId: secret.id,
+      configPath: "env.SECRET_KEY",
+    });
+  });
+
+  it("records an explicit service-level removal in the activity log", async () => {
+    const companyId = await seedCompany();
+    const secrets = secretService(db);
+    const secret = await secrets.create(companyId, {
+      name: `recorded-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "recorded-value",
+    });
+
+    const created = await agentService(db).create(companyId, {
+      name: "Recorded Remover",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          DROP_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        },
+      },
+      runtimeConfig: {},
+      spentMonthlyCents: 0,
+      lastHeartbeatAt: null,
+    });
+
+    await agentService(db).update(
+      created.id,
+      { adapterConfig: { env: {} } },
+      { envUpdate: { removals: ["DROP_KEY"] } },
+    );
+
+    const events = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityId, created.id),
+        eq(activityLog.action, "agent.adapter_config_env_removed"),
+      ));
+    expect(events).toHaveLength(1);
+    const details = events[0].details as Record<string, unknown>;
+    expect(details.removedKeys).toEqual(["DROP_KEY"]);
+    // The record names the binding kind, never its value.
+    expect(details.removedBindings).toEqual([{ key: "DROP_KEY", kind: "secret_ref" }]);
+    // `removedSecretBindingKeys` is masked by the activity-log redactor: its
+    // field name matches the secret-field pattern. The kind in
+    // `removedBindings` carries the same information and stays readable.
+    expect(JSON.stringify(details)).not.toContain("recorded-value");
   });
 
   it("backfills missing secret bindings when a legacy pending agent is approved", async () => {

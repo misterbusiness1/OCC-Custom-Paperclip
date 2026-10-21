@@ -89,7 +89,47 @@ describe("buildAgentUpdatePatch", () => {
         promptTemplate: "Work the issue.",
       },
       replaceAdapterConfig: true,
+      // The server merges `adapterConfig.env` per key, so a cleared binding
+      // has to be named explicitly or the merge would keep it.
+      envRemovedKeys: ["OPENAI_API_KEY"],
     });
+  });
+
+  it("names the removed env bindings and keeps the ones that stay", () => {
+    const agent = makeAgent();
+    agent.adapterConfig = {
+      ...agent.adapterConfig,
+      env: {
+        OPENAI_API_KEY: { type: "plain", value: "secret" },
+        KEEP_KEY: { type: "secret_ref", secretId: "secret-1", version: "latest" },
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        adapterConfig: {
+          env: {
+            KEEP_KEY: { type: "secret_ref", secretId: "secret-1", version: "latest" },
+          },
+        },
+      }),
+    );
+
+    expect(patch.envRemovedKeys).toEqual(["OPENAI_API_KEY"]);
+  });
+
+  it("does not name removals when the env bindings were not edited", () => {
+    const patch = buildAgentUpdatePatch(
+      makeAgent(),
+      makeOverlay({
+        adapterConfig: {
+          model: "claude-sonnet-4-6",
+        },
+      }),
+    );
+
+    expect(patch.envRemovedKeys).toBeUndefined();
   });
 
   it("writes max-turn continuation policy under runtimeConfig.heartbeat", () => {
