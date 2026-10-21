@@ -523,6 +523,20 @@ describeEmbeddedPostgres("approval decisions reach the requesting agent (fork PR
     expect(card.status).toBe("revision_requested");
   });
 
+  it("resumes a requester-owned task waiting only on its missed revision", async () => {
+    const fixture = await seed({ issueStatus: "blocked" });
+    await db.update(approvals).set({ status: "revision_requested", decidedByUserId: BOARD_USER_ID,
+      decidedAt: new Date(Date.now() - 60 * 60_000) }).where(eq(approvals.id, fixture.approvalId));
+    const heartbeat = heartbeatService(db);
+    await revisionReconciliation(db, (agentId, options) => heartbeat.wakeup(agentId, options)).reconcile();
+    const run = await waitForDecisionRun(fixture.requesterAgentId, "approval_revision_requested");
+    expect(run).toMatchObject({ status: "succeeded", errorCode: null });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    expect(issue).toMatchObject({ status: "in_progress", assigneeAgentId: fixture.requesterAgentId });
+    const [card] = await db.select().from(approvals).where(eq(approvals.id, fixture.approvalId));
+    expect(card.status).toBe("revision_requested");
+  });
+
   it("request-revision runs as a bounded interaction on a dependency-blocked issue", async () => {
     const fixture = await seed({ issueStatus: "blocked", blocked: true });
 

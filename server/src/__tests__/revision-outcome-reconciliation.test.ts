@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agentWakeupRequests, agents, approvals, companies, createDb, heartbeatRuns, issueApprovals,
-  issueRecoveryActions, issueThreadInteractions, issues } from "@paperclipai/db";
+  issueRecoveryActions, issueRelations, issueThreadInteractions, issues } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "./helpers/embedded-postgres.js";
 import { revisionReconciliation } from "../services/recovery/revision-reconciliation.js";
 import { REVISION_ATTEMPT_ACTIVITY, REVISION_OUTCOME_ACTIVITY } from "../services/recovery/revision-outcome.js";
@@ -146,6 +146,28 @@ suite("durable adapter-independent revision reconciliation", () => {
     const [card] = await db.select().from(approvals).where(eq(approvals.id, unrelated));
     expect(card.status).toBe("pending");
   });
+  it("settles its own action across multiple links while preserving an unrelated action", async () => {
+    const x = await seed(), otherIssue = randomUUID(), otherAction = randomUUID(), ownAction = randomUUID();
+    await db.insert(issues).values({ id: otherIssue, companyId: x.companyId, title: "Separate work", status: "todo" });
+    await db.insert(issueApprovals).values({ companyId: x.companyId, issueId: otherIssue, approvalId: x.approvalId });
+    const [card] = await db.select().from(approvals).where(eq(approvals.id, x.approvalId));
+    const revisionKey = `${x.approvalId}:${card.decidedAt!.toISOString()}`;
+    await db.insert(issueRecoveryActions).values([
+      { id: otherAction, companyId: x.companyId, sourceIssueId: otherIssue, kind: "stranded_assigned_issue",
+        ownerType: "board", cause: "separate_problem", fingerprint: "separate", nextAction: "Review separate work" },
+      { id: ownAction, companyId: x.companyId, sourceIssueId: x.issueId, kind: "stranded_assigned_issue",
+        ownerType: "board", cause: "approval_revision_unresolved", fingerprint: revisionKey,
+        evidence: { approvalId: x.approvalId }, nextAction: "Review revision" },
+    ]);
+    await db.insert(activityLog).values({ companyId: x.companyId, actorType: "system", actorId: "revision-recovery",
+      action: REVISION_OUTCOME_ACTIVITY, entityType: "approval", entityId: x.approvalId,
+      details: { outcome: "unresolved", revisionDecidedAt: card.decidedAt!.toISOString(), revisionKey } });
+    await db.update(approvals).set({ status: "cancelled", decidedAt: new Date() }).where(eq(approvals.id, x.approvalId));
+    await revisionReconciliation(db, vi.fn(async () => null)).reconcile();
+    const rows = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, x.companyId));
+    expect(rows.find(row => row.id === ownAction)!.status).toBe("resolved");
+    expect(rows.find(row => row.id === otherAction)!.status).toBe("active");
+  });
   it("gives an overdue human blocker accountable attention without resolving it", async () => {
     const x = await seed(); const interactionId = randomUUID();
     await db.update(approvals).set({ decidedAt: new Date(Date.now() - 48 * 60 * 60_000) }).where(eq(approvals.id, x.approvalId));
@@ -170,6 +192,22 @@ suite("durable adapter-independent revision reconciliation", () => {
     expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(0);
     expect(await latest(x.approvalId)).toMatchObject({ outcome: "durable_blocker", blocker: `interaction:${interactionId}` });
     expect(await events(x.approvalId)).toHaveLength(1);
+  });
+  it("preserves an explicit unblock descriptor on a requester-owned blocked task", async () => {
+    const x = await seed();
+    await db.update(issues).set({ status: "blocked", unblockDescriptor: { owner: "board", action: "Confirm the recipient contract" } })
+      .where(eq(issues.id, x.issueId));
+    await revisionReconciliation(db, vi.fn(async () => null)).reconcile();
+    expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(0);
+    expect(await latest(x.approvalId)).toMatchObject({ outcome: "durable_blocker", blocker: `unblock_descriptor:${x.issueId}` });
+  });
+  it("preserves an unresolved upstream dependency even when it has no assignee", async () => {
+    const x = await seed(), upstream = randomUUID();
+    await db.insert(issues).values({ id: upstream, companyId: x.companyId, title: "Awaiting upstream owner", status: "todo" });
+    await db.insert(issueRelations).values({ companyId: x.companyId, issueId: upstream, relatedIssueId: x.issueId, type: "blocks" });
+    await revisionReconciliation(db, vi.fn(async () => null)).reconcile();
+    expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(0);
+    expect(await latest(x.approvalId)).toMatchObject({ outcome: "durable_blocker", blocker: `issue:${upstream}` });
   });
   it("does not reopen linked-done issues or steal a changed owner", async () => {
     for (const status of ["done", "cancelled"] as const) {
