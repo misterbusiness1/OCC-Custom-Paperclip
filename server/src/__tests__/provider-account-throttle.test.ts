@@ -183,7 +183,7 @@ describeEmbedded("shared Codex account HTTP429 admission", () => {
       const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source!.id));
       expect(retry.scheduledRetryAt!.getTime()).toBeGreaterThan(Date.now());
       const before = providerTurns;
-      expect(failed?.runnerProfileJson).toMatchObject({ adapterDispatch: { providerAdmissionScopeKind: "agent_provider", providerAccountRecoveryOf: null } });
+      expect(failed?.runnerProfileJson).toMatchObject({ adapterDispatch: { providerAdmissionScopeKind: "provider_route", providerAccountRecoveryOf: null } });
       expect(failed?.resultJson).toMatchObject({ providerAdmissionWaitSource: "bounded_retry" });
       expect(new Date(String(failed?.resultJson?.retryNotBefore)).getTime()).toBe(retry.scheduledRetryAt!.getTime());
       const next = await heartbeat.wakeup(candidate.agentId, {
@@ -245,9 +245,9 @@ describeEmbedded("shared Codex account HTTP429 admission", () => {
     } finally { providerHttpStatus = null; providerRetryHint = null; }
   }, 30_000);
 
-  it("keeps a null-account wait scoped to its company, agent and sampled provider route", async () => {
+  it("shares a null-account wait across agents on the same sampled provider route without crossing routes", async () => {
     const { companyId, candidates } = await seedWorkers(2);
-    const scope = { kind: "agent_provider" as const, agentId: candidates[0].agentId, providerCooldownKey: "synthetic-provider-scope" };
+    const scope = { kind: "provider_route" as const, agentId: candidates[0].agentId, providerCooldownKey: "synthetic-provider-scope" };
     const profile = { adapterDispatch: { providerAccountKey: null, providerCooldownKey: scope.providerCooldownKey } };
     const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId: scope.agentId,
       status: "failed", finishedAt: new Date(), runnerProfileJson: profile,
@@ -264,16 +264,48 @@ describeEmbedded("shared Codex account HTTP429 admission", () => {
       resultJson: { providerHttpStatus: 429, errorFamily: "transient_upstream" } });
     expect(await providerRecoveryAdmission(db, companyId, scope, randomUUID())).toMatchObject({ allowed: false, retryAt: dueAt, recoveryOf: source.id });
     expect(await providerRecoveryAdmission(db, randomUUID(), scope, randomUUID())).toMatchObject({ allowed: true });
-    expect(await providerRecoveryAdmission(db, companyId, { ...scope, agentId: candidates[1].agentId }, randomUUID())).toMatchObject({ allowed: true });
+    expect(await providerRecoveryAdmission(db, companyId, { ...scope, agentId: candidates[1].agentId }, randomUUID())).toMatchObject({ allowed: false, retryAt: dueAt });
     expect(await providerRecoveryAdmission(db, companyId, { ...scope, providerCooldownKey: "changed-auth-route" }, randomUUID())).toMatchObject({ allowed: true });
     expect(await providerRecoveryAdmission(db, companyId, { kind: "account", providerAccountKey: "explicit-new-subscription" }, randomUUID())).toMatchObject({ allowed: true });
     await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { providerCooldownKey: scope.providerCooldownKey } } }).where(eq(heartbeatRuns.id, source.id));
     expect(await providerRecoveryAdmission(db, companyId, scope, randomUUID())).toMatchObject({ allowed: true });
   });
 
-  it.each(["account", "agent_provider"] as const)("keeps two in-flight $0 outcomes behind the longer persisted deadline", async (kind) => {
+  it("suppresses two agents after concurrent no-deadline429s on one unknown route and keeps the strongest retry deadline", async () => {
+    const { companyId, candidates } = await seedWorkers(2);
+    const providerCooldownKey = "synthetic-shared-unknown-route";
+    const dispatch = { providerAccountKey: null, providerCooldownKey };
+    const finishedAt = new Date();
+    const failures = await db.insert(heartbeatRuns).values(candidates.map((candidate) => ({
+      companyId,
+      agentId: candidate.agentId,
+      status: "failed" as const,
+      finishedAt,
+      runnerProfileJson: { adapterDispatch: dispatch },
+      resultJson: { providerHttpStatus: 429, errorFamily: "transient_upstream" },
+    }))).returning();
+    const shortDue = new Date(finishedAt.getTime() + 30_000);
+    const longDue = new Date(finishedAt.getTime() + 120_000);
+    await db.insert(heartbeatRuns).values([
+      { companyId, agentId: candidates[0].agentId, status: "queued", retryOfRunId: failures[0].id,
+        scheduledRetryAt: shortDue, scheduledRetryAttempt: 1 },
+      { companyId, agentId: candidates[1].agentId, status: "queued", retryOfRunId: failures[1].id,
+        scheduledRetryAt: longDue, scheduledRetryAttempt: 1 },
+    ]);
+    const admissions = await Promise.all(candidates.map((candidate) => providerRecoveryAdmission(db, companyId,
+      { kind: "provider_route", agentId: candidate.agentId, providerCooldownKey }, randomUUID(), finishedAt)));
+    expect(admissions).toEqual([
+      { allowed: false, recoveryOf: failures[1].id, retryAt: longDue },
+      { allowed: false, recoveryOf: failures[1].id, retryAt: longDue },
+    ]);
+    expect(await providerRecoveryAdmission(db, companyId,
+      { kind: "provider_route", agentId: candidates[0].agentId, providerCooldownKey: "distinct-credential-route" },
+      randomUUID(), finishedAt)).toEqual({ allowed: true, recoveryOf: null, retryAt: null });
+  });
+
+  it.each(["account", "provider_route"] as const)("keeps two in-flight $0 outcomes behind the longer persisted deadline", async (kind) => {
     const { companyId, candidates } = await seedWorkers(2); const candidate = candidates[0];
-    if (kind === "agent_provider") await db.update(agents).set({ adapterConfig: { agentCommand: "node ./synthetic-acp.js", stateDir: path.join(root, "state", candidate.agentId),
+    if (kind === "provider_route") await db.update(agents).set({ adapterConfig: { agentCommand: "node ./synthetic-acp.js", stateDir: path.join(root, "state", candidate.agentId),
       env: { CODEX_HOME: candidate.home, OPENAI_API_KEY: "synthetic-api-key" } } }).where(eq(agents.id, candidate.agentId));
     await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 2 } } }).where(eq(agents.id, candidate.agentId));
     await db.update(issues).set({ assigneeAgentId: candidate.agentId }).where(eq(issues.companyId, companyId));
@@ -302,7 +334,7 @@ describeEmbedded("shared Codex account HTTP429 admission", () => {
     } finally { releaseLong(); releaseShort(); providerBarrier = null; providerHttpStatus = null; providerRetryHint = null; }
   }, 30_000);
 
-  it.each((["account", "agent_provider"] as const).flatMap(kind =>
+  it.each((["account", "provider_route"] as const).flatMap(kind =>
     (["ordered", "reversed", "tied"] as const).map(order => ({ kind, order }))))(
     "honors the strongest $kind deadline with $order failure timestamps", async ({ kind, order }) => {
     const { companyId, providerAccountKey, candidates } = await seedWorkers(1);
@@ -344,7 +376,7 @@ describeEmbedded("shared Codex account HTTP429 admission", () => {
     providerHttpStatus = null;
     const source = (await heartbeat.getRun(sourceRun!.id))!;
     const dispatch = source.runnerProfileJson!.adapterDispatch as Record<string, unknown>;
-    const scope = { kind: "agent_provider" as const, agentId: candidate.agentId, providerCooldownKey: String(dispatch.providerCooldownKey) };
+    const scope = { kind: "provider_route" as const, agentId: candidate.agentId, providerCooldownKey: String(dispatch.providerCooldownKey) };
     const queued = await Promise.all(candidates.slice(1).map(c => wake(heartbeat, { ...candidate, issueId: c.issueId })));
     const restarted = heartbeatService(db); services.push(restarted);
     const turns = () => turnsByAgent.get(candidate.agentId) ?? 0;
@@ -375,7 +407,7 @@ describeEmbedded("shared Codex account HTTP429 admission", () => {
       // Claim receipts must already expose the one probe while its actual
       // preparation is paused, even with maxConcurrentRuns=3 and two services.
       expect((await heartbeat.getRun(unpreparedRunId!))?.runnerProfileJson).toMatchObject({ adapterDispatch: {
-        providerCooldownKey: scope.providerCooldownKey, providerAdmissionScopeKind: "agent_provider", providerAgentRecoveryOf: source.id,
+        providerCooldownKey: scope.providerCooldownKey, providerAdmissionScopeKind: "provider_route", providerAgentRecoveryOf: source.id,
       } });
       await restarted.resumeQueuedRuns();
       const unprepared = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
@@ -384,7 +416,7 @@ describeEmbedded("shared Codex account HTTP429 admission", () => {
       await expect.poll(() => turns() - before, { timeout: 10_000 }).toBe(1);
       const running = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
       expect(running).toHaveLength(1);
-      expect(running[0].runnerProfileJson).toMatchObject({ adapterDispatch: { providerAdmissionScopeKind: "agent_provider", providerAccountKey: null, providerAccountRecoveryOf: null, providerAgentRecoveryOf: source.id } });
+      expect(running[0].runnerProfileJson).toMatchObject({ adapterDispatch: { providerAdmissionScopeKind: "provider_route", providerAccountKey: null, providerAccountRecoveryOf: null, providerAgentRecoveryOf: source.id } });
       await Promise.all([heartbeat.resumeQueuedRuns(), restarted.resumeQueuedRuns()]); expect(turns()).toBe(before + 1);
       await db.update(issues).set({ status: "done" }).where(eq(issues.companyId, companyId));
       release(); await Promise.all([heartbeat.drainActiveRunExecutions(), restarted.drainActiveRunExecutions(), paused.drainActiveRunExecutions()]);
@@ -402,7 +434,7 @@ describeEmbedded("shared Codex account HTTP429 admission", () => {
     services.push(service);
     const run = await wake(service, candidate);
     await service.drainActiveRunExecutions();
-    expect((await service.getRun(run!.id))?.runnerProfileJson).toMatchObject({ adapterDispatch: { providerAdmissionScopeKind: "agent_provider", providerAccountKey: null, providerAccountRecoveryOf: null, providerAgentRecoveryOf: null } });
+    expect((await service.getRun(run!.id))?.runnerProfileJson).toMatchObject({ adapterDispatch: { providerAdmissionScopeKind: "provider_route", providerAccountKey: null, providerAccountRecoveryOf: null, providerAgentRecoveryOf: null } });
   }, 30_000);
 
   it("rechecks an account change in the prepared adapter and joins cleanup before returning its dispatching claim to queue", async () => {
@@ -466,7 +498,7 @@ describeEmbedded("shared Codex account HTTP429 admission", () => {
     await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, run.id));
   });
 
-  it.each(["account", "agent_provider", "agent_provider_legacy"] as const)("linearizes $0 probe429 with admission reading an older source", async (kind) => {
+  it.each(["account", "provider_route", "provider_route_legacy"] as const)("linearizes $0 probe429 with admission reading an older source", async (kind) => {
     const { companyId, providerAccountKey, candidates } = await seedWorkers(2);
     const candidate = candidates[0];
     let scope: Parameters<typeof providerRecoveryAdmission>[2] = { kind: "account", providerAccountKey };
@@ -480,14 +512,14 @@ describeEmbedded("shared Codex account HTTP429 admission", () => {
       providerHttpStatus = 429;
       const initial = await wake(heartbeat, candidate); await heartbeat.drainActiveRunExecutions();
       const source = (await heartbeat.getRun(initial!.id))!;
-      scope = { kind: "agent_provider", agentId: candidate.agentId,
+      scope = { kind: "provider_route", agentId: candidate.agentId,
         providerCooldownKey: String((source.runnerProfileJson!.adapterDispatch as Record<string, unknown>).providerCooldownKey) };
       await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson, retryNotBefore: new Date(Date.now() - 1000).toISOString() } }).where(eq(heartbeatRuns.id, source.id));
       probeCandidate = { ...candidate, issueId: candidates[1].issueId };
     }
     let release!: () => void;
     providerBarrier = new Promise<void>(resolve => { release = resolve; });
-    providerHttpStatus = 429; retainConversationPolicy = kind !== "agent_provider_legacy";
+    providerHttpStatus = 429; retainConversationPolicy = kind !== "provider_route_legacy";
     const turns = () => turnsByAgent.get(candidate.agentId) ?? 0; const before = turns();
     const probe = await wake(heartbeat, probeCandidate);
     await expect.poll(() => turns() - before, { timeout: 10_000 }).toBe(1);

@@ -48,12 +48,12 @@ export async function agentProviderCooldownUntil(
 
 export type ProviderAdmissionScope =
   | { kind: "account"; providerAccountKey: string }
-  | { kind: "agent_provider"; agentId: string; providerCooldownKey: string };
+  | { kind: "provider_route"; agentId: string; providerCooldownKey: string };
 
 export function providerAdmissionScope(agentId: string, providerCooldownKey: string | null,
   providerAccountKey: string | null): ProviderAdmissionScope | null {
   if (providerAccountKey) return { kind: "account", providerAccountKey };
-  return providerCooldownKey ? { kind: "agent_provider", agentId, providerCooldownKey } : null;
+  return providerCooldownKey ? { kind: "provider_route", agentId, providerCooldownKey } : null;
 }
 
 /** Preserve account receipts while making an ungrouped route's provenance explicit. */
@@ -62,15 +62,14 @@ export function providerAdmissionMetadata(scope: ProviderAdmissionScope | null, 
     providerAdmissionScopeKind: scope?.kind ?? null,
     providerAccountKey: scope?.kind === "account" ? scope.providerAccountKey : null,
     providerAccountRecoveryOf: scope?.kind === "account" ? recoveryOf : null,
-    providerAgentRecoveryOf: scope?.kind === "agent_provider" ? recoveryOf : null,
+    providerAgentRecoveryOf: scope?.kind === "provider_route" ? recoveryOf : null,
   };
 }
 
 function admissionScopePredicate(companyId: string, scope: ProviderAdmissionScope) {
   return and(eq(heartbeatRuns.companyId, companyId), scope.kind === "account"
     ? sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'providerAccountKey' = ${scope.providerAccountKey}`
-    : and(eq(heartbeatRuns.agentId, scope.agentId),
-      sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'providerCooldownKey' = ${scope.providerCooldownKey}`,
+    : and(sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'providerCooldownKey' = ${scope.providerCooldownKey}`,
       // Only an explicitly sampled null identity establishes an ungrouped scope.
       // Historical runs without that preparation receipt remain unassociated.
       sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->'providerAccountKey' = 'null'::jsonb`));
@@ -82,7 +81,7 @@ function admissionScopePredicate(companyId: string, scope: ProviderAdmissionScop
 export async function lockProviderAdmission(db: Pick<Db, "execute">, companyId: string, scope: ProviderAdmissionScope) {
   const lockKey = scope.kind === "account"
     ? `provider-account:${companyId}:${scope.providerAccountKey}`
-    : `provider-agent:${companyId}:${scope.agentId}:${scope.providerCooldownKey}`;
+    : `provider-route:${companyId}:${scope.providerCooldownKey}`;
   await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
 }
 
