@@ -330,6 +330,56 @@ describe("recovery classification of generic adapter quota failures", () => {
     });
   });
 
+  it.each(["retryNotBefore", "transientRetryNotBefore", "providerQuotaRetryNotBefore"])(
+    "keeps the absolute %s receipt due across later recovery scans",
+    (field) => {
+      const run = {
+        errorCode: "provider_quota", error: "Usage limit reached",
+        resultJson: { [field]: "2026-09-24T11:00:00.000Z", providerQuotaResetSource: "default" },
+      };
+      for (const scanAt of ["2026-09-24T11:00:00.000Z", "2026-09-24T12:01:00.000Z", "2026-09-25T12:01:00.000Z"]) {
+        expect(classifyAdapterFailureForRecovery(run, new Date(scanAt))).toEqual({
+          kind: "provider_quota", retryAt: new Date("2026-09-24T11:00:00.000Z"), parsedResetTime: false,
+        });
+      }
+    },
+  );
+
+  it.each([
+    { retryNotBefore: "2026-09-24T09:00:00.000Z", providerQuotaRetryNotBefore: "2026-09-24T15:00:00.000Z" },
+    { retryNotBefore: "2026-09-24T11:00:00.000Z", providerQuotaRetryNotBefore: "2026-09-24T15:00:00.000Z" },
+    { retryNotBefore: "malformed", transientRetryNotBefore: "2026-09-24T15:00:00.000Z" },
+    { retryNotBefore: "malformed", transientRetryNotBefore: "2026-09-24T11:00:00.000Z", providerQuotaRetryNotBefore: "2026-09-24T15:00:00.000Z" },
+  ])("does not let an earlier or malformed alias shorten a persisted wait: %j", (resultJson) => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota", error: "Usage limit reached",
+      resultJson: { ...resultJson, providerQuotaResetSource: "provider" },
+    }, new Date("2026-09-24T10:00:00.000Z"))).toEqual({
+      kind: "provider_quota", retryAt: new Date("2026-09-24T15:00:00.000Z"), parsedResetTime: true,
+    });
+  });
+
+  it.each([{}, { retryNotBefore: "malformed", transientRetryNotBefore: "", providerQuotaRetryNotBefore: "invalid" }])(
+    "keeps an unknown or malformed-only wait on the default recovery policy: %j", (resultJson) => {
+      expect(classifyAdapterFailureForRecovery({
+        errorCode: "provider_quota", error: "Usage limit reached", resultJson,
+      }, new Date("2026-09-24T10:00:00.000Z"))).toEqual({
+        kind: "provider_quota", retryAt: new Date("2026-09-24T11:00:00.000Z"), parsedResetTime: false,
+      });
+    },
+  );
+
+  it.each([
+    ["2026-10-08T10:00:00Z", "2026-10-08T10:00:00.000Z", "provider"],
+    ["2026-10-08T10:00:01Z", "2026-09-24T11:00:00.000Z", "default"],
+  ])("keeps the fresh-provider reset horizon for %s", (hint, expected, source) => {
+    expect(normalizeProviderQuotaAdapterResult(failedResult({
+      errorMessage: `You've hit your usage limit. Try again after ${hint}`,
+    }), new Date("2026-09-24T10:00:00.000Z"))).toMatchObject({
+      retryNotBefore: expected, resultJson: { providerQuotaResetSource: source },
+    });
+  });
+
   it("defers balance exhaustion instead of the 3x/60s transient retry", () => {
     const now = new Date("2026-09-24T23:30:00.000Z");
     const classification = classifyContinuationFailure({

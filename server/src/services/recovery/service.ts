@@ -957,11 +957,19 @@ function resolveProviderQuotaRetryAt(
   now: Date,
 ): { retryAt: Date; parsedResetTime: boolean } {
   const resultJson = parseObject(latestRun?.resultJson);
-  const persistedRetryAt = readNonEmptyString(resultJson.retryNotBefore) ??
-    readNonEmptyString(resultJson.transientRetryNotBefore) ??
-    readNonEmptyString(resultJson.providerQuotaRetryNotBefore);
-  const parsedPersistedRetryAt = persistedRetryAt ? new Date(persistedRetryAt) : null;
-  if (parsedPersistedRetryAt && !Number.isNaN(parsedPersistedRetryAt.getTime()) && parsedPersistedRetryAt > now) {
+  const parsedPersistedRetryAt = [
+    resultJson.retryNotBefore,
+    resultJson.transientRetryNotBefore,
+    resultJson.providerQuotaRetryNotBefore,
+  ].reduce<Date | null>((latest, value) => {
+    const raw = readNonEmptyString(value);
+    const parsed = raw ? new Date(raw) : null;
+    return parsed && Number.isFinite(parsed.getTime()) && (!latest || parsed > latest) ? parsed : latest;
+  }, null);
+  if (parsedPersistedRetryAt) {
+    // A recorded absolute wait stays due after it expires. Re-arming it from
+    // each recovery scan would renew an old failure and starve ordinary work.
+    // An older or malformed alias must not shorten another recorded wait.
     // normalizeProviderQuotaAdapterResult persists the default backoff too;
     // it marks that case so the monitor notes don't claim a provider reset.
     return {
