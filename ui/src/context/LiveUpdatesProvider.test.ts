@@ -193,10 +193,13 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       expect(invalidations).toContainEqual({ queryKey: queryKeys.approvals.issues("approval-1") });
     }
 
+    // An approval event refreshes a read in progress, with a predicate that leaves the queue's
+    // re-read-everything marker alone (see the next test).
+    const chipsExceptMarker = expect.objectContaining({ ...chips, predicate: expect.any(Function) });
     send({ entityType: "approval", entityId: "approval-1", action: "approval.comment_added" });
-    expect(invalidations).toContainEqual(chips);
+    expect(invalidations).toContainEqual(chipsExceptMarker);
     send({ entityType: "approval", action: "approval.created" });
-    expect(invalidations).toContainEqual(chips);
+    expect(invalidations).toContainEqual(chipsExceptMarker);
 
     // Another task event leaves the chips alone.
     send({ entityType: "issue", entityId: "issue-1", action: "issue.comment_added", details: {} });
@@ -222,6 +225,34 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(isStale(queryKeys.approvals.linkedIssues("company-1", "a1,a2"))).toBe(true);
     expect(isStale(queryKeys.approvals.linkedIssues("company-1", "a3"))).toBe(true);
     expect(isStale(queryKeys.approvals.linkedIssues("company-2", "a9"))).toBe(false);
+  });
+
+  it("refreshes the queue's re-read marker for a link change, but not for an approval event", () => {
+    const queryClient = new QueryClient();
+    const marker = queryKeys.approvals.linkedIssuesGeneration("company-1");
+    const read = queryKeys.approvals.linkedIssues("company-1", "a1,a2");
+    const reset = () => {
+      queryClient.setQueryData(marker, 1);
+      queryClient.setQueryData(read, {});
+    };
+    const isStale = (queryKey: readonly unknown[]) => queryClient.getQueryState(queryKey)?.isInvalidated;
+    const send = (payload: Record<string, unknown>) =>
+      __liveUpdatesTestUtils.invalidateActivityQueries(
+        queryClient,
+        "company-1",
+        { actorType: "agent", actorId: "agent-1", ...payload },
+        { userId: "user-1", agentId: null },
+      );
+
+    reset();
+    send({ entityType: "approval", entityId: "a1", action: "approval.approved" });
+    expect(isStale(read)).toBe(true);
+    expect(isStale(marker)).toBe(false);
+
+    reset();
+    send({ entityType: "issue", entityId: "issue-1", action: "issue.approval_unlinked", details: { approvalId: "a1" } });
+    expect(isStale(read)).toBe(true);
+    expect(isStale(marker)).toBe(true);
   });
 
   it("refreshes the approval cards of open task pages for an approval event", () => {

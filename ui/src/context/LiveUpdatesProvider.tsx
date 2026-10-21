@@ -1483,9 +1483,14 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({
       queryKey: ISSUE_APPROVALS_QUERY_KEY_FAMILY,
     });
-    // The queue's linked-task chips are read for the rows shown, in one batch; they follow too.
+    // The queue's linked-task chips: an approval event does not change the links of rows already
+    // read (links to an existing approval arrive as issue.approval_linked / unlinked, handled above,
+    // and an approval created with links is a new row, read when it comes onto the page). So only a
+    // read in progress follows; the queue's re-read-everything marker is left alone, or every
+    // decision would re-read every row on the page.
     queryClient.invalidateQueries({
       queryKey: queryKeys.approvals.linkedIssuesOfCompany(companyId),
+      predicate: (query) => query.queryKey[3] !== queryKeys.approvals.linkedIssuesGeneration(companyId)[3],
     });
     // An open approval page follows a resubmission, another member's decision and new comments too.
     if (entityId) {
