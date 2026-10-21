@@ -1580,9 +1580,10 @@ export function Approvals() {
     }
   };
 
-  // The linked-task chips of every row on the page come from one read, not one per card. The key is
-  // the set of rows shown, so a row the page brings in is read with the others; the rows already
-  // shown keep their chips while that read is on its way. Returning to the browser tab reads nothing.
+  // The linked-task chips come from batch reads, never one per card. A read covers only the rows on
+  // the page that were not read since the last live update; the rows already shown keep their chips
+  // while it is on its way. A focus change reads nothing. A live update of linked tasks or approvals,
+  // and a return to a tab that was hidden, read every row on the page again.
   const linkedKnown = linkedKnownState.companyId === selectedCompanyId
     ? linkedKnownState
     : { companyId: selectedCompanyId ?? null, byId: {} as ApprovalLinkedIssuesByApproval, fresh: new Set<string>() };
@@ -1610,17 +1611,17 @@ export function Approvals() {
     .filter((id) => !linkedKnown.fresh.has(id))
     .sort();
   const linkedIssueIdsKey = missingLinkedIds.join(",");
-  const { data: fetchedLinkedIssues, isFetching: linkedIssuesFetching } = useQuery({
-    queryKey: queryKeys.approvals.linkedIssues(selectedCompanyId ?? "", linkedIssueIdsKey),
+  const { data: fetchedLinkedIssues } = useQuery({
+    // The generation is part of the key: a re-read after a live update is a new read, never an
+    // answer still cached from before it.
+    queryKey: [...queryKeys.approvals.linkedIssues(selectedCompanyId ?? "", linkedIssueIdsKey), linkedGenerationAt],
     queryFn: () => approvalsApi.listLinkedIssues(selectedCompanyId!, linkedIssueIdsKey.split(",")),
     enabled: !!selectedCompanyId && linkedIssueIdsKey.length > 0,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
   useEffect(() => {
-    // Only an answer that is not being refetched: after a live update the cache can still hold the
-    // previous answer for this key while the new read is on its way.
-    if (!fetchedLinkedIssues || !linkedIssueIdsKey || linkedIssuesFetching) return;
+    if (!fetchedLinkedIssues || !linkedIssueIdsKey) return;
     setLinkedKnown((prev) => {
       const same = prev.companyId === selectedCompanyId;
       const byId: ApprovalLinkedIssuesByApproval = same ? { ...prev.byId } : {};
@@ -1632,7 +1633,7 @@ export function Approvals() {
       }
       return { companyId: selectedCompanyId ?? null, byId, fresh };
     });
-  }, [fetchedLinkedIssues, linkedIssueIdsKey, linkedIssuesFetching, selectedCompanyId]);
+  }, [fetchedLinkedIssues, linkedIssueIdsKey, selectedCompanyId]);
   const linkedIssuesByApproval = linkedKnown.byId;
 
   if (!selectedCompanyId) {
