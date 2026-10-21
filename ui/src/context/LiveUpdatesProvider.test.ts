@@ -253,6 +253,11 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     send({ entityType: "issue", entityId: "issue-1", action: "issue.approval_unlinked", details: { approvalId: "a1" } });
     expect(isStale(read)).toBe(true);
     expect(isStale(marker)).toBe(true);
+
+    // Deleting a task removes its links without a link event; the chips are read again too.
+    reset();
+    send({ entityType: "issue", entityId: "issue-1", action: "issue.deleted", details: {} });
+    expect(isStale(marker)).toBe(true);
   });
 
   it("refreshes the approval cards of open task pages for an approval event", () => {
