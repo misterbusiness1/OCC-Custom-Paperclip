@@ -42,12 +42,13 @@ describe("updateAgentSchema", () => {
 });
 
 describe("objectWithoutDefaults", () => {
-  it("carries the source schema's catchall over to the rebuilt schema", () => {
+  it("does not carry a catchall over, so update schemas built from it drop unknown fields", () => {
+    // Update schemas are the allow-list for column writes. A catchall on a base
+    // schema must not silently turn its update schema into a passthrough.
     const base = z.object({ known: z.string().default("x") }).catchall(z.unknown());
-    const rebuilt = objectWithoutDefaults(base);
+    const rebuilt = objectWithoutDefaults(base).partial();
 
-    const parsed = rebuilt.parse({ known: "y", extra: 1 });
-    expect(parsed).toMatchObject({ known: "y", extra: 1 });
+    expect(rebuilt.parse({ known: "y", extra: 1 })).toEqual({ known: "y" });
   });
 
   it("still drops the top-level defaults it exists to drop", () => {

@@ -71,12 +71,14 @@ function createToken() {
   return `pcp_${randomBytes(24).toString("hex")}`;
 }
 
-// The agent table's own columns. An update payload may carry fields the table
-// does not define - the request schema keeps unknown top-level fields so a new
-// one is never silently stripped - and persisting such a key would fail the
-// write. This set is the boundary between "a field the agent record has" and
-// "a field the request happened to include".
-const AGENT_COLUMN_KEYS = new Set(Object.keys(getTableColumns(agents)));
+// The agent columns an update may write. The request schema is the allow-list
+// for callers; this set is the service's own backstop: a key the table does not
+// define is ignored, and an agent's identity (id, company, creation time) is
+// never rewritten by an update, whatever a caller's schema lets through.
+const AGENT_IMMUTABLE_COLUMN_KEYS = new Set(["id", "companyId", "createdAt"]);
+const AGENT_COLUMN_KEYS = new Set(
+  Object.keys(getTableColumns(agents)).filter((key) => !AGENT_IMMUTABLE_COLUMN_KEYS.has(key)),
+);
 
 const CONFIG_REVISION_FIELDS = [
   "name",
@@ -920,12 +922,8 @@ export function agentService(db: Db) {
       assertBuiltInAgentMetadataMutationAllowed(existing.metadata, data.metadata, options);
     }
 
-    // The request schema keeps unknown top-level fields, so a new field is
-    // never silently stripped before the handler sees it. The database only has
-    // columns for the fields the agent table defines, and persisting an
-    // unknown key would fail the whole write, so the patch is limited to the
-    // table's own columns. A field the table does not know about is ignored,
-    // not fatal.
+    // Limit the patch to the agent columns an update may write (see
+    // AGENT_COLUMN_KEYS): unknown keys are ignored, identity columns never move.
     const normalizedPatch = Object.fromEntries(
       Object.entries(data).filter(([key]) => AGENT_COLUMN_KEYS.has(key)),
     ) as Partial<typeof agents.$inferInsert>;

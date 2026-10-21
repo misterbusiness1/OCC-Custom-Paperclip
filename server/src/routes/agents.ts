@@ -5534,6 +5534,10 @@ export function agentRoutes(
       // Read the requested env from the effective config, so the redacted
       // placeholder values the server already restored are the ones that merge.
       const effectiveRequestedEnv = asRecord(rawEffectiveAdapterConfig.env);
+      // Authorize before validating the removal list: its errors name the
+      // agent's bound env keys, which callers without update access must not
+      // learn (restricted views blank adapterConfig for the same reason).
+      if (envRemovedKeys.length > 0) await assertCanUpdateAgent(req, existing);
       envRemovals = assertValidEnvRemovalRequest({
         existingEnv,
         requestedEnv: effectiveRequestedEnv,
