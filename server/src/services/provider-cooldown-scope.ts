@@ -16,7 +16,7 @@ export async function declaredCodexProviderAccountKey(input: {
   if (input.adapterType !== "codex_local" || input.environmentDriver !== "local" || input.managed) return null;
   const declared = { ...record(input.environmentEnv), ...record(input.adapterConfig.env), ...record(input.projectEnv), ...record(input.routineEnv) };
   const env: Record<string, string> = {};
-  for (const key of ["CODEX_HOME", "OPENAI_API_KEY"]) {
+  for (const key of ["CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY"]) {
     const value = declared[key];
     if (typeof value === "string") env[key] = value;
     else if (value && typeof value === "object" && record(value).type === "plain" && typeof record(value).value === "string") env[key] = record(value).value as string;

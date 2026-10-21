@@ -372,3 +372,38 @@ describe("recovery classification of generic adapter quota failures", () => {
     })).toMatchObject({ kind: "default" });
   });
 });
+
+// Newer ACP diagnostics explicitly declined quota classification; the historical
+// category-only compatibility rule must not reverse that decision on a sweep.
+it("keeps a typed generic terminal-limit diagnostic out of historical quota fallback", () => {
+  const message = "ACP agent reported a terminal limit failure.";
+  const resultJson = { terminalSessionFailure: { category: "limit", title: message } };
+  expect(normalizeProviderQuotaAdapterResult({
+    exitCode: 1, timedOut: false, errorCode: "acpx_turn_failed", errorMessage: message, resultJson,
+  }).errorCode).toBe("acpx_turn_failed");
+  expect(classifyAdapterFailureForRecovery({ errorCode: "acpx_turn_failed", error: message, resultJson })).toBeNull();
+  expect(classifyContinuationFailure({
+    id: "typed-run", agentId: "agent", status: "failed", contextSnapshot: {}, livenessState: null,
+    startedAt: new Date(), createdAt: new Date(), errorCode: "acpx_turn_failed", error: message, resultJson,
+  }).kind)
+    .not.toBe("provider_quota");
+  expect(classifyProviderQuotaErrorMessage(message)).toBe("usage_limit");
+});
+
+it.each([
+  "ACP agent reported a terminal limit failure.", "Context window limit exceeded",
+  "Workspace storage capacity limit reached", "Maximum number of turns reached",
+  "Configured budget limit reached", "Rate limit exceeded; retry later",
+])("respects an explicit typed non-quota decision during finalization and recovery: %s", (message) => {
+  const resultJson = {
+    terminalSessionFailure: { category: "limit", title: message }, terminalSessionFailureClassified: true,
+  };
+  expect(normalizeProviderQuotaAdapterResult({
+    exitCode: 1, timedOut: false, errorCode: "acpx_turn_failed", errorMessage: message, resultJson,
+  }).errorCode).toBe("acpx_turn_failed");
+  expect(classifyAdapterFailureForRecovery({ errorCode: "acpx_turn_failed", error: message, resultJson })).toBeNull();
+  expect(classifyContinuationFailure({
+    id: "typed-run", agentId: "agent", status: "failed", contextSnapshot: {}, livenessState: null,
+    startedAt: new Date(), createdAt: new Date(), errorCode: "acpx_turn_failed", error: message, resultJson,
+  }).kind).not.toBe("provider_quota");
+});

@@ -338,7 +338,14 @@ describeEmbedded("generic adapter provider quota failures", () => {
       const cwd = path.join(root, "workspace");
       const stateDir = path.join(root, "state");
       await fs.mkdir(cwd, { recursive: true });
-      const canary = "synthetic-private-provider-limit-detail";
+      // The upgrade now receives typed provider wording. Exercise genuine
+      // usage exhaustion while keeping its full diagnostic private/redacted.
+      const resetClock = new Date(Date.now() + 2 * 60 * 60 * 1000).toLocaleTimeString("en-US", {
+        timeZone: "UTC", hour: "numeric", minute: "2-digit", hour12: true,
+      });
+      const canary = lane === "codex"
+        ? `You've hit your usage limit for GPT-5. Switch to another model now, or try again at ${resetClock} (UTC).`
+        : `You've hit your session limit · resets ${resetClock.toLowerCase().replace(" ", "")} (UTC)`;
       const { companyId, agentId, issueId } = await seedAssignedIssue(processAdapterTypes[lane], {
         agentCommand: `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(fixturePath.replaceAll("\\", "/"))}`,
         mode: "oneshot", stateDir, cwd, timeoutSec: 15,
@@ -358,7 +365,7 @@ describeEmbedded("generic adapter provider quota failures", () => {
       expect(failed?.error).toContain("ACP agent reported a terminal limit failure.");
       expect(failed?.errorCode).toBe("provider_quota");
       expect(failed?.resultJson).toMatchObject({
-        originalErrorCode: "acpx_turn_failed", errorFamily: "provider_quota", providerQuotaKind: "usage_limit",
+        errorFamily: "provider_quota", terminalSessionFailure: { category: "limit" }, terminalSessionFailureClassified: true,
       });
       expect(new Date(String(failed?.resultJson?.providerQuotaRetryNotBefore)).getTime()).toBeGreaterThan(Date.now());
       expect(JSON.stringify({ error: failed?.error, result: failed?.resultJson })).not.toContain(canary);

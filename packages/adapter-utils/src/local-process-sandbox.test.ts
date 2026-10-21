@@ -3,7 +3,7 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildLocalProcessSandboxSpawnTarget,
   parseLocalProcessFilesystemScope,
@@ -273,6 +273,118 @@ describe("local process sandbox", () => {
       expect(response).toEqual({ status: 200, body: "control-plane-response" });
     } finally {
       await target.cleanup?.();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it.runIf(process.platform === "linux")("survives a dropped CONNECT tunnel socket error (paperclipai/paperclip#15531)", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-network-connect-reset-"));
+    cleanup.push(workspace);
+    const tunnelTarget = net.createServer((socket) => {
+      socket.on("error", () => {});
+    });
+    await new Promise<void>((resolve) => tunnelTarget.listen(0, "127.0.0.1", resolve));
+    const address = tunnelTarget.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP test server address.");
+    const createServer = http.createServer.bind(http) as (...args: unknown[]) => http.Server;
+    const proxyServers: http.Server[] = [];
+    const createServerSpy = vi.spyOn(http, "createServer").mockImplementation(((...args: unknown[]) => {
+      const created = createServer(...args);
+      proxyServers.push(created);
+      return created;
+    }) as never);
+    let target: Awaited<ReturnType<typeof buildLocalProcessSandboxSpawnTarget>> | null = null;
+    let client: net.Socket | null = null;
+    try {
+      target = await buildLocalProcessSandboxSpawnTarget({
+        executable: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        cwd: workspace,
+        options: {
+          workspaceDir: workspace,
+          networkScope: "allowlist",
+          networkAllowlist: [`127.0.0.1:${address.port}`],
+        },
+      });
+      createServerSpy.mockRestore();
+      expect(proxyServers).toHaveLength(1);
+      const tunnelSocket = new Promise<net.Socket>((resolve) => {
+        proxyServers[0]!.once("connect", (_request, socket) => resolve(socket as net.Socket));
+      });
+      const socketPath = target.args[target.args.indexOf("--") + 3];
+      const connected = await new Promise<net.Socket>((resolve, reject) => {
+        const socket = net.createConnection(socketPath, () => {
+          socket.write(`CONNECT 127.0.0.1:${address.port} HTTP/1.1\r\nHost: 127.0.0.1:${address.port}\r\n\r\n`);
+        });
+        socket.setEncoding("utf8");
+        let response = "";
+        socket.on("data", (chunk) => {
+          response += chunk;
+          if (response.includes("\r\n\r\n")) resolve(socket);
+        });
+        socket.on("error", reject);
+      });
+      client = connected;
+      client.on("error", () => {});
+      const serverSide = await tunnelSocket;
+      const reset = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+      // Without the proxy's own listener this error escapes as an uncaught
+      // exception (thrown here, or re-emitted by the tunnel pipe on the next
+      // tick), which is what took the server down.
+      expect(() => serverSide.emit("error", reset)).not.toThrow();
+      // Let any re-emitted socket error surface inside this test.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(serverSide.destroyed).toBe(true);
+    } finally {
+      createServerSpy.mockRestore();
+      client?.destroy();
+      await target?.cleanup?.();
+      await new Promise<void>((resolve) => tunnelTarget.close(() => resolve()));
+    }
+  });
+
+  it.runIf(process.platform === "linux")("closes the upstream request when a client aborts an upload (paperclipai/paperclip#15531)", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-network-upload-abort-"));
+    cleanup.push(workspace);
+    let markReceived!: () => void;
+    let markUpstreamClosed!: () => void;
+    const received = new Promise<void>((resolve) => { markReceived = resolve; });
+    const upstreamClosed = new Promise<void>((resolve) => { markUpstreamClosed = resolve; });
+    const server = http.createServer((request) => {
+      request.on("close", () => markUpstreamClosed());
+      request.on("data", () => markReceived());
+      request.on("error", () => {});
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP test server address.");
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        networkScope: "allowlist",
+        networkAllowlist: [`127.0.0.1:${address.port}`],
+      },
+    });
+    const socketPath = target.args[target.args.indexOf("--") + 3];
+
+    try {
+      const outgoing = http.request({
+        socketPath,
+        method: "POST",
+        path: `http://127.0.0.1:${address.port}/upload`,
+        headers: { host: `127.0.0.1:${address.port}`, "content-length": "1048576" },
+      });
+      outgoing.on("error", () => {});
+      outgoing.write("partial-upload-body");
+      await received;
+      outgoing.destroy();
+      await expect(upstreamClosed).resolves.toBeUndefined();
+    } finally {
+      await target.cleanup?.();
+      server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });

@@ -61,7 +61,13 @@ export default defineConfig({
   // The webServer directive bootstraps a throwaway instance and then starts it.
   // `onboard --yes --run` works in a non-interactive temp PAPERCLIP_HOME.
   webServer: {
-    command: `pnpm paperclipai onboard --yes --run`,
+    cwd: path.resolve(import.meta.dirname, "../.."),
+    // Exercise the shipped UI. Source-checkout onboarding otherwise enables
+    // Vite middleware: every reload traverses thousands of modules, including
+    // service-worker-intercepted requests, before React can even start.
+    // Build the server's first-choice static directory so a prior package build
+    // cannot shadow the UI under test with stale server/ui-dist assets.
+    command: "pnpm --filter @paperclipai/ui build --outDir ../server/ui-dist --emptyOutDir && node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts onboard --yes --run",
     url: `${BASE_URL}/api/health`,
     // Always boot a dedicated throwaway instance for e2e so browser tests
     // never attach to the developer's active Paperclip home/server.
@@ -76,6 +82,7 @@ export default defineConfig({
       // Dedicated API tests separately verify fail-closed paused admission.
       PAPERCLIP_BOARD_COMMENT_REQUEST_ADMISSION_ENABLED: "true",
       PAPERCLIP_BOARD_COMMENT_REQUEST_DISPATCH_ENABLED: "true",
+      PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
       NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${path.resolve(import.meta.dirname, "fixtures/agent-chat-github.mjs")}`,
       PORT: String(PORT),
       PAPERCLIP_OPEN_ON_LISTEN: "false",

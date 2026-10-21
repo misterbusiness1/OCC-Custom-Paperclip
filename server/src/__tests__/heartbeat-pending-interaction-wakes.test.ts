@@ -10,10 +10,12 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 const adapterState = vi.hoisted(() => ({
   gate: null as Promise<void> | null,
   sideEffects: 0,
+  onComplete: null as (() => Promise<void>) | null,
 }));
 const execute = vi.hoisted(() => vi.fn(async () => {
   await adapterState.gate;
   adapterState.sideEffects += 1;
+  await adapterState.onComplete?.();
   return {
     exitCode: 0, signal: null, timedOut: false, errorMessage: null,
     summary: "Readiness wake completed.", provider: "test", model: "test-model",
@@ -52,6 +54,7 @@ describe("automatic readiness wakes while an interaction is pending", () => {
     execute.mockClear();
     adapterState.gate = null;
     adapterState.sideEffects = 0;
+    adapterState.onComplete = null;
   });
   afterAll(async () => { await temporary?.cleanup(); }, 30_000);
 
@@ -301,6 +304,10 @@ describe("automatic readiness wakes while an interaction is pending", () => {
     const svc = issueService(db);
     const gate = deferred<void>();
     adapterState.gate = gate.promise;
+    // The fake provider records a real waiting disposition, as the monitored
+    // task must do when it finishes. A successful process alone would correctly
+    // trigger the separate legacy missing-disposition recovery lane.
+    adapterState.onComplete = async () => { await scheduleFutureMonitor(f); };
     await scheduleFutureMonitor(f);
     const dueAt = new Date(Date.now() - 1_000);
     await db.update(issues).set({
@@ -319,10 +326,8 @@ describe("automatic readiness wakes while an interaction is pending", () => {
       () => expect(execute).toHaveBeenCalledTimes(1),
       { timeout: 5_000 },
     );
-    // Keep this fixture focused on dependency-ready generation dedup. The real
-    // canary maintains a pending approval; this smaller fixture uses an answered
-    // interaction, so move it out of review before finalization can schedule the
-    // unrelated review-path repair.
+    // Leave review before completion; the fake provider above records its
+    // next one-shot monitor instead of relying on an unowned review state.
     await db.update(issues).set({ status: "in_progress" })
       .where(eq(issues.id, f.issueId));
     const generationBefore = await svc.getById(f.blockerId);
@@ -355,7 +360,11 @@ describe("automatic readiness wakes while an interaction is pending", () => {
     expect(adapterState.sideEffects).toBe(1);
     expect(finalRuns).toHaveLength(1);
 
-    await db.update(issues).set({ status: "in_review" })
+    // Remove the deliberate wait before probing dependency delivery, so a
+    // monitor gate cannot hide a duplicate dependency-ready generation.
+    await db.update(issues).set({
+      status: "in_review", monitorNextCheckAt: null, executionPolicy: null,
+    })
       .where(eq(issues.id, f.issueId));
     await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });
     await db.update(issues).set({ status: "in_progress" })
@@ -366,7 +375,9 @@ describe("automatic readiness wakes while an interaction is pending", () => {
     expect(reconciledRuns).toHaveLength(2);
     expect(execute).toHaveBeenCalledTimes(2);
     expect(adapterState.sideEffects).toBe(2);
-    await db.update(issues).set({ status: "in_review" })
+    await db.update(issues).set({
+      status: "in_review", monitorNextCheckAt: null, executionPolicy: null,
+    })
       .where(eq(issues.id, f.issueId));
     await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });
     await heartbeat.drainActiveRunExecutions();
@@ -402,6 +413,8 @@ describe("automatic readiness wakes while an interaction is pending", () => {
     await db.update(issues).set({
       assigneeAgentId: successorAgentId,
       status: "in_review",
+      monitorNextCheckAt: null,
+      executionPolicy: null,
     })
       .where(eq(issues.id, f.issueId));
     await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });

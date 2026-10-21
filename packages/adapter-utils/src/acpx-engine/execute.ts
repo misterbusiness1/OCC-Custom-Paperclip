@@ -39,6 +39,13 @@ import {
 import { captureLocalProcess, capturedProcessExited, killCapturedLocalProcess } from "./local-process-control.js";
 import type { DuplexLossReason } from "../duplex-observability.js";
 import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../bridge-transport-contract.js";
+import {
+  formatTerminalSessionFailure,
+  sanitizeTerminalSessionFailure,
+  type AcpxTerminalSessionFailure,
+  type AcpxTerminalSessionFailureDiagnostic,
+} from "./terminal-session-failure.js";
+export type { AcpxTerminalSessionFailure } from "./terminal-session-failure.js";
 import type { WorkspaceRestoreFailureCode, WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
 import {
   classifyWorkspaceRestoreFailure,
@@ -66,16 +73,14 @@ import {
   isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
-  renderPaperclipWakePrompt,
   renderPaperclipSkillRelevanceAdvisory,
   renderTemplate,
   resolvePaperclipInstanceRootForAdapter,
-  selectPaperclipTaskMarkdown,
+  selectPaperclipPromptSections,
   resolveLegacyPaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
-  stringifyPaperclipWakePayload,
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
@@ -359,6 +364,11 @@ export interface AcpxRemoteManagedHomeResult {
   disposeStaged?: () => Promise<void>;
 }
 
+export type AcpxTerminalFailureClassification = Pick<
+  AdapterExecutionResult,
+  "errorCode" | "errorFamily" | "retryNotBefore"
+>;
+
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
   /** Resolve metadata from the prepared credential route, before any transport or warm-session reuse. */
@@ -371,6 +381,11 @@ export interface AcpxEngineExecutorOptions {
    */
   terminalProviderDiagnosticMatcher?: (content: string) => boolean;
   now?: () => number;
+  /** Inspect terminal provider text in memory; return only recovery labels and a timestamp. */
+  classifyTerminalSessionFailure?: (
+    failure: AcpxTerminalSessionFailure,
+    now: Date,
+  ) => AcpxTerminalFailureClassification | null;
   /**
    * The bound on how long the fail-fast seam waits for a cooperative
    * `turn.cancel()` after a latched terminal sandbox duplex-channel loss,
@@ -815,6 +830,10 @@ function resolveManagedCodexHomeDir(companyId: string): string {
   return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "codex-home");
 }
 
+function resolveManagedCodexApiKeyHomeDir(companyId: string, agentId: string): string {
+  return path.join(defaultStateDir(companyId, agentId), "codex-home");
+}
+
 // Mirrors `resolveManagedGrokHomeDir` in
 // `packages/adapters/grok-local/src/server/grok-home.ts` — this package
 // cannot import that adapter package (it would invert the dependency
@@ -1009,15 +1028,30 @@ async function prepareManagedCodexHome(input: {
   companyId: string;
   sourceHome: string;
   targetHome: string;
+  apiKey?: string;
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<string> {
-  const { sourceHome, targetHome, onLog } = input;
+  const { sourceHome, targetHome, apiKey, onLog } = input;
   if (path.resolve(sourceHome) === path.resolve(targetHome)) return targetHome;
 
   await fs.mkdir(targetHome, { recursive: true });
 
-  const authJson = path.join(sourceHome, "auth.json");
-  if (await pathExists(authJson)) await ensureSymlink(path.join(targetHome, "auth.json"), authJson);
+  const targetAuth = path.join(targetHome, "auth.json");
+  if (apiKey) {
+    // Codex reads auth.json ahead of the process environment. Never leave a
+    // shared ChatGPT-login symlink in an API-key agent's managed home, and never
+    // write through that symlink into the operator's own Codex credentials.
+    // Atomic replacement also keeps concurrent turns from seeing a missing or
+    // partially written credential file.
+    await writeFileAtomically({
+      target: targetAuth,
+      contents: JSON.stringify({ OPENAI_API_KEY: apiKey }),
+      mode: 0o600,
+    });
+  } else {
+    const sourceAuth = path.join(sourceHome, "auth.json");
+    if (await pathExists(sourceAuth)) await ensureSymlink(targetAuth, sourceAuth);
+  }
 
   for (const name of ["config.json", "config.toml", "instructions.md"]) {
     const source = path.join(sourceHome, name);
@@ -1268,6 +1302,13 @@ async function reconcileManagedCodexSkills(input: {
   }
 }
 
+/** Use the same API-key precedence for preparation and optional account metadata. */
+export function resolveCodexAcpApiKey(env: Record<string, unknown>): string | undefined {
+  const configuredOpenAi = typeof env.OPENAI_API_KEY === "string" ? env.OPENAI_API_KEY.trim() : "";
+  const configuredCodex = typeof env.CODEX_API_KEY === "string" ? env.CODEX_API_KEY.trim() : "";
+  return configuredOpenAi || configuredCodex || process.env.OPENAI_API_KEY?.trim() || process.env.CODEX_API_KEY?.trim();
+}
+
 /** Shared by admission metadata and preparation; configured homes deliberately bypass shared seeding. */
 export function resolveCodexAcpHomePaths(companyId: string, config: Record<string, unknown>) {
   const env = parseObject(config.env);
@@ -1287,6 +1328,7 @@ export async function resolveCodexAcpAuthHome(companyId: string, config: Record<
 
 async function prepareCodexSkillRuntime(input: {
   companyId: string;
+  agentId: string;
   config: Record<string, unknown>;
   env: Record<string, string>;
   moduleDir: string;
@@ -1306,11 +1348,16 @@ async function prepareCodexSkillRuntime(input: {
 }): Promise<{ identity: Record<string, unknown>; commandNotes: string[] }> {
   const now = input.now ?? (() => Date.now());
   const selection = resolveCodexAcpHomePaths(input.companyId, input.config);
+  const apiKey = resolveCodexAcpApiKey(input.env);
+  const managedCodexHome = apiKey
+    ? resolveManagedCodexApiKeyHomeDir(input.companyId, input.agentId)
+    : selection.targetHome;
   const effectiveCodexHome = selection.configuredHome ??
     await prepareManagedCodexHome({
       companyId: input.companyId,
       sourceHome: selection.sourceHome,
-      targetHome: selection.targetHome,
+      targetHome: managedCodexHome,
+      apiKey,
       onLog: input.onLog,
     });
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
@@ -1443,7 +1490,7 @@ function normalizeMode(config: Record<string, unknown>): "persistent" | "oneshot
 function normalizePermissionMode(config: Record<string, unknown>): "approve-all" | "approve-reads" | "deny-all" {
   const value = asString(config.permissionMode, DEFAULT_ACP_ENGINE_PERMISSION_MODE).trim();
   if (value === "approve-reads" || value === "deny-all") return value;
-  if (value === "default") return "approve-reads";
+  if (value === "default") return DEFAULT_ACP_ENGINE_PERMISSION_MODE;
   return "approve-all";
 }
 
@@ -1953,7 +2000,6 @@ async function buildRuntime(input: {
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
   if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
   if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
@@ -1962,7 +2008,6 @@ async function buildRuntime(input: {
   if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   applyPaperclipWorkspaceEnv(env, {
     workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
     workspaceSource,
@@ -2095,7 +2140,11 @@ async function buildRuntime(input: {
     paperclipClaudeSettings = await writePaperclipClaudeSettings({
       cwd,
       stateDir,
-      agentHome,
+      // A run's writable AGENT_HOME moves, but the existing permission root
+      // must not invalidate its resumable conversation. Run copies are covered
+      // by the company root already granted in these settings; the process env
+      // still receives this run's actual AGENT_HOME.
+      agentHome: asString(workspaceContext.agentHomeForPermissions, agentHome),
       companyId: agent.companyId,
     });
     skillCommandNotes.push(
@@ -2115,6 +2164,7 @@ async function buildRuntime(input: {
     const preparedSkills = await measureStartupStep(input.ctx, nowMs, "codex-home.seed", () =>
       prepareCodexSkillRuntime({
         companyId: agent.companyId,
+        agentId: agent.id,
         config,
         env,
         moduleDir: input.engine.moduleDir,
@@ -3074,15 +3124,8 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
     !resumedSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession });
+  const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, { resumedSession });
   const externalChatTurn = isPaperclipExternalChatTurn(context.paperclipWake);
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
-    resumedSession,
-    conversationMode: context.conversationMode === true,
-    // The task-context markdown is the authoritative brief on this lane; keep
-    // the wake prompt's description copy out so the prompt carries it once.
-    suppressIssueDescription: taskContextNote.length > 0,
-  });
   const skillRelevanceAdvisory = renderPaperclipSkillRelevanceAdvisory(context.paperclipSkillRelevanceAdvisory);
   const shouldUseResumeDeltaPrompt = resumedSession && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
@@ -3688,12 +3731,13 @@ async function closeWarmHandle(input: {
     input.handles.delete(input.key);
   }
   clearWarmHandleTimer(input.entry);
-  await input.entry.runtime.close({
+  const stopped = await input.entry.runtime.close({
     handle: input.entry.handle,
     reason: input.reason,
     discardPersistentState: input.discardPersistentState ?? false,
-  }).catch(() => {});
+  }).then(() => true, () => false);
   flushChildStderr(input.entry.childStderrState);
+  return stopped;
 }
 
 function warmHandleMatches(
@@ -4160,6 +4204,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // `endSession` step can cancel a running turn before it closes the runtime
       // (the cancel-before-close order). The turn wrapper assigns it in `turnStart`.
       let activeTurn: AcpRuntimeTurn | null = null;
+      let terminalFailureClassification: AcpxTerminalFailureClassification | null = null;
+      let terminalSessionFailureClassified = false;
+      let terminalSessionFailure: AcpxTerminalSessionFailureDiagnostic | null = null;
       // How the settlement `endSession` step must release the runtime for the path
       // this run took. Each exit path that acquired the runtime records it before it
       // returns; a build or create-runtime failure never registers the runtime, so
@@ -4762,6 +4809,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
       let eventCostUsd: number | null = null;
+      let lastRuntimeEventAt: number | null = null;
+      let observedRuntimeEvents = 0;
       // The turn-local state the sequence steps share. `promptBuild` sets the
       // prompt, `preTurnUsage` sets the pre-turn status, `turnStart` sets the
       // active turn, and `turnFinalize` reads all three. `activeTurn` is the run-
@@ -4851,6 +4900,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           requestId: ctx.runId,
           timeoutMs: startTimeoutMs,
           signal,
+          // The callback belongs to this turn, including when a runtime is reused.
+          // Diagnostics are retained even when an adapter has no recovery
+          // classifier. Redact before bounding so partial secrets cannot leak.
+          onTerminalSessionFailure: (failure: AcpxTerminalSessionFailure) => {
+            terminalSessionFailure = sanitizeTerminalSessionFailure(
+              failure, prepared.env, ctx.authToken, parseObject(ctx.config.env),
+            );
+            if (deps.classifyTerminalSessionFailure) {
+              terminalFailureClassification = deps.classifyTerminalSessionFailure(failure, new Date(now()));
+              terminalSessionFailureClassified = true;
+            }
+          },
         });
         activeTurn = turn;
         // A latched sandbox duplex-channel loss otherwise has no way to reach
@@ -4923,6 +4984,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         const toolTitles = new Map<string, string>();
         const drainEvents = (async (): Promise<void> => {
           for await (const event of turn.events) {
+            lastRuntimeEventAt = now();
+            observedRuntimeEvents += 1;
             // ACPX currently flattens client-side filesystem/terminal receipts
             // into status text. They cannot establish complete action outcomes.
             if (event.type === "status" && /^(fs|terminal)\//.test(event.text)) incompleteToolInventory = true;
@@ -4984,6 +5047,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       const stepTurnFinalize = async (
         input: TurnFinalizeInput<AcpRuntimeTurnResult>,
       ): Promise<TurnCompletion> => {
+        // Capture runtime activity before usage reads, error logs, or cleanup
+        // make an otherwise silent turn look active at its execution deadline.
+        const lastEventAgeMs = lastRuntimeEventAt === null ? undefined : now() - lastRuntimeEventAt;
+        const activityDiagnostics = {
+          acpObservedEventCount: observedRuntimeEvents,
+          ...(lastEventAgeMs !== undefined && Number.isSafeInteger(lastEventAgeMs) && lastEventAgeMs >= 0
+            ? { acpLastEventAgeMs: lastEventAgeMs } : {}),
+          acpPendingToolCount: [...interruptionTools.values()].filter(
+            (tool) => tool.status !== "completed" && tool.status !== "failed" && tool.status !== "cancelled",
+          ).length,
+          acpToolInventoryComplete: !incompleteToolInventory,
+        };
         if (input.kind === "terminal") {
         const terminal = input.terminal;
         const timedOut = input.timedOut;
@@ -5067,15 +5142,39 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           skipRemoteClose: channelLost,
         };
 
+        const failureDiagnostic = !timedOut && !channelLost && terminal.status === "failed"
+          ? terminalSessionFailure
+          : null;
         const errorMessage = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
           : channelLost
             ? channelLostMessage
-            : resultErrorMessage(terminal);
+            : formatTerminalSessionFailure(resultErrorMessage(terminal), failureDiagnostic);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+        const typedTerminalFailureReported = terminalSessionFailure !== null;
         const terminalFailure = terminal.status === "failed" && !timedOut && !channelLost
-          ? classifyAcpTerminalFailure(terminal.error.message, now(), terminal.error.providerHttpStatus)
+          ? classifyAcpTerminalFailure(terminalSessionFailure?.title ?? terminal.error.message, now(), terminal.error.providerHttpStatus)
           : null;
+        // Preserve upstream's provider-specific typed quota decision. Trusted
+        // authentication/HTTP throttle evidence still takes precedence.
+        const classifiedFailure = typedTerminalFailureReported && deps.classifyTerminalSessionFailure
+          && terminalFailure?.errorCode !== "acpx_auth_required"
+          && terminalFailure?.providerHttpStatus !== 429
+          && !(terminalFailure?.providerHttpStatus !== undefined && terminalFailure.providerHttpStatus >= 500)
+          ? terminalFailureClassification
+          : terminalFailure;
+        // Typed failures keep upstream's omit-when-absent fields; every other
+        // result keeps the fork's explicit null recovery fields.
+        const classifiedFailureFields: Pick<AdapterExecutionResult, "errorFamily" | "retryNotBefore"> =
+          typedTerminalFailureReported
+            ? {
+                ...(classifiedFailure?.errorFamily ? { errorFamily: classifiedFailure.errorFamily } : {}),
+                ...(classifiedFailure?.retryNotBefore ? { retryNotBefore: classifiedFailure.retryNotBefore } : {}),
+              }
+            : {
+                errorFamily: classifiedFailure?.errorFamily ?? null,
+                retryNotBefore: classifiedFailure?.retryNotBefore ?? null,
+              };
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
           summary: channelLost ? "duplex_channel_lost" : terminal.status,
@@ -5096,10 +5195,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             : channelLost
               ? DUPLEX_CHANNEL_LOST_ERROR_CODE
               : terminal.status === "failed"
-                ? terminalFailure?.errorCode ?? "acpx_turn_failed"
+                ? classifiedFailure?.errorCode ?? "acpx_turn_failed"
                 : null,
-          errorFamily: terminalFailure?.errorFamily ?? null,
-          retryNotBefore: terminalFailure?.retryNotBefore ?? null,
+          ...classifiedFailureFields,
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -5110,6 +5208,19 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           costUsd: turnUsage.costUsd,
           resultJson: {
             status: channelLost ? "failed" : terminal.status,
+            ...activityDiagnostics,
+            ...(failureDiagnostic ? { terminalSessionFailure: failureDiagnostic } : {}),
+            ...(failureDiagnostic && terminalSessionFailureClassified ? { terminalSessionFailureClassified: true } : {}),
+            ...(classifiedFailure?.errorFamily ? { errorFamily: classifiedFailure.errorFamily } : {}),
+            ...(classifiedFailure?.retryNotBefore
+              ? {
+                  retryNotBefore: classifiedFailure.retryNotBefore,
+                  transientRetryNotBefore: classifiedFailure.retryNotBefore,
+                  ...(classifiedFailure.errorFamily === "provider_quota"
+                    ? { providerQuotaRetryNotBefore: classifiedFailure.retryNotBefore }
+                    : {}),
+                }
+              : {}),
             stopReason: terminalStopReason,
             permissionMode: prepared.permissionMode,
             mode: prepared.mode,
@@ -5118,16 +5229,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             fastMode: prepared.fastMode,
             ...(terminalFailure?.providerHttpStatus !== undefined
               ? { providerHttpStatus: terminalFailure.providerHttpStatus }
-              : {}),
-            ...(terminalFailure?.errorFamily ? { errorFamily: terminalFailure.errorFamily } : {}),
-            ...(terminalFailure?.retryNotBefore
-              ? {
-                  retryNotBefore: terminalFailure.retryNotBefore,
-                  transientRetryNotBefore: terminalFailure.retryNotBefore,
-                  ...(terminalFailure.errorFamily === "provider_quota"
-                    ? { providerQuotaRetryNotBefore: terminalFailure.retryNotBefore }
-                    : {}),
-                }
               : {}),
             ...(turnUsage.usageDetail ? { usage: turnUsage.usageDetail } : {}),
             ...(turnUsage.cumulativeCostUsd != null
@@ -5265,7 +5366,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,
           clearSession: clearSession || timedOut,
-          resultJson: { phase },
+          resultJson: { phase, ...activityDiagnostics },
           summary: message,
         };
         // Return a typed failed completion so the coordinator settles for a cause
@@ -5404,7 +5505,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ) {
             // A matching warm entry closes through the warm store, which also
             // clears its idle timer and flushes its child stderr.
-            await closeWarmHandle({
+            runtimeStopConfirmed = await closeWarmHandle({
               handles: warmHandles,
               key: prepared.sessionKey,
               entry: existing,
@@ -5450,12 +5551,23 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // runs, so the host mints a `traceparent` for the provider spans, and the
         // per-task restore spans parent to `sandbox.syncBack`.
         syncBack: () => timedPhase("sync_back", async () => {
-          await runRuntimeSpan("sandbox.syncBack", async () => {
-            const restoreOutcome = await syncBackManagedHome(prepared);
-            if (!restoreOutcome.ok) {
-              workspaceRestoreFailureField = { workspaceRestoreFailure: restoreOutcome.code };
-            }
-          });
+          // A transport error or terminal narrative cannot authorize collecting
+          // mutable provider files. Require the owned close or local OS handle.
+          const stopped = runtimeStopConfirmed || (!prepared.processSessionBridge && capturedProcessExited(processIdentitySink?.localProcess));
+          try {
+            if (stopped) await ctx.onProviderStopped?.();
+          } catch {
+            // Match ACP's fail-soft teardown policy without describing this as
+            // a workspace restore failure or exposing paths from a raw error.
+            await recordTeardownError("instruction-collection", new Error("Instruction collection failed after provider stop. No instruction save is claimed."));
+          } finally {
+            await runRuntimeSpan("sandbox.syncBack", async () => {
+              const restoreOutcome = await syncBackManagedHome(prepared);
+              if (!restoreOutcome.ok) {
+                workspaceRestoreFailureField = { workspaceRestoreFailure: restoreOutcome.code };
+              }
+            });
+          }
         }),
         // The staging lease releases as the run's final act, AFTER the coordinator
         // reproduces the result, in the run root `finally` below. This step stays a

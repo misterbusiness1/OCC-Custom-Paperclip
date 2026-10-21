@@ -84,6 +84,9 @@ export const agentWakeupRequests = pgTable(
     issueCommentRequestIdempotencyUq: uniqueIndex("agent_wakeup_requests_issue_comment_request_uq")
       .on(table.companyId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} LIKE 'issue-comment-request:%'`),
+    chatCompletionIdempotencyUq: uniqueIndex("agent_wakeup_requests_chat_completion_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} LIKE 'chat-completion:%'`),
     companyPayloadIssueIdx: index("agent_wakeup_requests_company_payload_issue_idx").on(
       table.companyId,
       sql`(${table.payload} ->> 'issueId')`,

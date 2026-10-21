@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 
 function writeMessage(message) {
@@ -31,14 +32,17 @@ async function handleRequest(request) {
   }
   if (request.method === "session/new") return { sessionId: randomUUID() };
   if (request.method === "session/prompt") {
-    const typedFailureCanary = process.env.PAPERCLIP_ACPX_TYPED_FAILURE_CANARY;
+    const typedFailure = process.env.PAPERCLIP_ACPX_TYPED_FAILURE_FILE
+      ? JSON.parse(await readFile(process.env.PAPERCLIP_ACPX_TYPED_FAILURE_FILE, "utf8"))
+      : {};
+    const typedFailureCanary = typedFailure.title ?? process.env.PAPERCLIP_ACPX_TYPED_FAILURE_CANARY;
     if (typedFailureCanary) {
       if (!supportsTypedSessionFailure) {
         throw new Error(
           "client did not advertise typed session-failure support",
         );
       }
-      const configuredCategory = process.env.PAPERCLIP_ACPX_TYPED_FAILURE_CATEGORY;
+      const configuredCategory = typedFailure.category ?? process.env.PAPERCLIP_ACPX_TYPED_FAILURE_CATEGORY;
       const category = ["connection", "access", "limit", "service", "request", "unknown"].includes(configuredCategory)
         ? configuredCategory
         : "request";
@@ -48,6 +52,9 @@ async function handleRequest(request) {
         category,
         severity: "error",
         title: typedFailureCanary,
+        ...(typedFailure.details
+          ? { details: typedFailure.details }
+          : {}),
         actions: [],
       };
       writeMessage({

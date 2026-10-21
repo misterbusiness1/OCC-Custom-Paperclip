@@ -166,6 +166,8 @@ export type QueuedRunFacts = {
 
   resumeIntent: boolean;
   wakeCommentIdPresent: boolean;
+  /** Verified from current company-scoped parent/child state immediately before dispatch. */
+  isCompletedOnboardingHandoffWake?: boolean;
 
   /** True when the run's wake or retry reason asks for a continuation the parked-summary check must inspect. */
   continuationParkApplies: boolean;
@@ -651,10 +653,13 @@ export function decideQueuedRunStaleness(
     // A resume/comment marker records the earlier request, not authority to
     // execute an assigned task that has since closed. Non-assignee comment
     // notifications and verified approval-result delivery remain informational.
+    // Upstream (#14408): a completed onboarding handoff still reports back.
     terminalBypass:
       ((facts.resumeIntent || facts.wakeCommentIdPresent) &&
         facts.issueAssigneeAgentId !== facts.runAgentId) ||
-      facts.isVerifiedApprovalDecisionWakeForRequester === true,
+      facts.isVerifiedApprovalDecisionWakeForRequester === true ||
+      (facts.isCompletedOnboardingHandoffWake === true &&
+        facts.wakeReason === "issue_children_completed" && facts.issueStatus === "done"),
   });
   if (statusOutcome === "terminal") {
     return {

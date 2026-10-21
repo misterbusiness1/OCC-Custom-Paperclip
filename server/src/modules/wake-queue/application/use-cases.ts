@@ -12,6 +12,7 @@ import {
   isConfigurationIncompleteFailedRun,
   isWorkspaceValidationFailedRun,
   readNonEmptyString,
+  parseObject,
 } from "../domain/values.js";
 import type {
   AdmitWakeBehindIssueExecutionResult,
@@ -375,10 +376,20 @@ async function promoteDeferredWake(
   // after completion; it cannot revive a cancelled task. Other stale
   // continuations cannot revive assignee execution. Cancel before claiming promotion so
   // the compare-and-set still sees the deferred wake.
+  // Upstream (#14408): a completed onboarding first task still reports its
+  // result to the requester through the handoff wake.
+  const onboardingResultReport = currentIssue.status === "done" && currentIssue.originKind === "onboarding_first_task" &&
+    await ports.transaction.isCompletedOnboardingHandoffWake({ companyId: run.companyId, issueId: currentIssue.id,
+      agentId: workingCandidate.agentId, reason: workingCandidate.wakeReason ?? workingCandidate.reason,
+      contextSnapshot: workingCandidate.deferredContextSeed });
   // Fork (PR #104): a verified board decision still reaches the requester on
   // its closed issue, and an @mention of another agent is handed on only
   // when the owner's run ends (see decideTerminalIssueDeferredWake).
-  if (!shouldReopen && (currentIssue.status === "done" || currentIssue.status === "cancelled")) {
+  if (
+    !shouldReopen &&
+    !onboardingResultReport &&
+    (currentIssue.status === "done" || currentIssue.status === "cancelled")
+  ) {
     const wakeAgentIsAssignee = workingCandidate.agentId === currentIssue.assigneeAgentId;
     const isVerifiedApprovalDecisionForRequester =
       wakeAgentIsAssignee &&
@@ -876,8 +887,12 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         requestedByActorType: input.requestedByActorType,
         requestedByActorId: input.requestedByActorId,
       }));
+    // Each resolved card has its own immutable decision and continuation. Never
+    // merge it with comments or another card, in either arrival order.
+    const interactionReceipt = Boolean(input.contextSnapshot.interactionId || input.payload?.interactionId);
     const decision = decideWakeAdmission({
-      allowRunCoalescing: input.allowRunCoalescing,
+      allowRunCoalescing: interactionReceipt || parseObject(input.activeExecutionRun.contextSnapshot).interactionId
+        ? false : input.allowRunCoalescing,
       sameDurableActor,
       isSameExecutionAgent,
       shouldDeferFollowupWake,
@@ -929,7 +944,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     // existing deferred wake, so the coalesce path (the common path) never
     // pays for this query.
     const existingDeferred =
-      input.allowRunCoalescing === false
+      (interactionReceipt || input.allowRunCoalescing === false)
         ? null
         : await deps.reader.findExistingDeferredWake(scope, {
             companyId: input.companyId,
@@ -945,7 +960,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
               : {}),
           });
 
-    if (existingDeferred) {
+    if (existingDeferred && !existingDeferred.payload?.interactionId && !existingDeferred.deferredContext.interactionId) {
       const mergedDeferredContext = deps.helpers.mergeCoalescedContextSnapshot(
         existingDeferred.deferredContext,
         input.contextSnapshot,

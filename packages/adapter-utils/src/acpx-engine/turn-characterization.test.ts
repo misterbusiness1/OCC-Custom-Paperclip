@@ -227,7 +227,7 @@ describe("ACPX engine turn characterization", () => {
     runtimeSessionName: "runtime-session",
   };
 
-  it("passes exactly the six turn inputs to startTurn", async () => {
+  it("passes the turn inputs and terminal failure callback to startTurn", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     let captured: Record<string, unknown> | null = null;
@@ -276,9 +276,10 @@ describe("ACPX engine turn characterization", () => {
     const signal = input.signal as AbortSignal;
     expect(signal).toBeInstanceOf(AbortSignal);
     expect(signal.aborted).toBe(false);
-    // Exactly the six documented keys are threaded.
+    // Every adapter receives diagnostics, even without a failure classifier.
+    expect(input.onTerminalSessionFailure).toBeTypeOf("function");
     expect(Object.keys(input).sort()).toEqual(
-      ["handle", "mode", "requestId", "signal", "text", "timeoutMs"].sort(),
+      ["handle", "mode", "onTerminalSessionFailure", "requestId", "signal", "text", "timeoutMs"].sort(),
     );
   });
 
@@ -668,6 +669,54 @@ describe("ACPX engine turn characterization", () => {
     expect(genericResult.errorCode).toBe("acpx_turn_failed");
     expect(genericResult.errorFamily).toBeNull();
     expect(genericResult.retryNotBefore).toBeNull();
+  });
+
+  it("classifies a typed failure by message only when the adapter has no typed classifier", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const quotaTitle =
+      "Authentication required: 403 You’ve reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends.";
+    const typedLimitRuntime = () => turnRuntime({
+      onStartTurn: (turnInput) => {
+        const report = turnInput.onTerminalSessionFailure as (failure: { category: string; title?: string }) => void;
+        report({ category: "limit", title: quotaTitle });
+      },
+      events: async function* () {
+        yield { type: "done", stopReason: "failed" };
+      },
+      result: Promise.resolve({ status: "failed", error: new Error("ACP agent reported a terminal limit failure.") }),
+    }) as never;
+    const run = (execute: ReturnType<typeof createAcpxEngineExecutor>, runId: string) => execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    // kimi_local and other adapters without a typed classifier keep the
+    // fork's message classifier, so a typed Kimi quota still waits for reset.
+    const unclassified = await run(createAcpxEngineExecutor({
+      now: () => Date.parse("2030-04-22T16:00:00.000Z"),
+      createRuntime: typedLimitRuntime,
+    }), "run-typed-quota-no-classifier");
+    expect(unclassified).toMatchObject({
+      errorCode: "provider_quota",
+      errorFamily: "provider_quota",
+      retryNotBefore: "2030-04-22T21:00:00.000Z",
+    });
+
+    // An adapter classifier that declines (null) is a deliberate "not quota".
+    const declined = await run(createAcpxEngineExecutor({
+      now: () => Date.parse("2030-04-22T16:00:00.000Z"),
+      createRuntime: typedLimitRuntime,
+      classifyTerminalSessionFailure: () => null,
+    }), "run-typed-quota-declined");
+    expect(declined.errorCode).toBe("acpx_turn_failed");
+    expect(declined.errorFamily).toBeUndefined();
+    expect(declined.retryNotBefore).toBeUndefined();
   });
 
   it("computes usage the same way summarizeAcpxTurnUsage does for the event fallback", () => {

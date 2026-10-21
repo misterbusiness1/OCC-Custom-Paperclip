@@ -52,6 +52,12 @@ describe("normalizeIssueQueuedCommentQueue", () => {
     expect(queue?.heldForBoardReview?.map((held) => held.queueId)).toEqual(["held-1"]);
   });
 
+  it("retains the immutable response and fresh-turn requirement", () => {
+    const source = { kind: "interaction", interactionId: "approval-1", interactionKind: "request_confirmation", requiresFreshSession: true };
+    const normalized = normalizeIssueQueuedCommentQueue({ entries: [{ comment: comment("approval-1", "Accepted: Plan"), source,
+      canEdit: false, canDiscard: false }] }, "issue-1");
+    expect(normalized.entries[0]).toMatchObject({ source, canEdit: false, canDiscard: false });
+  });
   it("sorts, deduplicates, and drops malformed queue entries", () => {
     const queue = normalizeIssueQueuedCommentQueue(
       {

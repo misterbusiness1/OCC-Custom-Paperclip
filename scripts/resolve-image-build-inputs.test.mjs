@@ -25,7 +25,8 @@ for (const sourceRef of ["main", "fa821cc", "F".repeat(40), `${candidate}x`]) {
 }
 
 test("image workflows use resolved lowercase repositories and exact source provenance", () => {
-  for (const relative of ["../.github/workflows/docker.yml", "../.github/workflows/docker-cloud.yml"]) {
+  // Upstream v2026.1005.0 retired docker-cloud.yml (#13827).
+  for (const relative of ["../.github/workflows/docker.yml"]) {
     const workflow = readFileSync(new URL(relative, import.meta.url), "utf8");
     assert.match(workflow, /ref: \$\{\{ steps\.image-inputs\.outputs\.source_sha \}\}/);
     assert.match(workflow, /org\.opencontainers\.image\.revision=\$\{\{ steps\.image-inputs\.outputs\.source_sha \}\}/);

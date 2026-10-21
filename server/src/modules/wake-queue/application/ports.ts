@@ -181,6 +181,9 @@ export interface WakeQueueTransaction {
     commentIds: string[];
   }): Promise<boolean>;
   reopenIssue(input: { companyId: string; issueId: string; runId: string }): Promise<IssueSnapshot | null>;
+  /** Verifies a Done onboarding parent's completion wake against its own completed children. */
+  isCompletedOnboardingHandoffWake(input: { companyId: string; issueId: string; agentId: string;
+    reason: string | null; contextSnapshot: Record<string, unknown> }): Promise<boolean>;
   /**
    * Fork (PR #104): true when the wake is a board decision whose approval the
    * woken agent requested (approvals.requested_by_agent_id). Optional so a
