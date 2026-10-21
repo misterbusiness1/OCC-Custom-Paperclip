@@ -23,7 +23,8 @@ export function decideRevisionRecovery(input: {
   const result = (outcome: RevisionOutcome, action: "none" | "retry" | "escalate", blocker: string | null = null,
     nextFollowUpAt: string | null = null) => ({ outcome, action, blocker, nextFollowUpAt });
   if (input.status === "pending") return result("resubmitted", "none");
-  if (["approved", "rejected"].includes(input.status)) return result("disposed", "none");
+  if (["approved", "rejected", "cancelled"].includes(input.status)) return result("disposed", "none");
+  if (input.status !== "revision_requested") return result("unresolved", "none");
   if (input.blocker) return result("durable_blocker", "none", input.blocker);
   if (input.activeExecution) return result("unresolved", "none");
   if (!input.invokable) return result("unresolved", "escalate");

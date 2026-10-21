@@ -2,7 +2,7 @@
 
 The existing stranded-assignment sweep now also reconciles approval revisions. It uses the normal wake admission path for every adapter, including external adapters. It does not add a timer, change decisions, send messages, reassign tasks, or reopen completed tasks.
 
-A successful provider run is execution evidence only. Domain outcomes come from the same approval card: `pending` means resubmitted; `approved` or `rejected` means disposed. A persisted human interaction, named dependency, other pending approval, current human owner, future monitor, paused agent or recovery action is a durable blocker. Otherwise the revision remains unresolved.
+A successful provider run is execution evidence only. Domain outcomes come from the same approval card: `pending` means resubmitted; `approved`, `rejected`, or `cancelled` means disposed. A persisted human interaction, named dependency, other pending or revision-requested approval, current human owner, future monitor, paused agent or recovery action is a durable blocker. Otherwise the revision remains unresolved.
 
 ## Persistence and integration
 
@@ -31,3 +31,5 @@ For a stale revision, inspect the latest company-scoped outcome and attempt even
 No schema migration is required. Revert the revision-reconciliation call and the generic-sweep exclusion together to disable this behavior. Keep activity history and recovery actions for audit; dispose of board actions explicitly through the existing control plane. Reverting does not authorize another business action, production rollout, or approval decision.
 
 Source release qualification, independent exact-head review, staging, rollback snapshots and production board approval remain separate gates.
+
+A single visible requester-owned issue in `blocked` can recover through the verified approval decision wake when no other unresolved dependency, interaction, approval, recovery action, unblock descriptor, or operator hold remains. The wake keeps the normal ownership and state admission guards. Cancellation settles the revision without another reservation or intervention, including after exhaustion, and resolves only its own recovery actions.

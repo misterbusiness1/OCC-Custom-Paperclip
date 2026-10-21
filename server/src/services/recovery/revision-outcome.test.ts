@@ -10,10 +10,13 @@ describe("revision domain outcomes", () => {
   it("a successful no-op remains unresolved and requires follow-through", () => {
     expect(decideRevisionRecovery(base)).toMatchObject({ outcome: "unresolved", action: "retry" });
   });
-  it.each(["pending", "approved", "rejected"])("uses actual same-card %s status", status => {
+  it.each(["pending", "approved", "rejected", "cancelled"])("uses actual same-card %s status", status => {
     expect(decideRevisionRecovery({ ...base, status })).toMatchObject({
       outcome: status === "pending" ? "resubmitted" : "disposed", action: "none",
     });
+  });
+  it("never retries an unsupported non-revision state", () => {
+    expect(decideRevisionRecovery({ ...base, status: "unknown" })).toMatchObject({ outcome: "unresolved", action: "none" });
   });
   it("preserves a named human or dependency blocker without spending retry budget", () => {
     expect(decideRevisionRecovery({ ...base, blocker: "interaction:human-1", attemptCount: 3 }))

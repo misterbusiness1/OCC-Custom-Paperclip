@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agentWakeupRequests, agents, approvals, companies, createDb, heartbeatRuns, issueApprovals,
-  issueRecoveryActions, issueThreadInteractions, issues } from "@paperclipai/db";
+  issueRecoveryActions, issueRelations, issueThreadInteractions, issues } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "./helpers/embedded-postgres.js";
 import { revisionReconciliation } from "../services/recovery/revision-reconciliation.js";
 import { REVISION_ATTEMPT_ACTIVITY, REVISION_OUTCOME_ACTIVITY } from "../services/recovery/revision-outcome.js";
@@ -55,6 +55,87 @@ suite("durable adapter-independent revision reconciliation", () => {
       source: "automation", reason: "approval_revision_requested", status, payload: { issueId: x.issueId, approvalId: x.approvalId } });
     await revisionReconciliation(db, vi.fn(async () => null)).reconcile();
     expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(1);
+  });
+  it("does not reserve a cancelled card with no revision history", async () => {
+    const x = await seed(); const enqueue = vi.fn(async () => null);
+    await db.update(approvals).set({ status: "cancelled" }).where(eq(approvals.id, x.approvalId));
+    await revisionReconciliation(db, enqueue).reconcile();
+    expect(await events(x.approvalId)).toHaveLength(0);
+    expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(0);
+    expect(enqueue.mock.calls.filter(call => call[0] === x.agentId)).toHaveLength(0);
+  });
+  it.each([false, true])("settles cancellation without retrying or recreating exhausted intervention (%s)", async exhausted => {
+    const x = await seed(); const enqueue = vi.fn(async () => null);
+    await revisionReconciliation(db, enqueue).reconcile();
+    if (exhausted) {
+      for (let i = 0; i < 3; i++) {
+        await deferOldAttempts(x.approvalId);
+        await revisionReconciliation(db, enqueue).reconcile();
+      }
+      expect(await latest(x.approvalId)).toMatchObject({ outcome: "durable_blocker", attemptCount: 3 });
+    }
+    const before = await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY);
+    const callsBefore = enqueue.mock.calls.filter(call => call[0] === x.agentId).length;
+    await db.update(approvals).set({ status: "cancelled" }).where(eq(approvals.id, x.approvalId));
+    await deferOldAttempts(x.approvalId);
+    await revisionReconciliation(db, enqueue).reconcile();
+    await revisionReconciliation(db, enqueue).reconcile();
+    expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(before.length);
+    expect(enqueue.mock.calls.filter(call => call[0] === x.agentId)).toHaveLength(callsBefore);
+    expect(await latest(x.approvalId)).toMatchObject({ outcome: "disposed", blocker: null, nextFollowUpAt: null });
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, x.issueId));
+    expect(actions.filter(action => ["active", "escalated"].includes(action.status))).toHaveLength(0);
+  });
+  it("preserves unrelated recovery actions on cancellation", async () => {
+    const x = await seed();
+    await revisionReconciliation(db, vi.fn(async () => null)).reconcile();
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId: x.companyId, sourceIssueId: x.issueId,
+      kind: "stranded_assigned_issue", ownerType: "board", cause: "other_cause", fingerprint: "unrelated",
+      nextAction: "Preserve this action", status: "active" }).returning();
+    await db.update(approvals).set({ status: "cancelled" }).where(eq(approvals.id, x.approvalId));
+    await revisionReconciliation(db, vi.fn(async () => null)).reconcile();
+    const [after] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    expect(after).toEqual(action);
+    expect(await latest(x.approvalId)).toMatchObject({ outcome: "disposed", blocker: null });
+  });
+  it("recovers a requester-owned issue blocked solely on this revision once", async () => {
+    const x = await seed(); const enqueue = vi.fn(async () => null);
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, x.issueId));
+    await revisionReconciliation(db, enqueue).reconcile();
+    await revisionReconciliation(db, enqueue).reconcile();
+    const calls = enqueue.mock.calls.filter(call => call[0] === x.agentId);
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toMatchObject({ reason: "approval_revision_requested",
+      issueStateGuard: { statuses: ["todo", "in_progress", "blocked"], assigneeAgentId: x.agentId },
+      contextSnapshot: { approvalId: x.approvalId, approvalStatus: "revision_requested", issueId: x.issueId } });
+    expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(1);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, x.issueId));
+    expect(issue.status).toBe("blocked");
+  });
+  it.each(["dependency", "cancelled_dependency", "interaction", "approval", "owner", "unblock_descriptor"])("preserves blocked issue with unrelated %s", async kind => {
+    const x = await seed(); const enqueue = vi.fn(async () => null);
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, x.issueId));
+    if (kind === "dependency" || kind === "cancelled_dependency") {
+      const id = randomUUID();
+      await db.insert(issues).values({ id, companyId: x.companyId, title: "Required prerequisite", status: kind === "dependency" ? "todo" : "cancelled" });
+      await db.insert(issueRelations).values({ companyId: x.companyId, issueId: id, relatedIssueId: x.issueId, type: "blocks" });
+    } else if (kind === "interaction") {
+      await db.insert(issueThreadInteractions).values({ companyId: x.companyId, issueId: x.issueId,
+        kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee", payload: { title: "Human decision" } });
+    } else if (kind === "approval") {
+      const id = randomUUID();
+      await db.insert(approvals).values({ id, companyId: x.companyId, type: "request_board_approval", status: "revision_requested",
+        requestedByAgentId: x.agentId, payload: {}, decidedAt: new Date() });
+      await db.insert(issueApprovals).values({ companyId: x.companyId, issueId: x.issueId, approvalId: id });
+    } else if (kind === "unblock_descriptor") {
+      await db.update(issues).set({ unblockDescriptor: { owner: "board", action: "Authorize prerequisite" } }).where(eq(issues.id, x.issueId));
+    } else {
+      await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, x.issueId));
+    }
+    await revisionReconciliation(db, enqueue).reconcile();
+    expect(enqueue.mock.calls.filter(call => call[0] === x.agentId)).toHaveLength(0);
+    expect(await events(x.approvalId, REVISION_ATTEMPT_ACTIVITY)).toHaveLength(0);
+    expect(await latest(x.approvalId)).toMatchObject({ outcome: "durable_blocker" });
   });
   it("is wired into the existing sweep without a competing generic continuation", async () => {
     const x = await seed(); const enqueue = vi.fn(async () => null);
