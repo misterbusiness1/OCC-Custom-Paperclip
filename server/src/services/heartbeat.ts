@@ -550,6 +550,7 @@ import {
   type StrandedRecoveryNoticeSeed,
 } from "./recovery/stranded-notice.js";
 import { withRecoveryContext } from "./recovery/status-only-context.js";
+import { legacyDispositionRepairEnabled } from "./recovery/legacy-continuation.js";
 import {
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
   normalizeProviderQuotaAdapterResult,
@@ -27341,7 +27342,9 @@ export function heartbeatService(
           });
           if (!conversationSettled) {
             await handleIssueReviewPathDisposition(livenessRun);
-            if (livenessRun.runtimeMode !== "native") {
+            // Fork: legacy disposition repair is opt-in; with it off every
+            // run finishes through production's continuation and handoff.
+            if (livenessRun.runtimeMode !== "native" && legacyDispositionRepairEnabled()) {
               await recovery.reconcileLegacyContinuation(livenessRun.id);
             } else {
               await handleRunLivenessContinuation(livenessRun);

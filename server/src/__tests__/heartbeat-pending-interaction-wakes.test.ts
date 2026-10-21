@@ -444,6 +444,158 @@ describe("automatic readiness wakes while an interaction is pending", () => {
     expect(adapterState.sideEffects).toBe(3);
   });
 
+  it("fork default: delivers a same-blocker cycle exactly once with no disposition repair runs", async () => {
+    // Production's scenario, without the fake monitor re-arm: the overlay keeps
+    // the monitor armed itself, and with legacy disposition repair off (the fork
+    // default) no repair run follows the monitor or dependency runs.
+    const previousRepair = process.env.PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED;
+    delete process.env.PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED;
+    try {
+    const f = await seed({ interactionStatus: "answered" });
+    const svc = issueService(db);
+    const gate = deferred<void>();
+    adapterState.gate = gate.promise;
+    await scheduleFutureMonitor(f);
+    const dueAt = new Date(Date.now() - 1_000);
+    await db.update(issues).set({
+      status: "in_review",
+      monitorNextCheckAt: dueAt,
+    }).where(eq(issues.id, f.issueId));
+    await svc.update(f.blockerId, { status: "todo" });
+    await svc.update(f.blockerId, { status: "done" });
+
+    expect(await heartbeat.triggerIssueMonitor(f.issueId, {
+      actorType: "system",
+      actorId: "test-monitor-scheduler",
+      now: new Date(),
+    })).toMatchObject({ outcome: "triggered" });
+    await vi.waitFor(
+      () => expect(execute).toHaveBeenCalledTimes(1),
+      { timeout: 5_000 },
+    );
+    // Keep this fixture focused on dependency-ready generation dedup. The real
+    // canary maintains a pending approval; this smaller fixture uses an answered
+    // interaction, so move it out of review before finalization can schedule the
+    // unrelated review-path repair.
+    await db.update(issues).set({ status: "in_progress" })
+      .where(eq(issues.id, f.issueId));
+    const generationBefore = await svc.getById(f.blockerId);
+    await svc.update(f.blockerId, { status: "todo" });
+    const generationBetween = await svc.getById(f.blockerId);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await svc.update(f.blockerId, { status: "done" });
+    const generationAfter = await svc.getById(f.blockerId);
+    expect(generationBefore?.completedAt).toBeInstanceOf(Date);
+    expect(generationBetween?.completedAt).toBeNull();
+    expect(generationAfter?.completedAt).toBeInstanceOf(Date);
+    expect(generationAfter?.completedAt?.toISOString())
+      .not.toBe(generationBefore?.completedAt?.toISOString());
+    const beforeRelease = await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, f.companyId));
+    expect(beforeRelease.map((run) => ({
+      status: run.status,
+      wakeReason: (run.contextSnapshot as Record<string, unknown>)?.wakeReason,
+    }))).toEqual([{ status: "running", wakeReason: "issue_monitor_due" }]);
+
+    gate.resolve();
+    await heartbeat.drainActiveRunExecutions();
+    const finalRuns = await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, f.companyId));
+    expect(finalRuns.map((run) => ({
+      status: run.status,
+      wakeReason: (run.contextSnapshot as Record<string, unknown>)?.wakeReason,
+    }))).toEqual([{ status: "succeeded", wakeReason: "issue_monitor_due" }]);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(adapterState.sideEffects).toBe(1);
+    expect(finalRuns).toHaveLength(1);
+
+    // The monitor stays armed after its turn: a scheduled monitor owns the
+    // assignee's next automatic wake, so the same-blocker cycle is parked
+    // instead of opening a second run.
+    await db.update(issues).set({ status: "in_review" })
+      .where(eq(issues.id, f.issueId));
+    await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });
+    await db.update(issues).set({ status: "in_progress" })
+      .where(eq(issues.id, f.issueId));
+    await heartbeat.drainActiveRunExecutions();
+    const parkedRuns = await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, f.companyId));
+    expect(parkedRuns).toHaveLength(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(adapterState.sideEffects).toBe(1);
+    const parkedWakes = await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(parkedWakes.filter((wake) => wake.reason === "issue_monitor_pending"))
+      .toHaveLength(1);
+
+    // Once the monitor is no longer scheduled, the parked readiness signal is
+    // admitted exactly once.
+    await db.update(issues).set({ monitorNextCheckAt: null })
+      .where(eq(issues.id, f.issueId));
+    await db.update(issues).set({ status: "in_review" })
+      .where(eq(issues.id, f.issueId));
+    await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });
+    await db.update(issues).set({ status: "in_progress" })
+      .where(eq(issues.id, f.issueId));
+    await heartbeat.drainActiveRunExecutions();
+    const reconciledRuns = await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, f.companyId));
+    expect(reconciledRuns).toHaveLength(2);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(adapterState.sideEffects).toBe(2);
+    await db.update(issues).set({ status: "in_review" })
+      .where(eq(issues.id, f.issueId));
+    await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });
+    await heartbeat.drainActiveRunExecutions();
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(adapterState.sideEffects).toBe(2);
+
+    // Re-sending DONE is not a new dependency-ready generation. Exercise the
+    // real service/transaction path and prove both the persisted completion
+    // metadata and downstream execution count remain stable.
+    const consumedGeneration = await svc.getById(f.blockerId);
+    await svc.update(f.blockerId, { status: "done" });
+    const repeatedDoneGeneration = await svc.getById(f.blockerId);
+    expect(repeatedDoneGeneration?.completedAt?.toISOString())
+      .toBe(consumedGeneration?.completedAt?.toISOString());
+    await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });
+    await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });
+    await heartbeat.drainActiveRunExecutions();
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(adapterState.sideEffects).toBe(2);
+
+    const successorAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: successorAgentId,
+      companyId: f.companyId,
+      name: "Successor owner",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      permissions: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+    });
+    await db.update(issues).set({
+      assigneeAgentId: successorAgentId,
+      status: "in_review",
+    })
+      .where(eq(issues.id, f.issueId));
+    await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });
+    await db.update(issues).set({ status: "in_progress" })
+      .where(eq(issues.id, f.issueId));
+    await heartbeat.drainActiveRunExecutions();
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(adapterState.sideEffects).toBe(3);
+      const repairWakes = await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(repairWakes.filter((wake) => wake.reason === "issue_disposition_repair")).toHaveLength(0);
+    } finally {
+      if (previousRepair === undefined) delete process.env.PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED;
+      else process.env.PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED = previousRepair;
+    }
+  });
+
   it("still admits a due monitor and a fresh user comment", async () => {
     const f = await seed({ interactionStatus: "answered" });
     await scheduleFutureMonitor(f);

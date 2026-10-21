@@ -4,7 +4,7 @@ import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { executionRetryAccounting } from "../execution-recovery-attempt.js";
 import {
-  decideLegacyContinuation, legacyDispositionEpisode, legacyDispositionFingerprint,
+  decideLegacyContinuation, legacyDispositionEpisode, legacyDispositionFingerprint, legacyDispositionRepairEnabled,
   LEGACY_DISPOSITION_REPAIR_INSTRUCTION, type LegacyDispositionEpisode,
 } from "./legacy-continuation.js";
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
@@ -4242,6 +4242,7 @@ export function recoveryService(
   }
 
   async function reconcileLegacyContinuation(runId: string) {
+    if (!legacyDispositionRepairEnabled()) return "skipped" as const;
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1);
     if (!run || run.runtimeMode === "native" || run.status !== "succeeded") return "skipped" as const;
     const context = parseObject(run.contextSnapshot);
@@ -5249,7 +5250,9 @@ export function recoveryService(
         continue;
       }
 
-      if (latestRun?.status === "succeeded" && issue.status !== "in_review") {
+      // Fork: with legacy disposition repair off, fall through to the
+      // productive-work recovery production ran before the upgrade.
+      if (legacyDispositionRepairEnabled() && latestRun?.status === "succeeded" && issue.status !== "in_review") {
         const [source] = await db.select({ runtimeMode: heartbeatRuns.runtimeMode }).from(heartbeatRuns).where(eq(heartbeatRuns.id, latestRun.id)).limit(1);
         if (source?.runtimeMode !== "native") {
           if (await reconcileApprovedIssueContinuations(issue, agentId, latestRun, latestRun)) continue;
