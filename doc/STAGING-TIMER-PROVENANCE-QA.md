@@ -15,17 +15,20 @@ Configure a `process` adapter agent to run:
 }
 ```
 
-Initially set `runtimeConfig.heartbeat` to `{ "enabled": true, "intervalSec": 60,
+Initially set `runtimeConfig.heartbeat` to `{ "enabled": true, "intervalSec": 600,
 "wakeOnDemand": false }`. Create the explicitly named synthetic issue assigned
 to that agent in `in_progress` state. `wakeOnDemand: false` prevents the
 assignment itself from replacing the required scheduled-timer origin.
 
-After assignment has settled, enable `wakeOnDemand: true` before the first
-scheduled tick. Keep the agent paused during setup, then resume it; do not
-invoke an on-demand heartbeat. Recovery uses an automation wake, which is
-suppressed while `wakeOnDemand` is false. Increase `intervalSec` (for example,
-600) to leave time for recovery before a second timer can consume the marker.
-A second scheduled timer is not a recovery successor.
+Keep the agent paused during setup, then resume it without invoking an
+on-demand heartbeat. Leave `wakeOnDemand: false` until the first genuine timer
+has succeeded and its productive marker is persisted. Then, through the
+staging operator API, change only `wakeOnDemand` to `true`, preserving the other
+runtime settings. Recovery uses an automation wake, which is suppressed while
+`wakeOnDemand` is false. The 600-second timer interval leaves time for recovery
+before another timer can consume the marker. Do not enable on-demand wakes
+before the successful source exists: assignment recovery could otherwise run
+first. A second scheduled timer is not a recovery successor.
 
 The process adapter derives `PAPERCLIP_WAKE_REASON` from runtime context. Do not
 supply it in adapter `env` or a shell wrapper. Capture its value in stdout along
