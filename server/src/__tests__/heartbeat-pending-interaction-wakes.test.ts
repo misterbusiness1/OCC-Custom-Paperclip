@@ -445,9 +445,9 @@ describe("automatic readiness wakes while an interaction is pending", () => {
   });
 
   it("fork default: delivers a same-blocker cycle exactly once with no disposition repair runs", async () => {
-    // Production's scenario, without the fake monitor re-arm: the overlay keeps
-    // the monitor armed itself, and with legacy disposition repair off (the fork
-    // default) no repair run follows the monitor or dependency runs.
+    // Production's scenario, without the fake monitor re-arm: the fire consumes
+    // the monitor, and with legacy disposition repair off (the fork default) no
+    // repair run follows the monitor or dependency runs.
     const previousRepair = process.env.PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED;
     delete process.env.PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED;
     try {
@@ -509,27 +509,9 @@ describe("automatic readiness wakes while an interaction is pending", () => {
     expect(adapterState.sideEffects).toBe(1);
     expect(finalRuns).toHaveLength(1);
 
-    // The monitor stays armed after its turn: a scheduled monitor owns the
-    // assignee's next automatic wake, so the same-blocker cycle is parked
-    // instead of opening a second run.
-    await db.update(issues).set({ status: "in_review" })
-      .where(eq(issues.id, f.issueId));
-    await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });
-    await db.update(issues).set({ status: "in_progress" })
-      .where(eq(issues.id, f.issueId));
-    await heartbeat.drainActiveRunExecutions();
-    const parkedRuns = await db.select().from(heartbeatRuns)
-      .where(eq(heartbeatRuns.companyId, f.companyId));
-    expect(parkedRuns).toHaveLength(1);
-    expect(execute).toHaveBeenCalledTimes(1);
-    expect(adapterState.sideEffects).toBe(1);
-    const parkedWakes = await db.select().from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.companyId, f.companyId));
-    expect(parkedWakes.filter((wake) => wake.reason === "issue_monitor_pending"))
-      .toHaveLength(1);
-
-    // Once the monitor is no longer scheduled, the parked readiness signal is
-    // admitted exactly once.
+    // The monitor's fire consumed it and the woken run did not re-arm it, so
+    // no scheduled monitor parks the same-blocker cycle: the readiness signal
+    // is admitted exactly once.
     await db.update(issues).set({ monitorNextCheckAt: null })
       .where(eq(issues.id, f.issueId));
     await db.update(issues).set({ status: "in_review" })

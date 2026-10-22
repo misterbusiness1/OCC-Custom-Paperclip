@@ -11947,24 +11947,14 @@ export function heartbeatService(
       });
     }
 
-    // The fire must not consume the issue's continuation path. The woken run
-    // normally re-arms the monitor for the next check, but it can fail, be
-    // cancelled or crash before it does. Keeping the monitor armed here means
-    // a failed woken run still leaves a scheduled check behind instead of
-    // silently ending every future wake.
-    //
-    // The provider-quota monitor is the one exception: it is a server-owned
-    // one-shot device that hands over to the bounded retry chain, so it keeps
-    // the consume-on-fire behaviour.
+    // A fire consumes the monitor: it is a one-shot wake. The woken run re-arms
+    // it (with a new nextCheckAt) when it still needs another check. Keeping
+    // the monitor armed here made every monitor without bounds wake its agent
+    // forever, at the fallback cadence and regardless of what the woken run
+    // did. A woken run that fails before it can re-arm is covered by
+    // repairStrandedIssueMonitors, which re-arms only in that case.
     const isProviderQuotaRecoveryMonitor =
       monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME;
-    const fallbackNextCheckAt = isProviderQuotaRecoveryMonitor
-      ? null
-      : issueMonitorFallbackNextCheckAt({
-          triggeredAt: input.now,
-          scheduledNextCheckAt: claimed.monitorNextCheckAt,
-          lastTriggeredAt: claimed.monitorLastTriggeredAt,
-        });
 
     try {
       if (isProviderQuotaRecoveryMonitor) {
@@ -12065,7 +12055,6 @@ export function heartbeatService(
             policy,
             persistedPolicy: claimed.executionPolicy,
             triggeredAt: input.now,
-            fallbackNextCheckAt,
           }),
           updatedAt: new Date(),
         })
@@ -12083,7 +12072,6 @@ export function heartbeatService(
         details: {
           identifier: claimed.identifier,
           nextCheckAt: scheduledAtIso,
-          fallbackNextCheckAt: fallbackNextCheckAt?.toISOString() ?? null,
           lastTriggeredAt: input.now.toISOString(),
           attemptCount: nextAttemptCount,
           notes: claimed.monitorNotes ?? null,
@@ -12235,6 +12223,51 @@ export function heartbeatService(
     });
   }
 
+  /**
+   * True while a run for the issue is queued or running. A monitor must not
+   * fire into an issue that already has a live turn: the fire would only queue
+   * a second turn behind it (or coalesce into it) for the same wait.
+   */
+  function issueHasLiveRunSql() {
+    return sql`exists (
+      select 1 from ${heartbeatRuns}
+      where ${heartbeatRuns.companyId} = ${issues.companyId}
+        and ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issues.id}::text
+        and ${heartbeatRuns.status} in ('queued', 'running')
+    )`;
+  }
+
+  /**
+   * A monitor in the persisted state but without a schedule needs a repair
+   * only when nothing else owns the continuation:
+   * - "scheduled" without a `monitorNextCheckAt`: the schedule itself was lost;
+   * - "triggered": the fire consumed the monitor, so it is re-armed only when
+   *   the latest run for the issue since that fire ended without succeeding
+   *   (it failed, timed out, was interrupted or cancelled before it could
+   *   re-arm). A woken run that succeeded and did not re-arm decided there is
+   *   nothing left to watch, and re-arming it would wake the agent forever.
+   */
+  function strandedIssueMonitorNeedsRepairSql() {
+    return and(
+      sql`not ${issueHasLiveRunSql()}`,
+      or(
+        sql`${issues.executionState}->'monitor'->>'status' = 'scheduled'`,
+        and(
+          sql`${issues.executionState}->'monitor'->>'status' = 'triggered'`,
+          sql`${issues.monitorLastTriggeredAt} is not null`,
+          sql`(
+            select ${heartbeatRuns.status} from ${heartbeatRuns}
+            where ${heartbeatRuns.companyId} = ${issues.companyId}
+              and ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issues.id}::text
+              and ${heartbeatRuns.createdAt} >= ${issues.monitorLastTriggeredAt}
+            order by ${heartbeatRuns.createdAt} desc
+            limit 1
+          ) in ('failed', 'timed_out', 'interrupted', 'cancelled')`,
+        ),
+      ),
+    );
+  }
+
   async function tickDueIssueMonitors(now = new Date()) {
     const staleClaimThreshold = new Date(now.getTime() - 5 * 60 * 1000);
     const dueMonitors = await db
@@ -12253,6 +12286,8 @@ export function heartbeatService(
             isNull(issues.monitorWakeRequestedAt),
             lt(issues.monitorWakeRequestedAt, staleClaimThreshold),
           ),
+          // Stay due while a run for the issue is live; fire after it ends.
+          sql`not ${issueHasLiveRunSql()}`,
         ),
       )
       .orderBy(asc(issues.monitorNextCheckAt), asc(issues.updatedAt))
@@ -12281,6 +12316,7 @@ export function heartbeatService(
                 isNull(issues.monitorWakeRequestedAt),
                 lt(issues.monitorWakeRequestedAt, staleClaimThreshold),
               ),
+              sql`not ${issueHasLiveRunSql()}`,
             ),
           )
           .returning();
@@ -12339,7 +12375,7 @@ export function heartbeatService(
           sql`${issues.assigneeAgentId} is not null`,
           inArray(issues.status, ["in_progress", "in_review"]),
           sql`${issues.executionState}->'monitor' is not null`,
-          sql`${issues.executionState}->'monitor'->>'status' in ('triggered','scheduled')`,
+          strandedIssueMonitorNeedsRepairSql(),
         ),
       )
       .orderBy(asc(issues.updatedAt))
@@ -12372,11 +12408,27 @@ export function heartbeatService(
         nextCheckAt,
       });
 
-      // Only one writer may re-arm a given issue.
+      // Only one writer may re-arm a given issue, and only while the issue is
+      // still the one that was selected: open, assigned to the same agent, no
+      // new fire and no live run since the scan. An issue closed or reassigned
+      // in between must not get its monitor back (or a comment).
       const claimed = await db
         .update(issues)
         .set({ ...patch, updatedAt: now })
-        .where(and(eq(issues.id, row.id), isNull(issues.monitorNextCheckAt)))
+        .where(
+          and(
+            eq(issues.id, row.id),
+            isNull(issues.monitorNextCheckAt),
+            inArray(issues.status, ["in_progress", "in_review"]),
+            isNull(issues.assigneeUserId),
+            eq(issues.assigneeAgentId, row.assigneeAgentId!),
+            row.monitorLastTriggeredAt
+              ? eq(issues.monitorLastTriggeredAt, row.monitorLastTriggeredAt)
+              : isNull(issues.monitorLastTriggeredAt),
+            sql`${issues.executionState}->'monitor' is not null`,
+            strandedIssueMonitorNeedsRepairSql(),
+          ),
+        )
         .returning({ id: issues.id });
       if (!claimed.length) continue;
 
@@ -12388,11 +12440,13 @@ export function heartbeatService(
         body: [
           "Paperclip restored the scheduled monitor for this issue.",
           "",
-          "- The monitor fired but no next check was scheduled, so the issue had no continuation path.",
+          monitorState?.status === "triggered"
+            ? "- The monitor fired, but the woken run ended without succeeding before it could schedule the next check."
+            : "- The monitor had lost its schedule, so the issue had no continuation path.",
           `- Next check: ${nextCheckAt.toISOString()}`,
           `- Attempt count: ${String(patch.monitorAttemptCount ?? 0)}`,
           "",
-          "The monitor stays armed until it is explicitly re-armed or cleared.",
+          "The monitor fires once at that time. The woken run must re-arm it to keep watching.",
         ].join("\n"),
       });
 
