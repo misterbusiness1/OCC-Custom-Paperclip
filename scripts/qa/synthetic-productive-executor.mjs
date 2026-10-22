@@ -67,8 +67,31 @@ if (claimedIssue?.checkoutRunId !== runId || claimedIssue?.executionRunId !== ru
 }
 
 const comments = await request(`/api/issues/${issueId}/comments`);
-const hasProductiveMarker = Array.isArray(comments)
-  && comments.some((comment) => typeof comment?.body === "string" && comment.body.includes(marker));
+const productiveMarker = Array.isArray(comments)
+  ? comments.find((comment) => typeof comment?.body === "string" && comment.body.includes(marker))
+  : null;
+const hasProductiveMarker = Boolean(productiveMarker);
+const run = await request(`/api/heartbeat-runs/${runId}`);
+if (run.id !== runId || run.agentId !== issue.assigneeAgentId) {
+  throw new Error("Synthetic run does not match the checked-out agent");
+}
+if (!hasProductiveMarker) {
+  if (run.invocationSource !== "timer" || process.env.PAPERCLIP_WAKE_REASON !== "heartbeat_timer") {
+    throw new Error("First invocation must be a genuine timer with runtime heartbeat_timer");
+  }
+} else if (!productiveMarker.createdByRunId
+  || run.retryOfRunId !== productiveMarker.createdByRunId
+  || run.contextSnapshot?.source !== "issue.productive_terminal_continuation_recovery") {
+  throw new Error("Successor must recover the exact productive marker run; another timer is not a continuation");
+}
+console.log(JSON.stringify({
+  kind: "runtime-provenance",
+  runId,
+  wakeReason: process.env.PAPERCLIP_WAKE_REASON ?? null,
+  invocationSource: run.invocationSource,
+  retryOfRunId: run.retryOfRunId ?? null,
+  source: run.contextSnapshot?.source ?? null,
+}));
 
 if (!hasProductiveMarker) {
   await request(`/api/issues/${issueId}/comments`, {

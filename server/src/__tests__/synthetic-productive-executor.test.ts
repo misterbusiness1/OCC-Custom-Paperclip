@@ -15,7 +15,7 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
 });
 
-async function executeFixture(hasMarker: boolean, options: { checkoutStatus?: number; cwd?: string } = {}) {
+async function executeFixture(hasMarker: boolean, options: { checkoutStatus?: number; cwd?: string; secondTimer?: boolean; missingWakeReason?: boolean } = {}) {
   const requests: Array<{ method: string; url: string; body: string; runId: string | undefined }> = [];
   const server = createServer((request, response) => {
     let body = "";
@@ -39,7 +39,15 @@ async function executeFixture(hasMarker: boolean, options: { checkoutStatus?: nu
               executionRunId: "22222222-2222-4222-8222-222222222222",
             }));
       } else if (request.url?.endsWith("/comments") && request.method === "GET") {
-        response.end(JSON.stringify(hasMarker ? [{ body: "[synthetic-timer-provenance] productive terminal marker" }] : []));
+        response.end(JSON.stringify(hasMarker ? [{ body: "[synthetic-timer-provenance] productive terminal marker", createdByRunId: "source-run" }] : []));
+      } else if (request.url?.startsWith("/api/heartbeat-runs/")) {
+        response.end(JSON.stringify({
+          id: "22222222-2222-4222-8222-222222222222",
+          agentId: "33333333-3333-4333-8333-333333333333",
+          invocationSource: hasMarker && !options.secondTimer ? "automation" : "timer",
+          retryOfRunId: hasMarker && !options.secondTimer ? "source-run" : null,
+          contextSnapshot: hasMarker && !options.secondTimer ? { source: "issue.productive_terminal_continuation_recovery" } : {},
+        }));
       } else if (request.url === `/api/issues/${issueId}` && request.method === "GET") {
         response.end(JSON.stringify({ id: issueId, status: "in_progress", assigneeAgentId: "33333333-3333-4333-8333-333333333333" }));
       } else {
@@ -60,6 +68,7 @@ async function executeFixture(hasMarker: boolean, options: { checkoutStatus?: nu
         PAPERCLIP_API_URL: `http://127.0.0.1:${address.port}`,
         PAPERCLIP_API_KEY: "synthetic-token",
         PAPERCLIP_RUN_ID: "22222222-2222-4222-8222-222222222222",
+        PAPERCLIP_WAKE_REASON: options.missingWakeReason ? "" : "heartbeat_timer",
       },
     });
     let stdout = "";
@@ -109,6 +118,20 @@ describe("synthetic productive executor", () => {
 
     expect(result).toMatchObject({ code: 0, stderr: "" });
     expect(result.stdout).toContain("leaving issue in progress");
+  });
+
+  it("rejects a second timer instead of claiming recovery completion", async () => {
+    const { requests, result } = await executeFixture(true, { secondTimer: true });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("another timer is not a continuation");
+    expect(requests.some((request) => request.method === "PATCH")).toBe(false);
+  });
+
+  it("rejects missing runtime timer provenance before writing a marker", async () => {
+    const { requests, result } = await executeFixture(false, { missingWakeReason: true });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("runtime heartbeat_timer");
+    expect(requests.some((request) => request.url.endsWith("/comments") && request.method === "POST")).toBe(false);
   });
 
   it("fails closed when a different run already owns the issue", async () => {

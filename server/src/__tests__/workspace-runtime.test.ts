@@ -5346,7 +5346,9 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       )
       .digest("hex");
 
-    const staleProcess = spawn(resolveShell(), ["-lc", serviceCommand], {
+    // dash retains a shell parent unless exec is explicit; the assertion below
+    // must compare the actual listener PID, independent of the selected shell.
+    const staleProcess = spawn(resolveShell(), ["-lc", `exec ${serviceCommand}`], {
       cwd: workspaceRoot,
       env: {
         ...process.env,
