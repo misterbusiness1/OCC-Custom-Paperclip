@@ -22,6 +22,14 @@ export interface LegacyDispositionEpisode {
   attempt: number;
   maxAttempts: number;
 }
+/** Fork rule (owner decision 2026-10-21): upstream repairs every non-native
+ * successful run that ends without a recorded disposition (up to two extra
+ * runs, then the issue is blocked and escalated). Production never did that,
+ * so it stays off unless this switch is on. With it off, run finalization and
+ * the recovery scan follow production's pre-upgrade paths. */
+export function legacyDispositionRepairEnabled(): boolean {
+  return process.env.PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED === "true";
+}
 export const LEGACY_DISPOSITION_REPAIR_MAX_ATTEMPTS = 2;
 export const LEGACY_DISPOSITION_REPAIR_INSTRUCTION =
   "The previous task run ended without a recorded disposition or an owned next execution path. " +

@@ -9,12 +9,13 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agentFileStore, fileHash, inspectAgentFile, snapshotAgentFiles, MAX_AGENT_FILE_BYTES, MAX_AGENT_DIRECTORY_BYTES, MAX_AGENT_DIRECTORY_ENTRIES } from "../services/agent-file-store.js";
+import { adoptLegacyAgentHomeNotes, agentFileStore, fileHash, inspectAgentFile, readLegacyNoteFile, snapshotAgentFiles, MAX_AGENT_FILE_BYTES, MAX_AGENT_DIRECTORY_BYTES, MAX_AGENT_DIRECTORY_ENTRIES } from "../services/agent-file-store.js";
 import { agents, companies, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns, environmentLeases, environments, agentInstructionWorkingCopies, agentInstructionRevisions, agentInstructionHeads, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionWorkingCopyService, instructionWorkingCopyGuidance } from "../services/agent-instruction-working-copies.js";
 import { resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
+import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-context.js";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
@@ -430,6 +431,99 @@ describe("persistent agent directories", () => {
     expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe("new directory contents");
     await expect(revisions.commit({ ...target(), entryFile, content: "stale legacy run", baseRevisionId: id, source: "cleanup" }, board())).rejects.toMatchObject({ status: 409 });
     expect(await db.select().from(agentInstructionRevisions).where(eq(agentInstructionRevisions.agentId, agentId))).toHaveLength(1);
+  });
+
+  it("copies notes from the former agent home once at adoption, without overwriting or following links", async () => {
+    const legacyHome = resolveDefaultAgentWorkspaceDir(agentId);
+    await fs.mkdir(path.join(legacyHome, "memory"), { recursive: true });
+    await fs.mkdir(path.join(legacyHome, "life", "areas"), { recursive: true });
+    await fs.writeFile(path.join(legacyHome, "memory", "2026-10-20.md"), "## Today's Plan\nship it\n");
+    await fs.writeFile(path.join(legacyHome, "MEMORY.md"), "# Long-term memory\n");
+    await fs.writeFile(path.join(legacyHome, "memory", "keep.md"), "legacy copy");
+    await fs.writeFile(path.join(legacyHome, "life", "areas", "ops.md"), "durable fact");
+    await fs.writeFile(path.join(legacyHome, "task-only.txt"), "not a note");
+    await fs.writeFile(path.join(home, "outside.txt"), "outside");
+    await fs.symlink(path.join(home, "outside.txt"), path.join(legacyHome, "memory", "linked.md"));
+    await fs.mkdir(path.join(root, "memory"), { recursive: true });
+    await fs.writeFile(path.join(root, "memory", "keep.md"), "agent directory copy");
+    // Entries that cannot be copied are skipped, never fatal to the run.
+    await fs.mkdir(path.join(legacyHome, "memory", ".paperclip-runtime"), { recursive: true });
+    await fs.writeFile(path.join(legacyHome, "memory", ".paperclip-runtime", "state"), "reserved");
+    await fs.writeFile(path.join(legacyHome, "memory", "back\\slash.md"), "unsafe name");
+    await fs.mkdir(path.join(legacyHome, "memory", "clash"), { recursive: true });
+    await fs.writeFile(path.join(legacyHome, "memory", "clash", "inner.md"), "folder on one side");
+    await fs.writeFile(path.join(root, "memory", "clash"), "file on the other");
+    await fs.mkdir(path.join(home, "outside-tree"), { recursive: true });
+    await fs.writeFile(path.join(home, "outside-tree", "secret.md"), "outside");
+    await fs.symlink(path.join(home, "outside-tree"), path.join(legacyHome, "memory", "linked-dir"));
+
+    const first = await run();
+    await expect(fs.stat(path.join(first.localRoot, "memory", ".paperclip-runtime"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(path.join(first.localRoot, "memory", "back\\slash.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.lstat(path.join(first.localRoot, "memory", "linked-dir"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(path.join(first.localRoot, "memory", "clash"), "utf8")).toBe("file on the other");
+    expect(await fs.readFile(path.join(first.localRoot, "memory", "2026-10-20.md"), "utf8")).toBe("## Today's Plan\nship it\n");
+    expect(await fs.readFile(path.join(first.localRoot, "life", "areas", "ops.md"), "utf8")).toBe("durable fact");
+    expect(await fs.readFile(path.join(first.localRoot, "MEMORY.md"), "utf8")).toBe("# Long-term memory\n");
+    expect(await fs.readFile(path.join(first.localRoot, "memory", "keep.md"), "utf8")).toBe("agent directory copy");
+    await expect(fs.lstat(path.join(first.localRoot, "memory", "linked.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(path.join(first.localRoot, "task-only.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(path.join(legacyHome, "memory", "keep.md"), "utf8")).toBe("legacy copy");
+
+    // Adoption happens once: later changes in the former home are not copied again.
+    await fs.rm(path.join(first.localRoot, "memory", "2026-10-20.md"));
+    expect((await copies.collectStopped({ companyId, runId: first.runId }))?.state).toBe("saved");
+    await fs.writeFile(path.join(legacyHome, "memory", "2026-10-21.md"), "later");
+    copies = agentInstructionWorkingCopyService(db);
+    const next = await run();
+    await expect(fs.stat(path.join(next.localRoot, "memory", "2026-10-20.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(path.join(next.localRoot, "memory", "2026-10-21.md"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("skips a linked notes folder in the former agent home", async () => {
+    const legacyHome = resolveDefaultAgentWorkspaceDir(agentId);
+    await fs.mkdir(path.join(home, "outside-life"), { recursive: true });
+    await fs.writeFile(path.join(home, "outside-life", "secret.md"), "outside");
+    await fs.mkdir(legacyHome, { recursive: true });
+    await fs.symlink(path.join(home, "outside-life"), path.join(legacyHome, "life"));
+    const first = await run();
+    await expect(fs.stat(path.join(first.localRoot, "life"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reads a former-home note only when the opened file is the expected regular file", async () => {
+    const dir = await fs.mkdtemp(path.join(home, "legacy-read-"));
+    const real = await fs.realpath(dir);
+    await fs.writeFile(path.join(dir, "note.md"), "note");
+    expect((await readLegacyNoteFile(path.join(dir, "note.md"), path.join(real, "note.md"), 1024))?.toString()).toBe("note");
+    // Over the remaining budget.
+    expect(await readLegacyNoteFile(path.join(dir, "note.md"), path.join(real, "note.md"), 3)).toBeNull();
+    // A hard link to a file outside the notes.
+    await fs.writeFile(path.join(home, "outside-hard.txt"), "outside");
+    await fs.link(path.join(home, "outside-hard.txt"), path.join(dir, "hard.md"));
+    expect(await readLegacyNoteFile(path.join(dir, "hard.md"), path.join(real, "hard.md"), 1024)).toBeNull();
+    // A named pipe must neither block the open nor be read.
+    await execFile("mkfifo", [path.join(dir, "pipe.md")]);
+    expect(await readLegacyNoteFile(path.join(dir, "pipe.md"), path.join(real, "pipe.md"), 1024)).toBeNull();
+    // A parent folder swapped for a link: the last component is a plain file,
+    // but the opened file is not the one under the notes folder.
+    await fs.mkdir(path.join(home, "outside-parent"), { recursive: true });
+    await fs.writeFile(path.join(home, "outside-parent", "secret.md"), "outside");
+    await fs.symlink(path.join(home, "outside-parent"), path.join(dir, "swapped"));
+    expect(await readLegacyNoteFile(path.join(dir, "swapped", "secret.md"), path.join(real, "swapped", "secret.md"), 1024)).toBeNull();
+  });
+
+  it("stops copying former-home notes at the copy budget and keeps the run startable", async () => {
+    const legacyHome = resolveDefaultAgentWorkspaceDir(agentId);
+    await fs.mkdir(path.join(legacyHome, "memory"), { recursive: true });
+    for (const day of ["01", "02", "03", "04"]) await fs.writeFile(path.join(legacyHome, "memory", `2026-10-${day}.md`), "0123456789");
+    const target = await fs.mkdtemp(path.join(home, "budget-target-"));
+    await adoptLegacyAgentHomeNotes(target, agentId, { maxBytes: 25, maxEntries: 100 });
+    expect(await fs.readdir(path.join(target, "memory"))).toHaveLength(2);
+    const byCount = await fs.mkdtemp(path.join(home, "budget-count-"));
+    // One entry for the memory folder itself, then two files.
+    await adoptLegacyAgentHomeNotes(byCount, agentId, { maxBytes: 1024, maxEntries: 3 });
+    expect(await fs.readdir(path.join(byCount, "memory"))).toHaveLength(2);
+    expect(await run()).toBeTruthy();
   });
 
   it("ordinary file edits leave the loaded instruction digest unchanged", async () => {

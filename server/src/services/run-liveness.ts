@@ -83,6 +83,14 @@ const MANAGER_REVIEW_RE =
   /\b(?:manager review|human review|manual review|security review|escalate|production deploy|deploy(?:ing)? to production|deploy(?:ing)? to prod|prod deploy|production access|rotate .{0,40}\b(?:secret|key|token)|delete .{0,40}\bproduction|security-sensitive|credentialed operation|budget-sensitive|cost approval|spend approval)\b/i;
 const RUNNABLE_RE =
   /\b(?:(?:run|rerun|execute)\s+(?:pnpm|npm|yarn|bun|vitest|jest|pytest|cargo|go test|curl|tests?|typecheck|build|lint|package|verification)|(?:inspect|check|review|look|investigate|analy[sz]e|open|read|start|begin|continue|implement|fix|test|update|create|add|write|verify|validate|report)\b)/i;
+// Fork rule (owner decision 2026-10-21): production exempts plan, research,
+// report and similar document tasks by title or description, not only by the
+// explicit planning work mode upstream introduced. Existing tasks are all in
+// "standard" mode, so without this their document runs ending in "Next steps"
+// would draw extra plan-only continuation runs.
+const PLAN_TASK_TITLE_RE = /\b(?:plan|planning|analysis|investigation|research|report|proposal|design doc|write-?up)\b/i;
+const PLAN_TASK_DESCRIPTION_RE =
+  /\b(?:create|write|produce|draft|update|revise|prepare)\s+(?:a\s+|the\s+)?(?:plan|analysis|investigation|research report|report|proposal|design doc|write-?up)\b/i;
 const UNMANAGED_BACKGROUND_TASK_STOP_REASON = "unmanaged_background_task_stopped";
 const UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON = "unmanaged background task stopped; no durable live path";
 
@@ -182,6 +190,12 @@ export function looksLikePlanningOnly(input: RunLivenessClassificationInput) {
   const text = actionabilityText(input);
   if (!text) return false;
   return PLANNING_ONLY_RE.test(text) || NEXT_STEPS_RE.test(text) || /^\s*next(?: steps?| action)?\s*:/im.test(text);
+}
+
+export function isPlanningOrDocumentTask(issue: RunLivenessIssueInput | null | undefined) {
+  if (!issue) return false;
+  if (PLAN_TASK_TITLE_RE.test(issue.title)) return true;
+  return PLAN_TASK_DESCRIPTION_RE.test(issue.description ?? "");
 }
 
 function normalizeEvidence(evidence: Partial<RunLivenessEvidenceInput> | null | undefined): RunLivenessEvidenceInput {
@@ -312,9 +326,12 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
   const issueStatus = input.issue?.status ?? null;
   const usefulOutput = hasUsefulOutput(input);
   const concreteEvidence = hasConcreteActionEvidence(evidence);
-  // This is a diagnostic only. Requested deliverables (including plans) do not
-  // select a work mode; only the persisted field grants the planning exemption.
-  const planExempt = input.issue?.workMode === "planning" || evidence.planDocumentRevisionsCreated > 0;
+  // Explicit planning mode, a saved plan revision, or (fork rule, see
+  // isPlanningOrDocumentTask) a task whose title or description asks for a
+  // plan or document grants the planning exemption.
+  const planExempt = input.issue?.workMode === "planning" ||
+    isPlanningOrDocumentTask(input.issue) ||
+    evidence.planDocumentRevisionsCreated > 0;
   const lastUsefulActionAt = concreteEvidence ? evidence.latestEvidenceAt : null;
 
   const output = (state: RunLivenessState, reason: string, nextAction: string | null = null): RunLivenessClassification => ({
@@ -358,7 +375,7 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
   }
 
   if (planExempt && usefulOutput) {
-    return output("advanced", "Explicit planning mode or a saved plan revision is exempt from plan-only classification");
+    return output("advanced", "Planning mode, a saved plan revision or a planning/document task is exempt from plan-only classification");
   }
 
   if (looksLikePlanningOnly(input) || nextAction) {

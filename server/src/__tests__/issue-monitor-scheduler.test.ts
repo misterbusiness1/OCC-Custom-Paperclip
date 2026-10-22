@@ -151,7 +151,13 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     agentStatus?: "active" | "paused";
     issueStatus?: "in_progress" | "in_review";
     monitorAttemptCount?: number;
+    monitorLastTriggeredAt?: Date | null;
     monitor?: Record<string, unknown>;
+    /**
+     * Reproduce a monitor that fired without a following check: the persisted
+     * monitor state says "triggered" and no schedule is left on the row.
+     */
+    stranded?: boolean;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -160,12 +166,14 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     const monitorAttemptCount = input?.monitorAttemptCount ?? 0;
+    const monitorLastTriggeredAt = input?.monitorLastTriggeredAt ?? null;
     const monitor = {
       nextCheckAt: nextCheckAt.toISOString(),
       notes: "Check deploy",
       scheduledBy: "assignee",
       ...(input?.monitor ?? {}),
     };
+    const stranded = input?.stranded === true;
 
     await db.insert(companies).values({
       id: companyId,
@@ -210,7 +218,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         mode: "normal",
         commentRequired: true,
         stages: [],
-        monitor,
+        ...(stranded ? {} : { monitor }),
       },
       executionState: {
         status: "idle",
@@ -223,9 +231,9 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         lastDecisionId: null,
         lastDecisionOutcome: null,
         monitor: {
-          status: "scheduled",
-          nextCheckAt: nextCheckAt.toISOString(),
-          lastTriggeredAt: null,
+          status: stranded ? "triggered" : "scheduled",
+          nextCheckAt: stranded ? null : nextCheckAt.toISOString(),
+          lastTriggeredAt: monitorLastTriggeredAt?.toISOString() ?? null,
           attemptCount: monitorAttemptCount,
           notes: "Check deploy",
           scheduledBy: "assignee",
@@ -238,7 +246,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
           clearReason: null,
         },
       },
-      monitorNextCheckAt: nextCheckAt,
+      monitorNextCheckAt: stranded ? null : nextCheckAt,
+      monitorLastTriggeredAt,
       monitorAttemptCount,
       monitorNotes: "Check deploy",
       monitorScheduledBy: "assignee",
@@ -247,7 +256,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     return { companyId, agentId, issueId, nextCheckAt };
   }
 
-  it("triggers due issue monitors once and clears the one-shot schedule", async () => {
+  it("triggers due issue monitors once and keeps the monitor armed for the next check", async () => {
     const { issueId, agentId } = await seedFixture();
     const heartbeat = heartbeatService(db);
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
@@ -259,12 +268,21 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(duplicateResult.enqueued).toBe(0);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
-    expect(issue.monitorNextCheckAt).toBeNull();
+    // The fire must not consume the schedule: the woken run may fail before it
+    // re-arms the monitor, and the issue still needs a future check.
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(
+      new Date(tickAt.getTime() + 30 * 60 * 1000).toISOString(),
+    );
     expect(issue.monitorAttemptCount).toBe(1);
     expect(issue.monitorLastTriggeredAt?.toISOString()).toBe(tickAt.toISOString());
-    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor ?? null).toBeNull();
+    const persistedMonitor = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor ?? null;
+    expect(persistedMonitor).toMatchObject({
+      notes: "Check deploy",
+      scheduledBy: "assignee",
+    });
     expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
-      status: "triggered",
+      status: "scheduled",
+      nextCheckAt: issue.monitorNextCheckAt?.toISOString(),
       lastTriggeredAt: tickAt.toISOString(),
       attemptCount: 1,
     });
@@ -283,6 +301,93 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(activityLog.entityId, issueId))
       .then((rows) => rows.map((row) => row.action));
     expect(activity.filter((action) => action === "issue.monitor_triggered")).toHaveLength(1);
+  });
+
+  it("keeps a scheduled check when the woken run fails to re-arm the monitor", async () => {
+    const { issueId, agentId } = await seedFixture();
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    await heartbeat.tickTimers(tickAt);
+
+    // The woken run died before it could re-arm the monitor: nothing was
+    // written back to the issue by the agent.
+    const afterWake = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    const fallbackNextCheckAt = afterWake.monitorNextCheckAt;
+    expect(fallbackNextCheckAt).not.toBeNull();
+
+    // The next tick must still pick the issue up: the continuation path
+    // survived the failed woken run.
+    const secondTickAt = new Date(fallbackNextCheckAt!.getTime() + 1_000);
+    const nextTick = await heartbeat.tickTimers(secondTickAt);
+    expect(nextTick.enqueued).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorAttemptCount).toBe(2);
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(
+      new Date(secondTickAt.getTime() + 30 * 60 * 1000).toISOString(),
+    );
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows);
+    expect(wakeups).toHaveLength(2);
+  });
+
+  it("re-arms the monitor with the cadence the assignee chose", async () => {
+    const { issueId } = await seedFixture({
+      monitorLastTriggeredAt: new Date("2026-04-11T10:30:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    await heartbeat.tickTimers(tickAt);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    // The previous cycle ran from 10:30 to the 12:30 check: two hours.
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(
+      new Date(tickAt.getTime() + 2 * 60 * 60 * 1000).toISOString(),
+    );
+  });
+
+  it("re-arms stranded monitors that lost their schedule and says so on the issue", async () => {
+    const { issueId } = await seedFixture({
+      stranded: true,
+      monitorLastTriggeredAt: new Date("2026-04-11T12:30:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    const result = await heartbeat.tickTimers(tickAt);
+
+    expect(result.enqueued).toBe(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).not.toBeNull();
+    expect(issue.monitorNextCheckAt!.getTime()).toBeGreaterThan(tickAt.getTime());
+    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor).toMatchObject({
+      notes: "Check deploy",
+    });
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+    });
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .then((rows) => rows);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("restored the scheduled monitor");
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.map((row) => row.action));
+    expect(activity).toContain("issue.monitor_rearmed");
   });
 
   it.each(["unknown", "exhausted"] as const)("does not replay a quota monitor with %s execution evidence", async (kind) => {
@@ -307,8 +412,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const { companyId, issueId, agentId: assigneeAgentId } = await seedFixture({
       issueStatus: "in_review",
       monitor: { serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, externalRef: sourceRunId },
-    });
-    const participantAgentId = randomUUID();
+    });    const participantAgentId = randomUUID();
     await db.insert(agents).values({
       id: participantAgentId,
       companyId,
@@ -378,6 +482,15 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(heartbeatRuns.agentId, participantAgentId));
     expect(participantRuns).toHaveLength(2);
     expect(participantRuns.find((run) => run.id === scheduled.id)?.errorCode).not.toBe("issue_assignee_changed");
+
+    // The provider-quota monitor is the documented exception: it is consumed by
+    // its fire because its continuation is the bounded retry chain, not
+    // another scheduled check.
+    const quotaIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(quotaIssue.monitorNextCheckAt).toBeNull();
+    expect(parseIssueExecutionState(quotaIssue.executionState)?.monitor).toMatchObject({
+      status: "triggered",
+    });
   });
 
   it("lets the board trigger a scheduled issue monitor immediately", async () => {
@@ -394,10 +507,16 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(result.outcome).toBe("triggered");
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
-    expect(issue.monitorNextCheckAt).toBeNull();
+    // A board-triggered check must not consume the monitor either: the woken
+    // run can fail before it re-arms the monitor.
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(
+      new Date(triggeredAt.getTime() + 30 * 60 * 1000).toISOString(),
+    );
     expect(issue.monitorLastTriggeredAt?.toISOString()).toBe(triggeredAt.toISOString());
     expect(issue.monitorAttemptCount).toBe(1);
-    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor ?? null).toBeNull();
+    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor).toMatchObject({
+      notes: "Check deploy",
+    });
 
     const wakeup = await db
       .select()

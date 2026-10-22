@@ -1771,17 +1771,29 @@ export function builtInAgentService(db: Db) {
         assertAdapterAllowed(definition, adapterType);
         patch.adapterType = adapterType;
         const resolvedAdapterConfig = resolvedInput.adapterConfig ?? existing.adapterConfig;
+        // Preserve the stored environment map when the resolved config does
+        // not set one. This reconciliation used to replace the whole adapter
+        // config, so an agent's credential bindings disappeared on a routine
+        // reconcile (2026-08-28 and 2026-09-25 on our instance) with no
+        // error raised. The service merges the map per key as well, so the
+        // binding survives either way; this keeps the intent explicit at the
+        // path that dropped them.
+        const storedEnv = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig.env : null;
+        const resolvedEnv = isPlainRecord(resolvedAdapterConfig) ? resolvedAdapterConfig.env : null;
+        const effectiveAdapterConfig = isPlainRecord(storedEnv) && !isPlainRecord(resolvedEnv)
+          ? { ...resolvedAdapterConfig, env: storedEnv }
+          : resolvedAdapterConfig;
         const recoveredBinding = adapterType === existing.adapterType
           ? await instructionsSvc.resolvePersistedBundleBinding(existing as Agent)
           : null;
-        if (recoveredBinding && isPlainRecord(resolvedAdapterConfig)) {
+        if (recoveredBinding && isPlainRecord(effectiveAdapterConfig)) {
           const currentConfig = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {};
           const managedSkillSync = currentConfig.paperclipSkillSync === undefined
             ? {}
             : { paperclipSkillSync: currentConfig.paperclipSkillSync };
-          patch.adapterConfig = { ...resolvedAdapterConfig, ...managedSkillSync, ...recoveredBinding };
+          patch.adapterConfig = { ...effectiveAdapterConfig, ...managedSkillSync, ...recoveredBinding };
         } else {
-          patch.adapterConfig = resolvedAdapterConfig;
+          patch.adapterConfig = effectiveAdapterConfig;
         }
       }
       if (!existingPendingApproval && resolvedInput.budgetMonthlyCents !== undefined) {

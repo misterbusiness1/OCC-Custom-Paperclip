@@ -73,6 +73,20 @@ const PENDING_STATUS: IssueExecutionState["status"] = "pending";
 const CHANGES_REQUESTED_STATUS: IssueExecutionState["status"] = "changes_requested";
 const MONITOR_INVALID_MESSAGE = "Monitor can only be scheduled on issues assigned to an agent in in_progress or in_review";
 const MONITOR_BOUNDS_EXHAUSTED_MESSAGE = "Monitor bounds are already exhausted";
+
+/**
+ * A scheduled issue monitor is the issue's continuation path: the woken run is
+ * expected to re-arm it for the next check. When that run fails, is cancelled
+ * or crashes before it re-arms, the fire must not consume the schedule —
+ * otherwise the issue silently loses every future wake and nothing ever says
+ * so.
+ *
+ * The fallback interval is the cadence the assignee chose for the previous
+ * cycle when it can be derived, and a conservative default otherwise.
+ */
+export const ISSUE_MONITOR_FALLBACK_INTERVAL_MS = 30 * 60 * 1000;
+export const ISSUE_MONITOR_MIN_FALLBACK_INTERVAL_MS = 5 * 60 * 1000;
+export const ISSUE_MONITOR_MAX_FALLBACK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const STAGE_DECISION_COMMENT_HINT = "Include the decision comment in the same PATCH request; prior comments are not considered.";
 export const REDACTED_ISSUE_MONITOR_EXTERNAL_REF = "[redacted]";
 
@@ -260,6 +274,130 @@ function buildClearedMonitorState(input: {
     clearedAt: input.clearedAt.toISOString(),
     clearReason: input.clearReason,
   };
+}
+
+function buildArmedMonitorState(input: {
+  previous: IssueExecutionMonitorState | null;
+  nextCheckAt: Date;
+}): IssueExecutionMonitorState {
+  return {
+    status: "scheduled",
+    nextCheckAt: input.nextCheckAt.toISOString(),
+    lastTriggeredAt: input.previous?.lastTriggeredAt ?? null,
+    attemptCount: input.previous?.attemptCount ?? 0,
+    notes: input.previous?.notes ?? null,
+    scheduledBy: input.previous?.scheduledBy ?? null,
+    ...monitorMetadataFromState(input.previous),
+    clearedAt: null,
+    clearReason: null,
+  };
+}
+
+function parsePersistedMonitorPolicy(
+  persistedPolicy: Record<string, unknown> | null | undefined,
+): IssueExecutionMonitorPolicy | null {
+  const raw = (persistedPolicy?.monitor ?? null) as Record<string, unknown> | null;
+  if (!raw || typeof raw !== "object") return null;
+  const nextCheckAt = typeof raw.nextCheckAt === "string" ? raw.nextCheckAt : null;
+  if (!nextCheckAt) return null;
+  const scheduledBy =
+    raw.scheduledBy === "board" || raw.scheduledBy === "assignee"
+      ? raw.scheduledBy
+      : "assignee";
+  return {
+    nextCheckAt,
+    notes: typeof raw.notes === "string" ? raw.notes : null,
+    scheduledBy,
+    kind: (raw.kind ?? null) as IssueExecutionMonitorPolicy["kind"],
+    serviceName: typeof raw.serviceName === "string" ? raw.serviceName : null,
+    externalRef: typeof raw.externalRef === "string" ? raw.externalRef : null,
+    timeoutAt: typeof raw.timeoutAt === "string" ? raw.timeoutAt : null,
+    maxAttempts: typeof raw.maxAttempts === "number" ? raw.maxAttempts : null,
+    recoveryPolicy:
+      (raw.recoveryPolicy ?? null) as IssueExecutionMonitorPolicy["recoveryPolicy"],
+  };
+}
+
+function normalizePersistedExternalRef(
+  value: string | null | undefined,
+): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed === REDACTED_ISSUE_MONITOR_EXTERNAL_REF) return null;
+  return trimmed;
+}
+
+/**
+ * Rebuild the monitor block of an execution policy so it stays armed for
+ * `nextCheckAt`. The persisted monitor block wins over the normalized one so
+ * the raw `externalRef` survives the fire (normalized projections redact it).
+ */
+function armedMonitorPolicy(input: {
+  policy: IssueExecutionPolicy | null;
+  persistedPolicy?: Record<string, unknown> | null;
+  nextCheckAt: Date;
+  monitorState: IssueExecutionMonitorState | null;
+}): IssueExecutionPolicy {
+  const persistedMonitor = parsePersistedMonitorPolicy(input.persistedPolicy);
+  const base = persistedMonitor ?? input.policy?.monitor ?? null;
+  const monitor: IssueExecutionMonitorPolicy = {
+    nextCheckAt: input.nextCheckAt.toISOString(),
+    notes: input.monitorState?.notes ?? base?.notes ?? null,
+    scheduledBy: base?.scheduledBy ?? input.monitorState?.scheduledBy ?? "assignee",
+    kind: base?.kind ?? input.monitorState?.kind ?? null,
+    serviceName: base?.serviceName ?? input.monitorState?.serviceName ?? null,
+    externalRef:
+      normalizePersistedExternalRef(base?.externalRef) ??
+      normalizePersistedExternalRef(input.monitorState?.externalRef),
+    timeoutAt: base?.timeoutAt ?? input.monitorState?.timeoutAt ?? null,
+    maxAttempts: base?.maxAttempts ?? input.monitorState?.maxAttempts ?? null,
+    recoveryPolicy:
+      base?.recoveryPolicy ?? input.monitorState?.recoveryPolicy ?? null,
+  };
+  if (!input.policy) {
+    return {
+      mode: "normal",
+      commentRequired: true,
+      stages: [],
+      monitor,
+    };
+  }
+  return { ...input.policy, monitor };
+}
+
+/**
+ * Interval used to re-arm a monitor whose woken run never re-armed it.
+ * Prefers the cadence the assignee chose for the previous cycle (the gap
+ * between the previous trigger and the check that just fired) and falls back
+ * to a conservative default for the first cycle of a monitor.
+ */
+export function issueMonitorFallbackIntervalMs(input: {
+  scheduledNextCheckAt?: Date | null;
+  lastTriggeredAt?: Date | null;
+}): number {
+  const scheduled = input.scheduledNextCheckAt?.getTime() ?? null;
+  const lastTriggered = input.lastTriggeredAt?.getTime() ?? null;
+  if (scheduled !== null && lastTriggered !== null) {
+    const cadence = scheduled - lastTriggered;
+    if (cadence > 0) {
+      return Math.min(
+        ISSUE_MONITOR_MAX_FALLBACK_INTERVAL_MS,
+        Math.max(ISSUE_MONITOR_MIN_FALLBACK_INTERVAL_MS, cadence),
+      );
+    }
+  }
+  return ISSUE_MONITOR_FALLBACK_INTERVAL_MS;
+}
+
+export function issueMonitorFallbackNextCheckAt(input: {
+  triggeredAt: Date;
+  scheduledNextCheckAt?: Date | null;
+  lastTriggeredAt?: Date | null;
+}): Date {
+  return new Date(
+    input.triggeredAt.getTime() + issueMonitorFallbackIntervalMs(input),
+  );
 }
 
 function issueAllowsMonitor(status: string, assigneeAgentId: string | null, assigneeUserId: string | null) {
@@ -1166,7 +1304,20 @@ export function buildInitialIssueMonitorFields(input: {
 export function buildIssueMonitorTriggeredPatch(input: {
   issue: IssueLike;
   policy: IssueExecutionPolicy | null;
+  /** Raw persisted policy; keeps the monitor block verbatim when it stays armed. */
+  persistedPolicy?: Record<string, unknown> | null;
   triggeredAt: Date;
+  /**
+   * When set, the monitor stays armed after the fire: the schedule advances to
+   * this instant and the monitor block stays in the execution policy, so a
+   * woken run that fails, is cancelled or crashes cannot leave the issue
+   * without a continuation path. The woken run can still re-arm (or clear) it.
+   *
+   * When omitted the monitor is consumed by the fire. That is only correct for
+   * server-owned one-shot recovery monitors whose continuation lives elsewhere
+   * (the provider-quota monitor hands over to the bounded retry chain).
+   */
+  fallbackNextCheckAt?: Date | null;
 }) {
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentMonitorState = derivePersistedMonitorState({
@@ -1179,6 +1330,31 @@ export function buildIssueMonitorTriggeredPatch(input: {
     triggeredAt: input.triggeredAt,
   });
 
+  if (input.fallbackNextCheckAt) {
+    const armedMonitorState = buildArmedMonitorState({
+      previous: nextMonitorState,
+      nextCheckAt: input.fallbackNextCheckAt,
+    });
+    return {
+      executionPolicy: armedMonitorPolicy({
+        policy: input.policy,
+        persistedPolicy: input.persistedPolicy,
+        nextCheckAt: input.fallbackNextCheckAt,
+        monitorState: nextMonitorState,
+      }) as unknown as Record<string, unknown> | null,
+      executionState: executionStateWithMonitor(
+        existingState,
+        armedMonitorState,
+      ) as Record<string, unknown> | null,
+      monitorNextCheckAt: input.fallbackNextCheckAt,
+      monitorWakeRequestedAt: null,
+      monitorLastTriggeredAt: input.triggeredAt,
+      monitorAttemptCount: nextMonitorState.attemptCount,
+      monitorNotes: nextMonitorState.notes,
+      monitorScheduledBy: nextMonitorState.scheduledBy,
+    };
+  }
+
   return {
     executionPolicy: stripMonitorFromExecutionPolicy(input.policy) as Record<string, unknown> | null,
     executionState: executionStateWithMonitor(existingState, nextMonitorState) as Record<string, unknown> | null,
@@ -1188,6 +1364,51 @@ export function buildIssueMonitorTriggeredPatch(input: {
     monitorAttemptCount: nextMonitorState.attemptCount,
     monitorNotes: nextMonitorState.notes,
     monitorScheduledBy: nextMonitorState.scheduledBy,
+  };
+}
+
+/**
+ * Re-arm a monitor that lost its schedule. The scheduler only selects rows
+ * with a `monitorNextCheckAt`, so a monitor that fired without a following
+ * check is an issue with no continuation path at all. The persisted monitor
+ * state still carries the notes, the bounds and the recovery policy, so the
+ * monitor can be scheduled again instead of being lost silently.
+ */
+export function buildStrandedIssueMonitorRearmPatch(input: {
+  issue: IssueLike;
+  policy: IssueExecutionPolicy | null;
+  persistedPolicy?: Record<string, unknown> | null;
+  nextCheckAt: Date;
+}) {
+  const existingState = parseIssueExecutionState(input.issue.executionState);
+  const currentMonitorState = derivePersistedMonitorState({
+    issue: input.issue,
+    state: existingState,
+    policy: input.policy,
+  });
+  const armedMonitorState = buildArmedMonitorState({
+    previous: currentMonitorState,
+    nextCheckAt: input.nextCheckAt,
+  });
+
+  return {
+    executionPolicy: armedMonitorPolicy({
+      policy: input.policy,
+      persistedPolicy: input.persistedPolicy,
+      nextCheckAt: input.nextCheckAt,
+      monitorState: currentMonitorState,
+    }) as unknown as Record<string, unknown> | null,
+    executionState: executionStateWithMonitor(
+      existingState,
+      armedMonitorState,
+    ) as Record<string, unknown> | null,
+    monitorNextCheckAt: input.nextCheckAt,
+    monitorWakeRequestedAt: null,
+    monitorLastTriggeredAt: input.issue.monitorLastTriggeredAt ?? null,
+    monitorAttemptCount:
+      currentMonitorState?.attemptCount ?? input.issue.monitorAttemptCount ?? 0,
+    monitorNotes: currentMonitorState?.notes ?? null,
+    monitorScheduledBy: currentMonitorState?.scheduledBy ?? null,
   };
 }
 
