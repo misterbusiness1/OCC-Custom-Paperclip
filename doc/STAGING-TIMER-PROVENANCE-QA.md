@@ -15,10 +15,21 @@ Configure a `process` adapter agent to run:
 }
 ```
 
-Set `runtimeConfig.heartbeat` to `{ "enabled": true, "intervalSec": 60,
+Initially set `runtimeConfig.heartbeat` to `{ "enabled": true, "intervalSec": 60,
 "wakeOnDemand": false }`. Create the explicitly named synthetic issue assigned
 to that agent in `in_progress` state. `wakeOnDemand: false` prevents the
 assignment itself from replacing the required scheduled-timer origin.
+
+After assignment has settled, enable `wakeOnDemand: true` before the first
+scheduled tick. Keep the agent paused during setup, then resume it; do not
+invoke an on-demand heartbeat. Recovery uses an automation wake, which is
+suppressed while `wakeOnDemand` is false. Increase `intervalSec` (for example,
+600) to leave time for recovery before a second timer can consume the marker.
+A second scheduled timer is not a recovery successor.
+
+The process adapter derives `PAPERCLIP_WAKE_REASON` from runtime context. Do not
+supply it in adapter `env` or a shell wrapper. Capture its value in stdout along
+with `PAPERCLIP_RUN_ID`; a missing value fails this acceptance lane.
 
 The fixture first checks out the explicit issue with the current run and fails
 closed unless the response binds both `checkoutRunId` and `executionRunId` to
@@ -27,8 +38,10 @@ run ID and exits successfully while leaving the issue in progress. The normal
 recovery pass must enqueue the productive-terminal continuation. The second
 invocation marks the issue done. Record both run rows and assert:
 
-1. the source run has `contextSnapshot.wakeReason = heartbeat_timer` and its
-   `issueId` / `taskId` equal the synthetic issue UUID;
+1. the source run has `invocationSource = timer`, runtime
+   `PAPERCLIP_WAKE_REASON = heartbeat_timer`, persisted
+   `contextSnapshot.wakeReason = heartbeat_timer`, and `issueId` / `taskId` equal
+   to the synthetic issue UUID;
 2. the continuation has source `issue.productive_terminal_continuation_recovery`;
 3. the continuation `retryOfRunId` equals that exact timer run ID; and
 4. heartbeat context still reports `heartbeat_timer` after coalescing.
@@ -39,6 +52,13 @@ not enqueue a continuation. Do not alter a real run or use a cross-company
 record. The focused `heartbeat-retry-source-scope` regression suite is the
 deterministic oracle for this negative case; staging evidence must include its
 passing mismatched-run case alongside the rejected live probe.
+
+Keep the source `in_progress` and its assignee invokable while the recovery pass
+runs. Confirm the successful source has productive liveness (such as `advanced`)
+and an attributed comment before looking for its successor. Record the recovery
+scan result or the skipped wake reason when no successor appears. Do not PATCH
+run rows or manufacture `retryOfRunId` to satisfy the assertion. Pause the agent
+once both run rows and the negative-probe evidence have been captured.
 
 Rollback is deletion of the isolated synthetic company (or disposal of the
 whole staging database) and removal of this process adapter configuration.

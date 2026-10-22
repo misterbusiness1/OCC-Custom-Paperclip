@@ -14,7 +14,7 @@ import {
 } from "../utils.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, config, onLog, onMeta, authToken } = ctx;
+  const { runId, agent, config, context, onLog, onMeta, authToken } = ctx;
   const command = asString(config.command, "");
   if (!command) throw new Error("Process adapter missing command");
 
@@ -24,12 +24,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const env: Record<string, string> = {
     ...buildPaperclipEnv(agent),
   };
+  // Wake provenance comes only from the persisted runtime context, never
+  // adapter configuration or the server process environment.
+  const wakeReason = asString(context.wakeReason, "").trim();
+  if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v !== "string") continue;
     // Runtime PAPERCLIP_* always wins over config, and PAPERCLIP_API_KEY is
     // never accepted from config — the harness-minted run token is the only
     // source. Other PAPERCLIP_* keys Paperclip did not assign flow through.
-    if (isForbiddenConfigEnvKey(k)) continue;
+    if (isForbiddenConfigEnvKey(k) || k === "PAPERCLIP_WAKE_REASON") continue;
     if (isPaperclipRuntimeEnvKey(k) && k in env) continue;
     env[k] = v;
   }
