@@ -1,4 +1,4 @@
-import { and, eq, gte, isNotNull, isNull, or } from "drizzle-orm";
+import { and, eq, gte, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { approvals, issueApprovals, issueComments, issues, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 
@@ -21,6 +21,15 @@ export const APPROVAL_DECISION_WAKE_REASONS: ReadonlySet<string> = new Set([
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+/** Old persisted wakes lack a version; new producers emit a canonical exact version. */
+function readApprovalDecisionVersion(context: Record<string, unknown> | null | undefined) {
+  const raw = context?.approvalUpdatedAt;
+  if (raw === undefined) return { valid: true, value: null };
+  const value = readNonEmptyString(raw);
+  return { valid: Boolean(value && Number.isFinite(Date.parse(value))
+    && new Date(value).toISOString() === value), value };
 }
 
 /**
@@ -51,6 +60,10 @@ export async function isVerifiedApprovalDecisionWakeForRequester(
   if (!isApprovalDecisionWakeForRequester(input.contextSnapshot)) return false;
   const approvalId = readNonEmptyString(input.contextSnapshot?.approvalId);
   if (!approvalId || !isUuidLike(approvalId)) return false;
+  const status = String(input.contextSnapshot!.wakeReason).slice("approval_".length);
+  if (input.contextSnapshot?.approvalStatus !== undefined && input.contextSnapshot.approvalStatus !== status) return false;
+  const version = readApprovalDecisionVersion(input.contextSnapshot);
+  if (!version.valid) return false;
   const approval = await dbOrTx
     .select({ id: approvals.id })
     .from(approvals)
@@ -58,6 +71,8 @@ export async function isVerifiedApprovalDecisionWakeForRequester(
       eq(approvals.id, approvalId),
       eq(approvals.companyId, input.companyId),
       eq(approvals.requestedByAgentId, input.agentId),
+      eq(approvals.status, status),
+      ...(version.value ? [sql`date_trunc('milliseconds', ${approvals.updatedAt}) = ${version.value}::timestamptz`] : []),
     ))
     .then((rows) => rows[0] ?? null);
   return approval !== null;
@@ -85,6 +100,8 @@ export async function isVerifiedApprovalDecisionWakeForConversation(
   if (!approvalId || !isUuidLike(approvalId) || !approvalStatus ||
       input.contextSnapshot?.wakeReason !== `approval_${approvalStatus}`) return false;
 
+  const version = readApprovalDecisionVersion(input.contextSnapshot);
+  if (!version.valid) return false;
   const [decision] = await dbOrTx.select({ id: approvals.id }).from(approvals)
     .innerJoin(issueApprovals, and(
       eq(issueApprovals.approvalId, approvals.id),
@@ -108,6 +125,7 @@ export async function isVerifiedApprovalDecisionWakeForConversation(
       eq(approvals.requestedByAgentId, input.agentId),
       eq(approvals.decidedByUserId, input.requestedByActorId),
       eq(approvals.status, approvalStatus),
+      ...(version.value ? [sql`date_trunc('milliseconds', ${approvals.updatedAt}) = ${version.value}::timestamptz`] : []),
       isNotNull(approvals.decidedAt),
       or(
         isNull(issues.conversationBoundaryCommentId),

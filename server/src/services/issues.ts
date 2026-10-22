@@ -7985,6 +7985,7 @@ export function issueService(db: Db) {
       archivedByRunId?: string | null;
     },
     dbOrTx: any = db,
+    options: { onlyIfOlder?: boolean } = {},
   ) {
     const now = new Date();
     const [row] = await dbOrTx
@@ -8012,6 +8013,9 @@ export function issueService(db: Db) {
           archivedByRunId: attribution?.archivedByRunId ?? null,
           updatedAt: now,
         },
+        // Automatic completion cleanup must never backdate a newer manual
+        // archive, including one that commits while this upsert waits on its row.
+        setWhere: options.onlyIfOlder ? lt(issueInboxArchives.archivedAt, archivedAt) : undefined,
       })
       .returning();
     return row;
@@ -8535,6 +8539,33 @@ export function issueService(db: Db) {
     },
 
     archiveInbox,
+
+    async archiveCompletedInbox(
+      companyId: string,
+      issueId: string,
+      userId: string,
+      expectedCompletedAt: Date,
+      attribution?: Parameters<typeof archiveInbox>[4],
+    ) {
+      return db.transaction(async (tx) => {
+        const [current] = await tx.select({ status: issues.status, completedAt: issues.completedAt })
+          .from(issues).where(and(
+            eq(issues.companyId, companyId), eq(issues.id, issueId),
+            touchedByUserCondition(companyId, userId),
+          )).for("update");
+        if (current?.status !== "done" || !current.completedAt
+            || current.completedAt.getTime() !== expectedCompletedAt.getTime()) {
+          return { id: issueId, archived: false as const, reason: "completion_changed" as const };
+        }
+        // Archive the completion event, not subsequent activity. Existing inbox
+        // resurfacing rules keep later mentions, questions and attention transitions visible.
+        const archived = await archiveInbox(
+          companyId, issueId, userId, current.completedAt, attribution, tx, { onlyIfOlder: true },
+        );
+        return archived ? { ...archived, archived: true as const }
+          : { id: issueId, archived: false as const, reason: "already_archived" as const };
+      });
+    },
 
     /**
      * Seed inbox archives for a batch of freshly imported issues so a company

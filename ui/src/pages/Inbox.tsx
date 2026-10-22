@@ -27,6 +27,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { approvalListQuery } from "../lib/approval-queue";
 import { useDialogActions } from "../context/DialogContext";
+import { useCompletedInboxCleanup } from "../hooks/useCompletedInboxCleanup";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
 import {
   applyIssueFilters,
@@ -1192,6 +1193,10 @@ function StreamlinedInbox() {
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
+  const completedInboxCleanup = useCompletedInboxCleanup({
+    companyId: selectedCompanyId, userId: currentUserId,
+    issues: mineIssuesRaw, updatedAt: mineIssuesUpdatedAt,
+  });
   const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
   const [undoableArchiveIssueIds, setUndoableArchiveIssueIds] = useState<string[]>([]);
   const [unarchivingIssueIds, setUnarchivingIssueIds] = useState<Set<string>>(new Set());
@@ -2636,6 +2641,16 @@ function StreamlinedInbox() {
       : null;
   return (
     <div className="space-y-6">
+      <label className="flex items-center gap-2 text-sm text-muted-foreground">
+        <input
+          type="checkbox"
+          checked={completedInboxCleanup.enabled}
+          disabled={!completedInboxCleanup.available}
+          onChange={(event) => completedInboxCleanup.setEnabled(event.target.checked)}
+        />
+        Automatically archive completed tasks from my inbox
+      </label>
+      {completedInboxCleanup.error && <p role="alert" className="text-sm text-destructive">{completedInboxCleanup.error}</p>}
       <InboxCollectionToolbar
         streamlined={streamlinedUiEnabled}
         ariaLabel="Inbox controls"

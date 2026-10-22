@@ -37,11 +37,15 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockDecisionDelivery = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/approval-decision-delivery.js", () => ({
+    deliverCurrentApprovalDecision: mockDecisionDelivery,
+  }));
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
@@ -141,6 +145,7 @@ async function createAgentApp(
 describe("approval routes idempotent retries", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDecisionDelivery.mockReset().mockImplementation(async (_db, _decision, deliver) => deliver());
     mockApprovalService.list.mockReset();
     mockApprovalService.getById.mockReset();
     mockApprovalService.create.mockReset();
@@ -357,6 +362,7 @@ describe("approval routes idempotent retries", () => {
       type: "hire_agent",
       status: "pending",
       payload: {},
+      updatedAt: new Date("2026-10-22T00:00:00Z"),
       requestedByAgentId: null,
     });
     mockApprovalService.approve.mockResolvedValue({
@@ -366,6 +372,7 @@ describe("approval routes idempotent retries", () => {
         type: "hire_agent",
         status: "approved",
         payload: {},
+      updatedAt: new Date("2026-10-22T00:00:00Z"),
         requestedByAgentId: null,
       },
       applied: true,
@@ -386,6 +393,7 @@ describe("approval routes idempotent retries", () => {
       type: "hire_agent",
       status: "pending",
       payload: {},
+      updatedAt: new Date("2026-10-22T00:00:00Z"),
     });
     mockApprovalService.reject.mockResolvedValue({
       approval: {
@@ -394,6 +402,7 @@ describe("approval routes idempotent retries", () => {
         type: "hire_agent",
         status: "rejected",
         payload: {},
+      updatedAt: new Date("2026-10-22T00:00:00Z"),
       },
       applied: true,
     });
@@ -413,6 +422,7 @@ describe("approval routes idempotent retries", () => {
       type: "hire_agent",
       status: "pending",
       payload: {},
+      updatedAt: new Date("2026-10-22T00:00:00Z"),
     });
     mockApprovalService.requestRevision.mockResolvedValue({
       id: "approval-6",
@@ -420,6 +430,7 @@ describe("approval routes idempotent retries", () => {
       type: "hire_agent",
       status: "revision_requested",
       payload: {},
+      updatedAt: new Date("2026-10-22T00:00:00Z"),
     });
 
     const res = await request(await createApp())
@@ -442,6 +453,7 @@ describe("approval routes idempotent retries", () => {
       type: "request_board_approval",
       status: "pending",
       payload: {},
+      updatedAt: new Date(VERSION),
       requestedByAgentId: null,
     };
 
@@ -949,6 +961,26 @@ describe("approval routes idempotent retries", () => {
         updatedAt: decidedAt,
       };
     }
+
+    it("does not enqueue requester or review-path wakes or hand back tasks after the exact decision guard suppresses delivery", async () => {
+      const approval = decided("approved");
+      mockApprovalService.getById.mockResolvedValue(approval);
+      mockApprovalService.approve.mockResolvedValue({ approval, applied: true });
+      mockDecisionDelivery.mockResolvedValueOnce(undefined);
+      mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+        parkedIssue, { ...parkedIssue, id: "other-issue", assigneeAgentId: "other-agent" },
+      ]);
+      mockIssueService.listReviewAttention.mockResolvedValue(new Map([
+        ["issue-1", { state: "stalled", paths: [], reason: "consumed" }],
+        ["other-issue", { state: "stalled", paths: [], reason: "consumed" }],
+      ]));
+      const response = await request(await createApp()).post("/api/approvals/approval-1/approve").send({});
+      expect(response.status).toBe(200);
+      expect(mockDecisionDelivery).toHaveBeenCalledWith(expect.anything(), approval, expect.any(Function));
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockLogActivity.mock.calls.map(([, event]) => event.action)).toEqual(["approval.approved"]);
+    });
 
     it("hands a board-owned in_review issue back to the requester and wakes it on approve", async () => {
       mockApprovalService.getById.mockResolvedValue(decided("approved"));

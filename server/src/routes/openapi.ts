@@ -118,6 +118,7 @@ import {
   createApprovalSchema,
   resolveApprovalSchema,
   retireApprovalSchema,
+  revokeApprovalSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
@@ -1345,6 +1346,7 @@ const browserUseOperations = [
 
 const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/approvals/{id}/retire",
+  "POST /api/approvals/{id}/revoke",
   "GET /api/issues/{id}/comment-requests/{clientRequestId}",
   ...browserUseOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
   "GET /api/companies/{companyId}/ai-connections",
@@ -5243,6 +5245,15 @@ registry.registerPath({
     body: jsonBody(resolveApprovalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/approvals/{id}/revoke",
+  tags: ["approvals"],
+  summary: "Withdraw an approved request before execution starts",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(revokeApprovalSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
 
 registry.registerPath({

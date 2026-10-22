@@ -11641,7 +11641,9 @@ export function issueRoutes(
 
   router.post(
     "/issues/:id/inbox-archive",
-    validate(inboxArchiveBodySchema),
+    validate(inboxArchiveBodySchema.unwrap().extend({
+      expectedCompletedAt: z.string().datetime({ offset: true }).optional(),
+    }).default({})),
     async (req, res) => {
       const id = req.params.id as string;
       const issue = await getAccessibleResource(
@@ -11653,17 +11655,21 @@ export function issueRoutes(
       if (!issue) return;
       const target = await resolveInboxArchiveTarget(req, issue);
       const actor = getActorInfo(req);
-      const archiveState = await svc.archiveInbox(
-        issue.companyId,
-        issue.id,
-        target.userId,
-        new Date(),
-        {
-          archivedByActorType: req.actor.type === "agent" ? "agent" : "user",
-          archivedByAgentId: actor.agentId,
-          archivedByRunId: actor.runId,
-        },
-      );
+      const attribution = {
+        archivedByActorType: req.actor.type === "agent" ? "agent" as const : "user" as const,
+        archivedByAgentId: actor.agentId,
+        archivedByRunId: actor.runId,
+      };
+      const archiveState = req.body.expectedCompletedAt
+        ? await svc.archiveCompletedInbox(
+            issue.companyId, issue.id, target.userId,
+            new Date(req.body.expectedCompletedAt), attribution,
+          )
+        : await svc.archiveInbox(issue.companyId, issue.id, target.userId, new Date(), attribution);
+      if ("archived" in archiveState && !archiveState.archived) {
+        res.json(archiveState);
+        return;
+      }
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,

@@ -253,6 +253,10 @@ export const issuesApi = {
       `/issues/${id}/inbox-archive`,
       {},
     ),
+  archiveCompletedFromInbox: (id: string, expectedCompletedAt: string) =>
+    api.post<{ id: string; archived: boolean; archivedAt?: Date; reason?: string }>(
+      `/issues/${id}/inbox-archive`, { expectedCompletedAt },
+    ),
   unarchiveFromInbox: (id: string) =>
     api.delete<{ id: string; archivedAt: Date } | { ok: true }>(
       `/issues/${id}/inbox-archive`,
