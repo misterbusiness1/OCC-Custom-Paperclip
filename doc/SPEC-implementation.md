@@ -1020,6 +1020,8 @@ Core authorization follows these rules:
 - New qualifying issue activity may invalidate an archive so the item resurfaces; archival is not a substitute for resolving or closing work.
 - Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with a user-authored comment, issue creation/assignment, or another audited user mutation; explicit product actions such as manually running a routine may record an audited inbox touch.
 
+`POST /issues/:id/inbox-archive` accepts optional `expectedCompletedAt`. When supplied, archive only the matching done completion at its completion timestamp. Return `archived: false` with `completion_changed` or `already_archived` when skipped, and `archived: true` on conditional success. Preserve newer manual archives and later activity.
+
 Failed-run rows in Mine and the inbox badge use the run's `responsibleUserId`.
 Another user's run does not appear there, even for a shared agent. Select the
 latest run per agent before checking ownership so older failures do not resurface.
@@ -1182,6 +1184,7 @@ Allowed states are `joined` and `left`. Endpoints require a concrete board user 
 - `POST /companies/:companyId/approvals`
 - `POST /approvals/:approvalId/approve`
 - `POST /approvals/:approvalId/reject`
+- `POST /approvals/:approvalId/revoke` — board-only withdrawal of a version-matched approved board request with a required reason. Lock all matching decision wake and run history, including terminal rows, in wake-before-run order. Refuse recorded starts or uncertain outcomes with 409; cancel only unstarted work. Revocation never reverses execution.
 - `POST /approvals/:approvalId/retire` — explicit board-only retirement of a version-matched obsolete `request_board_approval` linked exclusively to closed, same-company tasks without execution ownership; records rejection and no-execution audit atomically, without requester or plugin decision work. Ordinary rejection retains its notification contract.
 
 ## 10.8 Cost and Budgets

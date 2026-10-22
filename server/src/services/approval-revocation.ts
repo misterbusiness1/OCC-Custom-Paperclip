@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { agentWakeupRequests, approvals, heartbeatRuns, toolActionRequests, toolInvocations, type Db } from "@paperclipai/db";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -41,23 +41,22 @@ export async function revokeApproval(db: Db, input: {
     if (invocations.length !== invocationIds.length) {
       throw conflict("Tool action has an invalid company binding; reconcile it before revocation", { code: "approval_action_scope_invalid" });
     }
+    // Read terminal history too: completion cannot erase execution evidence.
     // Match heartbeat admission's wake -> run lock order. Reversing it can
     // deadlock a dispatcher that already owns the wake and is claiming its run.
     const wakes = await tx.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, input.companyId),
-      sql`${agentWakeupRequests.payload}->>'approvalId' = ${current.id}`,
-      inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "deferred_agent_execution", "claimed"])))
+      sql`${agentWakeupRequests.payload}->>'approvalId' = ${current.id}`))
       .orderBy(asc(agentWakeupRequests.id)).for("update");
     const runs = await tx.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, input.companyId),
-      sql`${heartbeatRuns.contextSnapshot}->>'approvalId' = ${current.id}`,
-      inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"])))
+      sql`${heartbeatRuns.contextSnapshot}->>'approvalId' = ${current.id}`))
       .orderBy(asc(heartbeatRuns.id)).for("update");
     const payload = current.payload;
     if (actions.some(x => ["executing", "executed"].includes(x.status))
       || invocations.some(x => x.startedAt !== null || ["executing", "succeeded"].includes(x.status))
-      || wakes.some(x => x.status === "claimed" || x.claimedAt !== null)
-      || runs.some(x => x.status === "running" || x.startedAt !== null)
+      || wakes.some(x => !["queued", "deferred_issue_execution", "deferred_agent_execution"].includes(x.status) || x.claimedAt !== null)
+      || runs.some(x => !["queued", "scheduled_retry"].includes(x.status) || x.startedAt !== null)
       || Boolean(payload.sentAt || payload.executedAt)
       || [payload.sendStatus, payload.executionStatus].some(status =>
         ["sent", "executed", "succeeded", "completed"].includes(String(status ?? "")))) {
@@ -71,15 +70,15 @@ export async function revokeApproval(db: Db, input: {
     if (invocationIds.length) await tx.update(toolInvocations).set({ status: "cancelled", completedAt: now, updatedAt: now,
       errorCode: "approval_revoked", errorMessage: "Board approval was revoked before execution" }).where(and(
         eq(toolInvocations.companyId, input.companyId), inArray(toolInvocations.id, invocationIds),
-        inArray(toolInvocations.status, ["pending", "authorized", "awaiting_approval"])));
+        isNull(toolInvocations.startedAt), inArray(toolInvocations.status, ["pending", "authorized", "awaiting_approval"])));
     const cancelledRuns = await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: now, updatedAt: now,
       errorCode: "approval_revoked", error: "Board approval was revoked before execution" }).where(and(
         eq(heartbeatRuns.companyId, input.companyId), sql`${heartbeatRuns.contextSnapshot}->>'approvalId' = ${current.id}`,
-        inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]))).returning({ id: heartbeatRuns.id });
+        isNull(heartbeatRuns.startedAt), inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]))).returning({ id: heartbeatRuns.id });
     const cancelledWakes = await tx.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: now, updatedAt: now,
       error: "Board approval revoked" }).where(and(eq(agentWakeupRequests.companyId, input.companyId),
         sql`${agentWakeupRequests.payload}->>'approvalId' = ${current.id}`,
-        inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "deferred_agent_execution"])))
+        isNull(agentWakeupRequests.claimedAt), inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "deferred_agent_execution"])))
       .returning({ id: agentWakeupRequests.id });
     const [approval] = await tx.update(approvals).set({ status: "cancelled", decidedByUserId: input.userId,
       decisionNote: input.decisionNote.trim(), decidedAt: now, updatedAt: nextApprovalUpdatedAt(now) })

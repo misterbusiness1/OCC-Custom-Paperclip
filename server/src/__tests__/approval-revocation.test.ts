@@ -93,6 +93,57 @@ const support = await getEmbeddedPostgresTestSupport();
       source: "automation", status: "claimed", claimedAt: new Date(), payload: { approvalId: f.approval.id } });
     expect((await revoke(f)).status).toBe(409);
   });
+  it.each(["completed", "failed", "cancelled"])("preserves terminal %s wake evidence", async status => {
+    const f = await seed();
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+      source: "automation", status, claimedAt: new Date(), finishedAt: new Date(),
+      payload: { approvalId: f.approval.id } }).returning();
+    expect((await revoke(f)).status).toBe(409);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake!.id)))[0]!.status).toBe(status);
+    expect((await db.select().from(approvals).where(eq(approvals.id, f.approval.id)))[0]!.status).toBe("approved");
+  });
+  it.each(["succeeded", "failed", "cancelled"])("preserves terminal %s run evidence", async status => {
+    const f = await seed();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      status, startedAt: new Date(), finishedAt: new Date(), contextSnapshot: { approvalId: f.approval.id } }).returning();
+    expect((await revoke(f)).status).toBe(409);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0]!.status).toBe(status);
+    expect((await db.select().from(approvals).where(eq(approvals.id, f.approval.id)))[0]!.status).toBe("approved");
+  });
+  it.each(["failed", "cancelled"])("rejects uncertain %s history without start timestamps", async status => {
+    const f = await seed();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      status, contextSnapshot: { approvalId: f.approval.id } });
+    expect((await revoke(f)).status).toBe(409);
+  });
+  it("rejects a run finishing while revocation waits for its lock", async () => {
+    const f = await seed();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      status: "running", startedAt: new Date(), contextSnapshot: { approvalId: f.approval.id } }).returning();
+    const revoker = createDb(temp.connectionString, { maxConnections: 1, applicationName: "revocation-terminal-race" });
+    let signal!: () => void, unlock!: () => void;
+    const locked = new Promise<void>(r => { signal = r; });
+    const released = new Promise<void>(r => { unlock = r; });
+    const finish = db.transaction(async tx => {
+      await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)).for("update");
+      signal(); await released;
+      await tx.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
+    });
+    await locked;
+    const attempt = revokeApproval(revoker, { companyId: f.companyId, approvalId: f.approval.id,
+      userId: "board", decisionNote: "Withdraw", expectedUpdatedAt: f.approval.updatedAt })
+      .then(value => ({ value, error: null }), error => ({ value: null, error }));
+    try {
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_stat_activity where application_name = 'revocation-terminal-race' and wait_event_type = 'Lock'`);
+        expect(waiting.length).toBe(1);
+      }, { timeout: 5000 });
+    } finally { unlock(); }
+    await finish;
+    expect((await attempt).error).toMatchObject({ status: 409 });
+    expect((await db.select().from(approvals).where(eq(approvals.id, f.approval.id)))[0]!.status).toBe("approved");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0]!.status).toBe("succeeded");
+  });
   it("follows dispatcher wake-before-run lock order without deadlock", async () => {
     const f = await seed();
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,

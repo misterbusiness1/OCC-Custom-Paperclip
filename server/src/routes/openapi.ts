@@ -1,3 +1,4 @@
+import { completedInboxArchiveBodySchema, completedInboxArchiveResponseSchema } from "./inbox-archive-schema.js";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
 import {
   experimentalApiPaths,
@@ -4320,11 +4321,12 @@ registry.registerPath({
   path: "/api/issues/{id}/inbox-archive",
   tags: ["issues"],
   summary: "Archive issue from inbox",
+  description: "With expectedCompletedAt, archives only the matching done completion. Returns archived: false with completion_changed or already_archived when skipped; archived: true on conditional success. Without it, performs ordinary inbox archive.",
   request: {
     params: z.object({ id: z.string() }),
-    body: jsonBody(z.object({ userId: z.string().min(1).optional() })),
+    body: jsonBody(completedInboxArchiveBodySchema),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+  responses: { 200: r.ok(completedInboxArchiveResponseSchema), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({

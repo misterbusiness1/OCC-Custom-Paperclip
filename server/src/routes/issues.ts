@@ -1,3 +1,4 @@
+import { completedInboxArchiveBodySchema } from "./inbox-archive-schema.js";
 import { boardCommentRequestDelivery } from "../services/board-comment-request-delivery.js";
 import { classifyBoardCommentSourceRecovery } from "../services/board-comment-request-recovery-effects.js";
 import { issueCommentRequestService } from "../services/issue-comment-requests.js";
@@ -11641,9 +11642,7 @@ export function issueRoutes(
 
   router.post(
     "/issues/:id/inbox-archive",
-    validate(inboxArchiveBodySchema.unwrap().extend({
-      expectedCompletedAt: z.string().datetime({ offset: true }).optional(),
-    }).default({})),
+    validate(completedInboxArchiveBodySchema),
     async (req, res) => {
       const id = req.params.id as string;
       const issue = await getAccessibleResource(
