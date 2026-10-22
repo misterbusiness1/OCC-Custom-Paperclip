@@ -958,12 +958,8 @@ export function AgentDetail() {
   useEffect(() => {
     if (!agent) return;
     if (!urlRunId && urlTab === "channels" && !chatConnectorsLoaded) return;
-    if (urlRunId) {
-      if (routeAgentRef !== canonicalAgentRef) {
-        navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
-      }
-      return;
-    }
+    // Run URLs canonicalize before mounting their interactive detail below.
+    if (urlRunId) return;
     const canonicalTab =
       activeView === "instructions"
         ? "instructions"
@@ -1193,6 +1189,11 @@ export function AgentDetail() {
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
+  // Do not mount run mutations on the UUID alias: the canonical lookup can
+  // show a loading skeleton and unmount them, discarding pending/error state.
+  if (urlRunId && routeAgentRef !== canonicalAgentRef) {
+    return <Navigate to={`/agents/${canonicalAgentRef}/runs/${urlRunId}`} replace />;
+  }
   if (!urlRunId && !urlTab) {
     return <Navigate to={`/agents/${canonicalAgentRef}/dashboard`} replace />;
   }

@@ -361,19 +361,36 @@ describe("Approvals", () => {
     it("re-reads every row after a live update of linked tasks, keeping the chips shown until the answer lands", async () => {
       await render();
       await vi.waitFor(() => expect(rows()[0].textContent).toContain("DEMO-7"));
+      // A chip can render before the completed batch's observer is removed.
+      // Flush queued notifications and wait for the settled live-update boundary:
+      // only the generation marker is active, so invalidation makes one new read.
+      const linkedPrefix = queryKeys.approvals.linkedIssuesOfCompany("company-1");
+      await vi.waitFor(async () => {
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(queryClient.isFetching({ queryKey: linkedPrefix })).toBe(0);
+        expect(queryClient.getQueryCache().findAll({ queryKey: linkedPrefix, type: "active" })
+          .map((query) => query.queryKey)).toEqual([queryKeys.approvals.linkedIssuesGeneration("company-1")]);
+      });
+      expect(apiMocks.listLinkedIssues).toHaveBeenCalledTimes(1);
       const readsBefore = apiMocks.listLinkedIssues.mock.calls.length;
       let answer!: (value: Record<string, unknown[]>) => void;
       apiMocks.listLinkedIssues.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
 
       // What LiveUpdatesProvider does on issue.approval_linked / unlinked and on approval events.
+      // Keep its refetch pending until this test supplies the delayed response.
+      // Awaiting it here would wait on the answer that can only be sent below.
+      let refresh!: Promise<void>;
       await act(async () => {
-        await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.linkedIssuesOfCompany("company-1") });
+        refresh = queryClient.invalidateQueries({ queryKey: queryKeys.approvals.linkedIssuesOfCompany("company-1") });
       });
       await vi.waitFor(() => expect(apiMocks.listLinkedIssues.mock.calls.length).toBe(readsBefore + 1));
       expect(apiMocks.listLinkedIssues).toHaveBeenLastCalledWith("company-1", ["email", "newest", "oldest"]);
       expect(rows()[0].textContent).toContain("DEMO-7");
 
-      await act(async () => answer({ oldest: [{ id: "issue-8", identifier: "DEMO-8", title: "Relinked task", status: "todo" }] }));
+      await act(async () => {
+        answer({ oldest: [{ id: "issue-8", identifier: "DEMO-8", title: "Relinked task", status: "todo" }] });
+        await refresh;
+      });
       await vi.waitFor(() => expect(rows()[0].textContent).toContain("DEMO-8"));
       expect(rows()[0].textContent).not.toContain("DEMO-7");
     });

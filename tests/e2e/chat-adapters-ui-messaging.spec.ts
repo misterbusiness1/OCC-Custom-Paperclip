@@ -1442,6 +1442,13 @@ test.describe("Exact failed chat run retry", () => {
           .getByRole("button", { name: "Retry", exact: true })
           .filter({ visible: true });
         await expect(retry).toHaveCount(1);
+        if (surface === "agent run") {
+          // Retry must mount only after UUID canonicalization has settled;
+          // otherwise the slug lookup can discard its denial mutation state.
+          await expect(page).toHaveURL(
+            new RegExp(`/${seed.prefix}/agents/maya/runs/${failedRunId}$`),
+          );
+        }
         await retry.click();
         await expect.poll(() => requests.length).toBe(1);
         expect(requests[0]).toEqual({
