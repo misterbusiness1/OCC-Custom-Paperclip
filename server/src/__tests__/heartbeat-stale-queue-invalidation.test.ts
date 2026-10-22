@@ -2017,14 +2017,18 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(1);
   });
 
-  async function seedDecidedApproval(input: { companyId: string; requestedByAgentId: string }) {
+  async function seedDecidedApproval(input: {
+    companyId: string;
+    requestedByAgentId: string;
+    status?: "approved" | "rejected" | "revision_requested";
+  }) {
     const approvalId = randomUUID();
     await db.insert(approvals).values({
       id: approvalId,
       companyId: input.companyId,
       type: "request_board_approval",
       requestedByAgentId: input.requestedByAgentId,
-      status: "approved",
+      status: input.status ?? "approved",
       payload: {},
       decidedByUserId: "board-user-1",
       decidedAt: new Date(),
@@ -2205,7 +2209,8 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         assigneeAgentId: requesterIsAssignee ? agentId : otherAssigneeId,
         ...(issueStatus === "done" ? { completedAt: new Date() } : { cancelledAt: new Date() }),
       });
-      const approvalId = await seedDecidedApproval({ companyId, requestedByAgentId: agentId });
+      // The persisted decision must match the wake; mismatches are correctly rejected.
+      const approvalId = await seedDecidedApproval({ companyId, requestedByAgentId: agentId, status: decision });
       const wakeReason = `approval_${decision}`;
 
       const queued = await heartbeat.wakeup(agentId, {

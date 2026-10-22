@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -20,6 +20,7 @@ import {
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { issueService } from "../services/issues.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -192,6 +193,138 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       .send({})
       .expect(200)
       .expect(({ body }) => expect(body).toEqual({ ok: true, userId: seeded.responsibleUserId }));
+  });
+
+  it("archives only the matching completed notification, preserving later genuine activity and history", async () => {
+    const seeded = await seed();
+    const app = appFor({
+      type: "board", source: "session", userId: seeded.responsibleUserId,
+      companyIds: [seeded.companyId],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
+    });
+    const completedAt = new Date(Date.now() - 60_000);
+    await db.update(issues).set({ status: "done", completedAt, updatedAt: completedAt })
+      .where(eq(issues.id, seeded.issueId));
+    // Genuine activity already newer than completion must not be swallowed by cleanup.
+    await db.insert(issueComments).values({
+      companyId: seeded.companyId, issueId: seeded.issueId, authorUserId: seeded.targetUserId,
+      body: "New question after completion", createdAt: new Date(completedAt.getTime() + 1_000),
+      updatedAt: new Date(completedAt.getTime() + 1_000),
+    });
+    const result = await request(app).post(`/api/issues/${seeded.issueId}/inbox-archive`)
+      .send({ expectedCompletedAt: completedAt.toISOString() }).expect(200);
+    expect(result.body).toMatchObject({ archived: true, userId: seeded.responsibleUserId,
+      archivedAt: completedAt.toISOString() });
+    await request(app).post(`/api/issues/${seeded.issueId}/inbox-archive`)
+      .send({ expectedCompletedAt: completedAt.toISOString() }).expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({ archived: false, reason: "already_archived" }));
+    const visible = await request(app).get(`/api/companies/${seeded.companyId}/issues`)
+      .query({ touchedByUserId: "me", inboxArchivedByUserId: "me" }).expect(200);
+    expect(visible.body.map((row: { id: string }) => row.id)).toContain(seeded.issueId);
+    expect(await db.select().from(issueComments)).toHaveLength(1);
+    const [stored] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(stored.status).toBe("done");
+    expect(stored.completedAt).toEqual(completedAt);
+    const archives = await db.select().from(issueInboxArchives);
+    expect(archives).toHaveLength(1);
+    expect(archives[0].userId).toBe(seeded.responsibleUserId);
+    expect((await db.select().from(activityLog)).filter((row) => row.action === "issue.inbox_archived")).toHaveLength(1);
+  });
+
+  it("never backdates a newer manual archive committed while automatic cleanup waits on its row", async () => {
+    const seeded = await seed();
+    const completedAt = new Date(Date.now() - 60_000);
+    const manualAt = new Date();
+    await db.update(issues).set({ status: "done", completedAt }).where(eq(issues.id, seeded.issueId));
+    const service = issueService(db);
+    await service.archiveInbox(seeded.companyId, seeded.issueId, seeded.responsibleUserId,
+      new Date(completedAt.getTime() - 60_000));
+    const automaticDb = createDb(tempDb!.connectionString, {
+      maxConnections: 1, applicationName: "completed-inbox-manual-archive-race",
+    });
+    let signal!: () => void;
+    let unlock!: () => void;
+    const locked = new Promise<void>((resolve) => { signal = resolve; });
+    const released = new Promise<void>((resolve) => { unlock = resolve; });
+    const manual = db.transaction(async (tx) => {
+      await service.archiveInbox(seeded.companyId, seeded.issueId, seeded.responsibleUserId,
+        manualAt, { archivedByActorType: "user" }, tx);
+      signal();
+      await released;
+    });
+    await locked;
+    const automatic = issueService(automaticDb).archiveCompletedInbox(
+      seeded.companyId, seeded.issueId, seeded.responsibleUserId, completedAt,
+      { archivedByActorType: "agent", archivedByAgentId: seeded.agentId, archivedByRunId: seeded.runId },
+    );
+    try {
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_stat_activity
+          where application_name = 'completed-inbox-manual-archive-race' and wait_event_type = 'Lock'`);
+        expect(waiting.length).toBe(1);
+      }, { timeout: 5_000 });
+    } finally {
+      unlock();
+    }
+    await manual;
+    expect(await automatic).toMatchObject({ archived: false, reason: "already_archived" });
+    const [archive] = await db.select().from(issueInboxArchives);
+    expect(archive).toMatchObject({ archivedAt: manualAt, archivedByActorType: "user",
+      archivedByAgentId: null, archivedByRunId: null });
+  });
+
+  it("removes a completed notification from Mine without deleting its task", async () => {
+    const seeded = await seed();
+    const app = appFor({
+      type: "board", source: "session", userId: seeded.responsibleUserId,
+      companyIds: [seeded.companyId],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
+    });
+    const completedAt = new Date(Date.now() - 60_000);
+    await db.update(issues).set({ status: "done", completedAt, updatedAt: completedAt })
+      .where(eq(issues.id, seeded.issueId));
+    await request(app).post(`/api/issues/${seeded.issueId}/inbox-archive`)
+      .send({ expectedCompletedAt: completedAt.toISOString() }).expect(200);
+    await request(app).get(`/api/companies/${seeded.companyId}/issues`)
+      .query({ touchedByUserId: "me", inboxArchivedByUserId: "me" }).expect(200)
+      .expect(({ body }) => expect(body).toEqual([]));
+    await request(app).get(`/api/issues/${seeded.issueId}`).expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({ id: seeded.issueId, status: "done" }));
+  });
+
+  it("does not archive reopened, blocked, or differently completed tasks from a stale inbox snapshot", async () => {
+    const seeded = await seed();
+    const app = appFor({
+      type: "board", source: "session", userId: seeded.responsibleUserId,
+      companyIds: [seeded.companyId],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
+    });
+    const expected = new Date(Date.now() - 60_000);
+    for (const status of ["todo", "in_progress", "blocked", "done"] as const) {
+      await db.update(issues).set({ status, completedAt: new Date(expected.getTime() + 1_000) })
+        .where(eq(issues.id, seeded.issueId));
+      await request(app).post(`/api/issues/${seeded.issueId}/inbox-archive`)
+        .send({ expectedCompletedAt: expected.toISOString() }).expect(200)
+        .expect(({ body }) => expect(body).toMatchObject({ archived: false, reason: "completion_changed" }));
+    }
+    const otherUserApp = appFor({
+      type: "board", source: "session", userId: seeded.targetUserId,
+      companyIds: [seeded.companyId],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
+    });
+    await request(otherUserApp).post(`/api/issues/${seeded.issueId}/inbox-archive`)
+      .send({ expectedCompletedAt: new Date(expected.getTime() + 1_000).toISOString() }).expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({ archived: false, reason: "completion_changed" }));
+    expect(await db.select().from(issueInboxArchives)).toHaveLength(0);
+    expect(await db.select().from(activityLog)).toHaveLength(0);
+    await request(app).post(`/api/issues/${seeded.issueId}/inbox-archive`)
+      .send({ expectedCompletedAt: "invalid-date" }).expect(400);
+    await request(app).delete(`/api/issues/${seeded.issueId}/inbox-archive`)
+      .send({ expectedCompletedAt: expected.toISOString() }).expect(400);
   });
 
   it("silently archives an issue for the board user who moves it to done", async () => {

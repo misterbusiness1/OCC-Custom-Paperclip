@@ -1,4 +1,6 @@
 import { Router, type Request } from "express";
+import { deliverCurrentApprovalDecision } from "../services/approval-decision-delivery.js";
+import { revokeApproval } from "../services/approval-revocation.js";
 import { and, eq, isNull } from "drizzle-orm";
 import { heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
 import {
@@ -11,6 +13,7 @@ import {
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   retireApprovalSchema,
+  revokeApprovalSchema,
   resubmitApprovalSchema,
   isUuidLike,
 } from "@paperclipai/shared";
@@ -170,6 +173,7 @@ export function approvalRoutes(
   async function queueAdditionalApprovalReviewPathWakes(input: {
     approvalId: string;
     approvalStatus: string;
+    approvalUpdatedAt: string;
     companyId: string;
     linkedIssues: Awaited<ReturnType<typeof issueApprovalsSvc.listIssuesForApproval>>;
     lostIssueIds: Set<string>;
@@ -189,10 +193,11 @@ export function approvalRoutes(
           source: "automation",
           triggerDetail: "system",
           reason: wakeReason,
-          idempotencyKey: `approval-review-path:${input.approvalId}:${issue.id}:${input.approvalStatus}`,
+          idempotencyKey: `approval-review-path:${input.approvalId}:${issue.id}:${input.approvalStatus}:${input.approvalUpdatedAt}`,
           payload: {
             approvalId: input.approvalId,
             approvalStatus: input.approvalStatus,
+            approvalUpdatedAt: input.approvalUpdatedAt,
             issueId: issue.id,
             ...approvalReviewPathContext(input.approvalId),
           },
@@ -202,6 +207,7 @@ export function approvalRoutes(
             source: `approval.${input.approvalStatus}`,
             approvalId: input.approvalId,
             approvalStatus: input.approvalStatus,
+            approvalUpdatedAt: input.approvalUpdatedAt,
             issueId: issue.id,
             taskId: issue.id,
             wakeReason,
@@ -218,6 +224,7 @@ export function approvalRoutes(
           entityId: input.approvalId,
           details: {
             approvalStatus: input.approvalStatus,
+            approvalUpdatedAt: input.approvalUpdatedAt,
             issueId: issue.id,
             assigneeAgentId: issue.assigneeAgentId,
             wakeRunId: wakeRun?.id ?? null,
@@ -237,6 +244,7 @@ export function approvalRoutes(
           entityId: input.approvalId,
           details: {
             approvalStatus: input.approvalStatus,
+            approvalUpdatedAt: input.approvalUpdatedAt,
             issueId: issue.id,
             assigneeAgentId: issue.assigneeAgentId,
             error: err instanceof Error ? err.message : String(err),
@@ -349,6 +357,7 @@ export function approvalRoutes(
         payload: {
           approvalId: approval.id,
           approvalStatus: approval.status,
+          approvalUpdatedAt: approval.updatedAt.toISOString(),
           issueId: primaryIssueId,
           issueIds: input.linkedIssueIds,
           ...(input.reviewPathContext ?? {}),
@@ -359,6 +368,7 @@ export function approvalRoutes(
           source: `approval.${approval.status}`,
           approvalId: approval.id,
           approvalStatus: approval.status,
+          approvalUpdatedAt: approval.updatedAt.toISOString(),
           issueId: primaryIssueId,
           issueIds: input.linkedIssueIds,
           taskId: primaryIssueId,
@@ -444,39 +454,42 @@ export function approvalRoutes(
     actorUserId: string;
   }) {
     const { approval } = input;
-    const linkedIssuesBefore = await issueApprovalsSvc.listIssuesForApproval(approval.id);
-    const linkedIssueIds = linkedIssuesBefore.map((issue) => issue.id);
-    const handedBack = await handLinkedIssuesBackToRequester({
-      approval,
-      linkedIssues: linkedIssuesBefore,
-      actorUserId: input.actorUserId,
+    return deliverCurrentApprovalDecision(db, approval, async () => {
+      const linkedIssuesBefore = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      const linkedIssueIds = linkedIssuesBefore.map((issue) => issue.id);
+      const handedBack = await handLinkedIssuesBackToRequester({
+        approval,
+        linkedIssues: linkedIssuesBefore,
+        actorUserId: input.actorUserId,
+      });
+      const linkedIssues = handedBack.size > 0
+        ? await issueApprovalsSvc.listIssuesForApproval(approval.id)
+        : linkedIssuesBefore;
+      const lostReviewIssueIds = await lostReviewPathIssueIds(approval.companyId, linkedIssues);
+      const primaryIssueId = linkedIssueIds[0] ?? null;
+      const primaryReviewPathContext = primaryIssueId && lostReviewIssueIds.has(primaryIssueId)
+        ? approvalReviewPathContext(approval.id)
+        : null;
+      const requesterWake = await queueRequesterDecisionWake({
+        approval,
+        linkedIssueIds,
+        reviewPathContext: primaryReviewPathContext,
+        actorUserId: input.actorUserId,
+      });
+      await queueAdditionalApprovalReviewPathWakes({
+        approvalId: approval.id,
+        approvalStatus: approval.status,
+        approvalUpdatedAt: approval.updatedAt.toISOString(),
+        companyId: approval.companyId,
+        linkedIssues,
+        lostIssueIds: lostReviewIssueIds,
+        alreadyWoken: requesterWake.queued && approval.requestedByAgentId
+          ? { agentId: approval.requestedByAgentId, issueIds: new Set([...(primaryIssueId ? [primaryIssueId] : []), ...handedBack]) }
+          : null,
+        requestedByUserId: input.actorUserId,
+      });
+      return { linkedIssueIds, handedBack, requesterWake };
     });
-    const linkedIssues = handedBack.size > 0
-      ? await issueApprovalsSvc.listIssuesForApproval(approval.id)
-      : linkedIssuesBefore;
-    const lostReviewIssueIds = await lostReviewPathIssueIds(approval.companyId, linkedIssues);
-    const primaryIssueId = linkedIssueIds[0] ?? null;
-    const primaryReviewPathContext = primaryIssueId && lostReviewIssueIds.has(primaryIssueId)
-      ? approvalReviewPathContext(approval.id)
-      : null;
-    const requesterWake = await queueRequesterDecisionWake({
-      approval,
-      linkedIssueIds,
-      reviewPathContext: primaryReviewPathContext,
-      actorUserId: input.actorUserId,
-    });
-    await queueAdditionalApprovalReviewPathWakes({
-      approvalId: approval.id,
-      approvalStatus: approval.status,
-      companyId: approval.companyId,
-      linkedIssues,
-      lostIssueIds: lostReviewIssueIds,
-      alreadyWoken: requesterWake.queued && approval.requestedByAgentId
-        ? { agentId: approval.requestedByAgentId, issueIds: new Set([...(primaryIssueId ? [primaryIssueId] : []), ...handedBack]) }
-        : null,
-      requestedByUserId: input.actorUserId,
-    });
-    return { linkedIssueIds, handedBack, requesterWake };
   }
 
   async function requireApprovalAccess(req: Request, id: string) {
@@ -694,6 +707,21 @@ export function approvalRoutes(
       await resumeRequesterAfterDecision({ approval, actorUserId: decidedByUserId });
     }
 
+    res.json(redactApprovalPayload(approval));
+  });
+
+  router.post("/approvals/:id/revoke", validate(revokeApprovalSchema), async (req, res) => {
+    assertBoard(req);
+    const existing = await requireApprovalAccess(req, req.params.id as string);
+    if (!existing) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    const approval = await revokeApproval(db, {
+      companyId: existing.companyId, approvalId: existing.id,
+      userId: req.actor.userId ?? "board", decisionNote: req.body.decisionNote,
+      expectedUpdatedAt: new Date(req.body.expectedUpdatedAt),
+    });
     res.json(redactApprovalPayload(approval));
   });
 

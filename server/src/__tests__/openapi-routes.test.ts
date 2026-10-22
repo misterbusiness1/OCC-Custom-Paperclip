@@ -1015,3 +1015,21 @@ describe("heartbeat run ID OpenAPI contract", () => {
     expect(checked).toBe(12);
   });
 });
+
+describe("completed inbox archive contract", () => {
+  it("publishes the runtime completion guard and conditional response semantics", () => {
+    const spec = buildOpenApiSpec() as any;
+    const operation = spec.paths["/api/issues/{id}/inbox-archive"].post;
+    const schema = operation.requestBody.content["application/json"].schema;
+    expect(schema.properties.expectedCompletedAt).toMatchObject({ type: "string", format: "date-time" });
+    expect(schema.required ?? []).not.toContain("expectedCompletedAt");
+    expect(schema.additionalProperties).toBe(false);
+    expect(operation.description).toContain("completion_changed");
+    expect(operation.description).toContain("already_archived");
+    expect(operation.description).toContain("archived: true");
+    const response = operation.responses[200].content["application/json"].schema;
+    expect(response.oneOf[0].properties.archived).toMatchObject({ type: "boolean", enum: [false] });
+    expect(response.oneOf[0].properties.reason.enum).toEqual(["completion_changed", "already_archived"]);
+    expect(response.oneOf[1].properties.archivedAt).toMatchObject({ type: "string", format: "date-time" });
+  });
+});

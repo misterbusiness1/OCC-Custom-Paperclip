@@ -1,3 +1,4 @@
+import { completedInboxArchiveBodySchema, completedInboxArchiveResponseSchema } from "./inbox-archive-schema.js";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
 import {
   experimentalApiPaths,
@@ -118,6 +119,7 @@ import {
   createApprovalSchema,
   resolveApprovalSchema,
   retireApprovalSchema,
+  revokeApprovalSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
@@ -1345,6 +1347,7 @@ const browserUseOperations = [
 
 const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/approvals/{id}/retire",
+  "POST /api/approvals/{id}/revoke",
   "GET /api/issues/{id}/comment-requests/{clientRequestId}",
   ...browserUseOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
   "GET /api/companies/{companyId}/ai-connections",
@@ -4318,11 +4321,12 @@ registry.registerPath({
   path: "/api/issues/{id}/inbox-archive",
   tags: ["issues"],
   summary: "Archive issue from inbox",
+  description: "With expectedCompletedAt, archives only the matching done completion. Returns archived: false with completion_changed or already_archived when skipped; archived: true on conditional success. Without it, performs ordinary inbox archive.",
   request: {
     params: z.object({ id: z.string() }),
-    body: jsonBody(z.object({ userId: z.string().min(1).optional() })),
+    body: jsonBody(completedInboxArchiveBodySchema),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+  responses: { 200: r.ok(completedInboxArchiveResponseSchema), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -5243,6 +5247,15 @@ registry.registerPath({
     body: jsonBody(resolveApprovalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/approvals/{id}/revoke",
+  tags: ["approvals"],
+  summary: "Withdraw an approved request before execution starts",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(revokeApprovalSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
 
 registry.registerPath({

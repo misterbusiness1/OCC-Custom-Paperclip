@@ -118,6 +118,12 @@ export const retireApprovalSchema = z.object({
 
 export type RetireApproval = z.infer<typeof retireApprovalSchema>;
 
+/** Board withdrawal of an approved request; ordinary rejection remains unchanged. */
+export const revokeApprovalSchema = retireApprovalSchema.extend({
+  decisionNote: multilineTextSchema.refine((value) => value.trim().length > 0, "A revocation reason is required"),
+});
+export type RevokeApproval = z.infer<typeof revokeApprovalSchema>;
+
 export const requestApprovalRevisionSchema = z.object({
   decisionNote: multilineTextSchema.optional().nullable(),
   expectedUpdatedAt: expectedApprovalUpdatedAtSchema,

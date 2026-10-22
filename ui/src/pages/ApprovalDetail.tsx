@@ -1,3 +1,4 @@
+import { ApprovalRevocation } from "../components/ApprovalRevocation";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "@/lib/router";
@@ -463,6 +464,8 @@ export function ApprovalDetail() {
           </div>
         )}
       </section>
+
+      <ApprovalRevocation approval={approval} onResolved={refresh} />
 
       <details className="rounded-lg border border-border">
         <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-foreground">Full request</summary>

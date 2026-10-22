@@ -36,6 +36,7 @@ const apiMocks = vi.hoisted(() => ({
   issuesCount: vi.fn(),
   issueLabels: vi.fn(),
   archiveFromInbox: vi.fn(),
+  archiveCompletedFromInbox: vi.fn(),
   unarchiveFromInbox: vi.fn(),
   agentsList: vi.fn(),
   heartbeatRunsList: vi.fn(),
@@ -86,6 +87,7 @@ vi.mock("../api/issues", () => ({
     markRead: vi.fn(),
     markUnread: vi.fn(),
     archiveFromInbox: apiMocks.archiveFromInbox,
+    archiveCompletedFromInbox: apiMocks.archiveCompletedFromInbox,
     unarchiveFromInbox: apiMocks.unarchiveFromInbox,
   },
 }));
@@ -376,6 +378,7 @@ function resetInboxApiMocks() {
   apiMocks.issuesCount.mockResolvedValue({ count: 0 });
   apiMocks.issueLabels.mockResolvedValue([]);
   apiMocks.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
+  apiMocks.archiveCompletedFromInbox.mockResolvedValue({ id: "issue-1", archived: true });
   apiMocks.unarchiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
   apiMocks.agentsList.mockResolvedValue([]);
   apiMocks.heartbeatRunsList.mockResolvedValue([]);
@@ -442,6 +445,30 @@ describe("Inbox toolbar", () => {
       }
     },
   );
+
+  it("offers completed-task cleanup only as an explicit inbox opt-in", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const completedAt = new Date("2026-10-22T12:00:00Z");
+    apiMocks.issuesList.mockResolvedValue([createIssue({ status: "done", completedAt })]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(queryClient.isFetching()).toBe(0));
+      const label = Array.from(container.querySelectorAll("label")).find((element) =>
+        element.textContent?.includes("Automatically archive completed tasks from my inbox"));
+      const checkbox = label?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+      expect(checkbox?.checked).toBe(false);
+      expect(apiMocks.archiveCompletedFromInbox).not.toHaveBeenCalled();
+      await act(async () => checkbox!.click());
+      await vi.waitFor(() => expect(apiMocks.archiveCompletedFromInbox)
+        .toHaveBeenCalledWith("issue-1", completedAt.toISOString()));
+      expect(apiMocks.archiveFromInbox).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
 
   it("restores the legacy toolbar and issue-row presentation when Streamlined UI is off", async () => {
     routerMock.location.pathname = "/inbox/mine";

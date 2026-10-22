@@ -7,6 +7,7 @@ import {
   type ApprovalQueue,
   type Issue,
   type RetireApproval,
+  type RevokeApproval,
 } from "@paperclipai/shared";
 import { ApiError, api, type RequestOptions } from "./client";
 import { expectedVersionFields, type ApprovalVersion } from "../lib/approval-version";
@@ -92,6 +93,8 @@ export const approvalsApi = {
   reject: (id: string, decisionNote?: string, options?: ApprovalDecisionOptions) =>
     api.post<Approval>(`/approvals/${id}/reject`, decisionBody(decisionNote, options)),
   /** Explicit board cleanup of closed work; ordinary rejection keeps its notification contract. */
+  revoke: (id: string, data: RevokeApproval) =>
+    api.post<Approval>(`/approvals/${id}/revoke`, data),
   retire: (id: string, data: RetireApproval) =>
     api.post<Approval>(`/approvals/${id}/retire`, data),
   requestRevision: (id: string, decisionNote?: string, options?: ApprovalDecisionOptions) =>
