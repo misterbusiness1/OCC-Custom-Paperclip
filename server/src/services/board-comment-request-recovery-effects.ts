@@ -114,13 +114,11 @@ export async function classifyBoardCommentSourceRecovery(db: Db, input: {
       }
 
       const approvals = await issueApprovalsSvc.listApprovalsForIssue(issue.id);
-      if (
-        approvals.some(
-          (approval) =>
-            approval.status === "pending" ||
-            approval.status === "revision_requested",
-        )
-      ) {
+      // Fork (OXFA-35229): only a pending approval waits on the board. With
+      // revision_requested the agent moves next, so a recovery action for its
+      // failed wake is not stale; cancelling it let the stranded sweep
+      // escalate the same issue again on every pass.
+      if (approvals.some((approval) => approval.status === "pending")) {
         return "Recovery action became stale because the source issue now has a pending approval.";
       }
     }
