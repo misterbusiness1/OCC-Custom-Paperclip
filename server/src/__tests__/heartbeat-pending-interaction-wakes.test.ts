@@ -445,9 +445,9 @@ describe("automatic readiness wakes while an interaction is pending", () => {
   });
 
   it("fork default: delivers a same-blocker cycle exactly once with no disposition repair runs", async () => {
-    // Production's scenario, without the fake monitor re-arm: the overlay keeps
-    // the monitor armed itself, and with legacy disposition repair off (the fork
-    // default) no repair run follows the monitor or dependency runs.
+    // Production's scenario, without the fake monitor re-arm: the fire consumes
+    // the monitor, and with legacy disposition repair off (the fork default) no
+    // repair run follows the monitor or dependency runs.
     const previousRepair = process.env.PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED;
     delete process.env.PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED;
     try {
@@ -509,9 +509,15 @@ describe("automatic readiness wakes while an interaction is pending", () => {
     expect(adapterState.sideEffects).toBe(1);
     expect(finalRuns).toHaveLength(1);
 
-    // The monitor stays armed after its turn: a scheduled monitor owns the
+    // The fire consumed the monitor: the woken run did not re-arm it.
+    const [consumedIssue] = await db.select().from(issues)
+      .where(eq(issues.id, f.issueId));
+    expect(consumedIssue?.monitorNextCheckAt).toBeNull();
+
+    // When the woken run re-arms the monitor, the scheduled monitor owns the
     // assignee's next automatic wake, so the same-blocker cycle is parked
     // instead of opening a second run.
+    await scheduleFutureMonitor(f);
     await db.update(issues).set({ status: "in_review" })
       .where(eq(issues.id, f.issueId));
     await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });
@@ -530,9 +536,9 @@ describe("automatic readiness wakes while an interaction is pending", () => {
 
     // Once the monitor is no longer scheduled, the parked readiness signal is
     // admitted exactly once.
-    await db.update(issues).set({ monitorNextCheckAt: null })
-      .where(eq(issues.id, f.issueId));
-    await db.update(issues).set({ status: "in_review" })
+    await db.update(issues).set({
+      status: "in_review", monitorNextCheckAt: null, executionPolicy: null,
+    })
       .where(eq(issues.id, f.issueId));
     await heartbeat.reconcileResolvedDependencyWakes({ companyId: f.companyId });
     await db.update(issues).set({ status: "in_progress" })
