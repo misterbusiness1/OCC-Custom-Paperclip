@@ -10,11 +10,11 @@ function clone(value) {
   return structuredClone(value);
 }
 
-test("passes the exact governed ruleset for all 49 manifest repositories", () => {
-  assert.equal(EXPECTED_REPOSITORIES.length, 49);
+test("passes the exact governed ruleset for all 51 manifest repositories", () => {
+  assert.equal(EXPECTED_REPOSITORIES.length, 51);
   const results = EXPECTED_REPOSITORIES.map((repository) => validateOccReviewBotRuleset(repository, [clone(fixture.compliant)]));
-  assert.equal(results.filter((result) => result.state === "pass").length, 49);
-  assert.match(rulesetDriftMarkdown(results), /Repositories checked: 49/);
+  assert.equal(results.filter((result) => result.state === "pass").length, 51);
+  assert.match(rulesetDriftMarkdown(results), /Repositories checked: 51/);
   assert.match(rulesetDriftMarkdown(results), /Result: PASS/);
 });
 
