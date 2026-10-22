@@ -39,6 +39,7 @@ import { workspaceOperationService, isNativeWorkspaceFinalizationOperationActive
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { PROVIDER_QUOTA_RECOVERY_MAX_ATTEMPTS, recoveryService } from "../services/recovery/service.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -816,6 +817,172 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(enqueueWakeup).not.toHaveBeenCalled();
     },
   );
+
+  async function seedBoardRequestWait(input: {
+    status: "in_review" | "in_progress";
+    approvalStatus: "pending" | "revision_requested" | null;
+    conversation?: boolean;
+    staleRun?: boolean;
+  }) {
+    const seeded = await seedCompany();
+    const { companyId, coderId, sourceIssueId } = seeded;
+    await db.update(issues).set({
+      status: input.status,
+      executionState: input.status === "in_review" ? {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: coderId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      } : null,
+      ...(input.conversation ? {
+        conversationAgentId: coderId,
+        conversationUserId: "board-user",
+        conversationState: "active" as const,
+      } : {}),
+    }).where(eq(issues.id, sourceIssueId));
+    // A cancelled legacy run: without a board wait this escalates to a
+    // board-owned recovery action (the OXFA-35229 flip).
+    if (input.staleRun !== false) await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "cancelled",
+      error: "Issue reassigned",
+      errorCode: "issue_reassigned",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    if (input.approvalStatus) {
+      const [approval] = await db.insert(approvals).values({
+        companyId,
+        type: "request_board_approval",
+        status: input.approvalStatus,
+        payload: { title: "Waiting for the board" },
+        requestedByAgentId: coderId,
+      }).returning();
+      await db.insert(issueApprovals).values({
+        companyId,
+        issueId: sourceIssueId,
+        approvalId: approval!.id,
+        linkedByAgentId: coderId,
+      });
+    }
+    return seeded;
+  }
+
+  it("leaves an in_review issue waiting on a pending board request alone across sweeps", async () => {
+    const { coderId, sourceIssueId } = await seedBoardRequestWait({ status: "in_review", approvalStatus: "pending" });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    for (let sweep = 0; sweep < 3; sweep += 1) {
+      expect(await recovery.reconcileStrandedAssignedIssues()).toMatchObject({ skipped: 1, escalated: 0, issueIds: [] });
+      const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(updatedIssue).toMatchObject({ status: "in_review", assigneeAgentId: coderId });
+      expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    }
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["in_review", "revision_requested"],
+    ["in_progress", "pending"],
+    ["in_review", null],
+  ] as const)("keeps stale-run escalation for a %s issue with a %s board request", async (status, approvalStatus) => {
+    const { coderId, sourceIssueId } = await seedBoardRequestWait({ status, approvalStatus });
+    const enqueueWakeup = vi.fn(async () => null);
+
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ escalated: 1, issueIds: [sourceIssueId] });
+    expect(await db.select().from(issueRecoveryActions)).toEqual([expect.objectContaining({
+      cause: "legacy_execution_requires_reconciliation", ownerType: "board", returnOwnerAgentId: coderId,
+    })]);
+  });
+
+  it("still delivers an undelivered conversation comment on an in_review issue waiting on a board request", async () => {
+    const previous = await instanceSettingsService(db).getExperimental();
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    try {
+      const { companyId, coderId, sourceIssueId } = await seedBoardRequestWait({
+        status: "in_review",
+        approvalStatus: "pending",
+        conversation: true,
+      });
+      const [comment] = await db.insert(issueComments).values({
+        companyId,
+        issueId: sourceIssueId,
+        authorUserId: "board-user",
+        authorType: "user",
+        clientRequestId: randomUUID(),
+        body: "Any update?",
+      }).returning();
+      const enqueueWakeup = vi.fn(async () => null);
+
+      const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+
+      expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+        reason: "issue_commented",
+        idempotencyKey: `conversation-comment:${comment!.id}`,
+      }));
+      expect(result).toMatchObject({ skipped: 1, escalated: 0 });
+      const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(updatedIssue).toMatchObject({ status: "in_review" });
+      expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: previous.enableAgentChat });
+    }
+  });
+
+  it("still requeues an approved approval's continuation on an in_review issue waiting on another board request", async () => {
+    // No stale run here: a cancelled legacy predecessor is terminalized by the
+    // orphan recovery itself (upstream behaviour), which is not under test.
+    const { companyId, coderId, sourceIssueId } = await seedBoardRequestWait({
+      status: "in_review",
+      approvalStatus: "pending",
+      staleRun: false,
+    });
+    const decidedAt = new Date("2026-10-15T19:57:00.000Z");
+    const [approved] = await db.insert(approvals).values({
+      companyId,
+      type: "request_board_approval",
+      status: "approved",
+      payload: { title: "Authorized action" },
+      requestedByAgentId: coderId,
+      decidedByUserId: "board-user",
+      decidedAt,
+      updatedAt: decidedAt,
+    }).returning();
+    await db.insert(issueApprovals).values({
+      companyId,
+      issueId: sourceIssueId,
+      approvalId: approved!.id,
+      linkedByAgentId: coderId,
+    });
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() }));
+
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ continuationRequeued: 1, escalated: 0 });
+    expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+      reason: "issue_continuation_needed",
+      contextSnapshot: expect.objectContaining({
+        approvalId: approved!.id,
+        approvalOrphanRecovery: true,
+      }),
+    }));
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({ status: "in_review" });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+  });
 
   it("stands down while the latest run was cancelled by a board operator", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();

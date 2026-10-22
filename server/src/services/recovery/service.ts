@@ -89,6 +89,7 @@ import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { budgetService } from "../budgets.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { issueApprovalService } from "../issue-approvals.js";
 import { hasConversationContinuationPolicy } from "../conversation-continuation.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { syncRoutineRunStatusForIssue } from "../routine-run-status.js";
@@ -5392,6 +5393,24 @@ export function recoveryService(
       if (isOperatorCancelledRun(executionRecoverySource, agentId)) {
         result.operatorCancelExempted += 1;
         continue;
+      }
+      // Fork: an in_review issue waiting on a pending board request
+      // (request_board_approval) is waiting on the board, not stranded.
+      // Escalating it looped with the recovery-action revalidation, which
+      // cancels the action as stale because of that same approval, after which
+      // the agent restored in_review (OXFA-35229, 18 flips in 17 h). The skip
+      // sits after conversation settlement and comment delivery, and runs the
+      // approved-approval orphan recovery first, so those paths still run for
+      // such an issue. revision_requested is not a board wait (the agent moves
+      // next), and other statuses and approval types keep upstream's behaviour.
+      if (issue.status === "in_review") {
+        const linkedApprovals = await issueApprovalService(db).listApprovalsForIssue(issue.id);
+        if (linkedApprovals.some((approval) =>
+          approval.type === "request_board_approval" && approval.status === "pending")) {
+          if (await reconcileApprovedIssueContinuations(issue, agentId, latestRun)) continue;
+          result.skipped += 1;
+          continue;
+        }
       }
       if (
         executionRecoverySource &&
