@@ -8,6 +8,8 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentRuntimeState,
+  userSecretDeclarations,
   agents,
   companies,
   companyMemberships,
@@ -105,6 +107,7 @@ describeEmbeddedPostgres("agent adapter-config environment binding merge", () =>
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
   });
 
@@ -210,6 +213,60 @@ describeEmbeddedPostgres("agent adapter-config environment binding merge", () =>
     const env = await storedEnv(agent.id);
     expect(env[PLAIN_KEY]).toMatchObject({ type: "plain", value: "plain-value" });
     expect(env[SECRET_KEY]).toMatchObject({ type: "secret_ref", secretId, version: "latest" });
+  });
+
+  const fixedBinding = { type: "user_secret_ref", key: "CLAUDE_CODE_OAUTH_TOKEN" };
+
+  it.each([
+    { adapterType: "process" },
+    { adapterType: "process", adapterConfig: { command: "echo" } },
+    { adapterType: "process", adapterConfig: { env: {} } },
+    { adapterType: "process", adapterConfig: { env: {
+      [PLAIN_KEY]: { type: "plain", value: "***REDACTED***" },
+    } } },
+  ])("drops an omitted fixed binding on transition: %j", async (patch) => {
+    const agent = await seedAgent();
+    const env = await storedEnv(agent.id);
+    await db.update(agents).set({ adapterConfig: {
+      env: { ...env, CLAUDE_CODE_OAUTH_TOKEN: fixedBinding },
+    } }).where(eq(agents.id, agent.id));
+    // Materialize the fixed user-secret declaration through the real service.
+    await agentService(db).update(agent.id, { adapterConfig: { env: {
+      ...env, CLAUDE_CODE_OAUTH_TOKEN: fixedBinding,
+    } } });
+    const beforeDeclarations = await db.select().from(userSecretDeclarations)
+      .where(eq(userSecretDeclarations.targetId, agent.id));
+    expect(beforeDeclarations).toHaveLength(1);
+    await db.insert(agentRuntimeState).values({
+      agentId: agent.id, companyId: COMPANY_ID, adapterType: "claude_local",
+      sessionId: "synthetic-session", stateJson: { synthetic: true },
+    });
+
+    const res = await request(createApp()).patch(`/api/agents/${agent.id}`).send(patch);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const persisted = await storedEnv(agent.id);
+    expect(persisted.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(persisted[PLAIN_KEY]).toEqual(env[PLAIN_KEY]);
+    expect(persisted[SECRET_KEY]).toMatchObject(env[SECRET_KEY]);
+    const [runtime] = await db.select().from(agentRuntimeState)
+      .where(eq(agentRuntimeState.agentId, agent.id));
+    expect(runtime).toMatchObject({ adapterType: "process", sessionId: null, stateJson: {} });
+    const declarations = await db.select().from(userSecretDeclarations)
+      .where(eq(userSecretDeclarations.targetId, agent.id));
+    expect(declarations).toHaveLength(0);
+  });
+
+  it("forwards an explicitly supplied fixed binding under existing policy", async () => {
+    const agent = await seedAgent();
+    const env = await storedEnv(agent.id);
+    await db.update(agents).set({ adapterConfig: {
+      env: { ...env, CLAUDE_CODE_OAUTH_TOKEN: fixedBinding },
+    } }).where(eq(agents.id, agent.id));
+    const res = await request(createApp()).patch(`/api/agents/${agent.id}`).send({
+      adapterType: "process", adapterConfig: { env: { CLAUDE_CODE_OAUTH_TOKEN: fixedBinding } },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await storedEnv(agent.id)).CLAUDE_CODE_OAUTH_TOKEN).toMatchObject(fixedBinding);
   });
 
   it("ignores an unknown top-level field instead of failing the write", async () => {

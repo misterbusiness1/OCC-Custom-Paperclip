@@ -5562,11 +5562,15 @@ export function agentRoutes(
         // harness. When an agent moves to another harness, the binding has to
         // go with it: the service releases the stored session claim only when
         // it sees the binding removed. A binding the request set explicitly is
-        // forwarded as sent, so the service decides on it.
+        // forwarded as sent, so the service decides on it. Read intent from
+        // the original request: adapter-agnostic preservation above may have
+        // synthesized env even when the caller omitted it.
         if (
           changingAdapterType
           && requestedAdapterType !== "claude_local"
-          && !isFixedClaudeOAuthEnvBinding(effectiveRequestedEnv?.CLAUDE_CODE_OAUTH_TOKEN)
+          && !isFixedClaudeOAuthEnvBinding(
+            asRecord(requestedAdapterConfig?.env)?.CLAUDE_CODE_OAUTH_TOKEN,
+          )
           && isFixedClaudeOAuthEnvBinding(mergedEnv.CLAUDE_CODE_OAUTH_TOKEN)
         ) {
           delete mergedEnv.CLAUDE_CODE_OAUTH_TOKEN;
