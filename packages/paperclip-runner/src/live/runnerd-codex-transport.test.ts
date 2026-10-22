@@ -4471,9 +4471,10 @@ it("steers the active provider turn through the durable PRP command path", async
   }
 }, 30_000);
 
-it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
+it.each(["held-ack", "lost-ack", "lost-ack-late-observer", "rejected-attach"] as const)(
   "preserves old warm-attach authority and event ownership across %s",
   async (mode) => {
+    const losesAck = mode === "lost-ack" || mode === "lost-ack-late-observer";
     const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-warm-ack-"));
     const callsPath = join(stateDirectory, "calls.log");
     const cores: DurablePrpControlPlane[] = [];
@@ -4518,7 +4519,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
               heldEvent = structuredClone(event);
               enteredCommit();
               await commitGate;
-              if (mode === "lost-ack") {
+              if (losesAck) {
                 // The external durable effect exists, but this connection
                 // disappears before its local cursor/ACK can be published.
                 throw new Error(
@@ -4609,6 +4610,18 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
       const runnerPid = bundle.evidence().runnerPid;
       providerPid = bundle.evidence().codexPid;
       const rotations: (typeof core.store.state)[] = [];
+      const retiredAuthorities: (typeof core.store.state)[] = [];
+      const commit = core.store.commit.bind(core.store);
+      vi.spyOn(core.store, "commit").mockImplementation((candidate) => {
+        // Authenticated activation may complete before attachRun's next poll.
+        // Observe the durable old epoch immediately before that authority changes,
+        // rather than snapshotting a later idempotent rotateRunIdentity call.
+        const retired = core.store.state.identity.runId === oldIdentity.runId
+          && candidate.identity.runId !== oldIdentity.runId
+          ? structuredClone(core.store.state) : null;
+        commit(candidate);
+        if (retired) retiredAuthorities.push(retired);
+      });
       const rotate = core.rotateRunIdentity.bind(core);
       vi.spyOn(core, "rotateRunIdentity").mockImplementation(
         (identity, template) => {
@@ -4636,6 +4649,14 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
             ),
         );
       }
+      // Reproduce an attach observer polling only after authenticated activation.
+      const observeCommand = core.getCommand.bind(core);
+      vi.spyOn(core, "getCommand").mockImplementation((id) => {
+        const command = observeCommand(id);
+        return mode === "lost-ack-late-observer" && id.startsWith("command_attach_")
+          && core.store.state.identity.runId === oldIdentity.runId && command?.status === "completed"
+          ? { ...command, status: "pending" } : command;
+      });
       armed = true;
       const attachment = bundle.transport.attachRun!({
         runId: "run-warm-ack-next",
@@ -4648,6 +4669,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
           "run.attach cannot change the durable Codex provider profile",
         );
         expect(rotations).toHaveLength(0);
+        expect(retiredAuthorities).toHaveLength(0);
         expect(core.store.state.identity).toEqual(oldIdentity);
         expect((await readRunner()).runId).toBe(oldIdentity.runId);
         const read = await within(
@@ -4678,11 +4700,13 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
             ?.status,
         ).toBe("pending");
         expect(rotations).toHaveLength(0);
-        if (mode === "lost-ack") core.disconnectActiveRunner();
+        expect(retiredAuthorities).toHaveLength(0);
+        if (losesAck) core.disconnectActiveRunner();
         releaseCommit();
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
-        const retired = rotations[0]!;
+        expect(retiredAuthorities).toHaveLength(1);
+        const retired = retiredAuthorities[0]!;
         const attachedEvent = retired.committedEvents.find(
           (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
         )!;
@@ -4703,7 +4727,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
             (entry) => entry.envelope.runId === oldIdentity.runId,
           ),
         ).toBe(true);
-        if (mode === "lost-ack") {
+        if (losesAck) {
           expect(retired.connectionCount).toBeGreaterThanOrEqual(2);
           expect(effects.get(heldEvent!.sourceEventId)?.deliveries).toBe(2);
         } else {
