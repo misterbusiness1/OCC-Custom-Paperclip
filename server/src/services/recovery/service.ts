@@ -89,6 +89,7 @@ import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { budgetService } from "../budgets.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { issueApprovalService } from "../issue-approvals.js";
 import { hasConversationContinuationPolicy } from "../conversation-continuation.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { syncRoutineRunStatusForIssue } from "../routine-run-status.js";
@@ -3211,11 +3212,37 @@ export function recoveryService(
     ].join("\n");
   }
 
+  // Fork (OXFA-35229): an in_review issue with a linked approval still
+  // `pending` (any approval type) is waiting on the board, not stranded.
+  // Moving it to blocked looped: the recovery-action revalidation cancels the
+  // action as stale for exactly this state, the agent restores in_review, and
+  // the next sweep escalates again (18 flips in 17 h). Escalation helpers
+  // refuse such an issue (callers count a null result as skipped); requeues
+  // that leave the status alone (reviewer requeue, approved continuations,
+  // comment delivery) still run. `revision_requested` is not a board wait: the
+  // agent moves next, so its failed wakes still escalate, and the revalidation
+  // keeps that action.
+  async function isAwaitingBoardDecision(issue: typeof issues.$inferSelect) {
+    if (issue.status !== "in_review") return false;
+    const linkedApprovals = await issueApprovalService(db).listApprovalsForIssue(issue.id);
+    return linkedApprovals.some((approval) => approval.status === "pending");
+  }
+
+  async function releaseDeadRunIssueLocks(issue: typeof issues.$inferSelect, runId: string) {
+    await db.update(issues)
+      .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+      .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id), eq(issues.executionRunId, runId)));
+    await db.update(issues)
+      .set({ checkoutRunId: null })
+      .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id), eq(issues.checkoutRunId, runId)));
+  }
+
   async function escalateStrandedRecoveryIssueInPlace(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
   }) {
+    if (await isAwaitingBoardDecision(input.issue)) return null;
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
     });
@@ -4570,6 +4597,7 @@ export function recoveryService(
       });
     }
 
+    if (await isAwaitingBoardDecision(input.issue)) return null;
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
       input.recoveryCause,
@@ -5410,6 +5438,16 @@ export function recoveryService(
             ),
           );
         if (source && legacyExecutionNeedsReconciliation(source)) {
+          if (await isAwaitingBoardDecision(issue)) {
+            // Fork (OXFA-35229): release the dead run's execution/checkout
+            // locks as the terminalization would, but defer its board-owned
+            // decision, which the revalidation would cancel as stale while the
+            // approval is pending. Once the board decides, a later sweep
+            // terminalizes the run.
+            await releaseDeadRunIssueLocks(issue, source.id);
+            result.skipped += 1;
+            continue;
+          }
           await terminalizeLegacyExecution({
             db,
             run: source,
