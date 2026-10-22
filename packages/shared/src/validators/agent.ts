@@ -155,6 +155,10 @@ export const updateAgentSchema = objectWithoutDefaults(
   .extend({
     permissions: z.never().optional(),
     replaceAdapterConfig: z.boolean().optional(),
+    // Explicit environment-binding removals. `adapterConfig.env` merges per
+    // key, so a request that omits a binding keeps the stored one. Removing a
+    // binding is a deliberate act and must name the keys it removes.
+    envRemovedKeys: z.array(z.string().min(1)).optional(),
     status: z.enum(AGENT_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
   });

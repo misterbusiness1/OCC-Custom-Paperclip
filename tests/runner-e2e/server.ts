@@ -34,6 +34,9 @@ const gracefulStopTimeoutMs = 30_000;
 const serverEnvironment = buildPaperclipServerEnvironment(process.env, {
   NODE_ENV: "test",
   PORT: port,
+  // The live lifecycle cases cover upstream's legacy disposition repair, which
+  // the fork keeps opt-in in production.
+  PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED: "true",
   // Keep provider caches attempt-private without changing Playwright's browser
   // cache lookup in the parent process.
   XDG_CACHE_HOME: path.join(temporaryRoot, "xdg-cache"),

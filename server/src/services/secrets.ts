@@ -63,6 +63,7 @@ import type {
 } from "../secrets/types.js";
 import { isSecretProviderClientError } from "../secrets/types.js";
 import { authorizationDeniedDetails, authorizationService } from "./authorization.js";
+import { ENV_KEY_RE, isFixedClaudeOAuthEnvBinding } from "./agent-env-config.js";
 import { findActiveServerAdapter } from "../adapters/index.js";
 import { logActivity } from "./activity-log.js";
 // Only a `local_encrypted` secret can hold a literal directory path, so only a
@@ -85,7 +86,6 @@ import {
   withAccountHomeSecretMutationLock,
 } from "@paperclipai/adapter-codex-local/server";
 
-const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const AGENT_ACCESS_CONFIG_PATH_PREFIX = "access.";
 // System consumer id for a durable orphan-sandbox teardown. The cleanup sweep
 // resolves the recorded connection secret under this id so the audit trail
@@ -185,9 +185,7 @@ function readAdapterEnvRecord(config: unknown): Record<string, unknown> {
  * different user-secret key) is a replacement or a weaker binding.
  */
 export function isFixedClaudeOAuthBinding(binding: unknown): boolean {
-  if (typeof binding !== "object" || binding === null) return false;
-  const record = binding as Record<string, unknown>;
-  return record.type === "user_secret_ref" && record.key === CLAUDE_CODE_OAUTH_TOKEN_KEY;
+  return isFixedClaudeOAuthEnvBinding(binding);
 }
 
 /**

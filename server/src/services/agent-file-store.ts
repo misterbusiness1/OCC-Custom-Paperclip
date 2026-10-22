@@ -12,6 +12,8 @@ import { authorizeInstructionCommit, authorizeInstructionRead } from "./agent-in
 import { assertInstructionPathSafe, instructionPath, instructionBytes, materializeInstructionBytes, readInstructionBytes, MAX_INSTRUCTION_BYTES } from "./agent-instruction-files.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import type { AuthorizationActor } from "./authorization.js";
+import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Agent = typeof agents.$inferSelect;
@@ -82,8 +84,91 @@ export async function adoptAgentFiles(tx: Tx, agent: Agent): Promise<string> {
     .from(agentInstructionHeads).innerJoin(agentInstructionRevisions, eq(agentInstructionHeads.revisionId, agentInstructionRevisions.id))
     .where(and(eq(agentInstructionHeads.companyId, agent.companyId), eq(agentInstructionHeads.agentId, agent.id)));
   for (const entry of legacy) await materializeInstructionBytes(root, entry.entryFile, Buffer.from(entry.contentBase64, "base64"));
-  await materializeInstructionBytes(markerRoot, marker, Buffer.from(JSON.stringify({ schema: AGENT_FILES_CONTRACT })));
+  await adoptLegacyAgentHomeNotes(root, agent.id);
+  await materializeInstructionBytes(markerRoot, marker,Buffer.from(JSON.stringify({ schema: AGENT_FILES_CONTRACT })));
   return root;
+}
+
+/** Fork: before agent files, AGENT_HOME was the agent's default workspace, and
+ * agents kept their notes in `MEMORY.md`, `memory/` and `life/` there. Copy those
+ * notes into the agent directory once, at adoption, so they stay visible under
+ * the new AGENT_HOME. Files already in the agent directory win. Links at any
+ * level (checked on the opened file, so a swapped folder cannot redirect a read),
+ * special files, reserved or unsafe names and anything past the copy budget are
+ * skipped with a warning; one bad entry never blocks the agent's runs. The old
+ * folder is not changed. */
+export const LEGACY_AGENT_HOME_NOTE_FILES = ["MEMORY.md"] as const;
+export const LEGACY_AGENT_HOME_NOTE_DIRS = ["memory", "life"] as const;
+export const LEGACY_AGENT_HOME_COPY_LIMITS = { maxBytes: 256 * 1024 * 1024, maxEntries: 10_000 };
+async function lstatOrNull(target: string) {
+  return fs.lstat(target).catch(() => null);
+}
+/** Read a regular file only if the opened file really is `expectedRealPath`.
+ * O_NOFOLLOW guards the last component, O_NONBLOCK keeps a swapped-in FIFO from
+ * blocking the open, and the descriptor's resolved path catches a link swapped
+ * into any parent folder after it was checked. */
+export async function readLegacyNoteFile(filename: string, expectedRealPath: string, maxBytes: number): Promise<Buffer | null> {
+  const handle = await fs.open(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > maxBytes) return null;
+    const opened = await fs.readlink(`/proc/self/fd/${handle.fd}`).catch(() => fs.realpath(filename));
+    if (opened !== expectedRealPath) return null;
+    const bytes = await handle.readFile();
+    return bytes.length > maxBytes ? null : bytes;
+  } finally { await handle.close(); }
+}
+export async function adoptLegacyAgentHomeNotes(root: string, agentId: string, limits = LEGACY_AGENT_HOME_COPY_LIMITS) {
+  const legacyHome = resolveDefaultAgentWorkspaceDir(agentId);
+  if (!(await lstatOrNull(legacyHome))?.isDirectory()) return;
+  const realHome = await fs.realpath(legacyHome).catch(() => null);
+  if (!realHome) return;
+  let bytes = 0, entries = 0, copied = 0;
+  const skipped: string[] = [];
+  const skip = (relative: string, reason: string) => { if (skipped.length < 20) skipped.push(`${relative} (${reason})`); };
+  async function copyFile(relative: string) {
+    if (relative.split("/").some((part) => part.startsWith(".instruction-"))) return;
+    agentFilePath(relative);
+    if (entries >= limits.maxEntries) return skip(relative, "copy entry budget reached");
+    if (await inspectAgentFile(root, relative, 0)) return;
+    const content = await readLegacyNoteFile(path.join(legacyHome, relative), path.join(realHome!, relative), limits.maxBytes - bytes);
+    if (!content) return skip(relative, "link, special file or copy size budget reached");
+    await materializeInstructionBytes(root, relative, content);
+    bytes += content.length; entries += 1; copied += 1;
+  }
+  async function copyTree(relative: string) {
+    const dir = path.join(legacyHome, relative);
+    if (!(await lstatOrNull(dir))?.isDirectory()) return skip(relative, "not a directory");
+    if (entries >= limits.maxEntries) return skip(relative, "copy entry budget reached");
+    entries += 1;
+    let children;
+    try { children = await fs.readdir(dir, { withFileTypes: true }); } catch (error) { return skip(relative, (error as NodeJS.ErrnoException).code ?? "unreadable"); }
+    for (const entry of children) {
+      const child = `${relative}/${entry.name}`;
+      try {
+        if (entry.isDirectory()) await copyTree(child);
+        else if (entry.isFile()) await copyFile(child);
+        else skip(child, "not a regular file");
+      } catch (error) {
+        skip(child, error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
+  for (const name of [...LEGACY_AGENT_HOME_NOTE_FILES, ...LEGACY_AGENT_HOME_NOTE_DIRS]) {
+    const stat = await lstatOrNull(path.join(legacyHome, name));
+    if (!stat) continue;
+    try {
+      if (stat.isDirectory()) await copyTree(name);
+      else if (stat.isFile()) await copyFile(name);
+      else skip(name, "not a regular file or directory");
+    } catch (error) {
+      skip(name, error instanceof Error ? error.message : String(error));
+    }
+  }
+  if (copied || skipped.length) {
+    logger.info({ agentId, copiedFiles: copied, copiedBytes: bytes }, "copied notes from the former agent home into the agent directory");
+  }
+  if (skipped.length) logger.warn({ agentId, skipped }, "left some former agent home notes behind");
 }
 
 async function openAgentFile(root: string, relative: string) {

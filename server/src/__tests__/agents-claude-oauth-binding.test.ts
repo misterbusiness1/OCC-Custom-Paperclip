@@ -550,14 +550,35 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     await lockDb.$client.end();
   });
 
-  it("removes the fixed binding on a normal update", async () => {
+  it("keeps the fixed binding on a normal update that does not mention it", async () => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
     const created = await agentService(db).create(scope.companyId, createInput(scope), {
       claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
     });
 
+    // The environment map merges per key, so a write that does not mention the
+    // fixed binding keeps its stored value. The binding leaves the agent
+    // through an explicit removal request or a move to another harness, not
+    // through a write that simply leaves the key out.
     const updated = await agentService(db).update(created.id, { adapterConfig: { env: {} } });
+
+    const updatedEnv = (updated?.adapterConfig as { env: Record<string, unknown> }).env;
+    expect(updatedEnv.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject(FIXED_BINDING);
+  });
+
+  it("removes the fixed binding when the update names it", async () => {
+    const scope = await seedScope();
+    const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
+    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+      claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
+    });
+
+    const updated = await agentService(db).update(
+      created.id,
+      { adapterConfig: { env: {} } },
+      { envUpdate: { removals: ["CLAUDE_CODE_OAUTH_TOKEN"] } },
+    );
 
     const updatedEnv = (updated?.adapterConfig as { env: Record<string, unknown> }).env;
     expect(updatedEnv.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();

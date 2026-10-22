@@ -21,6 +21,9 @@ export default defineConfig({
     environment: "node",
     include: lanes[lane].files,
     setupFiles: [resolve(root, "server/src/__tests__/setup-supertest.ts")],
+    // Upstream's lanes cover legacy disposition repair, which the fork keeps
+    // opt-in in production (see server/vitest.config.ts).
+    env: { PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED: "true" },
     testTimeout: lane === "integration" ? 60_000 : 30_000,
     hookTimeout: 60_000,
     teardownTimeout: 30_000,

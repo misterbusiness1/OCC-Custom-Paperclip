@@ -44,5 +44,8 @@ export default defineConfig({
       hooks: "list",
     },
     setupFiles: ["./src/__tests__/setup-supertest.ts"],
+    // Upstream's suites cover legacy disposition repair, which the fork keeps
+    // opt-in in production; tests that pin the fork default turn it off.
+    env: { PAPERCLIP_LEGACY_DISPOSITION_REPAIR_ENABLED: "true" },
   },
 });
