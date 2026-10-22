@@ -153,6 +153,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     monitorAttemptCount?: number;
     monitorLastTriggeredAt?: Date | null;
     monitor?: Record<string, unknown>;
+    /** Agent heartbeat daily run cap; 0 makes every wake hit the cap. */
+    maxDailyRuns?: number;
     /**
      * Reproduce a monitor that fired without a following check: the persisted
      * monitor state says "triggered" and no schedule is left on the row.
@@ -199,6 +201,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         heartbeat: {
           enabled: false,
           wakeOnDemand: true,
+          ...(input?.maxDailyRuns !== undefined ? { maxDailyRuns: input.maxDailyRuns } : {}),
         },
       },
       permissions: {},
@@ -260,18 +263,36 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     companyId: string;
     agentId: string;
     issueId: string;
-    status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
+    status:
+      | "queued"
+      | "running"
+      | "scheduled_retry"
+      | "succeeded"
+      | "failed"
+      | "cancelled"
+      | "timed_out"
+      | "interrupted";
     createdAt?: Date;
+    /** Defaults to a run the monitor woke. */
+    source?: string;
   }) {
     const id = randomUUID();
-    const terminal = !["queued", "running"].includes(input.status);
+    const terminal = !["queued", "running", "scheduled_retry"].includes(input.status);
+    const source = input.source ?? "issue.monitor";
     await db.insert(heartbeatRuns).values({
       id,
       companyId: input.companyId,
       agentId: input.agentId,
       status: input.status,
       invocationSource: "on_demand",
-      contextSnapshot: { issueId: input.issueId, wakeReason: "issue_monitor_due" },
+      contextSnapshot: {
+        issueId: input.issueId,
+        source,
+        wakeReason: source === "issue.monitor" ? "issue_monitor_due" : "issue_commented",
+      },
+      ...(input.status === "scheduled_retry"
+        ? { scheduledRetryAt: new Date("2026-04-11T13:00:00.000Z"), scheduledRetryAttempt: 1 }
+        : {}),
       ...(input.createdAt ? { createdAt: input.createdAt } : {}),
       ...(terminal ? { finishedAt: new Date() } : {}),
     });
@@ -287,6 +308,22 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     issueId: string,
     change: Partial<typeof issues.$inferInsert>,
   ): typeof db {
+    return dbChangingIssueBeforeUpdate(
+      issueId,
+      change,
+      (values) => values.monitorNextCheckAt instanceof Date && "monitorLastTriggeredAt" in values,
+    );
+  }
+
+  /**
+   * Changes the issue right before the first issue update whose values match,
+   * to reproduce a concurrent writer landing between a read and that write.
+   */
+  function dbChangingIssueBeforeUpdate(
+    issueId: string,
+    change: Partial<typeof issues.$inferInsert>,
+    matches: (values: Record<string, unknown>) => boolean,
+  ): typeof db {
     let changed = false;
     return new Proxy(db, {
       get(target, prop, receiver) {
@@ -299,11 +336,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
               if (p !== "set") return Reflect.get(b, p, r);
               return (values: Record<string, unknown>) => {
                 const setBuilder = b.set(values as never);
-                const isRepairPatch =
-                  values.monitorNextCheckAt instanceof Date &&
-                  "monitorLastTriggeredAt" in values &&
-                  !changed;
-                if (!isRepairPatch) return setBuilder;
+                if (changed || !matches(values)) return setBuilder;
                 return {
                   where: (condition: Parameters<typeof setBuilder.where>[0]) => ({
                     returning: async (columns: Parameters<ReturnType<typeof setBuilder.where>["returning"]>[0]) => {
@@ -397,7 +430,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(comments).toHaveLength(0);
   });
 
-  it.each(["queued", "running"] as const)(
+  it.each(["queued", "running", "scheduled_retry"] as const)(
     "does not fire a due monitor while a run for the issue is %s",
     async (status) => {
       const { companyId, issueId, agentId, nextCheckAt } = await seedFixture();
@@ -427,7 +460,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     },
   );
 
-  it.each(["failed", "timed_out", "cancelled"] as const)(
+  it.each(["failed", "timed_out", "interrupted"] as const)(
     "re-arms a fired monitor once when the woken run %s before it could re-arm, and says so on the issue",
     async (runStatus) => {
       const lastTriggeredAt = new Date("2026-04-11T12:30:00.000Z");
@@ -466,7 +499,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         .then((rows) => rows);
       expect(comments).toHaveLength(1);
       expect(comments[0]?.body).toContain("restored the scheduled monitor");
-      expect(comments[0]?.body).toContain("ended without succeeding");
+      expect(comments[0]?.body).toContain("failed, timed out or was interrupted");
 
       const activity = await db
         .select()
@@ -479,7 +512,9 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
   it.each([
     ["the woken run succeeded", "succeeded"],
+    ["the woken run was cancelled (a deliberate stop)", "cancelled"],
     ["a run for the issue is still running", "running"],
+    ["a bounded retry of the woken run is scheduled", "scheduled_retry"],
     ["no run followed the fire", null],
   ] as const)("does not re-arm a fired monitor when %s", async (_label, runStatus) => {
     const lastTriggeredAt = new Date("2026-04-11T12:30:00.000Z");
@@ -505,6 +540,156 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(issue.monitorNextCheckAt).toBeNull();
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toHaveLength(0);
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
+  it("does not re-arm when the woken run succeeded and a later run from another wake failed", async () => {
+    const lastTriggeredAt = new Date("2026-04-11T12:30:00.000Z");
+    const { companyId, issueId, agentId } = await seedFixture({
+      stranded: true,
+      monitorLastTriggeredAt: lastTriggeredAt,
+    });
+    await seedIssueRun({
+      companyId, agentId, issueId, status: "succeeded",
+      createdAt: new Date(lastTriggeredAt.getTime() + 1_000),
+    });
+    await seedIssueRun({
+      companyId, agentId, issueId, status: "failed", source: "issue.comment",
+      createdAt: new Date(lastTriggeredAt.getTime() + 60_000),
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toHaveLength(0);
+  });
+
+  it("re-arms when the woken run failed although a later run from another wake succeeded", async () => {
+    const lastTriggeredAt = new Date("2026-04-11T12:30:00.000Z");
+    const { companyId, issueId, agentId } = await seedFixture({
+      stranded: true,
+      monitorLastTriggeredAt: lastTriggeredAt,
+    });
+    await seedIssueRun({
+      companyId, agentId, issueId, status: "failed",
+      createdAt: new Date(lastTriggeredAt.getTime() + 1_000),
+    });
+    await seedIssueRun({
+      companyId, agentId, issueId, status: "succeeded", source: "issue.comment",
+      createdAt: new Date(lastTriggeredAt.getTime() + 60_000),
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).not.toBeNull();
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+  });
+
+  it("keeps the monitor armed at the fallback interval when the fire's wake is skipped", async () => {
+    // maxDailyRuns 0: every wake hits the daily cap, so the fire starts no run
+    // and nothing could re-arm a consumed monitor.
+    const { issueId, agentId, nextCheckAt } = await seedFixture({ maxDailyRuns: 0 });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    await heartbeat.tickTimers(tickAt);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.status).toBe("skipped");
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).not.toBeNull();
+    expect(issue.monitorNextCheckAt!.getTime()).toBeGreaterThan(tickAt.getTime());
+    expect(issue.monitorNextCheckAt!.toISOString()).not.toBe(nextCheckAt.toISOString());
+    expect(issue.monitorAttemptCount).toBe(1);
+    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor).toMatchObject({
+      notes: "Check deploy",
+    });
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({ status: "scheduled" });
+
+    const triggered = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.find((row) => row.action === "issue.monitor_triggered"));
+    expect(triggered?.details).toMatchObject({
+      wakeSkipped: true,
+      wakeSkipReason: "heartbeat.daily_run_limit",
+      fallbackNextCheckAt: issue.monitorNextCheckAt!.toISOString(),
+    });
+  });
+
+  it("keeps a re-arm the woken run wrote before the fire's own write", async () => {
+    const { issueId } = await seedFixture();
+    const rearmedAt = new Date("2026-04-11T14:00:00.000Z");
+    const rearmedPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages: [],
+      monitor: { nextCheckAt: rearmedAt.toISOString(), notes: "Check again", scheduledBy: "assignee" },
+    };
+    const heartbeat = heartbeatService(
+      dbChangingIssueBeforeUpdate(
+        issueId,
+        { monitorNextCheckAt: rearmedAt, executionPolicy: rearmedPolicy, monitorWakeRequestedAt: null },
+        (values) => "monitorLastTriggeredAt" in values && "monitorAttemptCount" in values,
+      ),
+    );
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    expect((await heartbeat.tickTimers(tickAt)).enqueued).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(rearmedAt.toISOString());
+    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor).toMatchObject({
+      notes: "Check again",
+    });
+    const triggered = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.find((row) => row.action === "issue.monitor_triggered"));
+    expect(triggered?.details).toMatchObject({ scheduleUpdated: false });
+  });
+
+  it("fires a provider-quota monitor although another run for the issue is live", async () => {
+    const sourceRunId = randomUUID();
+    const { companyId, issueId, agentId } = await seedFixture({
+      monitor: { serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, externalRef: sourceRunId },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: sourceRunId, companyId, agentId, status: "failed", errorCode: "provider_quota",
+      finishedAt: new Date("2026-04-11T12:00:00.000Z"), contextSnapshot: { issueId },
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    });
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "Reviewer Bot",
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
+      permissions: {},
+    });
+    seededAgentIds.add(otherAgentId);
+    await seedIssueRun({ companyId, agentId: otherAgentId, issueId, status: "queued", source: "issue.comment" });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).toBeNull();
+    const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, sourceRunId));
+    expect(retries).toHaveLength(1);
   });
 
   it.each([
