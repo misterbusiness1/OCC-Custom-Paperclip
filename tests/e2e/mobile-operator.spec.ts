@@ -71,43 +71,48 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }
   });
 }
 
-test("rapid retry taps send one exact-run request and retain an actionable error", async ({ page, request }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  const company = await checked(await request.post("/api/companies", { data: { name: `Retry synthetic ${Date.now()}` } }));
-  const agent = await checked(await request.post(`/api/companies/${company.id}/agents`, { data: {
-    name: "Synthetic retry fixture", adapterType: "process", adapterConfig: { command: "node", args: ["-e", "process.exit(0)"] },
-    runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
-  } }));
-  const run = {
-    id: "70000000-0000-4000-8000-000000000001", companyId: company.id, agentId: agent.id,
-    status: "failed", invocationSource: "manual", triggerDetail: "manual", contextSnapshot: {},
-    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
-    error: "Synthetic failure", errorCode: "synthetic_failure", resultJson: null, usageJson: null, logRef: null,
-  };
-  await page.route("**/api/**", async route => {
-    const url = new URL(route.request().url());
-    if (url.pathname === `/api/heartbeat-runs/${run.id}`) return route.fulfill({ json: run });
-    if (url.pathname === `/api/heartbeat-runs/${run.id}/events`) return route.fulfill({ json: [] });
-    if (url.pathname === `/api/companies/${company.id}/heartbeat-runs`) return route.fulfill({ json: [run] });
-    return route.continue();
+test.describe("exact-run retry fixture", () => {
+  // Service-worker-owned requests bypass page.route. This test supplies a
+  // synthetic failed run through routing; the real-API tests above keep SW enabled.
+  test.use({ serviceWorkers: "block" });
+  test("rapid retry taps send one exact-run request and retain an actionable error", async ({ page, request }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const company = await checked(await request.post("/api/companies", { data: { name: `Retry synthetic ${Date.now()}` } }));
+    const agent = await checked(await request.post(`/api/companies/${company.id}/agents`, { data: {
+      name: "Synthetic retry fixture", adapterType: "process", adapterConfig: { command: "node", args: ["-e", "process.exit(0)"] },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
+    } }));
+    const run = {
+      id: "70000000-0000-4000-8000-000000000001", companyId: company.id, agentId: agent.id,
+      status: "failed", invocationSource: "manual", triggerDetail: "manual", contextSnapshot: {},
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+      error: "Synthetic failure", errorCode: "synthetic_failure", resultJson: null, usageJson: null, logRef: null,
+    };
+    await page.route("**/api/**", async route => {
+      const url = new URL(route.request().url());
+      if (url.pathname === `/api/heartbeat-runs/${run.id}`) return route.fulfill({ json: run });
+      if (url.pathname === `/api/heartbeat-runs/${run.id}/events`) return route.fulfill({ json: [] });
+      if (url.pathname === `/api/companies/${company.id}/heartbeat-runs`) return route.fulfill({ json: [run] });
+      return route.continue();
+    });
+    let calls = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    await page.route(`**/api/agents/${agent.id}/wakeup*`, async route => {
+      calls += 1;
+      expect(route.request().postDataJSON()).toMatchObject({ reason: "retry_failed_run", failedRunId: run.id });
+      await barrier;
+      await route.fulfill({ status: 409, json: { error: "Synthetic retry blocked: refresh the current run." } });
+    });
+    await page.goto(`/${company.issuePrefix}/agents/${agent.id}/runs/${run.id}`);
+    const retry = page.getByRole("button", { name: "Retry", exact: true });
+    await expect(retry).toBeVisible();
+    await retry.evaluate(button => { (button as HTMLButtonElement).click(); (button as HTMLButtonElement).click(); });
+    await expect.poll(() => calls).toBe(1);
+    await expect(page.getByRole("button", { name: "Retrying…", exact: true })).toBeDisabled();
+    release();
+    await expect(page.getByRole("alert")).toContainText("Synthetic retry blocked");
+    await expect(retry).toBeEnabled();
+    expect(calls).toBe(1);
   });
-  let calls = 0;
-  let release!: () => void;
-  const barrier = new Promise<void>(resolve => { release = resolve; });
-  await page.route(`**/api/agents/${agent.id}/wakeup*`, async route => {
-    calls += 1;
-    expect(route.request().postDataJSON()).toMatchObject({ reason: "retry_failed_run", failedRunId: run.id });
-    await barrier;
-    await route.fulfill({ status: 409, json: { error: "Synthetic retry blocked: refresh the current run." } });
-  });
-  await page.goto(`/${company.issuePrefix}/agents/${agent.id}/runs/${run.id}`);
-  const retry = page.getByRole("button", { name: "Retry", exact: true });
-  await expect(retry).toBeVisible();
-  await retry.evaluate(button => { (button as HTMLButtonElement).click(); (button as HTMLButtonElement).click(); });
-  await expect.poll(() => calls).toBe(1);
-  await expect(page.getByRole("button", { name: "Retrying…", exact: true })).toBeDisabled();
-  release();
-  await expect(page.getByRole("alert")).toContainText("Synthetic retry blocked");
-  await expect(retry).toBeEnabled();
-  expect(calls).toBe(1);
 });

@@ -454,7 +454,7 @@ describe("ACPX installation integrity", () => {
       },
       {
         name: "zod",
-        version: "4.4.3",
+        version: "4.6.7",
         directory: join(dependencyRoot, "zod"),
       },
     ] as const;
@@ -536,6 +536,15 @@ describe("ACPX installation integrity", () => {
       (await installation.openCommand()).spawn(),
       "qualified-claude-dependency",
     );
+    // The security upgrade changes the qualification, not the trust rule:
+    // reject both the vulnerable previous version and unqualified future drift.
+    for (const version of ["4.4.3", "4.6.8"]) {
+      await writeFile(join(dependencyFixtures[2].directory, "package.json"), JSON.stringify({
+        name: "zod", version, type: "module", exports: "./index.js",
+      }));
+      await expect(verifyQualifiedAcpxInstallation(profile, (name) => paths.get(name)!))
+        .rejects.toThrow(`ACPX claude dependency package version mismatch for zod: expected 4.6.7, received ${version}`);
+    }
   });
 
   it("rejects drift in Claude ACP's qualified dependency versions", async () => {
