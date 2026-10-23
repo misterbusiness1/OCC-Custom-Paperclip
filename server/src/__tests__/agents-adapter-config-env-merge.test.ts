@@ -485,6 +485,26 @@ describeEmbeddedPostgres("agent adapter-config environment binding merge", () =>
     expect(env.ROUTE_ADDED).toEqual({ type: "plain", value: "route" });
   });
 
+  it.each(["remove", "rotate"] as const)("instructions-only route does not replay env after concurrent %s", async (change) => {
+    const agent = await seedAgent();
+    const app = createApp();
+    await runContendingOperations(agent.id, [
+      () => change === "remove"
+        ? agentService(db).update(agent.id, { adapterConfig: { env: {} } }, { envUpdate: { removals: [SECRET_KEY] } })
+        : agentService(db).update(agent.id, { adapterConfig: { env: { [PLAIN_KEY]: { type: "plain", value: "rotated" } } } }),
+      () => request(app).patch(`/api/agents/${agent.id}/instructions-path`)
+        .send({ path: "/tmp/synthetic-concurrent-instructions.md" }).then((response) => {
+          expect(response.status, JSON.stringify(response.body)).toBe(200);
+        }),
+    ]);
+    const env = await storedEnv(agent.id);
+    if (change === "remove") expect(env[SECRET_KEY]).toBeUndefined();
+    else expect(env[PLAIN_KEY]).toEqual({ type: "plain", value: "rotated" });
+    const updated = await agentService(db).getById(agent.id);
+    expect((updated!.adapterConfig as Record<string, unknown>).instructionsFilePath)
+      .toBe("/tmp/synthetic-concurrent-instructions.md");
+  });
+
   it("treats a redacted route placeholder as preserve-current during a concurrent change", async () => {
     const agent = await seedAgent();
     const app = createApp();

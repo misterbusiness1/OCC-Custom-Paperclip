@@ -182,6 +182,83 @@ describeEmbeddedPostgres("built-in agents", () => {
     return companyId;
   }
 
+  it.each([
+    ["removal", "partial-config"], ["rotation", "partial-config"],
+    ["removal", "adapter-only"], ["rotation", "adapter-only"],
+  ] as const)("preserves concurrent env %s during built-in ensure %s", async (change, patchKind) => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const builtIns = builtInAgentService(db);
+    const first = await builtIns.ensure(companyId, "briefs", {
+      adapterType: "process",
+      adapterConfig: { command: "echo safe", env: { CREDENTIAL: { type: "plain", value: "synthetic-old" }, KEEP: { type: "plain", value: "keep" } } },
+    });
+    const agentId = first.agentId!;
+    let release!: () => void;
+    let locked!: (pid: number) => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const ready = new Promise<number>((resolve) => { locked = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`set local idle_in_transaction_session_timeout = '30s'`);
+      await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, agentId)).for("update");
+      const rows = await tx.execute(sql`select pg_backend_pid()::int as pid`);
+      locked(Number(rows[0]!.pid));
+      await gate;
+    });
+    const holderPid = await ready;
+    const waitBlocked = async (count: number) => vi.waitFor(async () => {
+      const rows = await db.execute(sql`with recursive blocked(pid) as (
+        select pid from pg_stat_activity where ${holderPid} = any(pg_blocking_pids(pid))
+        union select a.pid from pg_stat_activity a join blocked b on b.pid = any(pg_blocking_pids(a.pid))
+      ) select count(distinct pid)::int as waiting from blocked`);
+      expect(Number(rows[0]!.waiting)).toBeGreaterThanOrEqual(count);
+    }, { timeout: 5_000, interval: 20 });
+    let mutation: Promise<unknown> | undefined;
+    let ensuring: ReturnType<typeof builtIns.ensure> | undefined;
+    try {
+      mutation = agentService(db).update(agentId, {
+        adapterConfig: { env: change === "rotation" ? { CREDENTIAL: { type: "plain", value: "synthetic-new" } } : {} },
+      }, { envUpdate: { removals: change === "removal" ? ["CREDENTIAL"] : [] } });
+      await waitBlocked(1);
+      // The normal ensure read sees the old snapshot, then queues its actual
+      // service write after the deliberate rotation/removal at the row lock.
+      ensuring = builtIns.ensure(companyId, "briefs", patchKind === "partial-config"
+        ? { adapterType: "process", adapterConfig: { command: "echo changed" } }
+        : { adapterType: "process" });
+      await waitBlocked(2);
+      release();
+      await holder;
+      await mutation;
+      await ensuring;
+      const stored = await agentService(db).getById(agentId);
+      expect(stored!.adapterConfig.env).toEqual({
+        KEEP: { type: "plain", value: "keep" },
+        ...(change === "rotation" ? { CREDENTIAL: { type: "plain", value: "synthetic-new" } } : {}),
+      });
+      expect(stored!.adapterConfig.command).toBe(patchKind === "partial-config" ? "echo changed" : "echo safe");
+    } finally {
+      release();
+      await holder;
+      await Promise.allSettled([mutation, ensuring].filter(Boolean));
+    }
+  });
+
+  it("retains explicit built-in env patch intent after a binding was removed", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const builtIns = builtInAgentService(db);
+    const created = await builtIns.ensure(companyId, "briefs", {
+      adapterType: "process", adapterConfig: { command: "echo safe", env: {
+        CREDENTIAL: { type: "plain", value: "synthetic-old" }, KEEP: { type: "plain", value: "keep" },
+      } },
+    });
+    await agentService(db).update(created.agentId!, { adapterConfig: { env: {} } }, { envUpdate: { removals: ["CREDENTIAL"] } });
+    const configured = await builtIns.ensure(companyId, "briefs", {
+      adapterType: "process", adapterConfig: { command: "echo safe", env: { CREDENTIAL: { type: "plain", value: "explicit-new" } } },
+    });
+    expect(configured.agent!.adapterConfig.env).toEqual({
+      CREDENTIAL: { type: "plain", value: "explicit-new" }, KEEP: { type: "plain", value: "keep" },
+    });
+  });
+
   it("validates the static registry and rejects invalid definitions", () => {
     const definitions = listBuiltInAgentDefinitions();
     expect(definitions.map((definition) => definition.key).sort()).toEqual(["briefs", "learning", "reflection-coach", "summarizer"]);

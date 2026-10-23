@@ -5,6 +5,7 @@ import {
   findSilentSecretBindingRemovals,
   isFixedClaudeOAuthEnvBinding,
   mergeAgentEnvBindings,
+  withoutAgentEnvPatch,
 } from "../services/agent-env-config.js";
 
 describe("mergeAgentEnvBindings", () => {
@@ -184,5 +185,17 @@ describe("isFixedClaudeOAuthEnvBinding", () => {
     expect(isFixedClaudeOAuthEnvBinding({ type: "user_secret_ref", key: "OTHER" })).toBe(false);
     expect(isFixedClaudeOAuthEnvBinding({ type: "plain", value: "v" })).toBe(false);
     expect(isFixedClaudeOAuthEnvBinding(undefined)).toBe(false);
+  });
+});
+
+describe("withoutAgentEnvPatch", () => {
+  it("omits copied environment intent without mutating the source or other fields", () => {
+    const env = { KEEP: { type: "secret_ref", secretId: "synthetic" } };
+    const original = Object.freeze({ env, model: "model", promptTemplate: undefined });
+    const patch = withoutAgentEnvPatch(original);
+    expect(patch).toEqual({ model: "model", promptTemplate: undefined });
+    expect(Object.hasOwn(patch, "env")).toBe(false);
+    expect(original.env).toBe(env);
+    expect(patch).not.toBe(original);
   });
 });

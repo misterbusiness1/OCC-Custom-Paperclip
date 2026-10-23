@@ -180,3 +180,10 @@ export function assertValidEnvRemovalRequest(input: {
   }
   return removals;
 }
+
+/** Non-environment writers must not replay bindings copied from an unlocked snapshot. */
+export function withoutAgentEnvPatch(config: Record<string, unknown>): Record<string, unknown> {
+  const patch = { ...config };
+  delete patch.env;
+  return patch;
+}

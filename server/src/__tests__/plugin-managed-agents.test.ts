@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentConfigRevisions,
@@ -25,6 +25,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
 import { agentService } from "../services/agents.js";
+import * as agentServices from "../services/agents.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionsService } from "../services/agent-instructions.js";
 import { pluginRegistryService } from "../services/plugin-registry.js";
@@ -100,6 +101,7 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
     await db.delete(pluginEntities);
@@ -312,6 +314,42 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
 
     expect(created.status).toBe("created");
     expect(created.agent?.adapterType).toBe("codex_local");
+  });
+
+  it("keeps concurrent env additions and removals when materializing instruction config", async () => {
+    const previousHome = process.env.PAPERCLIP_HOME;
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "plugin-env-intent-"));
+    process.env.PAPERCLIP_HOME = tempHome;
+    try {
+      const pluginManifest = manifest();
+      pluginManifest.agents![0]!.instructions = { content: "# Native instruction intent\n" };
+      pluginManifest.agents![0]!.adapterConfig = { command: "synthetic", env: { REMOVE_ME: "old", KEEP_ME: "old" } };
+      const { companyId, pluginId } = await seedCompanyAndPlugin({ manifest: pluginManifest });
+      const nativeFactory = agentServices.agentService;
+      let interleaved = false;
+      vi.spyOn(agentServices, "agentService").mockImplementation((...args) => {
+        const native = nativeFactory(...args);
+        return { ...native, update: async (...updateArgs: Parameters<typeof native.update>) => {
+          if (!interleaved && updateArgs[1].adapterConfig?.instructionsFilePath) {
+            interleaved = true;
+            await nativeFactory(db).update(updateArgs[0], {
+              adapterConfig: { command: "synthetic", env: { KEEP_ME: "new", ADDED: "new" } },
+            }, { envUpdate: { removals: ["REMOVE_ME"] } });
+          }
+          return native.update(...updateArgs);
+        } };
+      });
+      const racingServices = buildHostServices(db, pluginId, pluginManifest.id, createEventBusStub(), undefined, { manifest: pluginManifest });
+      const created = await racingServices.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+      expect(interleaved).toBe(true);
+      const persisted = await nativeFactory(db).getById(created.agentId!);
+      expect(persisted!.adapterConfig.env).toEqual({ KEEP_ME: { type: "plain", value: "new" }, ADDED: { type: "plain", value: "new" } });
+      expect(await fs.readFile(persisted!.adapterConfig.instructionsFilePath as string, "utf8")).toBe("# Native instruction intent\n");
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
   });
 
   it("materializes declared managed agent instructions with local folder paths", async () => {

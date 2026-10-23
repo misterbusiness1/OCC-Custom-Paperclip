@@ -120,6 +120,7 @@ import {
   assertValidEnvRemovalRequest,
   isFixedClaudeOAuthEnvBinding,
   mergeAgentEnvBindings,
+  withoutAgentEnvPatch,
 } from "../services/agent-env-config.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
@@ -2734,7 +2735,7 @@ export function agentRoutes(
       delete nextAdapterConfig.bootstrapPromptTemplate;
       if (!hadLegacyPrompt) return agent;
 
-      const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig }, {
+      const updated = await svc.update(agent.id, { adapterConfig: withoutAgentEnvPatch(nextAdapterConfig) }, {
         allowPendingApprovalConfigUpdate: true,
       });
       return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
@@ -2751,7 +2752,7 @@ export function agentRoutes(
     delete nextAdapterConfig.promptTemplate;
     delete nextAdapterConfig.bootstrapPromptTemplate;
 
-    const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig }, {
+    const updated = await svc.update(agent.id, { adapterConfig: withoutAgentEnvPatch(nextAdapterConfig) }, {
       allowPendingApprovalConfigUpdate: true,
     });
     return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
@@ -3962,7 +3963,7 @@ export function agentRoutes(
       }
       const actor = getActorInfo(req);
       const updated = await svc.update(agent.id, {
-        adapterConfig: nextAdapterConfig,
+        adapterConfig: withoutAgentEnvPatch(nextAdapterConfig),
       }, {
         recordRevision: {
           createdByAgentId: actor.agentId,
@@ -5046,7 +5047,7 @@ export function agentRoutes(
     const actor = getActorInfo(req);
     const agent = await svc.update(
       id,
-      { adapterConfig: normalizedAdapterConfig },
+      { adapterConfig: withoutAgentEnvPatch(normalizedAdapterConfig) },
       {
         recordRevision: {
           createdByAgentId: actor.agentId,
@@ -5130,7 +5131,7 @@ export function agentRoutes(
     );
     await svc.update(
       id,
-      { adapterConfig: normalizedAdapterConfig },
+      { adapterConfig: withoutAgentEnvPatch(normalizedAdapterConfig) },
       {
         recordRevision: {
           createdByAgentId: actor.agentId,
@@ -5219,7 +5220,7 @@ export function agentRoutes(
           const adapterConfig = { ...asRecord(fresh.adapterConfig) };
           delete adapterConfig.promptTemplate;
           delete adapterConfig.bootstrapPromptTemplate;
-          await svc.update(existing.id, { adapterConfig });
+          await svc.update(existing.id, { adapterConfig: withoutAgentEnvPatch(adapterConfig) });
         }
       }
       res.json(instructionFileDetail(receipt, receipt));
@@ -5245,7 +5246,7 @@ export function agentRoutes(
     );
     await svc.update(
       id,
-      { adapterConfig: normalizedAdapterConfig },
+      { adapterConfig: withoutAgentEnvPatch(normalizedAdapterConfig) },
       {
         recordRevision: {
           createdByAgentId: actor.agentId,

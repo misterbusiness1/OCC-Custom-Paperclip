@@ -909,6 +909,12 @@ describe.sequential("agent skill routes", () => {
       ...makeAgent("claude_local"),
       adapterConfig,
     });
+    // The real service merges omitted env from its locked persisted config.
+    mockAgentService.update.mockImplementationOnce(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeAgent("claude_local"),
+      ...patch,
+      adapterConfig: { ...(patch.adapterConfig as Record<string, unknown>), env: adapterConfig.env },
+    }));
     mockSecretService.resolveAdapterConfigForRuntime.mockImplementationOnce(
       async (
         _companyId: string,
@@ -945,6 +951,7 @@ describe.sequential("agent skill routes", () => {
       .send({ desiredSkills: ["paperclipai/paperclip/paperclip"], mode: "replace" }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((mockAgentService.update.mock.calls[0][1] as { adapterConfig: Record<string, unknown> }).adapterConfig).not.toHaveProperty("env");
     expect(mockAdapter.syncSkills).toHaveBeenCalledWith(
       expect.objectContaining({
         adapterType: "claude_local",
