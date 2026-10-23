@@ -58,6 +58,11 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
   jq -e '
     .name == "occ-paperclip-staging" and
     .services.server.pull_policy == "never" and
+    .services.server.dns == ["127.0.0.1"] and
+    .services.db.dns == ["127.0.0.1"] and
+    .services.server.environment.PAPERCLIP_TELEMETRY_DISABLED == "1" and
+    (.services.server.networks | keys) == ["staging"] and
+    (.services.db.networks | keys) == ["staging"] and
     .services.server.environment.PAPERCLIP_AUTH_DISABLE_SIGN_UP == "true" and
     .services.server.ports[0].host_ip == "127.0.0.1" and
     .services.server.deploy.resources.limits.memory == "3221225472" and
