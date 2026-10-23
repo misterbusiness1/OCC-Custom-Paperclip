@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { agentAppearanceSchema, randomAgentAppearance, resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, getTableColumns, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
@@ -317,12 +318,23 @@ function mergeAgentEnvBindingsIntoAdapterConfig(input: {
   };
 }
 
+// JSONB ignores object key order and drops undefined object properties.
+function pendingAdapterConfigEqual(left: unknown, right: unknown): boolean {
+  const leftJson = JSON.stringify(left);
+  const rightJson = JSON.stringify(right);
+  if (leftJson === undefined || rightJson === undefined) return leftJson === rightJson;
+  return isDeepStrictEqual(JSON.parse(leftJson), JSON.parse(rightJson));
+}
+
 function changedPendingApprovalConfigFields(
   existing: typeof agents.$inferSelect,
   data: Partial<typeof agents.$inferInsert>,
 ) {
   return CONFIG_REVISION_FIELDS.filter((field) =>
-    Object.prototype.hasOwnProperty.call(data, field) && !jsonEqual(data[field], existing[field]),
+    Object.prototype.hasOwnProperty.call(data, field)
+      && !(field === "adapterConfig"
+        ? pendingAdapterConfigEqual(data[field], existing[field])
+        : jsonEqual(data[field], existing[field])),
   );
 }
 
@@ -904,7 +916,17 @@ function createAgentService(db: Db, updatingInTransaction: boolean) {
       throw conflict("Pending approval agents cannot be activated directly");
     }
     if (existing.status === "pending_approval" && !options?.allowPendingApprovalConfigUpdate) {
-      const changedFields = changedPendingApprovalConfigFields(existing as typeof agents.$inferSelect, data);
+      // Compare the effective env patch, not an unlocked caller's omitted map.
+      // Keep this pure check before secret/schema normalization or dependent writes.
+      const frozenPatch = isPlainRecord(data.adapterConfig)
+        ? { ...data, adapterConfig: mergeAgentEnvBindingsIntoAdapterConfig({
+            existingAdapterConfig: existing.adapterConfig,
+            nextAdapterConfig: data.adapterConfig,
+            adapterType: (data.adapterType ?? existing.adapterType) as string,
+            authorizedRemovals: options?.envUpdate?.removals ?? [],
+          }).adapterConfig }
+        : data;
+      const changedFields = changedPendingApprovalConfigFields(existing as typeof agents.$inferSelect, frozenPatch);
       if (changedFields.length > 0) {
         throw conflict("Pending approval agent configuration cannot be changed before board approval", {
           code: "pending_approval_agent_config_frozen",
