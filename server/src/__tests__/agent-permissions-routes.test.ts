@@ -609,15 +609,16 @@ describe.sequential("agent permission routes", () => {
 
   it("preserves stored env values when a redacted detail response is submitted unchanged", async () => {
     const plaintextValue = "stored-value-must-be-preserved";
-    mockAgentService.getById.mockResolvedValue({
+    const storedAgent = {
       ...baseAgent,
       adapterConfig: {
         env: {
           EXISTING_VALUE: { type: "plain", value: plaintextValue },
         },
       },
-    });
-    mockAgentService.update.mockResolvedValue(baseAgent);
+    };
+    mockAgentService.getById.mockResolvedValue(storedAgent);
+    mockAgentService.update.mockResolvedValue(storedAgent);
 
     const app = await createApp({
       type: "board",
@@ -645,10 +646,16 @@ describe.sequential("agent permission routes", () => {
     const updateCallArgs = mockAgentService.update.mock.calls[0]?.[1] as
       | { adapterConfig?: Record<string, unknown> }
       | undefined;
-    expect(updateCallArgs?.adapterConfig?.env).toEqual({
-      EXISTING_VALUE: { type: "plain", value: plaintextValue },
-    });
+    // Omission preserves the latest binding in the transactional service.
+    // Forwarding this route's stored value would overwrite a concurrent change.
+    expect(mockAgentService.update).toHaveBeenCalledTimes(1);
+    expect(updateCallArgs?.adapterConfig).toBeDefined();
+    expect(updateCallArgs?.adapterConfig).not.toHaveProperty("env");
+    expect(JSON.stringify(updateCallArgs?.adapterConfig ?? {})).not.toContain(plaintextValue);
     expect(JSON.stringify(updateCallArgs?.adapterConfig ?? {})).not.toContain("***REDACTED***");
+    expect(mockAgentService.update.mock.calls[0]?.[2]?.envUpdate).toEqual({ removals: [] });
+    expect(patchRes.body.adapterConfig.env).toEqual(redactedEnv);
+    expect(JSON.stringify(patchRes.body)).not.toContain(plaintextValue);
   }, 20_000);
 
   it("redacts company agent list for authenticated company members without agent admin permission", async () => {
