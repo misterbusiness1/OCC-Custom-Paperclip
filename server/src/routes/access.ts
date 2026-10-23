@@ -1,3 +1,4 @@
+import { withoutAgentEnvPatch } from "../services/agent-env-config.js";
 import {
   createHash,
   generateKeyPairSync,
@@ -3986,7 +3987,7 @@ export function accessRoutes(
           ? (existingAgent.adapterConfig as Record<string, unknown>)
           : {};
         const nextAdapterConfig = {
-          ...existingAdapterConfig,
+          ...withoutAgentEnvPatch(existingAdapterConfig),
           ...(joinDefaults.normalized ?? {})
         };
         const updatedAgent = await agents.update(created.createdAgentId, {

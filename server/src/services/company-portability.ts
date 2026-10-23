@@ -1,3 +1,4 @@
+import { withoutAgentEnvPatch } from "./agent-env-config.js";
 import { agentAppearanceSchema } from "@paperclipai/shared";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -5639,7 +5640,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 clearLegacyPromptTemplate: true,
                 replaceExisting: true,
               });
-              updated = await agents.update(updated.id, { adapterConfig: materialized.adapterConfig }) ?? updated;
+              updated = await agents.update(updated.id, { adapterConfig: withoutAgentEnvPatch(materialized.adapterConfig) }) ?? updated;
             } catch (err) {
               warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
             }
@@ -5686,7 +5687,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               clearLegacyPromptTemplate: true,
               replaceExisting: true,
             });
-            created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
+            created = await agents.update(created.id, { adapterConfig: withoutAgentEnvPatch(materialized.adapterConfig) }) ?? created;
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
