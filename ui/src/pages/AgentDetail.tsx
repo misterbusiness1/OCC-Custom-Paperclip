@@ -3488,6 +3488,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     if (taskKey) payload.taskKey = taskKey;
     return payload;
   }, [run.contextSnapshot]);
+  const retrySubmittedRun = useRef<string | null>(null);
   const retryRun = useMutation({
     mutationFn: async () => {
       return agentsApi.retryFailedRun(run.agentId, run.id, run.companyId);
@@ -3626,11 +3627,18 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   variant="ghost"
                   size="sm"
                   className="text-xs h-6 px-2"
-                  onClick={() => retryRun.mutate()}
-                  disabled={retryRun.isPending}
+                  onClick={() => {
+                    // A second tap may arrive before React renders isPending.
+                    if (retrySubmittedRun.current === run.id) return;
+                    retrySubmittedRun.current = run.id;
+                    retryRun.mutate(undefined, {
+                      onError: () => { retrySubmittedRun.current = null; },
+                    });
+                  }}
+                  disabled={retryRun.isPending || retryRun.isSuccess}
                 >
                   <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                  {retryRun.isPending ? "Retrying…" : "Retry"}
+                  {retryRun.isPending ? "Retrying…" : retryRun.isSuccess ? "Retry requested" : "Retry"}
                 </Button>
               )}
               <Button
@@ -3720,7 +3728,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               </div>
             )}
             {retryRun.isError && (
-              <div className="text-xs text-destructive">
+              <div role="alert" className="text-xs text-destructive">
                 {retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run"}
               </div>
             )}

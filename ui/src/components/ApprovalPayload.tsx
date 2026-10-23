@@ -233,11 +233,13 @@ export function OriginalRequestBlock({
     },
   ].filter((part) => Boolean(part.node));
 
-  return (
-    <div>
-      <ApprovalSectionLabel className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-        Original request
-      </ApprovalSectionLabel>
+  const content = (
+    <>
+      {!isEmailReplyPayload(payload) && (
+        <ApprovalSectionLabel className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+          Original request
+        </ApprovalSectionLabel>
+      )}
       {provenance.length > 0 && (
         <p className="mt-1 break-words text-xs text-muted-foreground">
           {provenance.map((part, index) => (
@@ -248,9 +250,21 @@ export function OriginalRequestBlock({
           ))}
         </p>
       )}
-      <OriginalRequestText text={original.text} collapsible={compact && isLongOriginalRequest(original.text)} />
-    </div>
+      <OriginalRequestText text={original.text} collapsible={!isEmailReplyPayload(payload) && compact && isLongOriginalRequest(original.text)} />
+    </>
   );
+
+  // Native disclosure is keyboard/touch accessible and keeps incoming email
+  // separate from the outgoing draft. Never interpret the retained text as HTML.
+  if (isEmailReplyPayload(payload)) {
+    return (
+      <details key={original.text} className="min-w-0 rounded-md border border-border p-3">
+        <summary className="cursor-pointer text-sm font-medium" aria-label={original.source.kind === "external" && original.source.channel === "email" ? "Original email request" : "Original request"}>Original request</summary>
+        {content}
+      </details>
+    );
+  }
+  return <div>{content}</div>;
 }
 
 const ORIGINAL_REQUEST_PREVIEW_LENGTH = 480;

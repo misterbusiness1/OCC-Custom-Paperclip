@@ -173,4 +173,50 @@ describeEmbeddedPostgres("issue list routes updatedSince filter", () => {
       error: "updatedSince must be a valid ISO 8601 timestamp when provided",
     });
   });
+  it("filters overdue follow-ups before pagination and excludes terminal, future and other-company tasks", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values([companyId, otherCompanyId].map((id) => ({
+      id, name: "Synthetic follow-up company", issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    })));
+    await seedCloudTenantMember(companyId);
+    const overdueId = randomUUID();
+    const past = new Date(Date.now() - 3600_000);
+    const future = new Date(Date.now() + 3600_000);
+    await db.insert(issues).values([
+      { id: overdueId, companyId, title: "Due follow-up", status: "blocked", monitorNextCheckAt: past },
+      { companyId, title: "Old task without commitment", status: "todo", updatedAt: past },
+      { companyId, title: "Future follow-up", status: "todo", monitorNextCheckAt: future },
+      { companyId, title: "Completed", status: "done", monitorNextCheckAt: past },
+      { companyId, title: "Cancelled", status: "cancelled", monitorNextCheckAt: past },
+      { companyId: otherCompanyId, title: "Other company", status: "todo", monitorNextCheckAt: past },
+    ]);
+    const app = createApp(companyId);
+    const result = await request(app).get(`/api/companies/${companyId}/issues`)
+      .query({ overdueFollowUp: "true", view: "compact", limit: "1" });
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    expect(result.body.map((issue: { id: string }) => issue.id)).toEqual([overdueId]);
+    const next = await request(app).get(`/api/companies/${companyId}/issues`)
+      .query({ overdueFollowUp: "true", limit: "1", offset: "1" });
+    expect(next.status).toBe(200);
+    expect(next.body).toEqual([]);
+    const count = await request(app).get(`/api/companies/${companyId}/issues/count`)
+      .query({ attention: "blocked", status: "blocked", overdueFollowUp: "true" });
+    expect(count.status, JSON.stringify(count.body)).toBe(200);
+    expect(count.body).toEqual({ count: 1 });
+    const forbidden = await request(app).get(`/api/companies/${otherCompanyId}/issues`)
+      .query({ overdueFollowUp: "true" });
+    expect(forbidden.status).toBe(403);
+  });
+
+  it("rejects malformed overdue filters rather than returning an unfiltered list", async () => {
+    const companyId = randomUUID();
+    const app = createApp(companyId);
+    for (const query of [{ overdueFollowUp: "yesterday" }, { overdueFollowUp: ["true", "false"] }]) {
+      const result = await request(app).get(`/api/companies/${companyId}/issues`).query(query);
+      expect(result.status).toBe(400);
+    }
+  });
+
 });
