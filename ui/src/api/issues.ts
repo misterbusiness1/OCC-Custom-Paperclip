@@ -80,6 +80,7 @@ export type ResolveRecoveryActionResponse = {
 };
 
 export type IssueListFilters = {
+  overdueFollowUp?: boolean;
   attention?: "blocked";
   status?: string;
   projectId?: string;
@@ -113,6 +114,7 @@ export type IssueListFilters = {
 
 function issueListSearchParams(filters?: IssueListFilters) {
   const params = new URLSearchParams();
+  if (filters?.overdueFollowUp) params.set("overdueFollowUp", "true");
   if (filters?.attention) params.set("attention", filters.attention);
   if (filters?.status) params.set("status", filters.status);
   if (filters?.projectId) params.set("projectId", filters.projectId);

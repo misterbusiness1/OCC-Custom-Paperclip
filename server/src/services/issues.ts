@@ -1850,6 +1850,8 @@ export function parseStatusFilter(
 }
 
 export interface IssueFilters {
+  /** Unfinished tasks whose explicit scheduled follow-up is past due. */
+  overdueFollowUp?: boolean;
   attention?: "blocked";
   status?: string | readonly string[];
   /**
@@ -6384,6 +6386,10 @@ async function blockedInboxIssueConditions(
     filters?.lowTrustBoundary,
   );
   if (lowTrustCondition) conditions.push(lowTrustCondition);
+  if (filters?.overdueFollowUp) {
+    conditions.push(sql<boolean>`${issues.monitorNextCheckAt} < CURRENT_TIMESTAMP`);
+    conditions.push(notInArray(issues.status, ["done", "cancelled"]));
+  }
   const statuses = parseStatusFilter(filters?.status);
   if (statuses.length > 0) {
     conditions.push(
@@ -8134,6 +8140,10 @@ export function issueService(db: Db) {
         filters?.lowTrustBoundary,
       );
       if (lowTrustCondition) conditions.push(lowTrustCondition);
+      if (filters?.overdueFollowUp) {
+        conditions.push(sql<boolean>`${issues.monitorNextCheckAt} < CURRENT_TIMESTAMP`);
+        conditions.push(notInArray(issues.status, ["done", "cancelled"]));
+      }
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1) {
         conditions.push(eq(issues.status, statuses[0]));
@@ -8414,6 +8424,10 @@ export function issueService(db: Db) {
         if (!filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
           conditions.push(nonIdleSlackIssueCondition());
         }
+      }
+      if (filters?.overdueFollowUp) {
+        conditions.push(sql<boolean>`${issues.monitorNextCheckAt} < CURRENT_TIMESTAMP`);
+        conditions.push(notInArray(issues.status, ["done", "cancelled"]));
       }
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1)

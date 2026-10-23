@@ -403,11 +403,24 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         ) : (
           <AgentAvatar agent={agent} size={32} />
         )}
-        secondaryRow={builtInCluster && (
-          <div className="@5xl:hidden flex flex-wrap items-center gap-1.5">
+        secondaryRow={
+          <div className="@5xl:hidden flex flex-wrap items-center gap-2">
             {builtInCluster}
+            <span className="sm:hidden"><AgentStatusBadge status={agent.status} /></span>
+            <span className="text-xs text-muted-foreground" aria-label="Last heartbeat">
+              Heartbeat: {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "Never"}
+            </span>
+            {liveRunByAgent.has(agent.id) && (
+              <span className="sm:hidden">
+                <LiveRunIndicator
+                  agentRef={agentRouteRef(agent)}
+                  runId={liveRunByAgent.get(agent.id)!.runId}
+                  liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+                />
+              </span>
+            )}
           </div>
-        )}
+        }
         meta={
           <div className="flex items-center gap-3">
             {builtInCluster && (

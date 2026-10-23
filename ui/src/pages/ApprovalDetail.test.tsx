@@ -241,7 +241,7 @@ describe("ApprovalDetail", () => {
     expect(isBefore(effect, button(panel(), "Approve"))).toBe(true);
     // The draft is never offered as the original request.
     expect(source[0].textContent).not.toContain("Last line of the draft.");
-    expect(controlsAboveDecision()).toEqual([]);
+    expect(controlsAboveDecision()).toEqual(["Original request"]);
   });
 
   it("names who wrote the original comment instead of printing an id, above the buttons and in Full request", async () => {

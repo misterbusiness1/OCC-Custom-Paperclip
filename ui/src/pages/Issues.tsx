@@ -11,6 +11,8 @@ import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
+import { Button } from "@/components/ui/button";
+import { OPERATOR_TASK_VIEWS, operatorTaskView, operatorTaskViewFilters } from "../lib/operator-task-views";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { CircleDot } from "lucide-react";
@@ -71,7 +73,9 @@ export function Issues() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const taskView = operatorTaskView(searchParams.get("view"));
+  const taskViewFilters = operatorTaskViewFilters(taskView);
   const queryClient = useQueryClient();
   const fetchNextPageInFlightRef = useRef(false);
 
@@ -152,6 +156,8 @@ export function Issues() {
   } = useInfiniteQuery({
     queryKey: [
       ...queryKeys.issues.list(selectedCompanyId!),
+      "operator-view",
+      taskView,
       "participant-agent",
       participantAgentId ?? "__all__",
       "workspace",
@@ -162,6 +168,7 @@ export function Issues() {
       issuePageSize,
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
+      ...taskViewFilters,
       participantAgentId,
       workspaceId: workspaceIdFilter,
       includeRoutineExecutions: true,
@@ -174,7 +181,6 @@ export function Issues() {
     getNextPageParam: (lastPage, _allPages, lastPageParam) =>
       getNextIssuesPageOffset(lastPage.length, lastPageParam, issuePageSize),
     enabled: !!selectedCompanyId,
-    placeholderData: (previousData) => previousData,
   });
 
   const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
@@ -209,7 +215,24 @@ export function Issues() {
   }
 
   return (
+    <div className="space-y-3">
+      <nav className="flex flex-wrap gap-2" aria-label="Task views">
+        {OPERATOR_TASK_VIEWS.map((view) => (
+          <Button key={view.value} size="sm" variant={taskView === view.value ? "secondary" : "ghost"}
+            aria-pressed={taskView === view.value}
+            onClick={() => setSearchParams((current) => {
+              const next = new URLSearchParams(current);
+              if (view.value === "all") next.delete("view");
+              else next.set("view", view.value);
+              return next;
+            })}>
+            {view.label}
+          </Button>
+        ))}
+      </nav>
+      {taskView === "overdue" && <p className="text-sm text-muted-foreground">Unfinished tasks with a scheduled follow-up time that has passed.</p>}
     <IssuesList
+      key={`${selectedCompanyId}:${taskView}`}
       issues={issues ?? []}
       isLoading={isLoading}
       isLoadingMoreIssues={isFetchingNextPage}
@@ -217,7 +240,7 @@ export function Issues() {
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
-      viewStateKey="paperclip:issues-view"
+      viewStateKey={taskView === "all" ? "paperclip:issues-view" : `paperclip:issues-view:${taskView}`}
       rowPresentation={issuesPresentation.rowPresentation}
       toolbarPresentation={issuesPresentation.toolbarPresentation}
       issueLinkState={issueLinkState}
@@ -229,7 +252,8 @@ export function Issues() {
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
+      searchFilters={{ ...taskViewFilters, participantAgentId, workspaceId: workspaceIdFilter }}
     />
+    </div>
   );
 }
