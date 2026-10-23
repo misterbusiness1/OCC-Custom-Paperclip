@@ -22,6 +22,7 @@ function errorText(value: unknown): string {
 export function parseOpenCodeJsonl(stdout: string) {
   let sessionId: string | null = null;
   let providerHttpStatus: number | null = null;
+  let providerRetryable = false;
   let retryAfter: string | null = null;
   const messages: string[] = [];
   const errors: string[] = [];
@@ -81,6 +82,7 @@ export function parseOpenCodeJsonl(stdout: string) {
       const status = data.statusCode;
       providerHttpStatus = error.name === "APIError" && typeof status === "number"
         && Number.isInteger(status) && status >= 400 && status <= 599 ? status : null;
+      providerRetryable = providerHttpStatus !== null && data.isRetryable === true;
       retryAfter = null;
       if (providerHttpStatus !== null) {
         const headers = parseObject(data.responseHeaders);
@@ -96,6 +98,7 @@ export function parseOpenCodeJsonl(stdout: string) {
   return {
     sessionId,
     providerHttpStatus,
+    providerRetryable,
     retryAfter,
     summary: messages.join("\n\n").trim(),
     usage,

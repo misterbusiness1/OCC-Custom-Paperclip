@@ -15,7 +15,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
-suite("OpenCode SDK rate limit native recovery", () => {
+suite("OpenCode SDK provider failure native recovery", () => {
   let temp: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   let heartbeat: ReturnType<typeof heartbeatService>;
@@ -33,7 +33,11 @@ suite("OpenCode SDK rate limit native recovery", () => {
     if (root) await fs.rm(root, { recursive: true, force: true });
     await temp?.cleanup();
   });
-  it.each([undefined, "600"])("persists one bounded retry with Retry-After %s without another provider turn", async (retryAfter) => {
+  it.each([
+    [429, undefined, true, true], [429, "600", true, true], [502, undefined, true, true],
+    [503, "600", true, true], [504, undefined, true, true], [408, undefined, true, true], [409, undefined, true, true],
+    [502, undefined, false, false], [401, undefined, true, false], [403, undefined, true, false],
+  ] as const)("SDK status %s with Retry-After %s and retryability %s uses the native retry policy", async (statusCode, retryAfter, isRetryable, expectedRetry) => {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const prefix = "O" + companyId.replaceAll("-", "").slice(0, 8).toUpperCase();
     await db.insert(companies).values({ id: companyId, name: "Synthetic OpenCode recovery", issuePrefix: prefix,
@@ -48,8 +52,8 @@ suite("OpenCode SDK rate limit native recovery", () => {
     transport.mockReset();
     transport.mockResolvedValue({ exitCode: 1, signal: null, timedOut: false, stderr: "", pid: 123,
       startedAt: new Date().toISOString(), stdout: JSON.stringify({ type: "error", error: { name: "APIError", data: {
-        message: 'Too Many Requests: {"status":429,"title":"Too Many Requests"}', statusCode: 429,
-        isRetryable: true, responseHeaders: retryAfter ? { "retry-after": retryAfter } : {},
+        message: "Synthetic provider failure", statusCode,
+        isRetryable, responseHeaders: retryAfter ? { "retry-after": retryAfter } : {},
       } } }) } as never);
     const started = Date.now();
     const run = await heartbeat.wakeup(agentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
@@ -57,10 +61,22 @@ suite("OpenCode SDK rate limit native recovery", () => {
     expect(run).not.toBeNull();
     await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 15_000 }).toBe("failed");
     const failed = await heartbeat.getRun(run!.id);
-    expect(failed).toMatchObject({ errorCode: "opencode_transient_upstream", resultJson: {
-      errorFamily: "transient_upstream", providerHttpStatus: 429,
-    } });
     const retries = () => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
+    if (!expectedRetry) {
+      // Await real finalization instead of racing its asynchronous retry decision.
+      await heartbeat.drainActiveRunExecutions();
+      expect(failed).toMatchObject({ errorCode: "adapter_failed", resultJson: { providerHttpStatus: statusCode } });
+      expect(failed?.resultJson).not.toHaveProperty("errorFamily");
+      // Existing generic recovery still owns its fallback retry; a terminal SDK
+      // result must not be promoted to the provider transient contract or hint.
+      expect(failed?.resultJson).not.toHaveProperty("retryNotBefore");
+      expect(await retries()).toHaveLength(1);
+      expect(transport).toHaveBeenCalledTimes(1);
+      return;
+    }
+    expect(failed).toMatchObject({ errorCode: "opencode_transient_upstream", resultJson: {
+      errorFamily: "transient_upstream", providerHttpStatus: statusCode,
+    } });
     await expect.poll(async () => (await retries()).length, { timeout: 10_000 }).toBe(1);
     const [retry] = await retries();
     expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });

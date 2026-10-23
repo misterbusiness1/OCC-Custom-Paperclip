@@ -685,15 +685,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderrLine ||
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
       const providerHttpStatus = attempt.parsed.providerHttpStatus;
-      const rateLimited = providerHttpStatus === 429 && Boolean(parsedError) && !attempt.proc.errorCode;
+      // Respect SDK retryability only for its transient HTTP status classes;
+      // authentication/payment failures never become retries from a flag alone.
+      const retryableProviderFailure = providerHttpStatus !== null &&
+        (providerHttpStatus === 429 || attempt.parsed.providerRetryable &&
+          (providerHttpStatus === 408 || providerHttpStatus === 409 || providerHttpStatus >= 500)) &&
+        Boolean(parsedError) && !attempt.proc.errorCode;
       const retryAfter = attempt.parsed.retryAfter?.trim();
       const now = Date.now();
       const retryAt = retryAfter && /^\d+$/.test(retryAfter)
         ? now + Number(retryAfter) * 1000
         : retryAfter ? Date.parse(retryAfter) : NaN;
-      const retryNotBefore = rateLimited && Number.isFinite(retryAt) && retryAt >= now
+      const retryNotBefore = retryableProviderFailure && Number.isFinite(retryAt) && retryAt >= now
         && retryAt <= 8.64e15 ? new Date(retryAt).toISOString() : null;
-      const providerFailure = rateLimited ? {
+      const providerFailure = retryableProviderFailure ? {
         errorFamily: "transient_upstream" as const,
         ...(retryNotBefore ? { retryNotBefore } : {}),
       } : {};
@@ -705,9 +710,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: false,
         errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
         // Transport disposition takes precedence over provider classification.
-        // Structured 429s use the controller's existing bounded transient policy;
+        // Structured retryable failures use the existing bounded transient policy;
         // an absent Retry-After is not an invented provider reset time.
-        errorCode: attempt.proc.errorCode ?? (rateLimited ? "opencode_transient_upstream" : null),
+        errorCode: attempt.proc.errorCode ?? (retryableProviderFailure ? "opencode_transient_upstream" : null),
         ...providerFailure,
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
