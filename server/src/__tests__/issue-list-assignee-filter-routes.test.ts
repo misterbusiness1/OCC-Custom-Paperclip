@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, issueInboxArchives, principalPermissionGrants } from "@paperclipai/db";
+import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, issueInboxArchives, issueThreadInteractions, principalPermissionGrants } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -15,6 +15,9 @@ import {
   ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES,
   issueRoutes,
 } from "../routes/issues.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { logActivity } from "../services/activity-log.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "../services/successful-run-handoff-state.js";
@@ -644,6 +647,28 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(visible.headers["x-paperclip-request-cache"]).toBe("miss");
   });
 
+  it("invalidates committed issue caches before a company listener can throw", async () => {
+    const { companyId, issueId } = await seedCachedInboxFixture();
+    const app = createApp(companyId), path = `/api/companies/${companyId}/issues`;
+    const query = { view: "compact" };
+    await request(app).get(path).query(query);
+    expect((await request(app).get(path).query(query)).headers["x-paperclip-request-cache"]).toBe("hit");
+    const notificationFailure = new Error("synthetic company listener failure");
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+      if (event.type === "activity.logged" && event.payload.entityId === issueId) throw notificationFailure;
+    });
+    try {
+      await db.update(issues).set({ title: "Committed title after cached read" }).where(eq(issues.id, issueId));
+      await expect(logActivity(db, {
+        companyId, actorType: "user", actorId: "cloud-user-1",
+        action: "issue.updated", entityType: "issue", entityId: issueId,
+      })).rejects.toBe(notificationFailure);
+      const after = await request(app).get(path).query(query);
+      expect(after.headers["x-paperclip-request-cache"]).toBe("miss");
+      expect(after.body[0].title).toBe("Committed title after cached read");
+    } finally { unsubscribe(); }
+  });
+
   it("detaches pre-write reads without joining or caching their stale completion", async () => {
     const { companyId, issueId } = await seedCachedInboxFixture();
     const oldReady = deferred(), releaseOld = deferred(), newDecision = deferred();
@@ -747,6 +772,54 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       expect(overflow.status).toBe(429);
       expect(computes).toBe(8);
     } finally { release.resolve(); await Promise.all(reads); }
+  });
+
+  it.each([false, true])("publishes confirmation cache invalidation only after its owner commits (rollback=%s)", async (rollback) => {
+    const { companyId, issueId } = await seedCachedInboxFixture();
+    await db.update(issues).set({ status: "todo", completedAt: null }).where(eq(issues.id, issueId));
+    const issue = { id: issueId, companyId, projectId: null, goalId: null };
+    const interaction = await issueThreadInteractionService(db).create(issue, {
+      kind: "request_confirmation", payload: { version: 1, prompt: "Confirm the synthetic task" },
+    }, { userId: "cloud-user-1" });
+    const originalTime = new Date("2026-01-01T00:00:00.000Z");
+    await db.update(issues).set({ updatedAt: originalTime }).where(eq(issues.id, issueId));
+    const app = createApp(companyId), path = `/api/companies/${companyId}/issues`;
+    const query = { view: "compact" };
+    expect((await request(app).get(path).query(query)).body[0].updatedAt).toBe(originalTime.toISOString());
+    const beforeCommit = deferred(), release = deferred();
+    const events: string[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+      if (event.type === "activity.logged" && event.payload.action === "issue.thread_interaction_accepted") events.push(String(event.payload.action));
+    });
+    const effects: Array<(committedDb: typeof db) => Promise<void>> = [];
+    const write = db.transaction(async (tx) => {
+      const result = await issueThreadInteractionService(tx as unknown as typeof db).acceptInteraction(issue, interaction.id, {}, { systemId: "system:pr-merged" }, {
+        deferConfirmationCommitEffects: (effect) => { effects.push(effect); },
+      });
+      beforeCommit.resolve();
+      await release.promise;
+      if (rollback) throw new Error("synthetic owner rollback");
+      return result;
+    });
+    const settled = write.then(result => ({ result, failed: false }), () => ({ result: null, failed: true }));
+    try {
+      await Promise.race([beforeCommit.promise, settled.then(outcome => { expect(outcome.failed).toBe(false); })]);
+      expect(events).toEqual([]);
+      const during = await request(app).get(path).query(query);
+      expect(during.headers["x-paperclip-request-cache"]).toBe("hit");
+      expect(during.body[0].updatedAt).toBe(originalTime.toISOString());
+      release.resolve();
+      const outcome = await settled;
+      expect(outcome.failed).toBe(rollback);
+      if (!rollback) for (const effect of effects) await effect(db);
+      expect(events).toHaveLength(rollback ? 0 : 1);
+      const after = await request(app).get(path).query(query);
+      expect(after.headers["x-paperclip-request-cache"]).toBe(rollback ? "hit" : "miss");
+      if (rollback) expect(after.body[0].updatedAt).toBe(originalTime.toISOString());
+      else expect(new Date(after.body[0].updatedAt).getTime()).toBeGreaterThan(originalTime.getTime());
+      const [persisted] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
+      expect(persisted.status).toBe(rollback ? "pending" : "accepted");
+    } finally { release.resolve(); await settled; unsubscribe(); }
   });
 
   it("bounds compact issue-list server cache entries", async () => {

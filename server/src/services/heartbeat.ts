@@ -29078,6 +29078,7 @@ export function heartbeatService(
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const cancelledRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
+      const postCommitIssueActivities: ActivityPublication[] = [];
 
       const outcome = await db
         .transaction(async (tx) => {
@@ -30248,7 +30249,7 @@ export function heartbeatService(
                   resolvedStrategy,
                   hasResolvablePriorSessionWorkspace,
                 },
-              });
+              }, postCommitIssueActivities);
               return { kind: "skipped" as const };
             }
           }
@@ -30661,6 +30662,10 @@ export function heartbeatService(
           // transitions to "running" — Fix A (lazy locking).
 
           return { kind: "queued" as const, run: newRun };
+        })
+        .then((outcome) => {
+          for (const publication of postCommitIssueActivities) publishActivity(publication);
+          return outcome;
         })
         .catch((error) => {
           if (isExternalChatWaitAuthorizationContention(error))

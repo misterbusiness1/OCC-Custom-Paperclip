@@ -16,7 +16,7 @@ import type { SecretProvider } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { agentService } from "./agents.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { normalizeSecretKey, secretService } from "./secrets.js";
 
 const CONFIG_PATH_RE = /^(?:env\.[A-Za-z_][A-Za-z0-9_]*|access\.[A-Za-z_][A-Za-z0-9_]*)$/;
@@ -124,7 +124,8 @@ export function createSecretProposalsService(db: Db) {
     return denial ? { ...denial, pending, recent } : null;
   }
 
-  async function createWithinQuota<T>(input: CreationQuotaInput, create: (txDb: Db) => Promise<T>) {
+  async function createWithinQuota<T>(input: CreationQuotaInput, create: (txDb: Db, publications: ActivityPublication[]) => Promise<T>) {
+    const publications: ActivityPublication[] = [];
     const result = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${input.companyId}), hashtext(${input.agentId}))`);
@@ -143,9 +144,10 @@ export function createSecretProposalsService(db: Db) {
         });
         return { denial, value: null };
       }
-      return { denial: null, value: await create(txDb) };
+      return { denial: null, value: await create(txDb, publications) };
     });
     if (result.denial) throw unprocessable(result.denial.message);
+    for (const publication of publications) publishActivity(publication);
     return result.value as T;
   }
 
@@ -173,6 +175,7 @@ export function createSecretProposalsService(db: Db) {
     txDb: Db,
     proposal: Proposal,
     sourceSecretLabel: string,
+    publications: ActivityPublication[],
   ) {
     if (!proposal.originIssueId || !proposal.targetId || !proposal.configPath) return proposal;
     const target = await txDb
@@ -248,7 +251,7 @@ export function createSecretProposalsService(db: Db) {
         effectiveResolverPolicy: "board_only",
         serverOwnedPayload: "secretProposal",
       },
-    });
+    }, publications);
     return linked;
   }
 
@@ -440,7 +443,7 @@ export function createSecretProposalsService(db: Db) {
     }
     return createWithinQuota(
       { companyId: context.companyId, agentId: run.agentId, runId: run.id, issueId: originIssueId },
-      async (txDb) => {
+      async (txDb, publications) => {
         if (input.secretProposalId) {
           const dependency = await txDb.select().from(companySecretProposals).where(and(
             eq(companySecretProposals.id, input.secretProposalId),
@@ -473,7 +476,7 @@ export function createSecretProposalsService(db: Db) {
         }).returning().then((rows) => rows[0]);
         await recordCreated(proposal, txDb);
         if (!sourceSecretLabel) throw conflict("Binding proposal source secret label is unavailable");
-        return createBindingInteraction(txDb, proposal, sourceSecretLabel);
+        return createBindingInteraction(txDb, proposal, sourceSecretLabel, publications);
       },
     );
   }

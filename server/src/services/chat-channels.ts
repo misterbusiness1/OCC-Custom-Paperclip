@@ -256,7 +256,7 @@ import {
   queueIssueAssignmentWakeup,
   type IssueAssignmentWakeupDeps,
 } from "./issue-assignment-wakeup.js";
-import { issueService } from "./issues.js";
+import { executeIssuePostCommitActions, issueService, type IssuePostCommitAction } from "./issues.js";
 import {
   authorizeNativeChatReviewPresentation,
   NativeChatReviewPresentationContentionError,
@@ -8629,6 +8629,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     };
     const notice = (text: string) =>
       enqueueResponse(`photon-response:${reference}:${event.sequence}`, text);
+    const resolutionPublications: ActivityPublication[] = [];
     try {
       if (interaction.kind === "ask_user_questions") {
         if (command?.command !== "submit") {
@@ -8763,10 +8764,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                   conversationId: conversation.id,
                   interactionId: resolved.id,
                 },
-              });
+              }, resolutionPublications);
             },
           },
         );
+        for (const publication of resolutionPublications) publishActivity(publication);
         scheduleMessageProcessing(async () => {
           await questionResponses.deliver(answered.id);
           await processPendingPublications();
@@ -8883,7 +8885,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 conversationId: conversation.id,
                 interactionId: resolved.id,
               },
-            });
+            }, resolutionPublications);
           },
         };
         if (decision === "accept")
@@ -8902,6 +8904,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             { userId: principal.userId },
             mutation,
           );
+        for (const publication of resolutionPublications) publishActivity(publication);
         scheduleMessageProcessing(async () => {
           await processPendingPublications();
         });
@@ -19660,7 +19663,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       interaction.status === "accepted" ? "Accepted" : "Rejected";
     const resolvedByThisProviderAction =
       action.result?.code === "confirmation_resolution_committed_by_provider";
-    return db.transaction(async (tx) => {
+    const resolutionPublications: ActivityPublication[] = [];
+    const settled = await db.transaction(async (tx) => {
       const [completed] = await tx
         .update(chatActions)
         .set({
@@ -19795,10 +19799,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             requestedResolverPolicy: interaction.requestedResolverPolicy,
             effectiveResolverPolicy: interaction.effectiveResolverPolicy,
           },
-        });
+        }, resolutionPublications);
       }
       return true;
     });
+    for (const publication of resolutionPublications) publishActivity(publication);
+    return settled;
   }
 
   async function reconcileTerminalConfirmationActions(
@@ -21077,6 +21083,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .then((rows) => rows[0] ?? null);
     if (!issue) return deny(safelyKnown);
+    const resolutionPublications: ActivityPublication[] = [];
     try {
       const answered = await issueThreadInteractionService(db).answerQuestions(
         issue,
@@ -21166,7 +21173,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 resolutionActorKind: "user",
                 answeredQuestionCount: 1,
               },
-            });
+            }, resolutionPublications);
             await tx
               .insert(chatPublications)
               .values({
@@ -21195,6 +21202,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           },
         },
       );
+      for (const publication of resolutionPublications) publishActivity(publication);
       scheduleMessageProcessing(async () => {
         await processPendingPublications();
       });
@@ -21818,6 +21826,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ReturnType<typeof issueThreadInteractionService>["answerQuestions"]
       >
     >;
+    const resolutionPublications: ActivityPublication[] = [];
     try {
       answered = await issueThreadInteractionService(db).answerQuestions(
         issue,
@@ -21884,10 +21893,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 resolutionActorKind: "user",
                 answeredQuestionCount: validation.answers.length,
               },
-            });
+            }, resolutionPublications);
           },
         },
       );
+      for (const publication of resolutionPublications) publishActivity(publication);
     } catch (error) {
       if (isExternalActionAuthorizationChange(error)) {
         await db.transaction(async (tx) => {
@@ -27773,19 +27783,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           }
           // Persist the resume and its marker together before waking. If a
           // scheduler response is lost, retry cannot reopen work a second time.
+          const resumePublications: ActivityPublication[] = [];
+          const resumePostCommitActions: IssuePostCommitAction[] = [];
           const issue = await lease.commit(async (tx) => {
             const [current] = await tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, action.companyId), eq(issues.assigneeAgentId, agentId))).for("update");
             if (!current) throw forbidden("The task is no longer assigned to the Slack agent");
             await assertSlackBoardWorkAllowed(tx as unknown as Db, current);
             if (action.result?.resumeApplied !== true) {
               if (["done", "blocked"].includes(current.status)) {
-                await issueService(tx as unknown as Db).update(current.id, { status: "todo", actorUserId: userId });
-                await logActivity(tx as unknown as Db, { companyId: current.companyId, actorType: "user", actorId: userId, action: "issue.updated", entityType: "issue", entityId: current.id, details: { status: "todo", source: "slack_board_message" } });
+                await issueService(db).update(current.id, { status: "todo", actorUserId: userId }, tx, resumePublications, resumePostCommitActions);
+                await logActivity(tx as unknown as Db, { companyId: current.companyId, actorType: "user", actorId: userId, action: "issue.updated", entityType: "issue", entityId: current.id, details: { status: "todo", source: "slack_board_message" } }, resumePublications);
               }
               await tx.update(chatActions).set({ result: { resumeApplied: true }, updatedAt: new Date() }).where(eq(chatActions.id, action.id));
             }
             return current;
           });
+          for (const publication of resumePublications) publishActivity(publication);
+          await executeIssuePostCommitActions(db, resumePostCommitActions);
           await lease.commit(async () => {});
           await options.heartbeat.wakeup(agentId, {
             source: "automation", triggerDetail: "system", reason: "issue_commented",

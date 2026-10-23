@@ -19,7 +19,7 @@ import type { PaperclipQuestionResponse } from "../vendor/paperclip-runner/index
 import { isUniqueViolation } from "../db-errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { logger } from "../middleware/logger.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import type { heartbeatService } from "./heartbeat.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 
@@ -503,6 +503,7 @@ export function questionResponseDeliveryService(
     errorCode?: string | null;
   }): Promise<QuestionResponseDeliveryOutcome> {
     const at = now();
+    const publications: ActivityPublication[] = [];
     const updated = await db.transaction(async (tx) => {
       const row = await tx
         .update(issueQuestionResponseDeliveries)
@@ -553,9 +554,11 @@ export function questionResponseDeliveryService(
           adapter: input.adapter,
           errorCode: input.errorCode ?? null,
         },
-      });
+      }, publications);
       return row;
     });
+
+    for (const publication of publications) publishActivity(publication);
 
     const persisted =
       updated ??
