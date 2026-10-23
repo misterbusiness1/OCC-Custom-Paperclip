@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -24,6 +24,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { agentService } from "../services/agents.js";
 import { secretService } from "../services/secrets.js";
 
@@ -403,4 +404,113 @@ describeEmbeddedPostgres("agent adapter-config environment binding merge", () =>
     expect(env[PLAIN_KEY]).toMatchObject({ type: "plain", value: "plain-value" });
     expect(env[SECRET_KEY]).toBeUndefined();
   });
+
+  async function runContendingOperations(agentId: string, operations: Array<() => Promise<unknown>>) {
+    let unlock!: () => void;
+    let locked!: () => void;
+    const release = new Promise<void>((resolve) => { unlock = resolve; });
+    const ready = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, agentId)).for("update");
+      locked();
+      await release;
+    });
+    await ready;
+    const updates: Promise<unknown>[] = [];
+    try {
+      for (const operation of operations) {
+        updates.push(operation());
+        // Enqueue in a known order at the actual PostgreSQL row-lock boundary.
+        // Old code has already read stale config here; fixed code locks first.
+        const deadline = Date.now() + 5000;
+        for (;;) {
+          const rows = await db.execute(sql`select count(*)::int as waiting from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock' and query like '%agents%'`);
+          if (Number(rows[0]?.waiting) >= updates.length) break;
+          if (Date.now() > deadline) throw new Error("Concurrent agent updates did not reach row-lock boundary");
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+    } finally {
+      unlock();
+      await holder;
+    }
+    return await Promise.all(updates);
+  }
+
+  async function runContendingUpdates(agentId: string, patches: Array<Parameters<ReturnType<typeof agentService>["update"]>[1]>, removals: string[][] = []) {
+    return runContendingOperations(agentId, patches.map((patch, index) => () => agentService(db).update(agentId, patch, {
+      envUpdate: { removals: removals[index] ?? [] },
+      recordRevision: { source: "patch" },
+    })));
+  }
+
+  it("preserves both independent environment additions under concurrent service updates", async () => {
+    const agent = await seedAgent();
+    await runContendingUpdates(agent.id, [
+      { adapterConfig: { env: { FIRST: { type: "plain", value: "first" } } } },
+      { adapterConfig: { env: { SECOND: { type: "plain", value: "second" } } } },
+    ]);
+    const env = await storedEnv(agent.id);
+    expect(env.FIRST).toEqual({ type: "plain", value: "first" });
+    expect(env.SECOND).toEqual({ type: "plain", value: "second" });
+    expect(env[SECRET_KEY]).toMatchObject({ secretId });
+  });
+
+  it("does not resurrect an explicit removal or lose a concurrent unrelated addition", async () => {
+    const agent = await seedAgent();
+    await runContendingUpdates(agent.id, [
+      { adapterConfig: { env: {} } },
+      { adapterConfig: { env: { ADDED: { type: "plain", value: "new" } } } },
+    ], [[SECRET_KEY], []]);
+    const env = await storedEnv(agent.id);
+    expect(env[SECRET_KEY]).toBeUndefined();
+    expect(env.ADDED).toEqual({ type: "plain", value: "new" });
+  });
+
+
+  it("does not replay a route snapshot after a concurrent secret removal", async () => {
+    const agent = await seedAgent();
+    const app = createApp();
+    const results = await runContendingOperations(agent.id, [
+      () => agentService(db).update(agent.id, { adapterConfig: { env: {} } }, { envUpdate: { removals: [SECRET_KEY] } }),
+      () => request(app).patch(`/api/agents/${agent.id}`).send({ adapterConfig: { env: { ROUTE_ADDED: { type: "plain", value: "route" } } } }).then((response) => {
+        expect(response.status).toBe(200);
+        return response.body;
+      }),
+    ]);
+    expect(results).toHaveLength(2);
+    const env = await storedEnv(agent.id);
+    expect(env[SECRET_KEY]).toBeUndefined();
+    expect(env.ROUTE_ADDED).toEqual({ type: "plain", value: "route" });
+  });
+
+  it("treats a redacted route placeholder as preserve-current during a concurrent change", async () => {
+    const agent = await seedAgent();
+    const app = createApp();
+    await runContendingOperations(agent.id, [
+      () => agentService(db).update(agent.id, { adapterConfig: { env: { [PLAIN_KEY]: { type: "plain", value: "changed" } } } }),
+      () => request(app).patch(`/api/agents/${agent.id}`).send({ adapterConfig: { env: { [PLAIN_KEY]: { type: "plain", value: REDACTED_EVENT_VALUE } } } }).then((response) => {
+        expect(response.status).toBe(200);
+      }),
+    ]);
+    expect((await storedEnv(agent.id))[PLAIN_KEY]).toEqual({ type: "plain", value: "changed" });
+  });
+
+
+  it("computes deliberate rollback removals from the locked current configuration", async () => {
+    const agent = await seedAgent();
+    const service = agentService(db);
+    await service.update(agent.id, { name: "Rollback snapshot" }, { recordRevision: { source: "patch" } });
+    const [revision] = await service.listConfigRevisions(agent.id);
+    expect(revision).toBeDefined();
+    await runContendingOperations(agent.id, [
+      () => service.update(agent.id, { adapterConfig: { env: { AFTER_SNAPSHOT: { type: "plain", value: "new" } } } }),
+      () => service.rollbackConfigRevision(agent.id, revision!.id, { userId: "board-user" }),
+    ]);
+    const env = await storedEnv(agent.id);
+    expect(env.AFTER_SNAPSHOT).toBeUndefined();
+    expect(env[SECRET_KEY]).toMatchObject({ secretId });
+  });
+
 });

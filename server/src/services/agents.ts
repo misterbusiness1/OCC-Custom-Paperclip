@@ -464,6 +464,10 @@ export function deduplicateAgentName(
 }
 
 export function agentService(db: Db) {
+  return createAgentService(db, false);
+}
+
+function createAgentService(db: Db, updatingInTransaction: boolean) {
   const secretsSvc = secretService(db);
 
   function currentUtcMonthWindow(now = new Date()) {
@@ -877,7 +881,14 @@ export function agentService(db: Db) {
     id: string,
     data: Partial<typeof agents.$inferInsert>,
     options?: UpdateAgentOptions,
-  ) {
+  ): Promise<Awaited<ReturnType<typeof getById>>> {
+    if (!updatingInTransaction) {
+      return db.transaction((tx) => createAgentService(tx as unknown as Db, true).update(id, data, options));
+    }
+    // Lock before reading: normalization, environment merging and all dependent
+    // binding/session/revision writes must observe the latest committed config.
+    const locked = await db.select({ id: agents.id }).from(agents).where(eq(agents.id, id)).for("update");
+    if (locked.length === 0) return null;
     const existing = await getById(id);
     if (!existing) return null;
 
@@ -948,7 +959,8 @@ export function agentService(db: Db) {
         normalizedAdapterConfig,
       );
       // Environment bindings merge per key, in the service layer, so every
-      // write path is covered. The HTTP route merges as well, but the
+      // write path is covered. The HTTP route forwards only env patch intent;
+      // it must not replay bindings copied from its earlier read. The
       // platform's own built-in agent reconciliation writes through this
       // service directly and used to replace the whole env map - that is how
       // it silently dropped the WooCommerce bindings from two of our agents
@@ -1085,11 +1097,7 @@ export function agentService(db: Db) {
       return normalizedUpdated;
     };
 
-    const transaction = (db as unknown as {
-      transaction?: (callback: (tx: unknown) => Promise<AgentUpdateResult>) => Promise<AgentUpdateResult>;
-    }).transaction;
-    if (typeof transaction !== "function") return applyUpdate(db);
-    return transaction.call(db, async (tx) => applyUpdate(tx as unknown as Db));
+    return applyUpdate(db);
   }
 
   return {
@@ -1485,7 +1493,12 @@ export function agentService(db: Db) {
       id: string,
       revisionId: string,
       actor: { agentId?: string | null; userId?: string | null },
-    ) => {
+    ): Promise<Awaited<ReturnType<typeof getById>>> => {
+      if (!updatingInTransaction) {
+        return db.transaction((tx) => createAgentService(tx as unknown as Db, true).rollbackConfigRevision(id, revisionId, actor));
+      }
+      const locked = await db.select({ id: agents.id }).from(agents).where(eq(agents.id, id)).for("update");
+      if (locked.length === 0) return null;
       const revision = await db
         .select()
         .from(agentConfigRevisions)

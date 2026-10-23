@@ -5480,6 +5480,7 @@ export function agentRoutes(
     // the service, which merges the environment map per key and records the
     // removal in the activity log.
     let envRemovals: string[] = [];
+    let adapterEnvPatch: Record<string, unknown> | null = null;
     if (touchesAdapterConfiguration) {
       assertExternalInstructionsAdmin(req, existing);
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
@@ -5617,6 +5618,17 @@ export function agentRoutes(
         adapterConfig: effectiveAdapterConfig,
       });
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+      // The effective config above is for validation. Only forward env keys
+      // actually supplied by the caller (plus newly generated defaults), never
+      // the stored map from this route's earlier, unlocked read. Otherwise a
+      // concurrent removal/change can be resurrected/overwritten by this PATCH.
+      const requestedEnv = asRecord(requestedAdapterConfig?.env) ?? {};
+      const normalizedEnv = asRecord(asRecord(patchData.adapterConfig)?.env) ?? {};
+      adapterEnvPatch = Object.fromEntries(Object.entries(normalizedEnv).filter(([key]) => {
+        const requestedBinding = asRecord(requestedEnv[key]);
+        if (requestedBinding?.type === "plain" && requestedBinding.value === REDACTED_EVENT_VALUE) return false;
+        return hasOwn(requestedEnv, key) || !hasOwn(existingEnv ?? {}, key);
+      }));
       assertExternalInstructionsAdmin(req, {
         ...existing,
         adapterConfig: patchData.adapterConfig,
@@ -5654,6 +5666,12 @@ export function agentRoutes(
       await assertCanUpdateAgent(req, existing);
     }
 
+    if (adapterEnvPatch !== null) {
+      const adapterConfig = { ...(asRecord(patchData.adapterConfig) ?? {}) };
+      if (Object.keys(adapterEnvPatch).length > 0) adapterConfig.env = adapterEnvPatch;
+      else delete adapterConfig.env;
+      patchData.adapterConfig = adapterConfig;
+    }
     const actor = getActorInfo(req);
     const agent = await svc.update(id, patchData, {
       recordRevision: {
