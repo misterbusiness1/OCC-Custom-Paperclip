@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants } from "@paperclipai/db";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, issueInboxArchives, principalPermissionGrants } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -614,6 +614,141 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(second.headers["x-paperclip-request-cache"]).toBe("hit");
   });
 
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  async function seedCachedInboxFixture() {
+    const companyId = randomUUID(), issueId = randomUUID();
+    const completedAt = new Date("2026-01-01T00:00:00.000Z");
+    await db.insert(companies).values({ id: companyId, name: "Cache fixture", issuePrefix: uniqueIssuePrefix(), requireBoardApprovalForNewAgents: false });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Archived completion", status: "done", priority: "medium", createdByUserId: "cloud-user-1", completedAt });
+    await db.insert(issueInboxArchives).values({ companyId, issueId, userId: "cloud-user-1", archivedAt: completedAt });
+    return { companyId, issueId };
+  }
+
+  it("immediately resurfaces a new user mention after a primed compact Mine cache", async () => {
+    const { companyId, issueId } = await seedCachedInboxFixture();
+    const app = createApp(companyId), path = `/api/companies/${companyId}/issues`;
+    const query = { view: "compact", touchedByUserId: "me", inboxArchivedByUserId: "me" };
+    expect((await request(app).get(path).query(query)).body).toEqual([]);
+    expect((await request(app).get(path).query(query)).headers["x-paperclip-request-cache"]).toBe("hit");
+    const comment = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "New attention [Me](user://cloud-user-1)", reopen: false });
+    expect(comment.status, JSON.stringify(comment.body)).toBe(201);
+    const visible = await request(app).get(path).query(query);
+    expect(visible.status).toBe(200);
+    expect(visible.body.map((row: { id: string }) => row.id)).toContain(issueId);
+    expect(visible.headers["x-paperclip-request-cache"]).toBe("miss");
+  });
+
+  it("detaches pre-write reads without joining or caching their stale completion", async () => {
+    const { companyId, issueId } = await seedCachedInboxFixture();
+    const oldReady = deferred(), releaseOld = deferred(), newDecision = deferred();
+    let joinedOld = false;
+    let computes = 0;
+    const app = createApp(companyId, { issueListDiagnostics: {
+      onComputeStart() { computes += 1; if (computes === 2) newDecision.resolve(); },
+      onCoalesced() { joinedOld = true; newDecision.resolve(); },
+      async onComputeComplete() { if (computes === 1) { oldReady.resolve(); await releaseOld.promise; } },
+    } });
+    const path = `/api/companies/${companyId}/issues`;
+    const query = { view: "compact", touchedByUserId: "me", inboxArchivedByUserId: "me" };
+    const old = request(app).get(path).query(query).then(response => response);
+    await oldReady.promise;
+    let fresh: Promise<Awaited<typeof old>> | undefined;
+    try {
+      const comment = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "New attention [Me](user://cloud-user-1)", reopen: false });
+      expect(comment.status, JSON.stringify(comment.body)).toBe(201);
+      fresh = request(app).get(path).query(query).then(response => response);
+      await newDecision.promise;
+      expect(joinedOld).toBe(false);
+      expect(computes).toBe(2);
+      const response = await fresh;
+      expect(response.body.map((row: { id: string }) => row.id)).toContain(issueId);
+      releaseOld.resolve();
+      expect((await old).body).toEqual([]);
+      const final = await request(app).get(path).query(query);
+      expect(final.body.map((row: { id: string }) => row.id)).toContain(issueId);
+      expect(final.headers["x-paperclip-request-cache"]).toBe("hit");
+      expect(computes).toBe(2);
+    } finally { releaseOld.resolve(); await old; await fresh; }
+  });
+
+  it("keeps another company's compact cache and does not invalidate on a no-op conditional archive", async () => {
+    const first = await seedCachedInboxFixture(), other = await seedCachedInboxFixture();
+    const app = createApp(first.companyId), otherApp = createApp(other.companyId);
+    const query = { view: "compact", touchedByUserId: "me", inboxArchivedByUserId: "me" };
+    const path = `/api/companies/${first.companyId}/issues`, otherPath = `/api/companies/${other.companyId}/issues`;
+    await request(app).get(path).query(query);
+    await request(otherApp).get(otherPath).query(query);
+    const noop = await request(app).post(`/api/issues/${first.issueId}/inbox-archive`).send({ expectedCompletedAt: "2025-01-01T00:00:00.000Z" });
+    expect(noop.status, JSON.stringify(noop.body)).toBe(200);
+    expect(noop.body.archived).toBe(false);
+    expect((await request(app).get(path).query(query)).headers["x-paperclip-request-cache"]).toBe("hit");
+    const comment = await request(app).post(`/api/issues/${first.issueId}/comments`).send({ body: "New attention [Me](user://cloud-user-1)", reopen: false });
+    expect(comment.status).toBe(201);
+    expect((await request(otherApp).get(otherPath).query(query)).headers["x-paperclip-request-cache"]).toBe("hit");
+    expect((await request(app).get(path).query(query)).headers["x-paperclip-request-cache"]).toBe("miss");
+  });
+
+  it("keeps a newer coalescing entry when the detached old read finishes", async () => {
+    const { companyId, issueId } = await seedCachedInboxFixture();
+    const oldReady = deferred(), releaseOld = deferred(), newReady = deferred(), releaseNew = deferred(), decision = deferred();
+    let computes = 0, completed = 0, joined = false;
+    const app = createApp(companyId, { issueListDiagnostics: {
+      onComputeStart() { computes += 1; if (computes > 2) decision.resolve(); },
+      onCoalesced() { joined = true; decision.resolve(); },
+      async onComputeComplete() {
+        completed += 1;
+        if (completed === 1) { oldReady.resolve(); await releaseOld.promise; }
+        else if (completed === 2) { newReady.resolve(); await releaseNew.promise; }
+      },
+    } });
+    const path = `/api/companies/${companyId}/issues`;
+    const query = { view: "compact", touchedByUserId: "me", inboxArchivedByUserId: "me" };
+    const old = request(app).get(path).query(query).then(response => response);
+    await oldReady.promise;
+    let fresh: Promise<Awaited<typeof old>> | undefined, follower: Promise<Awaited<typeof old>> | undefined;
+    try {
+      expect((await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "New attention [Me](user://cloud-user-1)", reopen: false })).status).toBe(201);
+      fresh = request(app).get(path).query(query).then(response => response);
+      await newReady.promise;
+      releaseOld.resolve();
+      expect((await old).body).toEqual([]);
+      follower = request(app).get(path).query(query).then(response => { decision.resolve(); return response; });
+      await decision.promise;
+      expect(joined).toBe(true);
+      expect(computes).toBe(2);
+      releaseNew.resolve();
+      for (const response of await Promise.all([fresh, follower])) {
+        expect(response.body.map((row: { id: string }) => row.id)).toContain(issueId);
+      }
+    } finally { releaseOld.resolve(); releaseNew.resolve(); await Promise.all([old, fresh, follower]); }
+  });
+
+  it("counts invalidated reads until completion when enforcing the actor admission cap", async () => {
+    const { companyId, issueId } = await seedCachedInboxFixture();
+    const allReady = deferred(), release = deferred();
+    let computes = 0, completed = 0;
+    const app = createApp(companyId, { issueListDiagnostics: {
+      onComputeStart() { computes += 1; },
+      async onComputeComplete() { completed += 1; if (completed === 8) allReady.resolve(); await release.promise; },
+    } });
+    const path = `/api/companies/${companyId}/issues`;
+    const reads = Array.from({ length: 8 }, (_, index) => request(app).get(path).query({ view: "compact", q: `held-${index}` }).then(response => response));
+    await allReady.promise;
+    try {
+      const comment = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "New attention [Me](user://cloud-user-1)", reopen: false });
+      expect(comment.status).toBe(201);
+      const overflow = await request(app).get(path).query({ view: "compact", q: "new-after-write" });
+      expect(overflow.status).toBe(429);
+      expect(computes).toBe(8);
+    } finally { release.resolve(); await Promise.all(reads); }
+  });
+
   it("bounds compact issue-list server cache entries", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
@@ -634,14 +769,18 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     });
 
     const app = createApp(companyId);
-    for (let index = 0; index < ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES + 5; index += 1) {
-      const res = await request(app)
-        .get(`/api/companies/${companyId}/issues`)
-        .query({ view: "compact", limit: "20", q: `cache-key-${index}` });
-      expect(res.status, JSON.stringify(res.body)).toBe(200);
-    }
+    // Exercise capacity independently of query duration and TTL expiry.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    try {
+      for (let index = 0; index < ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES + 5; index += 1) {
+        const res = await request(app)
+          .get(`/api/companies/${companyId}/issues`)
+          .query({ view: "compact", limit: "20", q: `cache-key-${index}` });
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+      }
 
-    expect(__getIssueListResponseCacheSizeForTests()).toBe(ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES);
+      expect(__getIssueListResponseCacheSizeForTests()).toBe(ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES);
+    } finally { clock.mockRestore(); }
   });
 
   it("logs request_storm_detected for identical in-flight compact issue-list fanout without query values", async () => {
