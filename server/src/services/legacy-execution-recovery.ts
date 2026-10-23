@@ -7,7 +7,7 @@ import { environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeR
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
 
@@ -184,7 +184,8 @@ export async function settleInterruptedNativeBootstrap(
   if (input.providerDispatchStarted) return null;
   const issueId = input.run.contextSnapshot?.issueId;
   if (typeof issueId !== "string") return null;
-  return db.transaction(async tx => {
+  const publications: ActivityPublication[] = [];
+  const result = await db.transaction(async tx => {
     const [task] = await tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, input.run.companyId))).for("update");
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId))).for("update");
     if (!task || !run || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt ||
@@ -235,7 +236,9 @@ export async function settleInterruptedNativeBootstrap(
     if (resolved.length) await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: "system", actorId: "system",
       action: "issue.recovery_action_resolved", entityType: "issue", entityId: task.id, agentId: run.agentId, runId: run.id,
       details: { reason: "native_bootstrap_stopped_before_provider", recoveryActionIds: resolved.map(r => r.id) },
-    });
+    }, publications);
     return settled;
   });
+  for (const publication of publications) publishActivity(publication);
+  return result;
 }

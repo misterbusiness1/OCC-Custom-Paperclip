@@ -2712,7 +2712,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       })]);
       expect(await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.endpointId, f.endpoint.id))).toHaveLength(0);
     });
-    it("uses task-bound bot tools and deterministic checks, then denies revoked people", async () => {
+    it.each([false, true])("uses task-bound bot tools and deterministic checks, then denies revoked people (listenerThrows=%s)", async (listenerThrows) => {
       const publicOrigin = vi.spyOn(cloudRuntimeIdentity, "runtimePublicOrigin").mockReturnValue("https://current-vanity.example");
       onTestFinished(() => publicOrigin.mockRestore());
       const f = await reviewBotFixture();
@@ -2897,13 +2897,29 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           },
         ],
       };
-      const result = await service.execute(
-        session,
-        "submit_review",
-        assessment,
-        "first-invocation",
-      );
-      expect(result).toMatchObject({ score: 2, conclusion: "failure" });
+      const notificationFailure = new Error("synthetic committed publication listener failure");
+      let notifications = 0;
+      const unsubscribePublicationFailure = subscribeCompanyLiveEvents(f.companyId, (event) => {
+        if (event.type !== "activity.logged" || event.payload.action !== "chat_github.published"
+            || event.payload.entityId !== conversation.issueId) return;
+        notifications += 1;
+        if (listenerThrows) throw notificationFailure;
+      });
+      let firstOutcome: { result: unknown; error: unknown };
+      try {
+        firstOutcome = await service.execute(
+          session,
+          "submit_review",
+          assessment,
+          "first-invocation",
+        ).then(result => ({ result, error: null }), error => ({ result: null, error }));
+      } finally { unsubscribePublicationFailure(); }
+      expect(notifications).toBe(1);
+      if (listenerThrows) expect(firstOutcome.error).toBe(notificationFailure);
+      else {
+        expect(firstOutcome.error).toBeNull();
+        expect(firstOutcome.result).toMatchObject({ score: 2, conclusion: "failure" });
+      }
       const [publication] = await db
         .select()
         .from(chatActions)
@@ -2914,6 +2930,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           ),
         );
       expect(publication.status).toBe("processed");
+      expect(publication.result).toMatchObject({ reviewId: expect.any(String), checkUrl: expect.stringMatching(/^https:\/\/github\.com\/test\/receipt\//) });
+      expect(publication.result).not.toHaveProperty("retryable");
+      expect(publication.result).not.toHaveProperty("code", "publication_failed");
       expect(
         mutations.find((m) => m.body.conclusion === "failure")?.body,
       ).toMatchObject({
@@ -2923,6 +2942,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         details_url: `https://current-vanity.example/${company.issuePrefix}/issues/${conversation.issueId}`,
       });
       const publishedCount = mutations.length;
+      await service.processPending();
+      expect(mutations).toHaveLength(publishedCount);
       const retried = await service.execute(
         session,
         "submit_review",
@@ -4200,6 +4221,105 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect((await db.select().from(chatPublications).where(eq(chatPublications.endpointId, endpoint.id))).every(row => row.state === "cancelled")).toBe(true);
     expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_board_message")))).toEqual([expect.objectContaining({ status: "cancelled" })]);
   });
+
+  it.each(["commit", "rollback"] as const)("publishes Slack Board resume activity only after outer %s", async (outcome) => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture, { linkedBoardUser: true });
+    const channel = makeThread({ channelId: "CCOMMIT", id: "slack:CCOMMIT:8250.1", name: "commit" });
+    await deliverMessage({ callbacks, endpointId: endpoint.id, thread: channel.thread,
+      message: makeMessage({ id: "8250.1", text: "@maya start here", mentioned: true }), trigger: "mention" });
+    await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
+    const [conversation] = await service.listConversations(endpoint.id);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, conversation.issueId));
+    wakeup.mockClear();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = boardActor(fixture.companyId, "owner-user"); next(); });
+    app.use("/api", issueRoutes(db));
+    app.use(errorHandler);
+    const issuePath = `/api/companies/${fixture.companyId}/issues`;
+    const query = { view: "compact", status: "done" };
+    expect((await request(app).get(issuePath).query(query)).body.map((row: { id: string }) => row.id)).toContain(conversation.issueId);
+    expect((await request(app).get(issuePath).query(query)).headers["x-paperclip-request-cache"]).toBe("hit");
+
+    // A deferred constraint trigger runs at the actual outer COMMIT, after all
+    // application callbacks. Hold that commit without adding a production hook.
+    const suffix = randomUUID().replaceAll("-", "");
+    const trigger = `chat_resume_commit_${suffix}`;
+    const lockKey = Number.parseInt(suffix.slice(0, 7), 16);
+    await db.execute(sql.raw(`create function ${trigger}() returns trigger language plpgsql as $fn$
+      begin
+        if NEW.entity_type = 'issue' and NEW.entity_id = '${conversation.issueId}'
+          and NEW.details->>'source' = 'slack_board_message' then
+          perform pg_advisory_xact_lock(${lockKey});
+          ${outcome === "rollback" ? "raise exception 'synthetic outer commit rejected';" : ""}
+        end if;
+        return NEW;
+      end $fn$;`));
+    try {
+      await db.execute(sql.raw(`create constraint trigger ${trigger} after insert on activity_log
+        deferrable initially deferred for each row execute function ${trigger}();`));
+    } catch (error) {
+      await db.execute(sql.raw(`drop function if exists ${trigger}();`));
+      throw error;
+    }
+    let release!: () => void;
+    let ready!: (pid: number) => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<number>((resolve) => { ready = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`set local idle_in_transaction_session_timeout = '30s'`);
+      await tx.execute(sql`select pg_advisory_xact_lock(${lockKey})`);
+      const rows = await tx.execute(sql`select pg_backend_pid()::int as pid`);
+      ready(Number(rows[0]!.pid));
+      await blocked;
+    });
+    const holderPid = await entered;
+    const events: unknown[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(fixture.companyId, (event) => {
+      if (event.type === "activity.logged" && event.payload.entityType === "issue"
+          && event.payload.entityId === conversation.issueId) events.push(event);
+    });
+    let sending: Promise<unknown> | undefined;
+    try {
+      sending = service.publishBoardMessage(endpoint.id, conversation.id, "Commit-scoped resume", randomUUID(), "owner-user");
+      await vi.waitFor(async () => {
+        const rows = await db.execute(sql`select count(*)::int as waiting from pg_stat_activity
+          where ${holderPid} = any(pg_blocking_pids(pid))`);
+        expect(Number(rows[0]!.waiting)).toBeGreaterThan(0);
+      }, { timeout: 5_000, interval: 20 });
+      expect(events).toEqual([]);
+      expect((await issueService(db).getById(conversation.issueId))!.status).toBe("done");
+      // Prime a read while the mutation is uncommitted. Only a post-commit
+      // publication can prevent this snapshot surviving after success.
+      expect((await request(app).get(issuePath).query(query)).body.map((row: { id: string }) => row.id)).toContain(conversation.issueId);
+      release();
+      await holder;
+      await sending;
+      const audit = await db.select().from(activityLog).where(and(eq(activityLog.entityId, conversation.issueId), eq(sql<string>`${activityLog.details}->>'source'`, "slack_board_message")));
+      const response = await request(app).get(issuePath).query(query);
+      if (outcome === "commit") {
+        expect(events).toHaveLength(1);
+        expect(audit).toHaveLength(1);
+        expect((await issueService(db).getById(conversation.issueId))!.status).toBe("todo");
+        expect(response.body.map((row: { id: string }) => row.id)).not.toContain(conversation.issueId);
+        expect(response.headers["x-paperclip-request-cache"]).toBe("miss");
+      } else {
+        expect(events).toEqual([]);
+        expect(audit).toEqual([]);
+        expect((await issueService(db).getById(conversation.issueId))!.status).toBe("done");
+        expect(response.body.map((row: { id: string }) => row.id)).toContain(conversation.issueId);
+        expect(wakeup).not.toHaveBeenCalled();
+      }
+    } finally {
+      release();
+      await holder;
+      await sending;
+      unsubscribe();
+      await db.execute(sql.raw(`drop trigger if exists ${trigger} on activity_log;`));
+      await db.execute(sql.raw(`drop function if exists ${trigger}();`));
+    }
+  }, 60_000);
 
   it.each(["concurrent", "lost-response"] as const)("applies the Slack Board resume once during %s dispatch", async (mode) => {
     const fixture = await seedCompany();

@@ -31,8 +31,9 @@ export function publishLiveEvent(input: {
   payload?: LiveEventPayload;
 }) {
   const event = toLiveEvent(input);
-  emitter.emit(input.companyId, event);
+  // Internal observers must see committed activity even if a company listener throws.
   emitter.emit(allCompanyEvents, event);
+  emitter.emit(input.companyId, event);
   return event;
 }
 

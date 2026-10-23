@@ -33,7 +33,8 @@ vi.mock("../services/activity-log.js", () => ({
   logActivity: vi.fn(),
 }));
 
-vi.mock("../services/live-events.js", () => ({
+vi.mock("../services/live-events.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../services/live-events.js")>(),
   publishGlobalLiveEvent: vi.fn(),
 }));
 

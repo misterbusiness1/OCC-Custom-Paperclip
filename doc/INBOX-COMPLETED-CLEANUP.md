@@ -26,3 +26,10 @@ Failures remain visible beside the checkbox. Failed requests do not hide rows;
 a later query refresh can retry. Disabling cleanup stops queued operations after
 the currently dispatched request. Closing Inbox stops additional queued requests.
 No server setting or inbox cleanup is enabled merely by installing this feature.
+
+Successful native issue activity invalidates company-scoped compact issue-list
+caches before the write response completes. Reads already computing a previous
+snapshot may finish for their original callers, but later reads cannot join them
+and they cannot refill the cache. Detached reads retain their admission slots
+until completion. Conditional archive no-ops publish no issue activity and leave
+the cache unchanged; cache keys retain their existing actor/company boundaries.

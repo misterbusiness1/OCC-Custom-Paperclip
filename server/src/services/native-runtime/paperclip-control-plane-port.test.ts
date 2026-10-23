@@ -524,7 +524,12 @@ describe("PaperclipControlPlanePort conformance", () => {
         "safe-progress-signal:1",
         "safe-progress-signal:2",
       ]);
-      expect(observed).toHaveLength(1);
+      expect(observed).toEqual([1, 2].map((seq) => ({
+        runId, agentId: identity.agentId, issueId, seq,
+        eventType: "tool.execution.started",
+      })));
+      expect(JSON.stringify(observed)).not.toContain("must-not-cross-live-signal");
+      await expect(visibilityCheck).resolves.toHaveLength(2);
 
       await expect(port.appendEvent({
         ...progressEvent,
@@ -533,7 +538,7 @@ describe("PaperclipControlPlanePort conformance", () => {
         eventType: "turn.started",
         payload: {},
       })).resolves.toMatchObject({ disposition: "committed" });
-      expect(observed).toHaveLength(1);
+      expect(observed).toHaveLength(2);
       expect(committedCallbacks).toEqual([
         "safe-progress-signal:1",
         "safe-progress-signal:2",

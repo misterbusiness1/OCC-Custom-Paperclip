@@ -53,7 +53,7 @@ import {
   githubAutomaticAdmission,
   githubPreviousAssessment,
 } from "./chat-github-events.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 
 type Session = {
   companyId: string;
@@ -995,6 +995,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         const session = action.payload.session as Session;
         if (!session || session.companyId !== action.companyId)
           throw forbidden("Invalid GitHub publication binding");
+        let committedPublications: ActivityPublication[] = [];
         try {
           const source = await scope(session, true);
           if (
@@ -1324,6 +1325,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
               summaryUrl: summaryReceipt?.html_url ?? null,
             };
           } else throw forbidden("Unknown GitHub publication");
+          const publications: ActivityPublication[] = [];
           await lease.commit(async (tx) => {
             await tx
               .update(chatActions)
@@ -1342,8 +1344,9 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
               entityId: source.issue.id,
               runId: source.run.id,
               details: { actionId: action.id, operation, ...receipt },
-            });
+            }, publications);
           });
+          committedPublications = publications;
         } catch (error) {
           if (error instanceof GitHubPublicationLeaseLost) return;
           const attempts = Number(fresh.result?.attempts ?? 0) + 1;
@@ -1385,6 +1388,8 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
               .where(eq(chatActions.id, action.id));
           });
         }
+        // Notification failure cannot turn a committed provider receipt into a retry.
+        for (const publication of committedPublications) publishActivity(publication);
       },
     );
   }

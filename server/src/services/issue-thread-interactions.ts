@@ -2380,7 +2380,7 @@ export function issueThreadInteractionService(
             effectiveResolverPolicy: lockedCurrent.effectiveResolverPolicy,
             ...(args.actor.resolutionDetails ?? {}),
           },
-        });
+        }, postCommitActivityPublications);
       }
 
       return {

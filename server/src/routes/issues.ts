@@ -1,3 +1,4 @@
+import { subscribeAllCompanyLiveEvents } from "../services/live-events.js";
 import { completedInboxArchiveBodySchema } from "./inbox-archive-schema.js";
 import { boardCommentRequestDelivery } from "../services/board-comment-request-delivery.js";
 import { classifyBoardCommentSourceRecovery } from "../services/board-comment-request-recovery-effects.js";
@@ -3131,15 +3132,20 @@ type IssueListDiagnostics = {
     cacheKeyHash: string;
   }) => void | Promise<void>;
   onStormDetected?: (event: IssueListStormEvent) => void;
+  onComputeComplete?: () => void | Promise<void>;
+  onCoalesced?: () => void;
 };
 
 type IssueListCacheEntry = {
+  companyId: string;
   response: IssueListPreparedResponse;
   expiresAt: number;
   staleUntil: number;
 };
 
 type IssueListInflightEntry = {
+  companyId: string;
+  invalidated: boolean;
   promise: Promise<IssueListPreparedResponse>;
   startedAt: number;
   waiterCount: number;
@@ -3149,6 +3155,24 @@ type IssueListInflightEntry = {
 const issueListResponseCache = new Map<string, IssueListCacheEntry>();
 const issueListInflight = new Map<string, IssueListInflightEntry>();
 const issueListActorClientInflight = new Map<string, number>();
+
+// Native issue activity is published before the write response completes. Clear
+// all projections for that company, including per-user inbox/archive views.
+// Detach old reads as well: a new read must not join pre-write work, and an old
+// completion must not refill the cache. Its admission slot remains counted until
+// its own finally block, even though it no longer owns the coalescing key.
+subscribeAllCompanyLiveEvents((event) => {
+  if (event.type !== "activity.logged" || event.payload.entityType !== "issue") return;
+  for (const [key, entry] of issueListResponseCache) {
+    if (entry.companyId === event.companyId) issueListResponseCache.delete(key);
+  }
+  for (const [key, entry] of issueListInflight) {
+    if (entry.companyId !== event.companyId) continue;
+    entry.invalidated = true;
+    issueListInflight.delete(key);
+  }
+});
+
 
 export function __getIssueListResponseCacheSizeForTests() {
   return issueListResponseCache.size;
@@ -3375,6 +3399,7 @@ async function coordinateIssueListGet(input: {
       logger.warn(event, "request_storm_detected");
       input.diagnostics?.onStormDetected?.(event);
     }
+    input.diagnostics?.onCoalesced?.();
     const response = await existing.promise;
     return { response, cacheStatus: "coalesced", identicalInFlightCount };
   }
@@ -3405,9 +3430,13 @@ async function coordinateIssueListGet(input: {
       companyId: input.companyId,
       cacheKeyHash: input.requestKey.keyHash,
     });
-    return input.compute();
+    const response = await input.compute();
+    await input.diagnostics?.onComputeComplete?.();
+    return response;
   })();
   const inflightEntry: IssueListInflightEntry = {
+    companyId: input.companyId,
+    invalidated: false,
     promise,
     startedAt: now,
     waiterCount: 0,
@@ -3417,8 +3446,9 @@ async function coordinateIssueListGet(input: {
 
   try {
     const response = await promise;
-    if (input.allowTtlCache) {
+    if (input.allowTtlCache && !inflightEntry.invalidated) {
       setIssueListResponseCacheEntry(input.requestKey.key, {
+        companyId: input.companyId,
         response,
         expiresAt: Date.now() + ISSUE_LIST_SERVER_CACHE_TTL_MS,
         staleUntil: Date.now() + ISSUE_LIST_SERVER_CACHE_STALE_MS,

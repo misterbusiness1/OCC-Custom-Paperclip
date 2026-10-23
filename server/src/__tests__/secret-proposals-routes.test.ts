@@ -33,6 +33,7 @@ import { issueThreadInteractionService } from "../services/issue-thread-interact
 import { agentService } from "../services/agents.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { secretService } from "../services/secrets.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -119,6 +120,72 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       executionRunId: heartbeatRunId,
     });
     return { companyId, agentId, heartbeatRunId, issueId };
+  }
+
+  for (const rollback of [false, true]) {
+    it(`publishes binding-card issue activity only after commit (rollback=${rollback})`, async () => {
+      const fixture = await seedRun();
+      const liveSecret = await secretService(db).create(fixture.companyId, {
+        name: "dev/publication-order/source",
+        key: "PUBLICATION_ORDER_SOURCE",
+        provider: "local_encrypted",
+        value: "synthetic-publication-order-secret",
+      });
+      const [before] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+      let beforeCommit!: () => void;
+      let finishTransaction!: () => void;
+      const reached = new Promise<void>((resolve) => { beforeCommit = resolve; });
+      const release = new Promise<void>((resolve) => { finishTransaction = resolve; });
+      const failure = new Error("synthetic binding-card commit failure");
+      const observedDb = Object.create(db) as typeof db;
+      observedDb.transaction = ((callback: Parameters<typeof db.transaction>[0]) => db.transaction(async (tx) => {
+        const value = await callback(tx);
+        beforeCommit();
+        await release;
+        if (rollback) throw failure;
+        return value;
+      })) as typeof db.transaction;
+      const events: Array<Record<string, unknown>> = [];
+      const visibleAtPublication: Array<Promise<unknown[]>> = [];
+      const unsubscribe = subscribeCompanyLiveEvents(fixture.companyId, (event) => {
+        if (event.type !== "activity.logged" || event.payload.action !== "issue.thread_interaction_created") return;
+        events.push(event.payload);
+        visibleAtPublication.push(db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, fixture.issueId)).then((rows) => rows));
+      });
+      const operation = createSecretProposalsService(observedDb).createBinding(
+        { companyId: fixture.companyId, heartbeatRunId: fixture.heartbeatRunId },
+        { secretId: liveSecret.id, configPath: "access.PUBLICATION_ORDER_ALIAS", justification: "Verify committed issue activity", bindingTargetPolicy: "self_and_reports" },
+      ).then((value) => ({ value, error: null }), (error: unknown) => ({ value: null, error }));
+      try {
+        await Promise.race([reached, operation.then((outcome) => {
+          throw outcome.error ?? new Error("Binding proposal finished before the commit barrier");
+        })]);
+        // Work and its audit exist inside the real transaction, but neither
+        // the outside reader nor the live event may observe an uncommitted card.
+        expect(events).toEqual([]);
+        expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, fixture.issueId))).toEqual([]);
+        finishTransaction();
+        const outcome = await operation;
+        if (rollback) {
+          expect(outcome.error).toBe(failure);
+          expect(events).toEqual([]);
+          expect(await db.select().from(companySecretProposals).where(eq(companySecretProposals.companyId, fixture.companyId))).toEqual([]);
+          const [after] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+          expect(after!.updatedAt).toEqual(before!.updatedAt);
+        } else {
+          expect(outcome.error).toBeNull();
+          expect(events).toHaveLength(1);
+          expect(events[0]).toMatchObject({ entityType: "issue", entityId: fixture.issueId, actorType: "agent", actorId: fixture.agentId, agentId: fixture.agentId, runId: fixture.heartbeatRunId });
+          expect(await Promise.all(visibleAtPublication)).toEqual([[expect.objectContaining({ id: outcome.value!.interactionId, status: "pending" })]]);
+        }
+        const issueAudit = await db.select().from(activityLog).where(and(eq(activityLog.entityId, fixture.issueId), eq(activityLog.action, "issue.thread_interaction_created")));
+        expect(issueAudit).toHaveLength(rollback ? 0 : 1);
+      } finally {
+        finishTransaction();
+        await operation;
+        unsubscribe();
+      }
+    });
   }
 
   async function holdIssueRowLock(issueId: string) {
