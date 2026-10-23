@@ -259,7 +259,7 @@ export function OriginalRequestBlock({
   if (isEmailReplyPayload(payload)) {
     return (
       <details key={original.text} className="min-w-0 rounded-md border border-border p-3">
-        <summary className="cursor-pointer text-sm font-medium" aria-label="Original email request">Original request</summary>
+        <summary className="cursor-pointer text-sm font-medium" aria-label={original.source.kind === "external" && original.source.channel === "email" ? "Original email request" : "Original request"}>Original request</summary>
         {content}
       </details>
     );

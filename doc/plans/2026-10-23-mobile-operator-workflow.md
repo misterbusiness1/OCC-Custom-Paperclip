@@ -37,3 +37,13 @@ Real-device Safari/Android behavior (keyboard, standalone safe areas, touch and 
 - Adversarial self-inspection removed a newly introduced nested run link from the mobile agent row, centralized the overdue predicate, and ensured coarse-pointer summary targets meet the existing 44px floor. Follow-up tests are running.
 - 47 selected private-cache/offline/task-view/agent tests passed. Five actual PostgreSQL filters tests passed. Broader agent run suite had 73 passes and one first-import timeout under concurrent Rust compilation; rerun without compilation contention is required.
 - Full test suite and full build remain running. Independent review, staging and real-device evidence remain open. No production deployment has occurred.
+
+## Review and security correction round
+
+- Independent CQE review at ecdb72e640446061a779fd6e3f3b7ac0df3dd901 found a P1: persisted board mode overwrites parent task-view status restrictions in column queries. The existing assigned engineer is preparing the intersection fix with rendered regression evidence on a separate branch. Do not merge this candidate until integrated and re-reviewed.
+- Actual GitHub required audit found GHSA-mrhx-c7xc-m3w5 in Zod. Updated direct v4 minimums and the shared v4 override to the fixed line (resolved 4.6.7). Updated Cursor SDK to 1.0.40, which supports Zod v4 as a peer and removes the vulnerable standalone v3 dependency, rather than forcing an incompatible major into the old SDK.
+- Production audit on the normalized current graph: 0 high, 0 critical (2 low and 10 moderate remain). A bounded array/set/map regression failed three checks with the old dependency and passes all four checks after repair. No memory-exhaustion attack was run.
+- 383 focused validator/Cursor/email checks passed after the dependency update. Full repository typecheck passed again. All 79 selected live-run and actual PostgreSQL route tests now pass: cold route imports moved into fixture setup, without changing request assertions or increasing timeouts.
+- The obsolete pre-security full local test invocation was explicitly stopped after its graph became obsolete; it is not green evidence. Exact-head full CI must pass on the corrected graph.
+- Four touch-mode built-app checks passed before this dependency correction; they must be repeated after final integration along with full build and final review.
+- Source retrieval verified one real inbound email and one checkout note rather than an email. The original requester is instructed to attach both with truthful provenance, and incoming-source labels must not falsely call a checkout note an email.
