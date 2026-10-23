@@ -495,3 +495,13 @@ environment patch; omitted bindings and redacted placeholders preserve the
 latest stored value. Explicit rollback snapshots calculate their removal keys
 under the same row lock. Concurrent changes to different environment keys are
 retained; explicit writes to the same key serialize in lock acquisition order.
+
+Internal writers follow the same environment patch contract. Instruction, skill
+and provider normalization must pass `withoutAgentEnvPatch(config)` when their
+configuration comes from a stored snapshot. Replaying that snapshot can undo a
+concurrent removal or rotation even though the service locks its later merge.
+Provisioning and import may forward environment keys explicitly declared by
+their caller or defaults. A writer that needs a full stored snapshot must lock
+the agent before reading it and keep the read and update in the same transaction.
+Regression tests must exercise the real caller while a concurrent removal or
+rotation commits before its service update.
