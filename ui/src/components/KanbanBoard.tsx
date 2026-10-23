@@ -149,6 +149,7 @@ interface Agent {
 
 interface KanbanBoardProps {
   issues: Issue[];
+  statuses?: readonly IssueStatus[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
   compactCards?: boolean;
@@ -385,6 +386,7 @@ function KanbanCard({
 
 export function KanbanBoard({
   issues,
+  statuses = boardStatuses,
   agents,
   liveIssueIds,
   compactCards = false,
@@ -463,7 +465,7 @@ export function KanbanBoard({
       onDragEnd={handleDragEnd}
     >
       <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">
-        {boardStatuses.map((status) => (
+        {statuses.map((status) => (
           <KanbanColumn
             key={status}
             status={status}

@@ -120,6 +120,18 @@ describe("KanbanBoard", () => {
     document.body.innerHTML = "";
   });
 
+  it("renders only the task-view status columns", () => {
+    const { container } = renderBoard({
+      issues: [createIssue(2, "blocked"), createIssue(3, "done")],
+      statuses: ["blocked"],
+    });
+    expect(container.textContent).toContain("Blocked");
+    expect(container.textContent).toContain("Issue 2");
+    expect(container.textContent).not.toContain("Done");
+    expect(container.textContent).not.toContain("Issue 3");
+    expect(container.textContent).not.toContain("Backlog");
+  });
+
   it("limits visible cards and reveals more cards per column", () => {
     const { container } = renderBoard({
       issues: createIssues(60, "todo"),
