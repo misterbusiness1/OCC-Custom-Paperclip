@@ -38,6 +38,8 @@ grep -q 'pull_policy: never' "$compose"
 grep -q 'pgvector/pgvector:pg16' "$compose"
 grep -q 'PAPERCLIP_AUTH_DISABLE_SIGN_UP:' "$compose"
 if grep -q '/usr/local/bin/docker-entrypoint.sh' "$compose"; then echo 'unexpected entrypoint override' >&2; exit 1; fi
+grep -qx 'staging-receipts' "$repo_root/.dockerignore"
+grep -qx 'staging-receipts/' "$repo_root/.gitignore"
 grep -q 'resources:' "$compose"
 grep -q 'healthcheck:' "$compose"
 if grep -Eq '(/paperclip/instances/default|onecli|\.config/gh|woocommerce|customer|production.*volume)' "$compose"; then echo 'sensitive production path in staging Compose' >&2; exit 1; fi

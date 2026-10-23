@@ -82,3 +82,6 @@ test-results/
 
 # Retained local lifecycle behavior measurements
 .lifecycle-baseline/
+
+# Local staging receipts can contain database/runtime rollback archives.
+staging-receipts/

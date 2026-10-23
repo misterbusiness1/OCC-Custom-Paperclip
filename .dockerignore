@@ -44,3 +44,7 @@ packages/paperclip-runner/scripts/*-smoke.mjs
 !packages/paperclip-runner/src/**/*.test.tsx
 
 packages/grok-acp/bin
+
+# Staging deploy receipts include quiescent database/runtime rollback archives.
+# They are operator artifacts, never application image inputs.
+staging-receipts
