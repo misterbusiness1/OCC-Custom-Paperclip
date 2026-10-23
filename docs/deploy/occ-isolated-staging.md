@@ -5,6 +5,8 @@ This lane runs a Paperclip commit as an isolated Compose project. It does not us
 ## Isolation contract
 
 - The project, network, database volume, runtime volume, ports, and secrets have staging-only names.
+- Both services use only the staging network. Docker resolves local service names, but external DNS forwarding is disabled. First-party telemetry is disabled in this synthetic lane.
+- Before qualification, the operator must enforce and attest a staging-bridge egress guard. DNS settings alone do not block numeric destinations. Prove loopback access, local database access, and refusal of off-host numeric connections and external DNS on the installed runtime. This does not claim host-service isolation.
 - The HTTP port binds to `127.0.0.1`. Browser QA must use an operator-approved private tunnel to that loopback endpoint.
 - The stack mounts only two host secret files. It does not mount agent homes, OneCLI data, GitHub data, WooCommerce data, customer data, or production Paperclip data.
 - The bootstrap creates one synthetic admin account in the new staging database. It does not clone production data.

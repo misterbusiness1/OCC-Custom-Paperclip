@@ -4,6 +4,8 @@ services:
   db:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    # Docker still resolves local service names; do not forward external DNS.
+    dns: ["127.0.0.1"]
     environment:
       POSTGRES_USER: paperclip_staging
       POSTGRES_DB: paperclip_staging
@@ -32,6 +34,8 @@ services:
     image: ${PAPERCLIP_STAGING_IMAGE:?set PAPERCLIP_STAGING_IMAGE}
     pull_policy: never
     restart: unless-stopped
+    # Docker still resolves local service names; do not forward external DNS.
+    dns: ["127.0.0.1"]
     init: true
     command:
       - /bin/bash
@@ -44,6 +48,7 @@ services:
       HOST: 0.0.0.0
       PORT: "3100"
       SERVE_UI: "true"
+      PAPERCLIP_TELEMETRY_DISABLED: "1"
       PAPERCLIP_HOME: /paperclip-staging
       PAPERCLIP_INSTANCE_ID: occ-staging
       PAPERCLIP_CONFIG: /paperclip-staging/instances/occ-staging/config.json

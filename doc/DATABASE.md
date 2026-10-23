@@ -484,3 +484,14 @@ reservation cannot silently disappear. Failed cleanup or an ambiguous storage
 write requires operator reconciliation before an unattached reservation is
 removed. The table stores no response bodies. See `doc/runner-api-tools.md` for
 limits and the operator override.
+
+## Agent configuration updates
+
+Agent configuration updates lock the agent row before reading and merging its
+environment bindings. The read, merge, secret binding synchronization, session
+invalidation, config revision and removal audit share one transaction. HTTP
+routes may validate an effective configuration, but forward only the requested
+environment patch; omitted bindings and redacted placeholders preserve the
+latest stored value. Explicit rollback snapshots calculate their removal keys
+under the same row lock. Concurrent changes to different environment keys are
+retained; explicit writes to the same key serialize in lock acquisition order.
