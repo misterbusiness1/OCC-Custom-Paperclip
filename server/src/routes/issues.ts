@@ -7095,41 +7095,49 @@ export function issueRoutes(
     }
   }
 
-  async function resolveActiveIssueRun(issue: {
-    id: string;
-    assigneeAgentId: string | null;
-    executionRunId?: string | null;
-  }) {
+  async function resolveActiveIssueRun(
+    issue: {
+      id: string;
+      companyId: string;
+      assigneeAgentId: string | null;
+      executionRunId?: string | null;
+    },
+    options: { includeQueued?: boolean } = {},
+  ) {
+    const isActiveIssueRun = (
+      run: Awaited<ReturnType<typeof heartbeat.getRun>> | null | undefined,
+    ) => {
+      if (
+        !run ||
+        (run.status !== "running" &&
+          !(options.includeQueued && run.status === "queued"))
+      ) return false;
+      // Checkout can bind a running timer run without changing its scheduler
+      // context. Trust that explicit binding after company/owner checks. Queued
+      // reservations and fallback lookups still require matching issue context.
+      return (
+        !options.includeQueued ||
+        (run.companyId === issue.companyId &&
+          run.agentId === issue.assigneeAgentId &&
+          ((run.status === "running" && run.id === issue.executionRunId) ||
+            run.contextSnapshot?.issueId === issue.id))
+      );
+    };
     let runToInterrupt = issue.executionRunId
       ? await heartbeat.getRun(issue.executionRunId)
       : null;
 
-    if (
-      (!runToInterrupt || runToInterrupt.status !== "running") &&
-      issue.assigneeAgentId
-    ) {
-      const activeRun = await heartbeat.getActiveRunForAgent(
-        issue.assigneeAgentId,
-      );
-      const activeIssueId =
-        activeRun &&
-        activeRun.contextSnapshot &&
-        typeof activeRun.contextSnapshot === "object" &&
-        typeof (activeRun.contextSnapshot as Record<string, unknown>)
-          .issueId === "string"
-          ? ((activeRun.contextSnapshot as Record<string, unknown>)
-              .issueId as string)
-          : null;
+    if (!isActiveIssueRun(runToInterrupt) && issue.assigneeAgentId) {
+      const activeRun = await heartbeat.getActiveRunForAgent(issue.assigneeAgentId);
       if (
-        activeRun &&
-        activeRun.status === "running" &&
-        activeIssueId === issue.id
+        activeRun?.contextSnapshot?.issueId === issue.id &&
+        isActiveIssueRun(activeRun)
       ) {
         runToInterrupt = activeRun;
       }
     }
 
-    return runToInterrupt?.status === "running" ? runToInterrupt : null;
+    return isActiveIssueRun(runToInterrupt) ? runToInterrupt : null;
   }
 
   type IssueQueueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -13730,13 +13738,18 @@ export function issueRoutes(
           issueId: existing.id,
           agentId: existing.assigneeAgentId,
         });
-        const runToStopForReassignment = await resolveActiveIssueRun(existing);
+        const runToStopForReassignment = await resolveActiveIssueRun(existing, {
+          includeQueued: true,
+        });
         if (runToStopForReassignment) {
           const cancelled = await heartbeat.cancelRun(
             runToStopForReassignment.id,
             "Cancelled before issue reassignment",
             {
               errorCode: "issue_reassigned",
+              // The committed assignment below owns the next wake. Do not
+              // recover the former owner while ownership is still changing.
+              suppressImmediateRecovery: true,
               resultJson: { reassignmentStopConfirmed: true, issueMutationStopId },
               eventMessage: "run cancelled before issue reassignment",
               eventPayload: { issueId: existing.id },
@@ -14776,9 +14789,13 @@ export function issueRoutes(
         ? await commentWasCreatedByAssigneeRun(comment, issue.assigneeAgentId)
         : false;
 
-      const assigneeChanged =
-        issue.assigneeAgentId !== existing.assigneeAgentId ||
-        issue.assigneeUserId !== existing.assigneeUserId;
+      // Use the receipt read under the update's row lock. Two requests can
+      // observe the same former owner, but only the committed ownership change
+      // may enqueue its assignment wake.
+      const assigneeChanged = issue.changes
+        ? Boolean(issueChanges.assigneeAgentId || issueChanges.assigneeUserId)
+        : issue.assigneeAgentId !== existing.assigneeAgentId ||
+          issue.assigneeUserId !== existing.assigneeUserId;
       const statusChangedFromBacklog =
         existing.status === "backlog" &&
         issue.status !== "backlog" &&

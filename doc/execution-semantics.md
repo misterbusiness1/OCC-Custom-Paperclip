@@ -29,6 +29,29 @@ An issue has at most one assignee.
 
 This is a hard invariant. Paperclip is single-assignee by design.
 
+### Reassignment and execution reservations
+
+An ownership change stops the former owner's matching running or queued issue
+run through the shared cancellation path before it changes the assignee. A
+queued reservation can exist while the former owner runs another issue. The
+reservation must match the issue, company and former owner; unrelated active
+and queued runs stay unchanged. An explicitly bound running checkout needs a
+matching company and former owner, but may retain scheduler context without an
+issue ID. Queued reservations and fallback lookups still require matching issue
+context. Terminal reservations need no new cancellation.
+The assignment owns the next wake, so cancellation suppresses immediate recovery
+for the former owner. Concurrent requests use the committed change receipt to
+emit only one wake for the same ownership change. Queued human-response guards
+still apply before the stop.
+
+Detection: the new owner's wake waits behind a never-started former-owner run
+that still holds `executionRunId`. Inspect that exact run and its issue, company
+and agent bindings. Do not flush an agent queue or edit execution leases with
+SQL. Use the authorized reassignment path and verify its cancellation receipt
+and the new owner's single start. Regression coverage lives in
+`server/src/__tests__/issue-reassignment-reservation.test.ts`. No schema migration
+is required; rollback uses a reviewed code revert.
+
 ## 3. Status Semantics
 
 Paperclip issue statuses are not just UI labels. They imply different expectations about ownership and execution.
