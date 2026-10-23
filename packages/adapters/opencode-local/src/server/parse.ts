@@ -21,6 +21,8 @@ function errorText(value: unknown): string {
 
 export function parseOpenCodeJsonl(stdout: string) {
   let sessionId: string | null = null;
+  let providerHttpStatus: number | null = null;
+  let retryAfter: string | null = null;
   const messages: string[] = [];
   const errors: string[] = [];
   const toolErrors: string[] = [];
@@ -72,6 +74,19 @@ export function parseOpenCodeJsonl(stdout: string) {
     }
 
     if (type === "error") {
+      // OpenCode's SDK APIError carries transport metadata separately from prose.
+      // Never infer a provider response from model/tool/user-generated text.
+      const error = parseObject(event.error);
+      const data = parseObject(error.data);
+      const status = data.statusCode;
+      providerHttpStatus = error.name === "APIError" && typeof status === "number"
+        && Number.isInteger(status) && status >= 400 && status <= 599 ? status : null;
+      retryAfter = null;
+      if (providerHttpStatus !== null) {
+        const headers = parseObject(data.responseHeaders);
+        const value = Object.entries(headers).find(([key]) => key.toLowerCase() === "retry-after")?.[1];
+        if (typeof value === "string") retryAfter = value;
+      }
       const text = errorText(event.error ?? event.message).trim();
       if (text) errors.push(text);
       continue;
@@ -80,6 +95,8 @@ export function parseOpenCodeJsonl(stdout: string) {
 
   return {
     sessionId,
+    providerHttpStatus,
+    retryAfter,
     summary: messages.join("\n\n").trim(),
     usage,
     costUsd,
