@@ -86,6 +86,7 @@ import {
   prepareGitHubExecutionEnvironment,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
+import { withoutAgentEnvPatch } from "./agent-env-config.js";
 import { agentService } from "./agents.js";
 import { agentInstructionWorkingCopyService, instructionWorkingCopyGuidance } from "./agent-instruction-working-copies.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
@@ -28575,7 +28576,8 @@ export function heartbeatService(
       if (nextConfig !== oldConfig) {
         await agentService(db).update(
           agent.id,
-          { adapterConfig: nextConfig },
+          // Provider migration must not replay the environment snapshot read above.
+          { adapterConfig: withoutAgentEnvPatch(nextConfig) },
           {
             recordRevision: {
               source: "normalize_runner_provider",

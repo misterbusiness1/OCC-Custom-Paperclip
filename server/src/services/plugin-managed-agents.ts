@@ -17,6 +17,7 @@ import type {
 import { isUuidLike } from "@paperclipai/shared";
 import { conflict, forbidden, notFound } from "../errors.js";
 import { agentService } from "./agents.js";
+import { withoutAgentEnvPatch } from "./agent-env-config.js";
 import { approvalService } from "./approvals.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
@@ -406,8 +407,9 @@ export function pluginManagedAgentService(
       });
       adapterConfig = materialized.adapterConfig;
     }
+    // Instruction materialization owns paths and templates, not environment bindings.
     const updated = await agentSvc.update(agent.id, {
-      adapterConfig,
+      adapterConfig: withoutAgentEnvPatch(adapterConfig),
     }, {
       recordRevision: {
         source: `plugin:${optionsForRevisionSource()}:managed-agent-instructions`,
