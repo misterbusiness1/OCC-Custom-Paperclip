@@ -887,8 +887,13 @@ function StreamlinedIssuesList({
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues,
     placeholderData: (previousData) => previousData,
   });
+  // Task-view status constraints apply to every board column, including search.
+  const allowedBoardStatuses = useMemo(() => {
+    const allowed = searchFilters?.status?.split(",").map((status) => status.trim());
+    return boardIssueStatuses.filter((status) => !allowed || allowed.includes(status));
+  }, [searchFilters?.status]);
   const boardIssueQueries = useQueries({
-    queries: boardIssueStatuses.map((status) => ({
+    queries: allowedBoardStatuses.map((status) => ({
       queryKey: [
         ...queryKeys.issues.list(selectedCompanyId ?? "__no-company__"),
         "board-column",
@@ -1996,6 +2001,7 @@ function StreamlinedIssuesList({
       {viewState.viewMode === "board" ? (
         <KanbanBoard
           issues={filtered}
+          statuses={allowedBoardStatuses}
           agents={agents}
           liveIssueIds={liveIssueIds}
           compactCards={boardCompactCards}
