@@ -684,6 +684,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         parsedError ||
         stderrLine ||
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
+      const providerHttpStatus = attempt.parsed.providerHttpStatus;
+      const rateLimited = providerHttpStatus === 429 && Boolean(parsedError) && !attempt.proc.errorCode;
+      const retryAfter = attempt.parsed.retryAfter?.trim();
+      const now = Date.now();
+      const retryAt = retryAfter && /^\d+$/.test(retryAfter)
+        ? now + Number(retryAfter) * 1000
+        : retryAfter ? Date.parse(retryAfter) : NaN;
+      const retryNotBefore = rateLimited && Number.isFinite(retryAt) && retryAt >= now
+        && retryAt <= 8.64e15 ? new Date(retryAt).toISOString() : null;
+      const providerFailure = rateLimited ? {
+        errorFamily: "transient_upstream" as const,
+        ...(retryNotBefore ? { retryNotBefore } : {}),
+      } : {};
       const modelId = model || null;
 
       return {
@@ -691,10 +704,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: attempt.proc.signal,
         timedOut: false,
         errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-        // Forward the transport-level error code from the run-disposition seam.
-        // A lost duplex control channel surfaces the typed `duplex_channel_lost`
-        // code; every other result carries no code here.
-        errorCode: attempt.proc.errorCode ?? null,
+        // Transport disposition takes precedence over provider classification.
+        // Structured 429s use the controller's existing bounded transient policy;
+        // an absent Retry-After is not an invented provider reset time.
+        errorCode: attempt.proc.errorCode ?? (rateLimited ? "opencode_transient_upstream" : null),
+        ...providerFailure,
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,
@@ -709,6 +723,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         billingType: "unknown",
         costUsd: attempt.parsed.costUsd,
         resultJson: {
+          ...(providerHttpStatus !== null ? { providerHttpStatus } : {}),
+          ...providerFailure,
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
         },
