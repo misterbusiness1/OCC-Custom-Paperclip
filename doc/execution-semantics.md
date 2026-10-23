@@ -35,7 +35,10 @@ An ownership change stops the former owner's matching running or queued issue
 run through the shared cancellation path before it changes the assignee. A
 queued reservation can exist while the former owner runs another issue. The
 reservation must match the issue, company and former owner; unrelated active
-and queued runs stay unchanged. Terminal reservations need no new cancellation.
+and queued runs stay unchanged. An explicitly bound running checkout needs a
+matching company and former owner, but may retain scheduler context without an
+issue ID. Queued reservations and fallback lookups still require matching issue
+context. Terminal reservations need no new cancellation.
 The assignment owns the next wake, so cancellation suppresses immediate recovery
 for the former owner. Concurrent requests use the committed change receipt to
 emit only one wake for the same ownership change. Queued human-response guards

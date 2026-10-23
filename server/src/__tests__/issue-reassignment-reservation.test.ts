@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { agents, companies, createDb, heartbeatRuns, agentWakeupRequests, issues } from "@paperclipai/db";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
+import { issueService } from "../services/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -82,6 +83,32 @@ suite("PATCH reassignment / heartbeat reservation seam", () => {
   }
   const run = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(r => r[0]);
 
+  it("cancels a scheduler-context running checkout before the new owner starts", async () => {
+    const s = await seed("running");
+    const schedulerContext = { source: "scheduler", reason: "interval_elapsed" };
+    await db.update(heartbeatRuns).set({ contextSnapshot: schedulerContext, invocationSource: "timer" })
+      .where(eq(heartbeatRuns.id, s.sourceRun));
+    await db.update(issues).set({ executionRunId: null, checkoutRunId: null,
+      executionAgentNameKey: null, executionLockedAt: null }).where(eq(issues.id, s.issueId));
+    await issueService(db).checkout(s.issueId, s.oldOwner, ["todo"], s.sourceRun);
+    expect((await db.select().from(issues).where(eq(issues.id, s.issueId)))[0]).toMatchObject({
+      executionRunId: s.sourceRun, checkoutRunId: s.sourceRun });
+    expect((await run(s.sourceRun)).contextSnapshot).toEqual(schedulerContext);
+    const activeBefore = await run(s.activeRun), queuedBefore = await run(s.otherQueued);
+    await request(app(s.companyId)).patch(`/api/issues/${s.issueId}`)
+      .send({ assigneeAgentId: s.newOwner }).expect(200);
+    const stopped = await run(s.sourceRun);
+    expect(stopped).toMatchObject({ status: "cancelled", errorCode: "issue_reassigned" });
+    await vi.waitFor(async () => {
+      const next = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, s.newOwner));
+      expect(next).toHaveLength(1);
+      expect(next[0].startedAt).not.toBeNull();
+      expect(stopped.finishedAt!.getTime()).toBeLessThanOrEqual(next[0].startedAt!.getTime());
+    }, { timeout: 10_000 });
+    expect(await run(s.activeRun)).toEqual(activeBefore);
+    expect(await run(s.otherQueued)).toEqual(queuedBefore);
+  });
+
   it.each(["queued", "running"])("releases only the %s source through native cancellation and starts the new owner once", async status => {
     const s = await seed(status);
     const activeBefore = await run(s.activeRun), queuedBefore = await run(s.otherQueued);
@@ -112,8 +139,11 @@ suite("PATCH reassignment / heartbeat reservation seam", () => {
       assigneeAgentId: s.newOwner, executionRunId: null });
   });
 
-  it.each(["agent", "company", "context", "missing-context", "missing-run"])("does not cancel a stale %s binding", async mismatch => {
-    const s = await seed();
+  it.each([
+    ...["agent", "company", "context", "missing-context", "missing-run"].map(mismatch => ({ status: "queued", mismatch })),
+    ...["agent", "company"].map(mismatch => ({ status: "running", mismatch })),
+  ])("does not cancel a stale $status $mismatch binding", async ({ status, mismatch }) => {
+    const s = await seed(status);
     await db.update(issues).set({ status: "backlog", ...(mismatch === "missing-run" ? { executionRunId: null } : {}) })
       .where(eq(issues.id, s.issueId));
     if (mismatch === "agent") await db.update(heartbeatRuns).set({ agentId: s.newOwner }).where(eq(heartbeatRuns.id, s.sourceRun));

@@ -7112,14 +7112,15 @@ export function issueRoutes(
         (run.status !== "running" &&
           !(options.includeQueued && run.status === "queued"))
       ) return false;
-      // Ownership changes may stop a queued reservation, but only when its
-      // persisted company, former owner and issue context all match. Never
-      // substitute the former owner's unrelated active run for that reservation.
+      // Checkout can bind a running timer run without changing its scheduler
+      // context. Trust that explicit binding after company/owner checks. Queued
+      // reservations and fallback lookups still require matching issue context.
       return (
         !options.includeQueued ||
         (run.companyId === issue.companyId &&
           run.agentId === issue.assigneeAgentId &&
-          run.contextSnapshot?.issueId === issue.id)
+          ((run.status === "running" && run.id === issue.executionRunId) ||
+            run.contextSnapshot?.issueId === issue.id))
       );
     };
     let runToInterrupt = issue.executionRunId
