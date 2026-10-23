@@ -17,6 +17,7 @@ import { agentInstructionRevisionService } from "./agent-instruction-revisions.j
 import type { AuthorizationActor } from "./authorization.js";
 import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import { agentService } from "./agents.js";
+import { withoutAgentEnvPatch } from "./agent-env-config.js";
 import { approvalService } from "./approvals.js";
 import {
   readBuiltInAgentMarker,
@@ -1101,7 +1102,7 @@ export function builtInAgentService(db: Db) {
         const nextConfig = { ...currentConfig, ...recoveredBinding };
         if (stableJson(currentConfig) !== stableJson(nextConfig)) {
           const updated = await agentSvc.update(agent.id, {
-            adapterConfig: nextConfig,
+            adapterConfig: withoutAgentEnvPatch(nextConfig),
           }, {
             allowBuiltInAgentMetadata: true,
             recordRevision: { source: "built-in-bundle:reconcile:instructions-binding" },
@@ -1141,7 +1142,7 @@ export function builtInAgentService(db: Db) {
       adapterConfig = materialized.adapterConfig;
     }
     const updated = await agentSvc.update(agent.id, {
-      adapterConfig,
+      adapterConfig: withoutAgentEnvPatch(adapterConfig),
     }, {
       allowBuiltInAgentMetadata: true,
       recordRevision: { source: `built-in-bundle:${mode}:instructions` },
@@ -1209,7 +1210,7 @@ export function builtInAgentService(db: Db) {
       { key: skill.key, versionId: skill.currentVersionId ?? null },
     ];
     const adapterConfig = writePaperclipSkillSyncPreference(agent.adapterConfig as Record<string, unknown>, nextDesired);
-    const updated = await agentSvc.update(agent.id, { adapterConfig }, {
+    const updated = await agentSvc.update(agent.id, { adapterConfig: withoutAgentEnvPatch(adapterConfig) }, {
       allowBuiltInAgentMetadata: true,
       recordRevision: { source: "built-in-bundle:skill-sync" },
     });
@@ -1770,19 +1771,11 @@ export function builtInAgentService(db: Db) {
         const adapterType = resolvedInput.adapterType ?? existing.adapterType;
         assertAdapterAllowed(definition, adapterType);
         patch.adapterType = adapterType;
-        const resolvedAdapterConfig = resolvedInput.adapterConfig ?? existing.adapterConfig;
-        // Preserve the stored environment map when the resolved config does
-        // not set one. This reconciliation used to replace the whole adapter
-        // config, so an agent's credential bindings disappeared on a routine
-        // reconcile (2026-08-28 and 2026-09-25 on our instance) with no
-        // error raised. The service merges the map per key as well, so the
-        // binding survives either way; this keeps the intent explicit at the
-        // path that dropped them.
-        const storedEnv = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig.env : null;
-        const resolvedEnv = isPlainRecord(resolvedAdapterConfig) ? resolvedAdapterConfig.env : null;
-        const effectiveAdapterConfig = isPlainRecord(storedEnv) && !isPlainRecord(resolvedEnv)
-          ? { ...resolvedAdapterConfig, env: storedEnv }
-          : resolvedAdapterConfig;
+        // Only resolved caller/default env keys express a change. Replaying
+        // stored bindings here would undo a concurrent removal or rotation;
+        // the agent service preserves omitted keys under its own row lock.
+        const effectiveAdapterConfig = resolvedInput.adapterConfig
+          ?? withoutAgentEnvPatch(existing.adapterConfig);
         const recoveredBinding = adapterType === existing.adapterType
           ? await instructionsSvc.resolvePersistedBundleBinding(existing as Agent)
           : null;
