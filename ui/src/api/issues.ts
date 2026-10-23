@@ -200,6 +200,7 @@ export const issuesApi = {
     companyId: string,
     filters: {
       attention: "blocked";
+      overdueFollowUp?: boolean;
       status?: string;
       assigneeAgentId?: string;
       assigneeUserId?: string;
@@ -210,6 +211,7 @@ export const issuesApi = {
   ) => {
     const params = new URLSearchParams();
     params.set("attention", filters.attention);
+    if (filters.overdueFollowUp) params.set("overdueFollowUp", "true");
     if (filters.status) params.set("status", filters.status);
     if (filters.assigneeAgentId)
       params.set("assigneeAgentId", filters.assigneeAgentId);

@@ -30,3 +30,10 @@ Real-device Safari/Android behavior (keyboard, standalone safe areas, touch and 
 - Existing exact-run retry API is idempotent. Added synchronous tap guard and retained success state before navigation; final interaction tests still required.
 - UI typecheck and production UI build passed after building workspace SDK. 51 PWA/update/approval-feedback/layout checks passed; offline-private-cache checks pending.
 - Remote release branch advanced to PR #206 (201b5e4b8) during implementation. Rebase and repeat qualification before PR/deploy. Local lock normalization is test setup only; repository policy forbids committing it.
+
+- Rebased onto verified remote release PR #206, 201b5e4b8611d5bd480626965ae4eb43c689b480. No conflicts.
+- Repository-wide typecheck passed with the existing pinned Rust 1.97.1 toolchain. Production UI build passed.
+- Four actual built-app browser checks passed: source disclosure and task/agent views at 390x844, 844x390 and 1280x900, plus exact-run rapid-tap refusal handling. Added coarse-touch target measurement for the final repeat.
+- Adversarial self-inspection removed a newly introduced nested run link from the mobile agent row, centralized the overdue predicate, and ensured coarse-pointer summary targets meet the existing 44px floor. Follow-up tests are running.
+- 47 selected private-cache/offline/task-view/agent tests passed. Five actual PostgreSQL filters tests passed. Broader agent run suite had 73 passes and one first-import timeout under concurrent Rust compilation; rerun without compilation contention is required.
+- Full test suite and full build remain running. Independent review, staging and real-device evidence remain open. No production deployment has occurred.

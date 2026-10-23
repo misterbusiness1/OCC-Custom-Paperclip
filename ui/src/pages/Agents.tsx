@@ -411,12 +411,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
               Heartbeat: {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "Never"}
             </span>
             {liveRunByAgent.has(agent.id) && (
-              <span className="sm:hidden">
-                <LiveRunIndicator
-                  agentRef={agentRouteRef(agent)}
-                  runId={liveRunByAgent.get(agent.id)!.runId}
-                  liveCount={liveRunByAgent.get(agent.id)!.liveCount}
-                />
+              <span className="sm:hidden text-xs text-muted-foreground">
+                {liveRunByAgent.get(agent.id)!.liveCount} active {liveRunByAgent.get(agent.id)!.liveCount === 1 ? "run" : "runs"}
               </span>
             )}
           </div>

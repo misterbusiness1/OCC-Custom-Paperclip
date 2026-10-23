@@ -231,29 +231,30 @@ export function Issues() {
         ))}
       </nav>
       {taskView === "overdue" && <p className="text-sm text-muted-foreground">Unfinished tasks with a scheduled follow-up time that has passed.</p>}
-    <IssuesList
-      key={`${selectedCompanyId}:${taskView}`}
-      issues={issues ?? []}
-      isLoading={isLoading}
-      isLoadingMoreIssues={isFetchingNextPage}
-      error={error as Error | null}
-      agents={agents}
-      projects={projects}
-      liveIssueIds={liveIssueIds}
-      viewStateKey={taskView === "all" ? "paperclip:issues-view" : `paperclip:issues-view:${taskView}`}
-      rowPresentation={issuesPresentation.rowPresentation}
-      toolbarPresentation={issuesPresentation.toolbarPresentation}
-      issueLinkState={issueLinkState}
-      initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
-      initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
-      initialSearch={syncedSearch}
-      onSearchChange={handleSearchChange}
-      enableRoutineVisibilityFilter
-      hasMoreIssues={hasMoreServerIssues}
-      onLoadMoreIssues={loadMoreServerIssues}
-      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={{ ...taskViewFilters, participantAgentId, workspaceId: workspaceIdFilter }}
-    />
+      {updateIssue.isError && <p role="alert" className="text-sm text-destructive">Task update failed: {updateIssue.error.message}</p>}
+      <IssuesList
+        key={`${selectedCompanyId}:${taskView}`}
+        issues={issues ?? []}
+        isLoading={isLoading}
+        isLoadingMoreIssues={isFetchingNextPage}
+        error={error as Error | null}
+        agents={agents}
+        projects={projects}
+        liveIssueIds={liveIssueIds}
+        viewStateKey={taskView === "all" ? "paperclip:issues-view" : `paperclip:issues-view:${taskView}`}
+        rowPresentation={issuesPresentation.rowPresentation}
+        toolbarPresentation={issuesPresentation.toolbarPresentation}
+        issueLinkState={issueLinkState}
+        initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
+        initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
+        initialSearch={syncedSearch}
+        onSearchChange={handleSearchChange}
+        enableRoutineVisibilityFilter
+        hasMoreIssues={hasMoreServerIssues}
+        onLoadMoreIssues={loadMoreServerIssues}
+        onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+        searchFilters={{ ...taskViewFilters, participantAgentId, workspaceId: workspaceIdFilter }}
+      />
     </div>
   );
 }

@@ -201,6 +201,10 @@ describeEmbeddedPostgres("issue list routes updatedSince filter", () => {
       .query({ overdueFollowUp: "true", limit: "1", offset: "1" });
     expect(next.status).toBe(200);
     expect(next.body).toEqual([]);
+    const count = await request(app).get(`/api/companies/${companyId}/issues/count`)
+      .query({ attention: "blocked", status: "blocked", overdueFollowUp: "true" });
+    expect(count.status, JSON.stringify(count.body)).toBe(200);
+    expect(count.body).toEqual({ count: 1 });
     const forbidden = await request(app).get(`/api/companies/${otherCompanyId}/issues`)
       .query({ overdueFollowUp: "true" });
     expect(forbidden.status).toBe(403);

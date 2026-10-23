@@ -1849,6 +1849,14 @@ export function parseStatusFilter(
     .filter(Boolean);
 }
 
+/** One predicate for list, count and blocked-attention paths; uses the database clock. */
+function overdueFollowUpCondition() {
+  return and(
+    sql<boolean>`${issues.monitorNextCheckAt} < CURRENT_TIMESTAMP`,
+    notInArray(issues.status, ["done", "cancelled"]),
+  )!;
+}
+
 export interface IssueFilters {
   /** Unfinished tasks whose explicit scheduled follow-up is past due. */
   overdueFollowUp?: boolean;
@@ -6387,8 +6395,7 @@ async function blockedInboxIssueConditions(
   );
   if (lowTrustCondition) conditions.push(lowTrustCondition);
   if (filters?.overdueFollowUp) {
-    conditions.push(sql<boolean>`${issues.monitorNextCheckAt} < CURRENT_TIMESTAMP`);
-    conditions.push(notInArray(issues.status, ["done", "cancelled"]));
+    conditions.push(overdueFollowUpCondition());
   }
   const statuses = parseStatusFilter(filters?.status);
   if (statuses.length > 0) {
@@ -8141,8 +8148,7 @@ export function issueService(db: Db) {
       );
       if (lowTrustCondition) conditions.push(lowTrustCondition);
       if (filters?.overdueFollowUp) {
-        conditions.push(sql<boolean>`${issues.monitorNextCheckAt} < CURRENT_TIMESTAMP`);
-        conditions.push(notInArray(issues.status, ["done", "cancelled"]));
+        conditions.push(overdueFollowUpCondition());
       }
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1) {
@@ -8426,8 +8432,7 @@ export function issueService(db: Db) {
         }
       }
       if (filters?.overdueFollowUp) {
-        conditions.push(sql<boolean>`${issues.monitorNextCheckAt} < CURRENT_TIMESTAMP`);
-        conditions.push(notInArray(issues.status, ["done", "cancelled"]));
+        conditions.push(overdueFollowUpCondition());
       }
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1)

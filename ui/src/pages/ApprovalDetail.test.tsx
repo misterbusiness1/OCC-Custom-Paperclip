@@ -192,7 +192,7 @@ describe("ApprovalDetail", () => {
     expect(isBefore(lastRisk, button(panel(), "Approve"))).toBe(true);
   });
 
-  it("shows the whole email draft and the whole original request above the decision buttons", async () => {
+  it("shows the whole email draft and an original-request disclosure above the decision buttons", async () => {
     // Longer than the 1,500 characters a card or inbox row shows before "Show full reply".
     const body = `Hi Sam,\n\n${"Our wholesale price list is attached. ".repeat(60)}\n\nLast line of the draft.`;
     expect(body.length).toBeGreaterThan(1500);
