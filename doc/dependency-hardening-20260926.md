@@ -31,6 +31,12 @@ Verify with `corepack pnpm audit --prod --json`, the Codex startup-trust suite i
 `packages/paperclip-runner`, and the UI build. Generate the lockfile for local
 verification; CI retains ownership of the committed lockfile.
 
+The excluded TypeSafe skill-suggestion plugin owns a separate package-local
+lockfile. Keep that lockfile aligned with its exact Vitest version. Docker runs
+`pnpm --dir packages/plugins/plugin-typesafe-skill-suggestion install
+--ignore-workspace --frozen-lockfile`; a root lockfile refresh cannot fix a
+package-local mismatch. The root lockfile remains owned by CI.
+
 ## Original upgrade
 
 The v2026.916.1 fork candidate retains the deployed immutable runtime skill snapshot fix and pins the qualified global CLIs: Claude Code 2.1.283, Codex 0.157.1, and Kimi Code 2.1.1. The external Kimi plugin is separately deployed as 1.0.5. Existing ACP bridge patches and qualified SDK pins remain unchanged.
