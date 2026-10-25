@@ -61,8 +61,8 @@ overrides:
   path-to-regexp: "8.4.0"
   react-router: "7.18.2"
   tar: "7.5.21"
-  "undici@<7": "6.28.1"
-  "undici@>=8 <9": "8.10.2"
+  "undici@<7": "6.29.1"
+  "undici@>=8 <9": "8.12.2"
   "@grpc/grpc-js": "1.14.5"
   # CodeMirror validates extensions with instanceof, so exactly one copy of
   # these two packages may resolve. Different CodeMirror packages pin
@@ -74,7 +74,7 @@ overrides:
 
   # Security fixes; keep legacy protocol bridge pins above unchanged.
   "qs": "6.16.0"
-  "body-parser": "2.3.0"
+  "body-parser": "2.4.0"
   "hono": "4.13.5"
   "svix@1.76.1>uuid": "11.1.1"
   "@esbuild-kit/core-utils@3.3.2>esbuild": "0.25.12"
@@ -82,3 +82,6 @@ overrides:
   # Parsers and highlighters must share NodeProp IDs from one Lezer instance.
   # Mixed copies can interpret unrelated node metadata as highlighting tags.
   "@lezer/common": "^1.5.2"
+
+  # Patched MSAL floor for the Teams SDK; verify client-credentials compatibility.
+  "@microsoft/teams.apps@2.0.16>@azure/msal-node": "7.1.0"
