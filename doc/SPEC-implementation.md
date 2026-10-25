@@ -1500,6 +1500,14 @@ Validation:
 
 ## 13.4 Rollups
 
+Cost summary responses include optional `costCoverage` counts for the same
+company/date predicate as recorded spend: total events, unpriced events, unpriced
+events outside included subscription capacity, included-subscription events,
+unknown billing routes, and unknown models. Missing prices remain visible usage;
+they must not be presented as verified zero bills. Included subscription usage
+does not imply a per-token API charge or include plan fees. Coverage reporting
+does not rewrite events or alter budget enforcement.
+
 Read-time aggregate queries are acceptable for V1.
 Materialized rollups can be added later if query latency exceeds targets.
 

@@ -3,7 +3,7 @@ title: Costs and Budgets
 summary: Budget caps, cost tracking, and auto-pause enforcement
 ---
 
-Paperclip tracks every token spent by every agent and enforces budget limits to prevent runaway costs.
+Paperclip records the usage and billed amounts reported by agent adapters. Budget limits apply to recorded amounts; missing prices and provider subscription quotas require separate attention.
 
 ## How Cost Tracking Works
 
@@ -16,6 +16,29 @@ Each agent heartbeat reports cost events with:
 - **Cost in cents** — the dollar cost of the invocation
 
 These are aggregated per agent per month (UTC calendar month).
+
+## Understanding recorded spend
+
+The Costs page labels its inference total as **Recorded inference spend**. Its
+coverage notice uses the same selected company and date range as that total:
+
+- An unpriced metered, overage, or unknown-route event has no reported monetary
+  amount. It remains visible as usage; zero ledger cents do not establish a
+  zero-dollar bill. Billed-cost caps cannot account for an amount that was not
+  reported.
+- Events recorded as included subscription usage can correctly record zero incremental billed
+  cents. Plan fees and invoice adjustments are separate Finance events, recorded
+  from authoritative statements. Per-token API list prices must not be applied
+  to included subscription usage.
+- Unknown model or billing route is shown explicitly. Paperclip does not guess a
+  provider's default model or rewrite historical attribution.
+
+The summary API adds optional `costCoverage` event counts: `eventCount`,
+`unpricedEventCount`, `unpricedNonIncludedEventCount`,
+`subscriptionIncludedEventCount`, `unknownBillingEventCount`, and
+`unknownModelEventCount`. They count ledger events, not distinct runs or invoices.
+Existing `spendCents` remains the recorded ledger sum; coverage does not change
+budgets, prices, or stored financial records.
 
 ## Setting Budgets
 
@@ -38,6 +61,10 @@ PATCH /api/agents/{agentId}
 ```
 
 ## Budget Enforcement
+
+A budget amount of zero means no cap. Billed-cost policies compare recorded
+ledger cents with the configured amount; they do not estimate missing costs or
+replace provider subscription quota checks.
 
 Paperclip enforces budgets automatically:
 

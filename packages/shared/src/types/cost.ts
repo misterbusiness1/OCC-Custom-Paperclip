@@ -28,6 +28,18 @@ export interface CostSummary {
   spendCents: number;
   budgetCents: number;
   utilizationPercent: number;
+  /** Coverage of the recorded ledger in the requested company/date range.
+   * Optional for compatibility with servers that predate coverage reporting.
+   * Counts are events, not distinct runs or provider invoices. */
+  costCoverage?: {
+    eventCount: number;
+    unpricedEventCount: number;
+    /** Unpriced events outside included subscription capacity. */
+    unpricedNonIncludedEventCount: number;
+    subscriptionIncludedEventCount: number;
+    unknownBillingEventCount: number;
+    unknownModelEventCount: number;
+  };
 }
 
 export interface IssueCostSummary {

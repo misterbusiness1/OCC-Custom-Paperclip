@@ -29,6 +29,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
+import { costCoverageMessages } from "../lib/cost-coverage";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -557,6 +558,9 @@ export function Costs({
   const showCustomPrompt = preset === "custom" && !customReady;
   const showOverviewLoading = (spendLoading || financeLoading) && customReady;
   const overviewError = spendError ?? financeError;
+  const coverageMessages = spendData?.summary.costCoverage
+    ? costCoverageMessages(spendData.summary.costCoverage)
+    : [];
   return (
     <div className="space-y-6">
       {showSummaryChrome ? (
@@ -608,7 +612,7 @@ export function Costs({
 
           <div className="grid gap-3 lg:grid-cols-4">
             <MetricTile
-              label="Inference spend"
+              label="Recorded inference spend"
               value={formatCents(spendData?.summary.spendCents ?? 0)}
               subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
               icon={DollarSign}
@@ -642,6 +646,12 @@ export function Costs({
               icon={ArrowUpRight}
             />
           </div>
+        </div>
+      ) : null}
+
+      {coverageMessages.length > 0 ? (
+        <div role="status" className="space-y-2 text-sm text-muted-foreground">
+          {coverageMessages.map((message) => <p key={message}>{message}</p>)}
         </div>
       ) : null}
 

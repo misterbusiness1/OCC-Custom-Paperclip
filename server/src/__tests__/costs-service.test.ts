@@ -473,6 +473,66 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(agent?.spentMonthlyCents).toBe(0);
   });
 
+  it("reports coverage separately from ledger spend, scoped to company and date range", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    for (const id of [companyId, otherCompanyId]) {
+      await db.insert(companies).values({
+        id,
+        name: "Coverage",
+        issuePrefix: `T${id.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+    }
+    for (const [id, owner] of [[agentId, companyId], [otherAgentId, otherCompanyId]]) {
+      await db.insert(agents).values({
+        id, companyId: owner, name: "Coverage Agent", role: "engineer",
+        status: "idle", adapterType: "codex_local", adapterConfig: {},
+        runtimeConfig: {}, permissions: {},
+      });
+    }
+    const base = {
+      companyId, agentId, provider: "openai", biller: "openai",
+      inputTokens: 100, outputTokens: 20, costCents: 0,
+      occurredAt: new Date("2026-04-10T12:00:00.000Z"),
+    };
+    await db.insert(costEvents).values([
+      { ...base, billingType: "metered_api", costStatus: "reported", model: "gpt-5", costCents: 125 },
+      { ...base, billingType: "metered_api", costStatus: "unpriced", model: "unknown" },
+      { ...base, billingType: "subscription_included", costStatus: "unpriced", model: "gpt-5" },
+      { ...base, billingType: "subscription_included", costStatus: "reported", model: "unknown" },
+      { ...base, billingType: "subscription_overage", costStatus: "unpriced", model: "gpt-5" },
+      { ...base, billingType: "unknown", costStatus: "unpriced", model: "unknown" },
+      // Neither another company nor an event outside the requested period may leak into coverage.
+      { ...base, companyId: otherCompanyId, agentId: otherAgentId, billingType: "unknown", costStatus: "unpriced", model: "unknown" },
+      { ...base, billingType: "metered_api", costStatus: "unpriced", model: "unknown", occurredAt: new Date("2026-04-09T23:59:59.999Z") },
+    ]);
+    const range = {
+      from: new Date("2026-04-10T00:00:00.000Z"),
+      to: new Date("2026-04-10T23:59:59.999Z"),
+    };
+    const summary = await costs.summary(companyId, range);
+    expect(summary.spendCents).toBe(125);
+    expect(summary.costCoverage).toEqual({
+      eventCount: 6,
+      unpricedEventCount: 4,
+      unpricedNonIncludedEventCount: 3,
+      subscriptionIncludedEventCount: 2,
+      unknownBillingEventCount: 1,
+      unknownModelEventCount: 3,
+    });
+    const empty = await costs.summary(companyId, {
+      from: new Date("2026-05-01T00:00:00.000Z"),
+    });
+    expect(empty.spendCents).toBe(0);
+    expect(empty.costCoverage).toEqual({
+      eventCount: 0, unpricedEventCount: 0, unpricedNonIncludedEventCount: 0,
+      subscriptionIncludedEventCount: 0, unknownBillingEventCount: 0, unknownModelEventCount: 0,
+    });
+  });
+
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

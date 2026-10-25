@@ -116,14 +116,20 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const [{ total }] = await db
+      const [aggregate] = await db
         .select({
           total: sumAsNumber(costEvents.costCents),
+          eventCount: sql<number>`count(*)::double precision`,
+          unpricedEventCount: sql<number>`count(*) filter (where ${costEvents.costStatus} = 'unpriced')::double precision`,
+          unpricedNonIncludedEventCount: sql<number>`count(*) filter (where ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included')::double precision`,
+          subscriptionIncludedEventCount: sql<number>`count(*) filter (where ${costEvents.billingType} = 'subscription_included')::double precision`,
+          unknownBillingEventCount: sql<number>`count(*) filter (where ${costEvents.billingType} = 'unknown')::double precision`,
+          unknownModelEventCount: sql<number>`count(*) filter (where lower(trim(${costEvents.model})) in ('unknown', ''))::double precision`,
         })
         .from(costEvents)
         .where(and(...conditions));
 
-      const spendCents = Number(total);
+      const spendCents = Number(aggregate.total);
       const utilization =
         company.budgetMonthlyCents > 0
           ? (spendCents / company.budgetMonthlyCents) * 100
@@ -134,6 +140,14 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         spendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+        costCoverage: {
+          eventCount: Number(aggregate.eventCount),
+          unpricedEventCount: Number(aggregate.unpricedEventCount),
+          unpricedNonIncludedEventCount: Number(aggregate.unpricedNonIncludedEventCount),
+          subscriptionIncludedEventCount: Number(aggregate.subscriptionIncludedEventCount),
+          unknownBillingEventCount: Number(aggregate.unknownBillingEventCount),
+          unknownModelEventCount: Number(aggregate.unknownModelEventCount),
+        },
       };
     },
 
