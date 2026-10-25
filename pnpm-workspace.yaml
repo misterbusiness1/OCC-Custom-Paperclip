@@ -48,14 +48,14 @@ overrides:
   # Enforce the patched floor for Mermaid and every other transitive consumer.
   dompurify: "^3.4.17"
   # Better Auth exposes Vitest as an optional production peer.
-  "vitest@4.1.11>vite": "8.2.4"
+  "vitest@4.1.12>vite": "8.2.4"
   react: "^19.2.8"
   react-dom: "^19.2.8"
   # Fork production dependency audit pins (#44, OXFA-27638); mirrored from
   # package.json#pnpm.overrides.
-  "brace-expansion@<2": "1.1.20"
-  "brace-expansion@>=2 <3": "2.1.6"
-  fast-uri: "3.1.8"
+  "brace-expansion@<2": "1.1.21"
+  "brace-expansion@>=2 <3": "2.1.7"
+  fast-uri: "3.1.9"
   js-yaml: "4.3.2"
   "nanoid@<4": "3.3.18"
   path-to-regexp: "8.4.0"
@@ -75,7 +75,7 @@ overrides:
   # Security fixes; keep legacy protocol bridge pins above unchanged.
   "qs": "6.16.0"
   "body-parser": "2.4.0"
-  "hono": "4.13.5"
+  "hono": "4.13.13"
   "svix@1.76.1>uuid": "11.1.1"
   "@esbuild-kit/core-utils@3.3.2>esbuild": "0.25.12"
   "form-data@>=4 <4.0.6": "4.0.6"
@@ -85,3 +85,15 @@ overrides:
 
   # Patched MSAL floor for the Teams SDK; verify client-credentials compatibility.
   "@microsoft/teams.apps@2.0.16>@azure/msal-node": "7.1.0"
+
+  # Keep this mirror aligned with package.json for newer pnpm clients.
+  "ip-address": "10.7.4"
+  "smol-toml": "1.9.0"
+  "fast-copy@>=4 <5": "4.1.0"
+  "postcss-selector-parser": "7.1.6"
+  "follow-redirects": "1.16.1"
+  "proxy-addr": "2.0.8"
+  "source-map-js": "1.2.2"
+  "sharp": "0.35.5"
+  "@modelcontextprotocol/sdk": "1.32.1"
+  "zod@>=4 <5": "4.6.7"
