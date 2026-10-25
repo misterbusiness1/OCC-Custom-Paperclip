@@ -1,3 +1,4 @@
+import { issueBoardStatuses, issueMatchesCollectionScope } from "../lib/issue-board-scope";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
@@ -121,7 +122,6 @@ function findIssuesScrollContainer(element: HTMLElement | null): HTMLElement | n
   }
   return null;
 }
-const boardIssueStatuses = ISSUE_STATUSES;
 const issueStatusLabels: Record<IssueStatus, string> = {
   backlog: "Backlog",
   todo: "Todo",
@@ -839,10 +839,13 @@ export function IssuesList({
         ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
       }, { signal }).then((rows) => rows as Issue[]),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues,
-    placeholderData: (previousData) => previousData,
   });
+  const allowedBoardStatuses = useMemo(
+    () => issueBoardStatuses(searchFilters?.status, viewState.statuses),
+    [searchFilters?.status, viewState.statuses],
+  );
   const boardIssueQueries = useQueries({
-    queries: boardIssueStatuses.map((status) => ({
+    queries: allowedBoardStatuses.map((status) => ({
       queryKey: [
         ...queryKeys.issues.list(selectedCompanyId ?? "__no-company__"),
         "board-column",
@@ -864,7 +867,6 @@ export function IssuesList({
           ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
         }, { signal }).then((rows) => rows as Issue[]),
       enabled: !!selectedCompanyId && viewState.viewMode === "board" && !searchWithinLoadedIssues,
-      placeholderData: (previousData: Issue[] | undefined) => previousData,
     })),
   });
   const { data: executionWorkspaces = [] } = useQuery({
@@ -1077,8 +1079,9 @@ export function IssuesList({
       }
     }
     if (merged.size > 0) return [...merged.values()];
-    return isPending ? issues : [];
-  }, [boardIssueQueries, issues, searchWithinLoadedIssues, viewState.viewMode]);
+    // Parent rows may belong to the previous task view. Await scoped results.
+    return isPending && !normalizedIssueSearch && !searchFilters ? issues : [];
+  }, [boardIssueQueries, issues, normalizedIssueSearch, searchFilters, searchWithinLoadedIssues, viewState.viewMode]);
   const boardColumnLimitReached = useMemo(
     () =>
       viewState.viewMode === "board" &&
@@ -1124,7 +1127,7 @@ export function IssuesList({
 
   const filtered = useMemo(() => {
     const filteredByControls = applyIssueFilters(
-      searchScopedIssues,
+      searchScopedIssues.filter((issue) => issueMatchesCollectionScope(issue, selectedCompanyId, searchFilters, currentUserId)),
       viewState,
       currentUserId,
       enableRoutineVisibilityFilter,
@@ -1134,6 +1137,8 @@ export function IssuesList({
     return sortIssues(filteredByControls, viewState);
   }, [
     searchScopedIssues,
+    selectedCompanyId,
+    searchFilters,
     viewState,
     currentUserId,
     enableRoutineVisibilityFilter,
@@ -1928,6 +1933,7 @@ export function IssuesList({
       {viewState.viewMode === "board" ? (
         <KanbanBoard
           issues={filtered}
+          statuses={allowedBoardStatuses}
           agents={agents}
           liveIssueIds={liveIssueIds}
           compactCards={boardCompactCards}

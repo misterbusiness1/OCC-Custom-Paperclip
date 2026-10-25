@@ -54,3 +54,39 @@ Real-device Safari/Android behavior (keyboard, standalone safe areas, touch and 
 - Required runner Vitest then caught the Claude installed-graph qualification still expecting Zod4.4.3. Updated the exact qualification and all direct/transitive v4 pins to4.6.7; broad ranges had resolved one Claude supplemental dependency to4.6.6 while the app used4.6.7. A fresh frozen install now aligns the graph. All71 installation-integrity checks pass, including the real installed Claude graph and added rejection assertions for old4.4.3 and unqualified future4.6.8. Version/descriptor checks remain strict.
 - Firefox and WebKit passed all six real-API mobile/email/task/agent cases. The mocked retry fixture initially failed in WebKit because service-worker-owned traffic bypassed page.route and reached the real empty run list. Scoped serviceWorkers:block to that synthetic routed fixture only; both Firefox/WebKit retry repeats pass. Real-API cases retain service workers. Full final cross-browser repeat remains required.
 - Canonical image build is queued behind the exact running backup invocation and80GiB admission/70GiB build reserve. No archive or rollback deletion, BuildKit pruning, staging mutation or production action. Source advance supersedes the queued prior-head build. Rebind build inputs to final head before proceeding.
+
+### Task-view board scope repair (2026-10-25)
+
+Both legacy and streamlined task boards intersect the collection's allowed
+statuses with saved local statuses. The same intersection controls requests and
+visible lanes. Saved controls can narrow a task view but cannot widen it.
+Company, assignee, participant, workspace, project, search, overdue and pagination
+constraints remain on the existing server requests. Column limits and abort
+signals remain unchanged. Company and assignee checks also protect rendered rows.
+Scoped boards wait for current query results rather than displaying parent rows
+from a previous task view. Search changes do not reuse previous-query rows.
+
+Regression commands (run from the repository root unless stated):
+
+- From `ui/`: `pnpm exec vitest run src/components/IssuesList.board-scope.test.tsx src/components/IssuesList.test.tsx src/pages/Issues.test.tsx src/lib/operator-task-views.test.ts`
+- From `server/`: `pnpm exec vitest run src/__tests__/issue-list-updatedsince-filter-routes.test.ts`
+- `pnpm exec playwright test --config tests/e2e/playwright.config.ts tests/e2e/legacy-board-task-views.spec.ts`
+- `pnpm check:token-gates`
+
+Detection: a Blocked or In review board must never request another status column
+or display its cards, including after search changes and persisted-layout reload.
+A saved conflicting status must produce no lanes. Test both values of
+`enableStreamlinedUi`; toggling that flag alone is not a rollback for this shared
+repair. The Playwright command starts a disposable local Paperclip instance and
+must not target shared staging or production.
+
+Rollback: revert the repair PR through normal review and release gates. No data
+migration, persistent format change, or new flag is required. Until a rollback or
+repair is qualified, operators can switch affected task views to List mode as a
+workaround. There is no new dedicated kill switch. This change does not qualify
+staging, waive hardware checks, or authorize production deployment.
+
+Local Chromium examples: [legacy Blocked board](../assets/legacy-board-task-views/legacy-blocked.png),
+[legacy empty search](../assets/legacy-board-task-views/legacy-search-empty.png),
+and [streamlined parity](../assets/legacy-board-task-views/streamlined-blocked.png).
+These are synthetic disposable-local-fixture captures, not staging attestations.
