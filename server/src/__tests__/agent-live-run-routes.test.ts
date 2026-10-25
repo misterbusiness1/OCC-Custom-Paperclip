@@ -272,7 +272,7 @@ async function requestApp(
 }
 
 describe("agent live run routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/agents.js");
     vi.doUnmock("../services/heartbeat.js");
@@ -392,6 +392,10 @@ describe("agent live run routes", () => {
       skipped: 0,
       skipReasons: [],
     });
+    // Cold route transformation belongs to fixture setup, not request timing.
+    // Keep imports sequential, as createApp requires for factory-mock isolation.
+    await vi.importActual("../routes/agents.js");
+    await vi.importActual("../middleware/index.js");
   });
 
   describe("heartbeat run ID validation", () => {

@@ -13,6 +13,7 @@ import {
   issueAgeSeparatorLabel,
 } from "./IssuesList";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { operatorTaskViewFilters } from "../lib/operator-task-views";
 import { taskCollectionPreferencesStorageKey } from "../lib/task-collection-preferences";
 
 const companyState = vi.hoisted(() => ({
@@ -1319,6 +1320,45 @@ describe("IssuesList", () => {
       root.unmount();
     });
   }, 10_000);
+
+  it.each(["blocked", "review", "assigned"] as const)(
+    "preserves %s task-view constraints in saved board mode with and without search",
+    async (taskView) => {
+      localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ viewMode: "board" }));
+      const statuses = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"] as const;
+      const filters = { ...operatorTaskViewFilters(taskView), overdueFollowUp: true };
+      const allowedStatuses = filters.status!.split(",");
+      mockIssuesApi.list.mockImplementation((_companyId, query) => Promise.resolve(
+        statuses.filter((status) => query?.status?.split(",").includes(status)).map((status) => createIssue({
+          id: `issue-${status}`, title: `Column task ${status}`, status,
+        })),
+      ));
+      for (const search of ["", "needle"]) {
+        mockIssuesApi.list.mockClear();
+        const { root } = renderWithQueryClient(
+          <IssuesList issues={[]} agents={[]} projects={[]} viewStateKey="paperclip:test-issues"
+            searchFilters={filters} initialSearch={search} projectId="project-1"
+            onUpdateIssue={() => undefined} />, container,
+        );
+        await waitForAssertion(() => {
+          for (const status of allowedStatuses) expect(container.textContent).toContain(`Column task ${status}`);
+          for (const status of statuses.filter((status) => !allowedStatuses.includes(status))) {
+            expect(container.textContent).not.toContain(`Column task ${status}`);
+          }
+          const columnCalls = mockIssuesApi.list.mock.calls.filter(([, query]) => query.limit === 200 && !query.status.includes(","));
+          expect([...new Set(columnCalls.map(([, query]) => query.status))].sort()).toEqual([...allowedStatuses].sort());
+          for (const [companyId, query] of columnCalls) {
+            expect(companyId).toBe("company-1");
+            expect(query).toEqual(expect.objectContaining({
+              ...filters, status: query.status, projectId: "project-1", ...(search ? { q: search } : {}),
+            }));
+          }
+          expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({ statuses: allowedStatuses }));
+        });
+        await act(() => root.unmount());
+      }
+    },
+  );
 
   it("loads board issues with a separate result limit for each status column", async () => {
     localStorage.setItem(

@@ -8309,7 +8309,13 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
+    const overdueFollowUp = parseOptionalBooleanQuery(req.query.overdueFollowUp);
+    if (overdueFollowUp === null) {
+      res.status(400).json({ error: "overdueFollowUp must be true or false when provided" });
+      return;
+    }
     const listFilters: IssueFilters = {
+      overdueFollowUp: overdueFollowUp === true,
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
@@ -8537,7 +8543,13 @@ export function issueRoutes(
       return;
     }
 
+    const overdueFollowUp = parseOptionalBooleanQuery(req.query.overdueFollowUp);
+    if (overdueFollowUp === null) {
+      res.status(400).json({ error: "overdueFollowUp must be true or false when provided" });
+      return;
+    }
     const blockedCountFilters = {
+      overdueFollowUp: overdueFollowUp === true,
       attention: "blocked",
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,

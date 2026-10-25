@@ -531,6 +531,8 @@
   }
   html {
     height: 100%;
+    -webkit-text-size-adjust: 100%;
+    overscroll-behavior: none;
     -webkit-tap-highlight-color: color-mix(in oklab, var(--foreground) 20%, transparent);
     @apply font-sans;
   }
@@ -548,6 +550,7 @@
   /* Prevent double-tap-to-zoom on interactive elements for mobile */
   a,
   button,
+  summary,
   [role="button"],
   input,
   select,
@@ -563,7 +566,15 @@
 }
 
 @media (pointer: coarse) {
+  /* Keep iOS from zooming focused fields; browser zoom stays available. */
+  input,
+  select,
+  textarea {
+    font-size: max(1rem, 16px);
+  }
+
   button,
+  summary,
   [role="button"],
   input,
   select,

@@ -80,6 +80,7 @@ export type ResolveRecoveryActionResponse = {
 };
 
 export type IssueListFilters = {
+  overdueFollowUp?: boolean;
   attention?: "blocked";
   status?: string;
   projectId?: string;
@@ -113,6 +114,7 @@ export type IssueListFilters = {
 
 function issueListSearchParams(filters?: IssueListFilters) {
   const params = new URLSearchParams();
+  if (filters?.overdueFollowUp) params.set("overdueFollowUp", "true");
   if (filters?.attention) params.set("attention", filters.attention);
   if (filters?.status) params.set("status", filters.status);
   if (filters?.projectId) params.set("projectId", filters.projectId);
@@ -198,6 +200,7 @@ export const issuesApi = {
     companyId: string,
     filters: {
       attention: "blocked";
+      overdueFollowUp?: boolean;
       status?: string;
       assigneeAgentId?: string;
       assigneeUserId?: string;
@@ -208,6 +211,7 @@ export const issuesApi = {
   ) => {
     const params = new URLSearchParams();
     params.set("attention", filters.attention);
+    if (filters.overdueFollowUp) params.set("overdueFollowUp", "true");
     if (filters.status) params.set("status", filters.status);
     if (filters.assigneeAgentId)
       params.set("assigneeAgentId", filters.assigneeAgentId);
