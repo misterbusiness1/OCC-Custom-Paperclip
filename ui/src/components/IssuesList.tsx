@@ -1,3 +1,4 @@
+import { issueBoardStatuses, issueMatchesCollectionScope } from "../lib/issue-board-scope";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
@@ -131,7 +132,6 @@ function findIssuesScrollContainer(element: HTMLElement | null): HTMLElement | n
   }
   return null;
 }
-const boardIssueStatuses = ISSUE_STATUSES;
 const issueStatusLabels: Record<IssueStatus, string> = {
   backlog: "Backlog",
   todo: "Todo",
@@ -885,13 +885,11 @@ function StreamlinedIssuesList({
         ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
       }, { signal }).then((rows) => rows as Issue[]),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues,
-    placeholderData: (previousData) => previousData,
   });
-  // Task-view status constraints apply to every board column, including search.
-  const allowedBoardStatuses = useMemo(() => {
-    const allowed = searchFilters?.status?.split(",").map((status) => status.trim());
-    return boardIssueStatuses.filter((status) => !allowed || allowed.includes(status));
-  }, [searchFilters?.status]);
+  const allowedBoardStatuses = useMemo(
+    () => issueBoardStatuses(searchFilters?.status, viewState.statuses),
+    [searchFilters?.status, viewState.statuses],
+  );
   const boardIssueQueries = useQueries({
     queries: allowedBoardStatuses.map((status) => ({
       queryKey: [
@@ -915,7 +913,6 @@ function StreamlinedIssuesList({
           ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
         }, { signal }).then((rows) => rows as Issue[]),
       enabled: !!selectedCompanyId && viewState.viewMode === "board" && !searchWithinLoadedIssues,
-      placeholderData: (previousData: Issue[] | undefined) => previousData,
     })),
   });
   const { data: executionWorkspaces = [] } = useQuery({
@@ -1132,8 +1129,9 @@ function StreamlinedIssuesList({
       }
     }
     if (merged.size > 0) return [...merged.values()];
-    return isPending ? issues : [];
-  }, [boardIssueQueries, issues, searchWithinLoadedIssues, viewState.viewMode]);
+    // Parent rows may belong to the previous task view. Await scoped results.
+    return isPending && !normalizedIssueSearch && !searchFilters ? issues : [];
+  }, [boardIssueQueries, issues, normalizedIssueSearch, searchFilters, searchWithinLoadedIssues, viewState.viewMode]);
   const boardColumnLimitReached = useMemo(
     () =>
       viewState.viewMode === "board" &&
@@ -1179,7 +1177,7 @@ function StreamlinedIssuesList({
 
   const filtered = useMemo(() => {
     const filteredByControls = applyIssueFilters(
-      searchScopedIssues,
+      searchScopedIssues.filter((issue) => issueMatchesCollectionScope(issue, selectedCompanyId, searchFilters, currentUserId)),
       viewState,
       currentUserId,
       enableRoutineVisibilityFilter,
@@ -1189,6 +1187,8 @@ function StreamlinedIssuesList({
     return sortIssues(filteredByControls, viewState);
   }, [
     searchScopedIssues,
+    selectedCompanyId,
+    searchFilters,
     viewState,
     currentUserId,
     enableRoutineVisibilityFilter,

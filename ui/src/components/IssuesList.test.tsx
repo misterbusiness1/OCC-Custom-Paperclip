@@ -1326,11 +1326,12 @@ describe("IssuesList", () => {
     async (taskView) => {
       localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ viewMode: "board" }));
       const statuses = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"] as const;
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" }, session: null });
       const filters = { ...operatorTaskViewFilters(taskView), overdueFollowUp: true };
       const allowedStatuses = filters.status!.split(",");
       mockIssuesApi.list.mockImplementation((_companyId, query) => Promise.resolve(
         statuses.filter((status) => query?.status?.split(",").includes(status)).map((status) => createIssue({
-          id: `issue-${status}`, title: `Column task ${status}`, status,
+          id: `issue-${status}`, title: `Column task ${status}`, status, assigneeUserId: "user-1",
         })),
       ));
       for (const search of ["", "needle"]) {
