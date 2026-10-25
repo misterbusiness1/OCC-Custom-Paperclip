@@ -1,5 +1,38 @@
 # Stable upgrade dependency hardening — 2026-09-26
 
+## Maintenance follow-up — 2026-10-25
+
+The follow-up candidate sets these patched floors in both override manifests:
+
+| Package | Resolution |
+| --- | --- |
+| fast-uri | 3.1.9 |
+| ip-address | 10.7.4 |
+| smol-toml | 1.9.0 |
+| fast-copy 4.x | 4.1.0 |
+| postcss-selector-parser | 7.1.6 |
+| Vitest | 4.1.12 in each workspace manifest |
+
+The workspace YAML mirror also receives the existing root security overrides.
+This prevents newer pnpm clients from resolving below the root manifest's floors.
+The declared package manager remains pnpm 9.15.4.
+
+smol-toml 1.9 returns tables with null prototypes. Codex startup trust now keeps
+that table shape when it changes the selected project. It still checks the exact
+semantic change before it writes a file. Existing tests cover retained comments,
+multiline strings, inline tables, worktrees, symlinks, and repeated calls.
+
+The local production audit reports zero moderate, high, or critical findings.
+Two low findings remain: the `cli` importer-name collision described below and
+the KaTeX prototype-pollution trust advisory. This candidate does not suppress
+either finding. The audit result is not a staging or production qualification.
+
+Verify with `corepack pnpm audit --prod --json`, the Codex startup-trust suite in
+`packages/paperclip-runner`, and the UI build. Generate the lockfile for local
+verification; CI retains ownership of the committed lockfile.
+
+## Original upgrade
+
 The v2026.916.1 fork candidate retains the deployed immutable runtime skill snapshot fix and pins the qualified global CLIs: Claude Code 2.1.283, Codex 0.157.1, and Kimi Code 2.1.1. The external Kimi plugin is separately deployed as 1.0.5. Existing ACP bridge patches and qualified SDK pins remain unchanged.
 
 Production dependency fixes:

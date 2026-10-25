@@ -102,7 +102,7 @@
     "cross-env": "^10.1.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "engines": {
     "node": ">=24.11.0"
@@ -131,12 +131,16 @@
       "@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk": "0.3.280",
       "rollup": ">=4.59.0",
       "dompurify": "^3.4.17",
-      "vitest@4.1.11>vite": "8.2.4",
+      "vitest@4.1.12>vite": "8.2.4",
       "react": "^19.2.8",
       "react-dom": "^19.2.8",
       "brace-expansion@<2": "1.1.21",
       "brace-expansion@>=2 <3": "2.1.7",
-      "fast-uri": "3.1.8",
+      "fast-uri": "3.1.9",
+      "ip-address": "10.7.4",
+      "smol-toml": "1.9.0",
+      "fast-copy@>=4 <5": "4.1.0",
+      "postcss-selector-parser": "7.1.6",
       "follow-redirects": "1.16.1",
       "js-yaml": "4.3.2",
       "nanoid@<4": "3.3.18",
