@@ -288,7 +288,7 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       finalPreparedCommand = preferredCommandPath;
       const runtimeEnv = {
         ...input.env,
-        PATH: `${path.join(systemHomeDir, ".local", "bin")}${path.delimiter}${input.env.PATH}`,
+        PATH: `${path.join(systemHomeDir, ".local", "bin")}${path.delimiter}${input.env.PATH ?? "/usr/bin:/bin"}`,
       };
       await fs.mkdir(path.dirname(preferredCommandPath), { recursive: true });
       await fs.writeFile(preferredCommandPath, preferredAgentScript);
@@ -307,23 +307,18 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
     const runnerState = {
       commands: [] as string[],
     };
-    // The managed-runtime restore path probes the generated archive with
-    // `wc -c` before reading bounded `dd | base64` chunks. Keep this fixture's
-    // shell seam faithful to that protocol instead of returning empty stdout
-    // for every shell command.
+    // Keep the actual archive/restore protocol, but simulate installation just
+    // like the fresh-lease case above. Managed setup runs before the second
+    // command-resolution call creates its preferred binary.
+    const fixtureRunner = createFreshLeaseSandboxRunner({
+      homeDir: systemHomeDir,
+      installCommandPath: path.join(systemHomeDir, ".local", "bin", "agent"),
+      captureDir: managedCaptureDir,
+    });
     const runner = {
-      execute: async (input: { command: string; args?: string[]; env?: Record<string, string> }) => {
+      execute: async (input: Parameters<typeof fixtureRunner.execute>[0]) => {
         runnerState.commands.push(input.command);
-        // Exercise actual bounded file reads during managed-home restoration;
-        // reporting empty success for every shell command hides missing bytes.
-        return runChildProcess(`cursor-fresh-lease-${runnerState.commands.length}`, input.command, input.args ?? [], {
-          cwd: remoteWorkspace,
-          env: { ...input.env, PATH: `${input.env?.PATH ?? ""}:/usr/bin:/bin` },
-          timeoutSec: 30,
-          graceSec: 5,
-          onLog: async () => {},
-          onSpawn: async () => {},
-        });
+        return fixtureRunner.execute(input);
       },
     };
 
@@ -370,6 +365,7 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       });
 
       expect(result.exitCode).toBe(0);
+      expect(fixtureRunner.installCommands).toEqual([SANDBOX_INSTALL_COMMAND]);
       expect(prepareInputs).toHaveLength(2);
       expect(finalPreparedCommand).not.toBeNull();
       expect(finalPreparedCommand).toMatch(/\.local\/(bin|sbin)\/agent$/);
