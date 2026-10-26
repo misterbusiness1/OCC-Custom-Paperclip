@@ -87,6 +87,7 @@ import {
   type SandboxOrphanCleanupSpool,
 } from "./sandbox-orphan-cleanup-spool.js";
 import { logger } from "../middleware/logger.js";
+import { environmentLeaseFailureReason } from "./environment-lease-failure-reason.js";
 
 // The constant error kind for the durable orphan-cleanup-write-failed log. The
 // log never reads the caught exception, because the exception can carry a
@@ -1112,6 +1113,18 @@ export function findReusableSandboxLeaseId(input: {
   });
 }
 
+async function readLeaseFailureReason(db: Db, input: EnvironmentDriverReleaseInput): Promise<string | undefined> {
+  if (input.status !== "failed") return undefined;
+  const runId = input.lease.heartbeatRunId;
+  const [run] = runId
+    ? await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, input.lease.companyId)))
+        .limit(1)
+    : [];
+  return environmentLeaseFailureReason(run);
+}
+
 function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
   const environmentsSvc = environmentService(db);
 
@@ -1136,7 +1149,9 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     },
 
     async releaseRunLease(input) {
-      return await environmentsSvc.releaseLease(input.lease.id, input.status);
+      return await environmentsSvc.releaseLease(input.lease.id, input.status, {
+        failureReason: await readLeaseFailureReason(db, input),
+      });
     },
 
     async retryPendingSandboxTeardown({ lease }) {
@@ -1216,7 +1231,9 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     },
 
     async releaseRunLease(input) {
-      return await environmentsSvc.releaseLease(input.lease.id, input.status);
+      return await environmentsSvc.releaseLease(input.lease.id, input.status, {
+        failureReason: await readLeaseFailureReason(db, input),
+      });
     },
 
     async realizeWorkspace(input) {
