@@ -1,3 +1,4 @@
+import { classifyToolGatewayAudit, runtimeMcpDiagnosticProvenance } from "./tool-gateway-audit-classification.js";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
 import { browserUseService } from "./browser-use.js";
 import { isBrowserUseConnection } from "./browser-use-client.js";
@@ -1613,33 +1614,7 @@ export function createToolGatewayService(
     action: string;
     details: Record<string, unknown>;
   }) {
-    const dedicatedAuditAction =
-      input.action === "tool_gateway.discovery"
-        ? "discovery"
-        : input.action === "tool_gateway.session_revoked"
-          ? "session_revoked"
-          : input.action === "tool_gateway.call_allowed" ||
-              input.action === "tool_gateway.session_created"
-            ? "policy_decision"
-            : input.action === "tool_gateway.call_completed"
-              ? "call_completed"
-              : input.action === "tool_gateway.call_denied" ||
-                  input.action === "tool_gateway.session_rejected"
-                ? "call_denied"
-                : input.action === "tool_gateway.call_deferred"
-                  ? "call_failed"
-                  : "call_failed";
-    const dedicatedOutcome =
-      input.action === "tool_gateway.session_revoked"
-        ? "success"
-        : input.action === "tool_gateway.call_denied" ||
-            input.action === "tool_gateway.session_rejected"
-          ? "denied"
-          : input.action === "tool_gateway.call_deferred"
-            ? "timeout"
-            : input.action === "tool_gateway.call_failed"
-              ? "failure"
-              : "success";
+    const classification = classifyToolGatewayAudit(input.action);
     try {
       await db.insert(toolAccessAuditEvents).values({
         companyId: input.companyId,
@@ -1687,8 +1662,8 @@ export function createToolGatewayService(
           input.agentId ??
           input.session?.gatewayTokenId ??
           input.companyId,
-        action: dedicatedAuditAction,
-        outcome: dedicatedOutcome,
+        action: classification.action,
+        outcome: classification.outcome,
         reasonCode:
           typeof input.details.reasonCode === "string"
             ? input.details.reasonCode
@@ -8322,14 +8297,34 @@ export function createToolGatewayService(
           ),
         )
         .limit(1);
+      if (!run) throw new Error("Runtime MCP diagnostic run identity mismatch.");
+      const connectionIds = input.permittedNotInstalledConnections.map(connection => connection.id);
+      const validIds = connectionIds.filter(id => uuidPattern.test(id));
+      const provenanceRows = validIds.length > 0
+        ? await db.select({
+            id: toolConnections.id,
+            applicationKey: toolApplications.applicationKey,
+            applicationMetadata: toolApplications.metadata,
+          }).from(toolConnections)
+            .innerJoin(toolApplications, eq(toolConnections.applicationId, toolApplications.id))
+            .where(and(
+              eq(toolConnections.companyId, input.companyId),
+              eq(toolApplications.companyId, input.companyId),
+              inArray(toolConnections.id, validIds),
+            ))
+        : [];
+      const provenance = runtimeMcpDiagnosticProvenance(connectionIds, provenanceRows);
       await writeAudit({
         companyId: input.companyId,
         agentId: input.agentId,
         runId: input.runId,
-        issueId: run?.issueId ?? null,
+        issueId: run.issueId ?? null,
         action: "tool_gateway.runtime_mcp_delivery",
         details: {
           decision: "diagnostic",
+          eventCategory: "diagnostic",
+          auditClassificationVersion: 1,
+          ...provenance,
           reasonCode: "permitted_connections_not_installed",
           deliveredServerCount: 0,
           permittedNotInstalledCount:

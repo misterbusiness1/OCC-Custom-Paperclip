@@ -484,8 +484,10 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       companyId: company!.id,
       actorType: "agent",
       actorId: agent!.id,
+      action: "runtime_diagnostic",
+      outcome: "diagnostic",
       reasonCode: "permitted_connections_not_installed",
-      details: expect.objectContaining({ runId, deliveredServerCount: 0 }),
+      details: expect.objectContaining({ runId, deliveredServerCount: 0, auditScope: "production", eventCategory: "diagnostic" }),
     });
   });
 
