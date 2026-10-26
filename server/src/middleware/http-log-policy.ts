@@ -42,11 +42,25 @@ const SECRET_SENSITIVE_HTTP_PATHS = [
 ];
 const SECRET_SENSITIVE_HTTP_METHODS = new Set(["POST", "PUT", "PATCH"]);
 
+/**
+ * Use the same case-insensitive namespace policy as Express's default routing.
+ * Return only fixed labels, including on malformed/rejected operator paths, so
+ * classification and URL projection cannot disagree or echo a capability.
+ */
+export function deploymentControlHttpLogUrl(method: string | undefined, url: string | undefined): string | undefined {
+  if (!method || !url) return undefined;
+  // Express's URL parser excludes fragments even when a raw HTTP client sends
+  // one in the request target. Match that boundary before testing namespaces.
+  const pathname = (normalizePath(url).split("#")[0] ?? "/").replace(/^https?:\/\/[^/]*/i, "");
+  if (/^\/api\/instance\/deployment-lease(?:\/|$)/i.test(pathname)) return "/api/instance/deployment-lease";
+  if (/^\/api\/instance\/task-drain(?:\/|$)/i.test(pathname)) return "/api/instance/task-drain";
+  if (/^\/api\/startup-work-barrier\/release(?:\/|$)/i.test(pathname)) return "/api/startup-work-barrier/release";
+  return undefined;
+}
+
 /** Owner capabilities must stay private even on malformed/rejected operator paths. */
 export function isDeploymentControlHttpRequest(method: string | undefined, url: string | undefined): boolean {
-  if (!method || !url) return false;
-  const pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
-  return /^\/api\/(?:instance\/(?:deployment-lease|task-drain)(?:\/|$)|startup-work-barrier\/release(?:\/|$))/.test(pathname);
+  return deploymentControlHttpLogUrl(method, url) !== undefined;
 }
 
 /** Provider payloads are private even when a method/signature is rejected. */

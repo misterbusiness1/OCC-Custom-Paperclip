@@ -5,6 +5,7 @@ import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
 import {
   isPrivateWebhookHttpRequest,
   isDeploymentControlHttpRequest,
+  deploymentControlHttpLogUrl,
   isSecretSensitiveHttpRequest,
   shouldSilenceHttpSuccessLog,
 } from "./http-log-policy.js";
@@ -72,12 +73,8 @@ function isContentFreeRequest(req: { method?: string; originalUrl?: unknown; url
 }
 
 function privateRequestLogUrl(req: { method?: string; originalUrl?: unknown; url?: unknown }) {
-  if (isDeploymentControl(req)) {
-    const url = (requestClassificationUrl(req) ?? "").split("?")[0].split("#")[0];
-    if (/\/instance\/task-drain(?:\/|$)/.test(url)) return "/api/instance/task-drain";
-    if (/\/startup-work-barrier\/release(?:\/|$)/.test(url)) return "/api/startup-work-barrier/release";
-    return "/api/instance/deployment-lease";
-  }
+  const controlUrl = deploymentControlHttpLogUrl(req.method, requestClassificationUrl(req));
+  if (controlUrl) return controlUrl;
   return privateWebhookLogUrl(requestClassificationUrl(req));
 }
 
