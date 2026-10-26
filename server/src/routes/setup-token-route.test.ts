@@ -366,22 +366,27 @@ interface AppHandle {
   logLines: string[];
 }
 
+function loadAppModules() {
+  return Promise.all([
+    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("pino")>("pino"),
+    vi.importActual<typeof import("pino-http")>("pino-http"),
+    vi.importActual<typeof import("../middleware/redact-sensitive.js")>(
+      "../middleware/redact-sensitive.js",
+    ),
+  ]);
+}
+
+let appModules: Awaited<ReturnType<typeof loadAppModules>>;
+
 async function createApp(opts: {
   deploymentMode?: "local_trusted" | "authenticated";
   confidentialProxyAllowlist?: string[];
   confidentialEdgeTlsTerminated?: boolean;
   transport?: TransportHandle;
 } = {}): Promise<AppHandle> {
-  const [{ agentRoutes }, { errorHandler }, pinoModule, pinoHttpModule, redactModule] =
-    await Promise.all([
-      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-      vi.importActual<typeof import("pino")>("pino"),
-      vi.importActual<typeof import("pino-http")>("pino-http"),
-      vi.importActual<typeof import("../middleware/redact-sensitive.js")>(
-        "../middleware/redact-sensitive.js",
-      ),
-    ]);
+  const [{ agentRoutes }, { errorHandler }, pinoModule, pinoHttpModule, redactModule] = appModules;
   const { pino } = pinoModule;
   const { pinoHttp } = pinoHttpModule;
   const { redactSensitive } = redactModule;
@@ -465,7 +470,7 @@ async function settle(): Promise<void> {
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.resetModules();
   registerModuleMocks();
   vi.clearAllMocks();
@@ -508,6 +513,10 @@ beforeEach(() => {
         ? { plugin: { id: "plugin-daytona" }, driver: { supportsLoginPty: true } }
         : null,
   );
+  // Dependency loading belongs to fixture setup. Reset and load the actual
+  // graph for every case so cold transforms use the existing setup-hook budget,
+  // while each behavior test still gets fresh modules and its normal timeout.
+  appModules = await loadAppModules();
 });
 
 // --- Company-and-environment routes ------------------------------------------
