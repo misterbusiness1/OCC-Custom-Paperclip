@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -101,7 +101,7 @@ test("general-server shards include server script suites exactly once", () => {
   }
 });
 
-function readActualVitestConfig() {
+function readActualVitestConfig(configFile = "vitest.config.ts") {
   // The policy job deliberately has no node_modules. Execute the checked-in
   // config and its real relative imports, replacing only Vitest's identity
   // defineConfig helper with a builtin VM module.
@@ -116,6 +116,14 @@ function readActualVitestConfig() {
     });
     async function load(identifier) {
       if (modules.has(identifier)) return modules.get(identifier);
+      if (identifier.startsWith("node:")) {
+        const namespace = await import(identifier);
+        const module = new SyntheticModule(Object.keys(namespace), function () {
+          for (const name of Object.keys(namespace)) this.setExport(name, namespace[name]);
+        });
+        modules.set(identifier, module);
+        return module;
+      }
       let source = readFileSync(new URL(identifier), "utf8");
       if (identifier.endsWith(".ts")) {
         source = stripTypeScriptTypes(source, { mode: "strip", sourceUrl: identifier });
@@ -127,6 +135,7 @@ function readActualVitestConfig() {
       modules.set(identifier, module);
       await module.link((specifier, reference) => {
         if (specifier === "vitest/config") return vitest;
+        if (specifier.startsWith("node:")) return load(specifier);
         if (!specifier.startsWith("./") && !specifier.startsWith("../")) {
           throw new Error("Unexpected config dependency: " + specifier);
         }
@@ -140,7 +149,7 @@ function readActualVitestConfig() {
   `;
   const result = spawnSync(process.execPath, [
     "--experimental-vm-modules", "--input-type=module", "--eval", probe,
-    path.join(repoRoot, "vitest.config.ts"),
+    path.join(repoRoot, configFile),
   ], { cwd: repoRoot, encoding: "utf8", env: workflowEnv() });
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout);
@@ -159,6 +168,49 @@ test("canonical Vitest projects are covered exactly once across stable workspace
   const expected = vitestProjects.filter((project) => project.path !== "server").map((project) => project.name);
   assert.deepEqual([...laneA, ...laneB].sort(), expected.sort());
   assert.equal(new Set([...laneA, ...laneB]).size, expected.length, "workspace lanes cannot overlap");
+});
+
+test("stable server lanes cover the actual Vitest-configured inventory exactly once", () => {
+  const config = readActualVitestConfig("server/vitest.config.ts");
+  assert.ok(Array.isArray(config.test.include) && config.test.include.length > 0);
+  const serverRoot = path.join(repoRoot, "server");
+  const expected = [];
+  function visit(directory) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!["node_modules", ".git", "dist"].includes(entry.name)) {
+          visit(path.join(directory, entry.name));
+        }
+      } else if (entry.isFile()) {
+        const relative = path.relative(serverRoot, path.join(directory, entry.name)).split(path.sep).join("/");
+        if (config.test.include.some((pattern) => path.matchesGlob(relative, pattern))
+          && !(config.test.exclude ?? []).some((pattern) => path.matchesGlob(relative, pattern))) {
+          expected.push(`server/${relative}`);
+        }
+      }
+    }
+  }
+  visit(serverRoot);
+  assert.ok(expected.length > 0, "the actual project config must select server suites");
+
+  const general = [];
+  const serialized = [];
+  for (let index = 0; index < 2; index += 1) {
+    const flags = ["--shard-index", String(index), "--shard-count", "2"];
+    general.push(...dryRunJson([
+      "--mode", "general", "--group", "general-server-without-chat", ...flags,
+    ], { GITHUB_WORKFLOW: "Release" }).selectedGeneralServerSuites);
+    serialized.push(...dryRunJson(["--mode", "serialized", ...flags]).selectedSerializedSuites);
+  }
+  const actual = [...general, ...serialized, "server/src/__tests__/chat-channels.integration.test.ts"];
+  assert.equal(new Set(actual).size, actual.length, "general, serialized, and chat lanes cannot overlap");
+  const actualSet = new Set(actual);
+  const expectedSet = new Set(expected);
+  assert.deepEqual({
+    uncovered: expected.filter((file) => !actualSet.has(file)).sort(),
+    unexpected: actual.filter((file) => !expectedSet.has(file)).sort(),
+  }, { uncovered: [], unexpected: [] },
+  "stable lanes must cover the independently configured server inventory without omissions");
 });
 
 test("unit bootstrap removes inherited database selectors and pins dotenv guards before invoking Vitest", () => {

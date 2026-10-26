@@ -510,6 +510,10 @@ const routeTests = walk(serverTestsDir)
   }))
   .sort((a, b) => a.repoPath.localeCompare(b.repoPath));
 
+// Remove only suites actually scheduled by the serialized lane. Route-like
+// names outside its directory still belong to the general server inventory.
+const serializedServerTestFiles = new Set(routeTests.map((test) => test.repoPath));
+
 // Every server test file that the general-server group is responsible for,
 // i.e. the whole server project minus the route/authz suites that run in the
 // dedicated serialized shards. Sharding this list across runners is what keeps
@@ -524,7 +528,7 @@ const generalServerTestFiles = [
     : []),
 ]
   .map((file) => toRepoPath(file))
-  .filter((repoPath) => !isRouteOrAuthzTest(repoPath))
+  .filter((repoPath) => !serializedServerTestFiles.has(repoPath))
   .sort((a, b) => a.localeCompare(b));
 
 const options = parseCliOptions(process.argv.slice(2));
