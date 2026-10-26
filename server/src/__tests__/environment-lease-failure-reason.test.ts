@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, agents, companies, createDb, environmentLeases, environments, heartbeatRuns } from "@paperclipai/db";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { environmentService } from "../services/environments.js";
 import { environmentLeaseFailureReason } from "../services/environment-lease-failure-reason.js";
+import { heartbeatService } from "../services/heartbeat.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 describe("environment lease failure categories", () => {
-  it.each(["acpx_turn_failed", "codex_transient_upstream", "process_lost"])("retains known causal code %s", errorCode => {
+  it.each(["acpx_turn_failed", "codex_transient_upstream", "process_lost", "setup_failed"])("retains known causal code %s", errorCode => {
     expect(environmentLeaseFailureReason({ status: "failed", errorCode })).toBe(errorCode);
   });
   it.each(["provider rejected Bearer synthetic-sensitive-value", "sk_synthetic_token_123", "unknown_provider_error", "", null])("never copies an unapproved error code: %s", errorCode => {
@@ -34,6 +35,7 @@ describeDb("failed local and SSH lease release", () => {
     stop = fixture.stop;
   });
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -42,10 +44,10 @@ describeDb("failed local and SSH lease release", () => {
   });
   afterAll(async () => { await stop?.(); });
 
-  async function seed(driver: "local" | "ssh", status: string, errorCode: string | null) {
-    const [company] = await db.insert(companies).values({ name: `Lease cause ${randomUUID()}` }).returning();
+  async function seed(driver: "local" | "ssh", status: (typeof heartbeatRuns.$inferInsert)["status"], errorCode: string | null) {
+    const [company] = await db.insert(companies).values({ name: `Lease cause ${randomUUID()}`, issuePrefix: `LC${randomUUID().slice(0, 6).toUpperCase()}` }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Cause fixture", role: "engineer", adapterType: "process" }).returning();
-    const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, invocationSource: "manual", status, errorCode }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, invocationSource: "manual", runtimeMode: "legacy", status, errorCode }).returning();
     const existing = driver === "local" ? await db.query.environments.findFirst({ where: eq(environments.driver, "local") }) : null;
     const environment = existing ?? (await db.insert(environments).values({ name: `Cause fixture ${randomUUID()}`, driver, status: "active", config: {} }).returning())[0];
     const lease = await environmentService(db).acquireLease({ companyId: company.id, environmentId: environment.id, heartbeatRunId: run.id, provider: driver, leasePolicy: "ephemeral", metadata: { driver } });
@@ -53,6 +55,13 @@ describeDb("failed local and SSH lease release", () => {
   }
 
   for (const driver of ["local", "ssh"] as const) {
+    it(`${driver} retains the durable cause through heartbeat recovery and the real orchestrator`, async () => {
+      const { run, lease } = await seed(driver, "failed", "acpx_turn_failed");
+      const result = await heartbeatService(db).reconcileTerminalEnvironmentLeases();
+      expect(result).toMatchObject({ released: 1, failed: 0, runIds: [run.id] });
+      const [row] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id));
+      expect(row).toMatchObject({ status: "failed", failureReason: "acpx_turn_failed" });
+    });
     it.each(["acpx_turn_failed", "codex_transient_upstream"])(`${driver} persists causal run code %s`, async errorCode => {
       const { run, lease } = await seed(driver, "failed", errorCode);
       const released = await environmentRuntimeService(db).releaseRunLeases(run.id, "failed");

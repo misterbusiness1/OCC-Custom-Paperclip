@@ -1,10 +1,11 @@
-/** Causal categories copied from the run contract, never provider error text. */
+/** Known non-secret run categories, never arbitrary provider error text. */
 const SAFE_RUN_FAILURE_CODES = new Set([
   "acpx_turn_failed",
   "codex_transient_upstream",
   "adapter_failed",
   "adapter_timeout",
   "environment_setup_failed",
+  "setup_failed",
   "process_lost",
   "server_shutdown_interrupted",
   "issue_execution_lock_changed",
