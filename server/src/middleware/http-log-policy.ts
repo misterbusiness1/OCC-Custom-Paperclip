@@ -42,6 +42,13 @@ const SECRET_SENSITIVE_HTTP_PATHS = [
 ];
 const SECRET_SENSITIVE_HTTP_METHODS = new Set(["POST", "PUT", "PATCH"]);
 
+/** Owner capabilities must stay private even on malformed/rejected operator paths. */
+export function isDeploymentControlHttpRequest(method: string | undefined, url: string | undefined): boolean {
+  if (!method || !url) return false;
+  const pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  return /^\/api\/(?:instance\/(?:deployment-lease|task-drain)(?:\/|$)|startup-work-barrier\/release(?:\/|$))/.test(pathname);
+}
+
 /** Provider payloads are private even when a method/signature is rejected. */
 export function isPrivateWebhookHttpRequest(
   method: string | undefined,
@@ -78,6 +85,8 @@ export function isSecretSensitiveHttpRequest(
 ): boolean {
   if (isPrivateWebhookHttpRequest(method, url)) return true;
   if (!method || !url) return false;
+  // Deployment capabilities remain private on every method, including rejected requests.
+  if (isDeploymentControlHttpRequest(method, url)) return true;
   if (!SECRET_SENSITIVE_HTTP_METHODS.has(method.toUpperCase())) return false;
   const pathname = normalizePath(url);
   return SECRET_SENSITIVE_HTTP_PATHS.some((pattern) => pattern.test(pathname));

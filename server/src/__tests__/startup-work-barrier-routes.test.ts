@@ -6,20 +6,34 @@ import { startupWorkBarrierHttpGate, startupWorkBarrierRoutes } from "../routes/
 import { createStartupWorkBarrier } from "../services/startup-work-barrier.js";
 import { resetStartupRecoveryStateForTests, setStartupRecoveryPhase } from "../startup-recovery-state.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import type { deploymentLeaseService } from "../services/deployment-lease.js";
+
+vi.mock("../routes/deployment-lease.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../routes/deployment-lease.js")>();
+  return { ...actual, createDeploymentLeaseRouteAudit: async () => ({ audit: async () => {}, publish: () => {} }) };
+});
 
 const held = () => createStartupWorkBarrier({ PAPERCLIP_STARTUP_WORK_HELD: "true" });
-const permit = (barrier: ReturnType<typeof held>) => ({ expectedBootId: barrier.snapshot().bootId,
+const permit = (barrier: ReturnType<typeof held>) => ({ deploymentLease: {
+  ownerToken: "a".repeat(64), expectedLeaseGeneration: 1, expectedBootId: barrier.snapshot().bootId }, expectedBootId: barrier.snapshot().bootId,
   expectedGeneration: 0, qualificationSha256: "a".repeat(64), expectedProtocolVersion: 1,
   expectedConfiguredControls: { admission: false, dispatch: false } });
-function app(barrier: ReturnType<typeof held>, qualifyDatabase = vi.fn(async () => {}), admin = true) {
+function app(barrier: ReturnType<typeof held>, qualifyDatabase = vi.fn(async () => {}), admin = true,
+  leases: Pick<ReturnType<typeof deploymentLeaseService>, "withOwner"> = { withOwner: async (_permit, run) => run() }) {
   const server = express(); server.use(express.json()); server.use(startupWorkBarrierHttpGate(barrier));
   server.use((req, _res, next) => { req.actor = { type: "board", userId: "operator", source: "session", isInstanceAdmin: admin }; next(); });
-  server.use("/api", startupWorkBarrierRoutes({} as Db, { barrier, qualifyDatabase }));
+  server.use("/api", startupWorkBarrierRoutes({} as Db, { barrier, qualifyDatabase, leases }));
   server.all("/{*path}", (_req, res) => res.json({ reached: true })); server.use(errorHandler);
   return server;
 }
 afterEach(() => { resetStartupRecoveryStateForTests(); vi.unstubAllEnvs(); });
 describe("startup work release authorization and ordering", () => {
+  it("rejects tokenless startup release rather than bypassing lease ownership", async () => {
+    const barrier = held(); const payload = permit(barrier);
+    const { deploymentLease: _ignored, ...unowned } = payload;
+    expect((await request(app(barrier)).post("/api/startup-work-barrier/release").send(unowned)).status).toBe(400);
+    expect(barrier.isHeld()).toBe(true);
+  });
   it.each(["/api/issues", "/api/agents/x/wakeup", "/api/chat/webhook", "/mcp", "/api/companies/x/health"])("blocks business route %s before handlers", async path => {
     const response = await request(app(held())).get(path);
     expect(response.status).toBe(503); expect(response.body.code).toBe("startup_work_held");
@@ -49,6 +63,16 @@ describe("startup work release authorization and ordering", () => {
     expect((await request(server).get("/api/issues")).status).toBe(200);
     expect((await request(server).post("/api/startup-work-barrier/release").send(permit(barrier))).status).toBe(409);
   });
+  it("rechecks bootstrap after asynchronous owner/audit work before the boot CAS", async () => {
+    const barrier = held();
+    const server = app(barrier, vi.fn(async () => {}), true, { withOwner: async (_permit, run) => {
+      setStartupRecoveryPhase("recovering");
+      return run();
+    } });
+    expect((await request(server).post("/api/startup-work-barrier/release").send(permit(barrier))).status).toBe(503);
+    expect(barrier.isHeld()).toBe(true);
+  });
+
   it("qualifies before release and accepts only one concurrent permit", async () => {
     const barrier = held(); let release!: () => void; let entered = 0;
     const ready = new Promise<void>(resolve => { release = resolve; });

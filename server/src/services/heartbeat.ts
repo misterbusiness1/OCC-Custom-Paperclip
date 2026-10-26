@@ -2,6 +2,7 @@ import { beginHeartbeatShutdown, beginHeartbeatClaim, isHeartbeatShuttingDown, w
 import { releaseRunClaimedJustBeforeSuppression } from "./heartbeat-queued-claim-release.js";
 import { reconcileTerminalWakeQueuedRun } from "./terminal-wake-queued-run.js";
 import { isStartupWorkHeld } from "./startup-work-barrier.js";
+import { deploymentLeaseService } from "./deployment-lease.js";
 import { assertBoardCommentWorkspaceMaterializationAllowed } from "./board-comment-workspace-reservation.js";
 import { boardCommentRequestDelivery } from "./board-comment-request-delivery.js";
 import { assertBoardCommentWakeClaim, type BoardCommentWakeClaim } from "./board-comment-wake-claim.js";
@@ -9628,6 +9629,7 @@ export function heartbeatService(
   };
   const getSchedulingSuppression = async () => {
     if (isHeartbeatShuttingDown()) return { suppressed: true, reason: "server_shutdown" as const };
+    if (await deploymentLeaseService(db).isDraining()) return { suppressed: true, reason: "task_drain" as const };
     const override = await resolveWorktreeRunExecutionOverride();
     // Shutdown can begin while the settings lookup is in flight. Completion
     // callbacks still use this service after the periodic scheduler stops.
