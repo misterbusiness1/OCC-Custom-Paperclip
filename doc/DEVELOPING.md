@@ -421,6 +421,20 @@ pnpm test
 pnpm test:watch
 ```
 
+`pnpm test:run` and `pnpm test` use the stable runner. Vitest and the
+runner share the project registrations in `scripts/vitest-projects.mjs`; add new
+projects there so no project is silently omitted from the test lanes. General
+server shards include both `server/src/**/*.test.ts` and
+`server/scripts/**/*.test.mjs`, while route/authz suites run in serialized lanes.
+`node scripts/run-vitest-stable.mjs --dry-run` prints the complete JSON inventory.
+
+Each runner invocation pins a private instance home/config and temporary root
+outside the checkout. It removes inherited database URLs, including test-only
+shortcuts, and disables checkout `.env` loading. Database fixtures must create
+their own disposable instance or explicitly configure their isolated child
+process. Keep temporary package/repository fixtures outside any checkout: pnpm
+can otherwise discover an ancestor workspace and install into that workspace.
+
 Browser suites stay separate:
 
 ```sh

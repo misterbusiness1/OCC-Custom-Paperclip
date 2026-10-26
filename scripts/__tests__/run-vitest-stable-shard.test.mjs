@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ import {
 } from "../general-server-shard.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "../test-line-shard.mjs";
+import { vitestProjects } from "../vitest-projects.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const script = path.join(repoRoot, "scripts", "run-vitest-stable.mjs");
@@ -49,6 +50,117 @@ function dryRunJson(args, envOverrides = {}) {
   assert.equal(result.status, 0, `expected success for ${args.join(" ")}: ${result.stderr}`);
   return JSON.parse(result.stdout);
 }
+
+test("dry-run flushes a large complete inventory through a pipe before exit", () => {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-plan-"));
+  try {
+    const testsDir = path.join(tempRoot, "server", "src", "__tests__");
+    mkdirSync(testsDir, { recursive: true });
+    const expected = Array.from({ length: 200 }, (_, index) =>
+      `server/src/__tests__/generated-inventory-${String(index).padStart(4, "0")}-route.test.ts`);
+    for (const file of expected) writeFileSync(path.join(tempRoot, file), "");
+    const result = spawnSync(process.execPath, [script, "--dry-run"], {
+      cwd: tempRoot, encoding: "utf8", env: workflowEnv(),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(Buffer.byteLength(result.stdout) > 8192, "fixture must exceed the pipe-sized output that was truncated");
+    const plan = JSON.parse(result.stdout);
+    assert.equal(plan.serializedSuiteCount, expected.length);
+    assert.deepEqual(plan.selectedSerializedSuites, expected);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("general-server shards include server script suites exactly once", () => {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-scripts-"));
+  try {
+    const expected = [
+      "server/scripts/nested/second.test.mjs",
+      "server/scripts/first.test.mjs",
+      "server/src/ordinary.test.ts",
+    ];
+    const other = ["server/src/__tests__/isolated-route.test.ts", "server/scripts/not-a-test.mjs"];
+    for (const file of [...expected, ...other]) {
+      mkdirSync(path.dirname(path.join(tempRoot, file)), { recursive: true });
+      writeFileSync(path.join(tempRoot, file), "");
+    }
+    const files = [];
+    for (let index = 0; index < 2; index += 1) {
+      const result = spawnSync(process.execPath, [script, "--mode", "general", "--group", "general-server",
+        "--shard-index", String(index), "--shard-count", "2", "--dry-run"], {
+        cwd: tempRoot, encoding: "utf8", env: workflowEnv(),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      files.push(...JSON.parse(result.stdout).selectedGeneralServerSuites);
+    }
+    assert.deepEqual(files.sort(), expected.sort());
+    assert.equal(new Set(files).size, expected.length);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("canonical Vitest projects are covered exactly once across stable workspace lanes", async () => {
+  const { default: vitestConfig } = await import("../../vitest.config.ts");
+  assert.deepEqual(vitestConfig.test.projects, vitestProjects.map((project) => project.path),
+    "the root Vitest project list must use the complete shared registration");
+  for (const project of vitestProjects) {
+    const pkg = JSON.parse(readFileSync(path.join(repoRoot, project.path, "package.json"), "utf8"));
+    assert.equal(project.name, pkg.name, `registered project name must match ${project.path}`);
+  }
+  const laneA = dryRunJson(["--mode", "general", "--group", "general-workspaces-a"]).workspaceProjects;
+  const laneB = dryRunJson(["--mode", "general", "--group", "general-workspaces-b"]).workspaceProjects;
+  const expected = vitestProjects.filter((project) => project.path !== "server").map((project) => project.name);
+  assert.deepEqual([...laneA, ...laneB].sort(), expected.sort());
+  assert.equal(new Set([...laneA, ...laneB]).size, expected.length, "workspace lanes cannot overlap");
+});
+
+test("unit bootstrap cannot select an external database from inherited URLs or checkout dotenv", () => {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-database-"));
+  try {
+    const fakeBin = path.join(tempRoot, "bin");
+    mkdirSync(fakeBin, { recursive: true });
+    mkdirSync(path.join(tempRoot, "server", "src", "__tests__"), { recursive: true });
+    writeFileSync(path.join(tempRoot, ".env"), [
+      "DATABASE_URL=postgres://invalid.example/checkout",
+      "DATABASE_MIGRATION_URL=postgres://invalid.example/checkout-migration",
+    ].join("\n") + "\n");
+    const capturePath = path.join(tempRoot, "config-capture.json");
+    const probe = [
+      `import { loadConfig } from ${JSON.stringify(path.join(repoRoot, "server", "src", "config.ts"))};`,
+      "const config = loadConfig();",
+      "console.log(JSON.stringify({ mode: config.databaseMode, hasUrl: Boolean(config.databaseUrl), hasMigrationUrl: Boolean(config.databaseMigrationUrl) }));",
+    ].join("\n");
+    const fakePnpm = path.join(fakeBin, "pnpm");
+    writeFileSync(fakePnpm, [
+      "#!/usr/bin/env node",
+      'const fs = require("node:fs");',
+      'const { spawnSync } = require("node:child_process");',
+      `const result = spawnSync(process.execPath, [${JSON.stringify(path.join(repoRoot, "cli", "node_modules", "tsx", "dist", "cli.mjs"))}, "--eval", ${JSON.stringify(probe)}], { encoding: "utf8", env: process.env });`,
+      'fs.writeFileSync(process.env.CAPTURE_PATH, JSON.stringify({ status: result.status, stdout: result.stdout, stderr: result.stderr }));',
+      "process.exit(result.status ?? 1);",
+    ].join("\n") + "\n");
+    chmodSync(fakePnpm, 0o700);
+    const result = spawnSync(process.execPath, [script, "--watch", "--"], {
+      cwd: tempRoot, encoding: "utf8",
+      env: { ...workflowEnv(), PATH: `${fakeBin}:${process.env.PATH ?? ""}`, CAPTURE_PATH: capturePath,
+        DATABASE_URL: "postgres://invalid.example/ambient",
+        DATABASE_MIGRATION_URL: "postgres://invalid.example/migration",
+        PAPERCLIP_TEST_DATABASE_URL: "postgres://invalid.example/test",
+        PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL: "postgres://invalid.example/tool-access",
+        TEST_DATABASE_URL: "postgres://invalid.example/fixture",
+        PAPERCLIP_CONFIG: "/production/config.json", PAPERCLIP_DISABLE_CWD_ENV: "false",
+        PAPERCLIP_DISABLE_CWD_ENV_FILE: "false" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const captured = JSON.parse(readFileSync(capturePath, "utf8"));
+    assert.equal(captured.status, 0, captured.stderr);
+    assert.deepEqual(JSON.parse(captured.stdout), { mode: "embedded-postgres", hasUrl: false, hasMigrationUrl: false });
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
 
 const SHARD_COUNT = 12;
 const SERIALIZED_SHARD_COUNT = 9;
@@ -129,6 +241,11 @@ test("vitest subprocesses cannot inherit a live config or worktree identity", { 
         CAPTURE_PATH: capturePath,
         PAPERCLIP_CONFIG: "/production/config.json",
         PAPERCLIP_CONTEXT: "/production/context.json",
+        DATABASE_URL: "postgres://invalid.example/ambient",
+        DATABASE_MIGRATION_URL: "postgres://invalid.example/migration",
+        PAPERCLIP_TEST_DATABASE_URL: "postgres://invalid.example/test",
+        PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL: "postgres://invalid.example/tool-access",
+        TEST_DATABASE_URL: "postgres://invalid.example/fixture",
         PAPERCLIP_IN_WORKTREE: "true",
         PAPERCLIP_WORKTREE_NAME: "production-worktree",
         PAPERCLIP_WORKTREE_COLOR: "#123456",
@@ -145,11 +262,18 @@ test("vitest subprocesses cannot inherit a live config or worktree identity", { 
       path.join(captured.PAPERCLIP_HOME, "instances", captured.PAPERCLIP_INSTANCE_ID, "config.json"),
     );
     assert.equal(captured.PAPERCLIP_CONTEXT, path.join(captured.PAPERCLIP_HOME, "context.json"));
+    assert.equal(captured.PAPERCLIP_DISABLE_CWD_ENV, "true");
+    assert.equal(captured.PAPERCLIP_DISABLE_CWD_ENV_FILE, "true");
     for (const key of [
       "PAPERCLIP_IN_WORKTREE",
       "PAPERCLIP_WORKTREE_NAME",
       "PAPERCLIP_WORKTREE_COLOR",
       "PAPERCLIP_WORKTREES_DIR",
+      "DATABASE_URL",
+      "DATABASE_MIGRATION_URL",
+      "PAPERCLIP_TEST_DATABASE_URL",
+      "PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL",
+      "TEST_DATABASE_URL",
     ]) {
       assert.equal(captured[key], undefined, `${key} must not reach Vitest`);
     }

@@ -152,6 +152,30 @@ async function runPnpm(cwd: string, args: string[]) {
   await execFileAsync("pnpm", args, { cwd });
 }
 
+const provisionConfigWriterCleanups: Array<() => Promise<void>> = [];
+
+async function isolateDependencyProvisionFixture() {
+  // These fixtures exercise dependency installation and the shell config writer.
+  // Actual CLI initialization/seed failures have their own CLI and shell tests.
+  // A host-installed paperclipai must not select a different path or read host
+  // instance state merely because the test runs on an operator's machine.
+  const fixtureRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-provision-fixture-")));
+  const fixtureBin = path.join(fixtureRoot, "bin");
+  await fs.mkdir(fixtureBin);
+  await fs.writeFile(path.join(fixtureBin, "paperclipai"), "#!/bin/sh\nexit 127\n", { mode: 0o755 });
+  const previousPath = process.env.PATH;
+  const previousWorktreesDir = process.env.PAPERCLIP_WORKTREES_DIR;
+  process.env.PATH = `${fixtureBin}${path.delimiter}${previousPath ?? ""}`;
+  process.env.PAPERCLIP_WORKTREES_DIR = path.join(fixtureRoot, "worktrees");
+  provisionConfigWriterCleanups.push(async () => {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    if (previousWorktreesDir === undefined) delete process.env.PAPERCLIP_WORKTREES_DIR;
+    else process.env.PAPERCLIP_WORKTREES_DIR = previousWorktreesDir;
+    await fs.rm(fixtureRoot, { recursive: true, force: true });
+  });
+}
+
 async function writeRegisteredSourceConfig(baseCwd: string, instanceId = "source-instance") {
   const configDir = path.join(baseCwd, ".paperclip");
   await fs.mkdir(configDir, { recursive: true });
@@ -442,6 +466,9 @@ function createWorkspaceOperationRecorderDouble() {
 }
 
 afterEach(async () => {
+  while (provisionConfigWriterCleanups.length > 0) {
+    await provisionConfigWriterCleanups.pop()!();
+  }
   await Promise.all(
     Array.from(leasedRunIds).map(async (runId) => {
       await releaseRuntimeServicesForRun(runId);
@@ -1932,6 +1959,7 @@ describe("realizeExecutionWorkspace", () => {
   it(
     "provisions worktree-local pnpm node_modules instead of reusing base-repo links",
     async () => {
+    await isolateDependencyProvisionFixture();
     const repoRoot = await createTempRepo();
     await writeRegisteredSourceConfig(repoRoot);
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
@@ -2035,6 +2063,7 @@ describe("realizeExecutionWorkspace", () => {
   );
 
   it("provisions successfully when install is needed but there are no symlinked node_modules to move", async () => {
+    await isolateDependencyProvisionFixture();
     const repoRoot = await createTempRepo();
     await writeRegisteredSourceConfig(repoRoot);
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
@@ -2109,6 +2138,7 @@ describe("realizeExecutionWorkspace", () => {
   }, 30_000);
 
   it("reinstalls worktree-local pnpm dependencies when package metadata changes", async () => {
+    await isolateDependencyProvisionFixture();
     const tempRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-stale-deps-")));
     const baseRoot = path.join(tempRoot, "base");
     const worktreeRoot = path.join(tempRoot, "worktree");
@@ -2352,6 +2382,7 @@ describe("realizeExecutionWorkspace", () => {
   });
 
   it("retries worktree-local pnpm install without a frozen lockfile when the lockfile is outdated", async () => {
+    await isolateDependencyProvisionFixture();
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-outdated-lockfile-"));
     const baseRoot = path.join(tempRoot, "base");
     const worktreeRoot = path.join(tempRoot, "worktree");
@@ -2430,6 +2461,7 @@ describe("realizeExecutionWorkspace", () => {
   it(
     "provisions worktree-local pnpm node_modules instead of reusing base-repo links",
     async () => {
+    await isolateDependencyProvisionFixture();
     const repoRoot = await createTempRepo();
     await writeRegisteredSourceConfig(repoRoot);
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });

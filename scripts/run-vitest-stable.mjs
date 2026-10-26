@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadShardDurations, selectGeneralServerShard } from "./general-server-shard.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "./test-line-shard.mjs";
+import { vitestProjects } from "./vitest-projects.mjs";
 
 const repoRoot = process.cwd();
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
@@ -18,23 +19,11 @@ const serializedShardDurations = loadShardDurations(
 );
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
+const serverScriptsDir = path.join(repoRoot, "server", "scripts");
 const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
-const nonServerProjects = [
-  "@paperclipai/shared",
-  "@paperclipai/skills-catalog",
-  "@paperclipai/db",
-  "@paperclipai/adapter-utils",
-  "@paperclipai/adapter-claude-local",
-  "@paperclipai/adapter-codex-local",
-  "@paperclipai/adapter-grok-local",
-  "@paperclipai/adapter-openclaw-gateway",
-  "@paperclipai/adapter-opencode-local",
-  "@paperclipai/plugin-daytona",
-  "@paperclipai/plugin-sdk",
-  "@paperclipai/create-paperclip-plugin",
-  "@paperclipai/ui",
-  "paperclipai",
-];
+const nonServerProjects = vitestProjects
+  .filter((project) => project.name !== "@paperclipai/server")
+  .map((project) => project.name);
 const routeTestPattern = /[^/]*(?:route|routes|authz)[^/]*\.test\.ts$/;
 const additionalSerializedServerTests = new Set([
   "server/src/__tests__/approval-routes-idempotency.test.ts",
@@ -336,6 +325,9 @@ function runVitest(args, label, { watch = false, testShard = null } = {}) {
   const env = {
     ...process.env,
     NODE_ENV: "test",
+    // Unit tests must not rehydrate an external database from the checkout .env.
+    PAPERCLIP_DISABLE_CWD_ENV: "true",
+    PAPERCLIP_DISABLE_CWD_ENV_FILE: "true",
     PAPERCLIP_HOME: testHome,
     PAPERCLIP_INSTANCE_ID: testInstanceId,
     // Config discovery otherwise prefers the checkout's .paperclip/config.json
@@ -349,6 +341,11 @@ function runVitest(args, label, { watch = false, testShard = null } = {}) {
   delete env.PAPERCLIP_WORKTREE_NAME;
   delete env.PAPERCLIP_WORKTREE_COLOR;
   delete env.PAPERCLIP_WORKTREES_DIR;
+  // A test can explicitly create its own database fixture after startup. It
+  // must never select the operator's database through inherited overrides.
+  for (const key of ["DATABASE_URL", "DATABASE_MIGRATION_URL", "PAPERCLIP_TEST_DATABASE_URL", "PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL", "TEST_DATABASE_URL"]) {
+    delete env[key];
+  }
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
   if (testShard) {
@@ -520,9 +517,13 @@ const routeTests = walk(serverTestsDir)
 // config pins maxWorkers to 1, so the only way to parallelize is across jobs.
 // Suites are partitioned by recorded duration (scripts/general-server-shard.mjs)
 // rather than round-robin, so one slow suite cluster can't stretch a single shard.
-const generalServerTestFiles = walk(serverSrcDir)
+const generalServerTestFiles = [
+  ...walk(serverSrcDir).filter((file) => file.endsWith(".test.ts")),
+  ...(existsSync(serverScriptsDir)
+    ? walk(serverScriptsDir).filter((file) => file.endsWith(".test.mjs"))
+    : []),
+]
   .map((file) => toRepoPath(file))
-  .filter((repoPath) => repoPath.endsWith(".test.ts"))
   .filter((repoPath) => !isRouteOrAuthzTest(repoPath))
   .sort((a, b) => a.localeCompare(b));
 
@@ -581,17 +582,16 @@ if (options.dryRun) {
       2,
     ),
   );
-  process.exit(0);
-}
-
-if (options.mode === generalModeName || options.mode === allModeName) {
-  if (options.group) {
-    runGeneralGroup(routeTests, options.group, options.shardIndex, options.shardCount);
-  } else {
-    runGeneralSuites(routeTests);
+} else {
+  if (options.mode === generalModeName || options.mode === allModeName) {
+    if (options.group) {
+      runGeneralGroup(routeTests, options.group, options.shardIndex, options.shardCount);
+    } else {
+      runGeneralSuites(routeTests);
+    }
   }
-}
 
-if (options.mode === serializedModeName || options.mode === allModeName) {
-  runSerializedSuites(routeTests, options.shardIndex ?? 0, options.shardCount ?? 1);
+  if (options.mode === serializedModeName || options.mode === allModeName) {
+    runSerializedSuites(routeTests, options.shardIndex ?? 0, options.shardCount ?? 1);
+  }
 }
