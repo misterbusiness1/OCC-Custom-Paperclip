@@ -101,8 +101,53 @@ test("general-server shards include server script suites exactly once", () => {
   }
 });
 
-test("canonical Vitest projects are covered exactly once across stable workspace lanes", async () => {
-  const { default: vitestConfig } = await import("../../vitest.config.ts");
+function readActualVitestConfig() {
+  // The policy job deliberately has no node_modules. Execute the checked-in
+  // config and its real relative imports, replacing only Vitest's identity
+  // defineConfig helper with a builtin VM module.
+  const probe = `
+    import { readFileSync } from "node:fs";
+    import { stripTypeScriptTypes } from "node:module";
+    import { pathToFileURL } from "node:url";
+    import { SourceTextModule, SyntheticModule } from "node:vm";
+    const modules = new Map();
+    const vitest = new SyntheticModule(["defineConfig"], function () {
+      this.setExport("defineConfig", (value) => value);
+    });
+    async function load(identifier) {
+      if (modules.has(identifier)) return modules.get(identifier);
+      let source = readFileSync(new URL(identifier), "utf8");
+      if (identifier.endsWith(".ts")) {
+        source = stripTypeScriptTypes(source, { mode: "strip", sourceUrl: identifier });
+      }
+      const module = new SourceTextModule(source, {
+        identifier,
+        initializeImportMeta(meta) { meta.url = identifier; },
+      });
+      modules.set(identifier, module);
+      await module.link((specifier, reference) => {
+        if (specifier === "vitest/config") return vitest;
+        if (!specifier.startsWith("./") && !specifier.startsWith("../")) {
+          throw new Error("Unexpected config dependency: " + specifier);
+        }
+        return load(new URL(specifier, reference.identifier).href);
+      });
+      return module;
+    }
+    const config = await load(pathToFileURL(process.argv[1]).href);
+    await config.evaluate();
+    console.log(JSON.stringify(config.namespace.default));
+  `;
+  const result = spawnSync(process.execPath, [
+    "--experimental-vm-modules", "--input-type=module", "--eval", probe,
+    path.join(repoRoot, "vitest.config.ts"),
+  ], { cwd: repoRoot, encoding: "utf8", env: workflowEnv() });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+test("canonical Vitest projects are covered exactly once across stable workspace lanes", () => {
+  const vitestConfig = readActualVitestConfig();
   assert.deepEqual(vitestConfig.test.projects, vitestProjects.map((project) => project.path),
     "the root Vitest project list must use the complete shared registration");
   for (const project of vitestProjects) {
@@ -116,30 +161,23 @@ test("canonical Vitest projects are covered exactly once across stable workspace
   assert.equal(new Set([...laneA, ...laneB]).size, expected.length, "workspace lanes cannot overlap");
 });
 
-test("unit bootstrap cannot select an external database from inherited URLs or checkout dotenv", () => {
+test("unit bootstrap removes inherited database selectors and pins dotenv guards before invoking Vitest", () => {
   const tempRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-database-"));
   try {
     const fakeBin = path.join(tempRoot, "bin");
     mkdirSync(fakeBin, { recursive: true });
     mkdirSync(path.join(tempRoot, "server", "src", "__tests__"), { recursive: true });
-    writeFileSync(path.join(tempRoot, ".env"), [
-      "DATABASE_URL=postgres://invalid.example/checkout",
-      "DATABASE_MIGRATION_URL=postgres://invalid.example/checkout-migration",
-    ].join("\n") + "\n");
-    const capturePath = path.join(tempRoot, "config-capture.json");
-    const probe = [
-      `import { loadConfig } from ${JSON.stringify(path.join(repoRoot, "server", "src", "config.ts"))};`,
-      "const config = loadConfig();",
-      "console.log(JSON.stringify({ mode: config.databaseMode, hasUrl: Boolean(config.databaseUrl), hasMigrationUrl: Boolean(config.databaseMigrationUrl) }));",
-    ].join("\n");
+    const capturePath = path.join(tempRoot, "environment-capture.json");
+    const databaseSelectors = [
+      "DATABASE_URL", "DATABASE_MIGRATION_URL", "PAPERCLIP_TEST_DATABASE_URL",
+      "PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL", "TEST_DATABASE_URL",
+    ];
     const fakePnpm = path.join(fakeBin, "pnpm");
     writeFileSync(fakePnpm, [
       "#!/usr/bin/env node",
       'const fs = require("node:fs");',
-      'const { spawnSync } = require("node:child_process");',
-      `const result = spawnSync(process.execPath, [${JSON.stringify(path.join(repoRoot, "cli", "node_modules", "tsx", "dist", "cli.mjs"))}, "--eval", ${JSON.stringify(probe)}], { encoding: "utf8", env: process.env });`,
-      'fs.writeFileSync(process.env.CAPTURE_PATH, JSON.stringify({ status: result.status, stdout: result.stdout, stderr: result.stderr }));',
-      "process.exit(result.status ?? 1);",
+      `const selectors = Object.fromEntries(${JSON.stringify(databaseSelectors)}.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));`,
+      'fs.writeFileSync(process.env.CAPTURE_PATH, JSON.stringify({ selectors, config: process.env.PAPERCLIP_CONFIG, disableCwdEnv: process.env.PAPERCLIP_DISABLE_CWD_ENV, disableCwdEnvFile: process.env.PAPERCLIP_DISABLE_CWD_ENV_FILE }));',
     ].join("\n") + "\n");
     chmodSync(fakePnpm, 0o700);
     const result = spawnSync(process.execPath, [script, "--watch", "--"], {
@@ -155,8 +193,10 @@ test("unit bootstrap cannot select an external database from inherited URLs or c
     });
     assert.equal(result.status, 0, result.stderr);
     const captured = JSON.parse(readFileSync(capturePath, "utf8"));
-    assert.equal(captured.status, 0, captured.stderr);
-    assert.deepEqual(JSON.parse(captured.stdout), { mode: "embedded-postgres", hasUrl: false, hasMigrationUrl: false });
+    assert.deepEqual(captured.selectors, {});
+    assert.notEqual(captured.config, "/production/config.json");
+    assert.equal(captured.disableCwdEnv, "true");
+    assert.equal(captured.disableCwdEnvFile, "true");
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }
