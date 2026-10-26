@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { instanceSettings, type Db } from "@paperclipai/db";
 import { z } from "zod";
@@ -9,11 +9,16 @@ import {
 export { deploymentLeasePermitSchema } from "@paperclipai/shared";
 export type { DeploymentLeasePermit, DeploymentLeaseStatus } from "@paperclipai/shared";
 import { HttpError } from "../errors.js";
-import { startupWorkBarrier } from "./startup-work-barrier.js";
+import { startupWorkBarrier, type StartupWorkRelease } from "./startup-work-barrier.js";
 
 const KEY = "deployment-drain/v1";
+const STARTUP_AUTHORIZATION_KEY = "deployment-startup-authorization/v1";
 const tokenSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const generationSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER - 1);
+const startupAuthorizationSchema = z.object({
+  id: z.string().uuid(), bootId: z.string().uuid(), leaseGeneration: generationSchema,
+  startupGeneration: generationSchema, qualificationSha256: tokenSchema,
+}).strict();
 const stateSchema = z.object({
   v: z.literal(1), generation: generationSchema, tokenHash: tokenSchema.nullable(),
   ownerBootId: z.string().uuid().nullable(), startedAt: z.string().datetime().nullable(),
@@ -152,12 +157,55 @@ export function deploymentLeaseService(db: Db, options: { bootId?: string } = {}
         return { result, lease: snap };
       });
     },
-    async withOwner<T>(raw: unknown, run: () => T, options: { requireDraining?: boolean; audit?: DeploymentLeaseAudit } = {}): Promise<T> {
+    async withOwner<T>(raw: unknown, run: () => T, options: {
+      requireDraining?: boolean;
+      audit?: DeploymentLeaseAudit;
+      authorization?: StartupWorkRelease;
+      onAuthorized?: () => void;
+    } = {}): Promise<T> {
       const input = deploymentLeasePermitSchema.parse(raw);
+      let authorization: z.infer<typeof startupAuthorizationSchema> | null = null;
+      if (options.audit || options.authorization) {
+        if (!options.audit || !options.authorization || !options.requireDraining) fail("deployment_startup_authorization_required");
+        authorization = startupAuthorizationSchema.parse({
+          id: randomUUID(), bootId: options.authorization.expectedBootId,
+          leaseGeneration: input.expectedLeaseGeneration,
+          startupGeneration: options.authorization.expectedGeneration,
+          qualificationSha256: options.authorization.qualificationSha256,
+        });
+        checkBoot(authorization.bootId);
+        const reserved = authorization;
+        // The irreversible process effect must not happen until this transaction
+        // and its truthful authorization audit have successfully COMMITTED.
+        await locked(async (tx, s, now) => {
+          checkOwner(s, input, now);
+          if (!s.draining) fail("deployment_lease_drain_required");
+          await options.audit!(tx, "release_authorized", status(s, now));
+          // Separate private singleton preserves the old strict lease-row format
+          // so rollback images can still adopt and clear the owned drain.
+          await tx.insert(instanceSettings).values({ singletonKey: STARTUP_AUTHORIZATION_KEY, general: reserved })
+            .onConflictDoUpdate({ target: instanceSettings.singletonKey,
+              set: { general: reserved, updatedAt: sql`clock_timestamp()` } });
+        });
+        options.onAuthorized?.();
+      }
       return locked(async (tx, s, now) => {
         checkOwner(s, input, now);
         if (options.requireDraining && !s.draining) fail("deployment_lease_drain_required");
-        await options.audit?.(tx, "released", status(s, now));
+        if (authorization) {
+          const rows = await tx.select({ general: instanceSettings.general }).from(instanceSettings)
+            .where(eq(instanceSettings.singletonKey, STARTUP_AUTHORIZATION_KEY)).limit(1);
+          const saved = startupAuthorizationSchema.safeParse(rows[0]?.general);
+          if (!saved.success || saved.data.id !== authorization.id
+            || saved.data.bootId !== bootId || saved.data.leaseGeneration !== s.generation
+            || saved.data.startupGeneration !== authorization.startupGeneration
+            || saved.data.qualificationSha256 !== authorization.qualificationSha256) fail("deployment_startup_authorization_changed");
+        }
+        // Recheck under a new owner row lock: a takeover, renewal or drain clear
+        // after authorization cannot race an old request's final boot CAS.
+        // No safety-critical writes occur here. A lost COMMIT acknowledgement
+        // after run() leaves the prior durable authorization available to GET
+        // reconciliation; it cannot roll that authorization audit back.
         return run();
       });
     },

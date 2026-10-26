@@ -77,7 +77,7 @@ export function startupWorkBarrierRoutes(db: Db, options: {
       const history = await createDeploymentLeaseRouteAudit(db, req, { namespace: "instance.startup_work",
         details: { qualificationSha256: input.qualificationSha256, startupGeneration: input.expectedGeneration + 1 } });
       await leases.withOwner(input.deploymentLease, () => {
-        // All asynchronous owner/audit work is complete. Recheck controls and
+        // Authorization and its audit are committed. Recheck controls and
         // bootstrap immediately before the synchronous single-use boot CAS.
         if (getStartupRecoveryState().phase !== "ready") throw new HttpError(503, "Server bootstrap is not ready");
         const configured = configuredBoardCommentRequestControls();
@@ -89,8 +89,7 @@ export function startupWorkBarrierRoutes(db: Db, options: {
         const inFlight = boardCommentRequestOperationalSnapshot().inFlight;
         if (inFlight.admission !== 0 || inFlight.dispatch !== 0) throw new HttpError(409, "Protocol operations remain in flight");
         return barrier.release(input);
-      }, { requireDraining: true, audit: history.audit });
-      history.publish();
+      }, { requireDraining: true, authorization: input, audit: history.audit, onAuthorized: history.publish });
     }
     catch (error) {
       if (error instanceof StartupWorkBarrierError) throw new HttpError(409, error.code);
