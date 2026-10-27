@@ -25,8 +25,11 @@ All later owner operations carry this permit:
 
 Each successful mutation advances the lease generation. Use the returned
 generation, not a cached earlier permit. Owner token, boot and generation are
-checked under a row lock using the database clock. Mutation state and all company
-audit rows commit together. Audit and HTTP failure logs exclude the capability.
+checked under a row lock using the database clock. Database mutation state and
+all company audit rows commit together. Audit and HTTP failure logs exclude the
+capability. Startup release is an irreversible process effect; its separate
+durable authorization protocol is described below, rather than claiming that
+process memory commits atomically with PostgreSQL.
 
 - `POST .../renew` adds `ttlMs` and extends ownership.
 - `POST .../adopt` adds `expectedOwnerBootId`; the same capability adopts a
@@ -35,11 +38,33 @@ audit rows commit together. Audit and HTTP failure logs exclude the capability.
   Omit `ttlMs` or set it to null. Owned drains never expire automatically.
 - `POST /api/startup-work-barrier/release` carries the qualified existing boot,
   protocol and controls fields plus `deploymentLease`. It requires an active
-  owned drain and holds the owner row lock through the final startup barrier CAS.
+  owned drain. A first owner-locked transaction commits an exact boot/generation/
+  qualification authorization and a `startup_work.release_authorized` audit.
+  Only after successful COMMIT acknowledgement does a second transaction lock
+  the same owner row, recheck the exact private authorization, ownership, expiry,
+  drain and final runtime controls, and perform the synchronous startup CAS.
 - `DELETE /api/instance/task-drain` carries the same envelope with a current
   permit and clears the durable drain.
 - `DELETE /api/instance/deployment-lease` carries the permit directly and refuses
   to drop ownership while its drain remains active.
+
+The authorization lives in the private `deployment-startup-authorization/v1`
+singleton, not in public settings or the strict lease row. Rollback images can
+therefore continue to read the original lease format. Authorization does not
+advance the lease generation: existing clients keep the same permit through
+startup release. Any intervening ownership/drain generation change invalidates
+the old authorization. A concurrent authorization replaces its reservation ID;
+the older request must refuse its effect. Takeover cannot cross the second row
+lock while the final CAS runs.
+
+An audit INSERT or COMMIT failure in the first phase leaves startup held. A lost
+first-phase acknowledgement also leaves it held; never replay an ambiguous POST.
+The audit says **authorized**, not that the process effect definitely completed.
+The second phase makes no safety-critical database writes. If its COMMIT
+acknowledgement fails after the CAS, the authorization and its audit are already
+durable. Use the existing GET-only exact boot/generation/qualification recovery
+to distinguish released startup from a still-held boot. The durable drain is
+retained in either case; release never silently resumes heartbeat admission.
 
 Expiry does **not** resume admission, drop ownership, or enable tokenless legacy
 drain changes. Expired recovery requires a new acquisition with exact current

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createDb, instanceSettings, companies, agents, issues, heartbeatRuns } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -25,7 +25,8 @@ describe("durable deployment lease ownership and recovery", () => {
     temp = await startEmbeddedPostgresTestDatabase("deployment-lease-");
     db = createDb(temp.connectionString);
   }, 60_000);
-  afterEach(async () => { await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, "deployment-drain/v1")); });
+  afterEach(async () => { await db.delete(instanceSettings).where(inArray(instanceSettings.singletonKey,
+    ["deployment-drain/v1", "deployment-startup-authorization/v1"])); });
   afterAll(async () => { await temp.cleanup(); });
 
   it("exposes only public status, and stores a hash rather than the capability", async () => {
@@ -109,18 +110,173 @@ describe("durable deployment lease ownership and recovery", () => {
     const lease = await acquire();
     const drain = await service().transitionDrain(permit(lease), true, async () => undefined);
     const owner = { ...permit(lease), expectedLeaseGeneration: drain.lease!.generation };
+    const authorization = { expectedBootId: boot, expectedGeneration: 0, qualificationSha256: "c".repeat(64) };
     let released = false;
-    await expect(service().withOwner(owner, () => { released = true; }, { requireDraining: true,
+    await expect(service().withOwner(owner, () => { released = true; }, { requireDraining: true, authorization,
       audit: async () => { throw new Error("fixture audit unavailable"); } })).rejects.toThrow("fixture audit unavailable");
     expect(released).toBe(false);
     expect(await service().get()).toMatchObject({ generation: 2, draining: true });
     let auditFinished = false;
     await service().withOwner(owner, () => { expect(auditFinished).toBe(true); released = true; }, {
-      requireDraining: true, audit: async (_tx, _event, status) => {
+      requireDraining: true, authorization, audit: async (_tx, _event, status) => {
         expect(JSON.stringify(status)).not.toContain(lease.ownerToken); auditFinished = true;
       },
     });
     expect(released).toBe(true);
+  });
+  it("keeps startup held when authorization fails at PostgreSQL COMMIT", async () => {
+    const { createStartupWorkBarrier } = await import("../services/startup-work-barrier.js");
+    const barrier = createStartupWorkBarrier({ PAPERCLIP_STARTUP_WORK_HELD: "true" });
+    const heldBoot = barrier.snapshot().bootId;
+    const leases = deploymentLeaseService(db, { bootId: heldBoot });
+    const lease = await leases.acquire({ expectedBootId: heldBoot, expectedLeaseGeneration: 0, ttlMs: 60_000 });
+    const drain = await leases.transitionDrain(permit(lease, heldBoot), true, async () => undefined);
+    const authorization = { expectedBootId: heldBoot, expectedGeneration: 0, qualificationSha256: "c".repeat(64) };
+    await db.execute(sql`create table deployment_commit_failure (id integer unique deferrable initially deferred)`);
+    await db.execute(sql`insert into deployment_commit_failure values (1)`);
+    try {
+      await expect(leases.withOwner({ ...permit(lease, heldBoot), expectedLeaseGeneration: drain.lease!.generation },
+        () => barrier.release(authorization), {
+          requireDraining: true, authorization,
+          // This statement succeeds. PostgreSQL rejects only the later COMMIT.
+          audit: async tx => { await tx.execute(sql`insert into deployment_commit_failure values (1)`); },
+        })).rejects.toThrow();
+      expect(barrier.isHeld()).toBe(true);
+      expect(barrier.snapshot().generation).toBe(0);
+      expect(await leases.get()).toMatchObject({ owned: true, draining: true, generation: 2 });
+      const rows = await db.execute(sql`select count(*)::int as count from deployment_commit_failure`);
+      expect(rows[0]?.count).toBe(1);
+    } finally {
+      await db.execute(sql`drop table deployment_commit_failure`);
+    }
+  });
+  it.each(["renew", "clear", "takeover", "adopt", "expire"] as const)(
+    "rejects the old release when %s occurs between authorization and effect", async change => {
+      const lease = await acquire();
+      const drain = await service().transitionDrain(permit(lease), true, async () => undefined);
+      const owner = { ...permit(lease), expectedLeaseGeneration: drain.lease!.generation };
+      let calls = 0;
+      const intercepted = new Proxy(db, { get(target, key, receiver) {
+        if (key !== "transaction") return Reflect.get(target, key, receiver);
+        return async (callback: Parameters<typeof db.transaction>[0]) => {
+          if (++calls === 2) {
+            if (change === "renew") await service().renew({ ...owner, ttlMs: 60_000 });
+            if (change === "clear") await service().transitionDrain(owner, false, async () => undefined);
+            if (change === "expire" || change === "takeover") await expire();
+            if (change === "takeover") await acquire(owner.expectedLeaseGeneration, true);
+            if (change === "adopt") {
+              const nextBoot = randomUUID();
+              await deploymentLeaseService(db, { bootId: nextBoot }).adopt({ ...owner,
+                expectedBootId: nextBoot, expectedOwnerBootId: boot });
+            }
+          }
+          return target.transaction(callback);
+        };
+      } });
+      let effects = 0;
+      await expect(deploymentLeaseService(intercepted, { bootId: boot }).withOwner(owner, () => { effects++; }, {
+        requireDraining: true,
+        authorization: { expectedBootId: boot, expectedGeneration: 0, qualificationSha256: "d".repeat(64) },
+        audit: async () => {},
+      })).rejects.toMatchObject({ status: 409 });
+      expect(effects).toBe(0);
+      expect((await service().get()).draining).toBe(change !== "clear");
+    },
+  );
+  it("does not release after a lost authorization COMMIT acknowledgement", async () => {
+    const lease = await acquire();
+    const drain = await service().transitionDrain(permit(lease), true, async () => undefined);
+    const owner = { ...permit(lease), expectedLeaseGeneration: drain.lease!.generation };
+    const intercepted = new Proxy(db, { get(target, key, receiver) {
+      if (key !== "transaction") return Reflect.get(target, key, receiver);
+      return async (callback: Parameters<typeof db.transaction>[0]) => {
+        await target.transaction(callback);
+        throw new Error("fixture lost COMMIT acknowledgement");
+      };
+    } });
+    let effects = 0;
+    await expect(deploymentLeaseService(intercepted, { bootId: boot }).withOwner(owner, () => { effects++; }, {
+      requireDraining: true,
+      authorization: { expectedBootId: boot, expectedGeneration: 0, qualificationSha256: "d".repeat(64) },
+      audit: async () => {},
+    })).rejects.toThrow("fixture lost COMMIT acknowledgement");
+    expect(effects).toBe(0);
+    const reservations = await db.select().from(instanceSettings)
+      .where(eq(instanceSettings.singletonKey, "deployment-startup-authorization/v1"));
+    expect(reservations).toHaveLength(1);
+    expect(await service().get()).toMatchObject({ owned: true, draining: true, generation: 2 });
+  });
+  it("rejects an authorization replaced by another request at the same lease generation", async () => {
+    const lease = await acquire();
+    const drain = await service().transitionDrain(permit(lease), true, async () => undefined);
+    const owner = { ...permit(lease), expectedLeaseGeneration: drain.lease!.generation };
+    const options = { requireDraining: true,
+      authorization: { expectedBootId: boot, expectedGeneration: 0, qualificationSha256: "d".repeat(64) },
+      audit: async () => {},
+    };
+    let calls = 0; let originalEffects = 0; let replacementEffects = 0;
+    const intercepted = new Proxy(db, { get(target, key, receiver) {
+      if (key !== "transaction") return Reflect.get(target, key, receiver);
+      return async (callback: Parameters<typeof db.transaction>[0]) => {
+        if (++calls === 2) await service().withOwner(owner, () => { replacementEffects++; }, options);
+        return target.transaction(callback);
+      };
+    } });
+    await expect(deploymentLeaseService(intercepted, { bootId: boot }).withOwner(owner,
+      () => { originalEffects++; }, options)).rejects.toMatchObject({ status: 409,
+      message: "deployment_startup_authorization_changed" });
+    expect(originalEffects).toBe(0);
+    expect(replacementEffects).toBe(1);
+    expect(await service().get()).toMatchObject({ owned: true, draining: true, generation: 2 });
+  });
+  it("retains committed authorization when the effect-phase COMMIT fails", async () => {
+    const { createStartupWorkBarrier } = await import("../services/startup-work-barrier.js");
+    const barrier = createStartupWorkBarrier({ PAPERCLIP_STARTUP_WORK_HELD: "true" });
+    const heldBoot = barrier.snapshot().bootId;
+    const leases = deploymentLeaseService(db, { bootId: heldBoot });
+    const lease = await leases.acquire({ expectedBootId: heldBoot, expectedLeaseGeneration: 0, ttlMs: 60_000 });
+    const drain = await leases.transitionDrain(permit(lease, heldBoot), true, async () => undefined);
+    const owner = { ...permit(lease, heldBoot), expectedLeaseGeneration: drain.lease!.generation };
+    const authorization = { expectedBootId: heldBoot, expectedGeneration: 0, qualificationSha256: "e".repeat(64) };
+    await db.execute(sql`create table deployment_effect_commit_failure (id integer unique deferrable initially deferred)`);
+    await db.execute(sql`insert into deployment_effect_commit_failure values (1)`);
+    let calls = 0;
+    const intercepted = new Proxy(db, { get(target, key, receiver) {
+      if (key !== "transaction") return Reflect.get(target, key, receiver);
+      return async (callback: Parameters<typeof db.transaction>[0]) => {
+        const phase = ++calls;
+        return target.transaction(async tx => {
+          const result = await callback(tx);
+          if (phase === 2) await tx.execute(sql`insert into deployment_effect_commit_failure values (1)`);
+          return result;
+        });
+      };
+    } });
+    try {
+      await expect(deploymentLeaseService(intercepted, { bootId: heldBoot }).withOwner(owner,
+        () => barrier.release(authorization), { requireDraining: true, authorization,
+          audit: async (tx, event) => {
+            expect(event).toBe("release_authorized");
+            await tx.execute(sql`insert into deployment_effect_commit_failure values (2)`);
+          },
+        })).rejects.toThrow();
+      // An ambiguous response is recoverable: release evidence and its earlier
+      // authorization are durable, while the independent drain remains active.
+      expect(barrier.snapshot()).toMatchObject({ held: false, generation: 1,
+        qualificationSha256: authorization.qualificationSha256 });
+      const rows = await db.execute(sql`select id from deployment_effect_commit_failure order by id`);
+      expect(rows.map(row => row.id)).toEqual([1, 2]);
+      const saved = await db.select().from(instanceSettings)
+        .where(eq(instanceSettings.singletonKey, "deployment-startup-authorization/v1"));
+      expect(saved[0].general).toMatchObject({ bootId: heldBoot, leaseGeneration: 2,
+        startupGeneration: 0, qualificationSha256: authorization.qualificationSha256 });
+      expect(await leases.get()).toMatchObject({ owned: true, draining: true, generation: 2 });
+      expect(JSON.stringify(saved)).not.toContain(lease.ownerToken);
+      const ownership = await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, "deployment-drain/v1"));
+      expect(ownership[0].general).not.toHaveProperty("startupAuthorization");
+    } finally {
+      await db.execute(sql`drop table deployment_effect_commit_failure`);
+    }
   });
   it("serializes owner effects against a concurrent takeover", async () => {
     const lease = await acquire(); let started!: () => void; let release!: () => void;

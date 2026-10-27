@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
   readPaperclipRuntimeSkillEntries,
@@ -579,6 +579,41 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  it.each([0, 7])("handles a child closing stdin without losing exit code %i", async (exitCode) => {
+    const onLogError = vi.fn();
+    const runId = randomUUID();
+    const result = await runChildProcess(
+      runId,
+      process.execPath,
+      ["-e", `process.exit(${exitCode})`],
+      {
+        cwd: process.cwd(), env: {}, stdin: "x".repeat(16 * 1024 * 1024),
+        timeoutSec: 5, graceSec: 1, onLog: async () => {}, onLogError,
+      },
+    );
+
+    expect(result.exitCode).toBe(exitCode);
+    expect(result.timedOut).toBe(false);
+    expect(onLogError).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "EPIPE" }), runId, "failed to write child stdin",
+    );
+  });
+
+  it("delivers the complete stdin payload when the child reads it", async () => {
+    const stdin = "x".repeat(1024 * 1024);
+    const onLogError = vi.fn();
+    const result = await runChildProcess(randomUUID(), process.execPath, [
+      "-e", "let bytes=0;process.stdin.on('data',chunk=>bytes+=chunk.length);process.stdin.on('end',()=>process.stdout.write(String(bytes)));",
+    ], {
+      cwd: process.cwd(), env: {}, stdin, timeoutSec: 5, graceSec: 1,
+      onLog: async () => {}, onLogError,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(String(stdin.length));
+    expect(onLogError).not.toHaveBeenCalled();
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),

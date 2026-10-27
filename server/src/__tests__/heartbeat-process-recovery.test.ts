@@ -2780,6 +2780,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             summary: "Saved response", provider: "test", model: "test-model" };
         });
 
+        let deferredInterruptWakeId: string | undefined;
         let heartbeat!: ReturnType<typeof heartbeatService>;
         heartbeat = heartbeatService(db, {
           beforeLegacyAdapterDispatch: async id => {
@@ -2791,6 +2792,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
               eq(agentWakeupRequests.status, "deferred_issue_execution"),
             )).then(rows => rows[0] ?? null), 8_000);
             expect(deferred).toBeTruthy();
+            deferredInterruptWakeId = deferred!.id;
             expect((await heartbeat.getRun(runId))?.resultJson?.legacyPrelaunchCancellation)
               .not.toMatchObject({ settledAt: expect.any(String) });
           },
@@ -2815,10 +2817,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
               settledAt: expect.any(String), settledControllerBootId: expect.any(String),
             } },
           });
-          const [promotedWake] = await db.select().from(agentWakeupRequests).where(and(
-            eq(agentWakeupRequests.companyId, companyId),
-            eq(agentWakeupRequests.reason, "issue_commented"),
-          ));
+          expect(deferredInterruptWakeId).toBeDefined();
+          const [promotedWake] = await db.select().from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.id, deferredInterruptWakeId!));
           expect(promotedWake).toMatchObject({
             status: "coalesced",
             requestedByActorType: "user",
@@ -2858,7 +2859,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             status: "resolved",
             evidence: { explicitUserContinuation: { runId: successors[0]!.id } },
           });
-          expect(wakes.some(wake => wake.status === "coalesced" && wake.runId === successors[0]!.id)).toBe(true);
+          expect(wakes.find(wake => wake.id === deferredInterruptWakeId)).toMatchObject({
+            status: "coalesced", runId: successors[0]!.id,
+          });
         } else {
           // Once dispatch wins, the narrow prelaunch receipt is unavailable.
           // Preserve the generic process-identity fail-closed behavior rather
