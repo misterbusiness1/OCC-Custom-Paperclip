@@ -41,6 +41,7 @@ import { Badge } from "@/components/ui/badge";
 import { CheckCircle2 } from "lucide-react";
 import { approvalChangeRequestFromCommentBody, type ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
+import { ownerEmailReviewUrl } from "../lib/owner-email-review";
 import { timeAgo } from "../lib/timeAgo";
 
 /** Shown where an agent's name is not known. An id, or a piece of one, is never shown as a name. */
@@ -258,6 +259,11 @@ export function ApprovalDetail() {
     revisionMutation.isPending ||
     resubmitMutation.isPending ||
     isSettling(approval);
+  const ownerReviewUrl = ownerEmailReviewUrl(approval, {
+    origin: import.meta.env.VITE_OWNER_EMAIL_ORIGIN,
+    companyId: import.meta.env.VITE_OWNER_EMAIL_COMPANY_ID,
+    requesterIds: import.meta.env.VITE_OWNER_EMAIL_REQUESTER_IDS,
+  }, window.location.origin);
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
   const hasSupportingDetails =
     Boolean(linkedIssues?.length) ||
@@ -289,6 +295,14 @@ export function ApprovalDetail() {
           Back to the queue
         </Link>
       </div>
+      {ownerReviewUrl && (
+        <div className="space-y-2 rounded-lg border border-border bg-muted/40 p-4">
+          <p className="text-sm text-foreground">Confirm the exact email with your owner passkey before it can be sent.</p>
+          <Button variant="outline" asChild>
+            <a href={ownerReviewUrl} target="_blank" rel="noopener noreferrer">Owner email review</a>
+          </Button>
+        </div>
+      )}
       {showApprovedBanner && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-4 py-3">
           <div className="flex items-start gap-2">
