@@ -1,3 +1,5 @@
+import { applyTrustedEnvProjection, managedOnecliBootstrapHint, scrubOnecliEnv } from "./managed-onecli-identity.js";
+import { prepareManagedOnecliAssignment } from "./managed-onecli-assignment.js";
 import { beginHeartbeatShutdown, beginHeartbeatClaim, isHeartbeatShuttingDown, waitForHeartbeatClaimsToSettle } from "./heartbeat-shutdown-admission.js";
 import { releaseRunClaimedJustBeforeSuppression } from "./heartbeat-queued-claim-release.js";
 import { reconcileTerminalWakeQueuedRun } from "./terminal-wake-queued-run.js";
@@ -1592,6 +1594,7 @@ function assertLowTrustEnvConfigAllowed(envValue: unknown, source: string) {
 
 export async function resolveExecutionRunAdapterConfig(input: {
   managedAiCredentials?: boolean;
+  managedOnecliIdentity?: boolean;
   companyId: string;
   agentId?: string | null;
   adapterType?: string | null;
@@ -1620,6 +1623,10 @@ export async function resolveExecutionRunAdapterConfig(input: {
   trustedEnvProjection?: Record<string, string>;
   trustedEnvSecretKeys?: string[];
 }) {
+  if (input.managedOnecliIdentity) {
+    input = { ...input, executionRunConfig: { ...input.executionRunConfig, env: scrubOnecliEnv(input.executionRunConfig.env) },
+      environmentEnv: scrubOnecliEnv(input.environmentEnv), projectEnv: scrubOnecliEnv(input.projectEnv), routineEnv: scrubOnecliEnv(input.routineEnv) };
+  }
   const executionRunConfig = stripForbiddenEnvFromAdapterConfig(
     input.executionRunConfig,
     input.managedGitHubCredentials,
@@ -1919,11 +1926,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
     input.trustedEnvProjection &&
     Object.keys(input.trustedEnvProjection).length > 0
   ) {
-    resolvedConfig.env = {
-      ...parseObject(resolvedConfig.env),
-      ...input.trustedEnvProjection,
-    };
-    for (const key of input.trustedEnvSecretKeys ?? []) secretKeys.add(key);
+    applyTrustedEnvProjection(resolvedConfig, input.trustedEnvProjection, secretKeys, input.trustedEnvSecretKeys ?? []);
   }
   // Pre-dispatch credential gate for codex_local: a managed Codex home with no
   // usable auth.json and an empty OPENAI_API_KEY would dispatch a run that
@@ -23132,10 +23135,13 @@ export function heartbeatService(
         ["local", "ssh"].includes(
           selectedEnvironmentForConfig?.driver ?? "local",
         );
+      // Operator opt-in is instance configuration, never agent-editable runtimeConfig.
+      const managedOnecliIdentity = Boolean(managedOnecliBootstrapHint(selectedEnvironmentForConfig?.id ?? "").onecliBootstrapPolicy);
       const aiBinding = agent.runtimeConfig?.aiConnection ? aiConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           managedAiCredentials: Boolean(aiBinding),
+          managedOnecliIdentity,
           managedGitHubCredentials: !useHostGitHub,
           companyId: agent.companyId,
           agentId: agent.id,
@@ -24255,6 +24261,26 @@ export function heartbeatService(
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const workspaceRealization = realizationResult.workspaceRealization;
       const executionTarget = realizationResult.executionTarget;
+      if (managedOnecliIdentity) {
+        try {
+          if (trustPreset.kind === "low_trust_review") throw new Error("Managed OneCLI identity requires a standard worker");
+          await prepareManagedOnecliAssignment(db, {
+            companyId: agent.companyId, agentId: agent.id, runId: run.id,
+            environmentId: selectedEnvironmentForConfig!.id, driver: selectedEnvironmentForConfig!.driver,
+            executionTarget, trustedApiBase: process.env.PAPERCLIP_ONECLI_TRUSTED_API_BASE ?? "",
+          }, (value) => {
+            const previous = readFailureReportSecrets;
+            readFailureReportSecrets = () => [...previous(), value];
+          }, runtimeConfig, secretKeys);
+        } catch {
+          throw new ConfigurationIncompleteFailure("Company owner must configure a verified OneCLI identity for this isolated worker", {
+            configurationIncomplete: { reason: "managed_onecli_identity_unverified", companyId: agent.companyId,
+              agentId: agent.id, environmentId: selectedEnvironmentForConfig?.id ?? null,
+              actionUrl: `/agents/${agent.id}/runtime` },
+          });
+        }
+      }
+
       let instructionCopy: Awaited<ReturnType<typeof instructionCopies.prepare>> = null;
       let instructionSave: Record<string, unknown> | null = null;
       const recordInstructionSave = async (saved: NonNullable<Awaited<ReturnType<typeof instructionCopies.get>>>) => {

@@ -1029,6 +1029,20 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     res.json(rotated);
   });
 
+  // Assignment is deliberately separate from agent-config and proposal permissions.
+  router.post("/secrets/:id/onecli-assignment", async (req, res) => {
+    assertBoard(req);
+    const secret = await getAccessibleResource(req, res, await svc.getById(req.params.id as string), "Secret not found");
+    if (!secret) return;
+    if (!req.actor.userId) throw forbidden("Company owner identity required");
+    const binding = await svc.assignOnecliIdentity(secret.companyId, secret.id, { userId: req.actor.userId });
+    await logActivity(db, { companyId: secret.companyId, actorType: "user", actorId: req.actor.userId,
+      action: "secret.onecli_identity_assigned", entityType: "secret", entityId: secret.id,
+      details: { bindingId: binding.id, agentId: binding.targetId },
+    });
+    res.json(binding);
+  });
+
   router.patch("/secrets/:id", validate(updateSecretSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
@@ -1053,7 +1067,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       description: req.body.description,
       externalRef: req.body.externalRef,
       providerMetadata: req.body.providerMetadata,
-    });
+    }, { userId: req.actor.userId, agentId: null });
 
     if (!updated) {
       res.status(404).json({ error: "Secret not found" });
@@ -1115,7 +1129,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     );
     if (!existing) return;
 
-    const removed = await svc.remove(id);
+    const removed = await svc.remove(id, { userId: req.actor.userId, agentId: null });
     if (!removed) {
       res.status(404).json({ error: "Secret not found" });
       return;

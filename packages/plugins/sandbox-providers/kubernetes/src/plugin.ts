@@ -24,7 +24,7 @@ import {
   type KubernetesLeaseMetadata,
 } from "./types.js";
 import { createKubeConfig, makeKubeClients } from "./kube-client.js";
-import { getAdapterDefaults, buildAdapterEnv, resolveRunAdapterType } from "./adapter-defaults.js";
+import { getAdapterDefaults, buildLeaseAdapterEnv, resolveRunAdapterType } from "./adapter-defaults.js";
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
 import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
@@ -308,6 +308,10 @@ const plugin = definePlugin({
     // it is a registered adapter (throws otherwise), so a curated-out adapter fails
     // the lease as before.
     const effectiveAdapterType = resolveRunAdapterType(params.adapterType, config.adapterType);
+    // Evaluate the host-owned policy BEFORE Kubernetes clients or resource creation.
+    const adapterDefaults = getAdapterDefaults(effectiveAdapterType, config.adapters);
+    const adapterEnv = buildLeaseAdapterEnv(adapterDefaults, params.onecliBootstrapPolicy);
+
 
     // Emit a runtime warning if FQDNs are configured but egressMode=standard
     // cannot enforce them. Mirrors the validateConfig warning so operators see
@@ -334,8 +338,6 @@ const plugin = definePlugin({
 
     // Ensure the tenant namespace and all its RBAC / network policy resources
     // exist before we try to create the Job.
-    const adapterDefaults = getAdapterDefaults(effectiveAdapterType, config.adapters);
-
     await ensureTenant(clients, {
       namespace,
       companyId: params.companyId,
@@ -421,7 +423,6 @@ const plugin = definePlugin({
 
     // defaultEnv (non-secret base, e.g. the inference base URL) is layered first;
     // the process-env secrets named by envKeys override it.
-    const adapterEnv = buildAdapterEnv(adapterDefaults);
     adapterEnv.PAPERCLIP_NETWORK_EGRESS_POLICY = "kubernetes-default-deny";
     adapterEnv.PAPERCLIP_NETWORK_EGRESS_GRANT_PATH = NETWORK_EGRESS_GRANT_PATH;
     adapterEnv.PAPERCLIP_NETWORK_EGRESS_ALLOW_FQDNS = scopedNetworkEgress.allowFqdns.join(",");
@@ -452,6 +453,7 @@ const plugin = definePlugin({
       jobName,
       podName,
       secretName,
+      ...(params.onecliBootstrapPolicy ? { onecliBootstrapPolicy: params.onecliBootstrapPolicy } : {}),
       phase: "Pending",
       backend: config.backend,
       scopedNetworkPolicyName,
@@ -471,6 +473,10 @@ const plugin = definePlugin({
   async onEnvironmentResumeLease(
     params: PluginEnvironmentResumeLeaseParams,
   ): Promise<PluginEnvironmentLease> {
+    if (params.onecliBootstrapPolicy !== undefined && (
+      params.onecliBootstrapPolicy !== "run-bindings-only-v1" ||
+      params.leaseMetadata?.onecliBootstrapPolicy !== params.onecliBootstrapPolicy
+    )) throw new Error("Managed worker cannot resume an unqualified bootstrap lease");
     const config = kubernetesProviderConfigSchema.parse(params.config);
     const namespace =
       typeof params.leaseMetadata?.namespace === "string"
@@ -525,6 +531,7 @@ const plugin = definePlugin({
     const leaseMetadata: KubernetesLeaseMetadata = {
       namespace,
       jobName: params.providerLeaseId,
+      ...(params.leaseMetadata?.onecliBootstrapPolicy === "run-bindings-only-v1" ? { onecliBootstrapPolicy: "run-bindings-only-v1" as const } : {}),
       podName: check.podName,
       secretName,
       phase: check.phase,
