@@ -4989,6 +4989,12 @@ export async function runChildProcess(
 
         const stdin = child.stdin;
         if (opts.stdin != null && stdin) {
+          // Pipe errors are emitted by stdin, not by the child process. A
+          // command may close its input before exiting; retain its actual exit
+          // result and report the input failure without crashing the server.
+          stdin.on("error", (err: Error) => {
+            onLogError(err, runId, "failed to write child stdin");
+          });
           void spawnPersistPromise.finally(() => {
             if (child.killed || stdin.destroyed) return;
             stdin.write(opts.stdin as string);
