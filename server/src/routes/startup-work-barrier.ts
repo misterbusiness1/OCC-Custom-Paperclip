@@ -1,4 +1,6 @@
 import { Router, type RequestHandler } from "express";
+import { deploymentLeaseRoutes, createDeploymentLeaseRouteAudit } from "./deployment-lease.js";
+import { deploymentLeaseService, deploymentLeasePermitSchema } from "../services/deployment-lease.js";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -16,7 +18,10 @@ export function startupWorkBarrierHttpGate(barrier = startupWorkBarrier): Reques
     const path = req.path;
     if (path === "/api/auth" || path.startsWith("/api/auth/")
       || (req.method === "GET" && ["/api/health", "/api/startup-work-barrier", "/api/board-comment-request-protocol"].includes(path))
-      || (req.method === "POST" && path === "/api/startup-work-barrier/release")) {
+      || (req.method === "POST" && path === "/api/startup-work-barrier/release")
+      || (["GET", "POST", "DELETE"].includes(req.method) && path === "/api/instance/deployment-lease")
+      || (req.method === "POST" && ["/api/instance/deployment-lease/adopt", "/api/instance/deployment-lease/renew"].includes(path))
+      || (["GET", "POST", "DELETE"].includes(req.method) && path === "/api/instance/task-drain")) {
       next(); return;
     }
     res.setHeader("Cache-Control", "no-store");
@@ -24,6 +29,7 @@ export function startupWorkBarrierHttpGate(barrier = startupWorkBarrier): Reques
   };
 }
 const releaseSchema = z.object({
+  deploymentLease: deploymentLeasePermitSchema,
   expectedBootId: z.string().uuid(), expectedGeneration: z.number().int().nonnegative(),
   qualificationSha256: z.string().regex(/^[a-f0-9]{64}$/),
   expectedProtocolVersion: z.number().int().nonnegative(),
@@ -34,9 +40,13 @@ export function startupWorkBarrierRoutes(db: Db, options: {
   barrier?: typeof startupWorkBarrier;
   /** Test seam only. Production checks real schema and retained compatibility. */
   qualifyDatabase?: () => Promise<void>;
+  /** Test seam; production always uses the durable row-locked owner check. */
+  leases?: Pick<ReturnType<typeof deploymentLeaseService>, "withOwner">;
 } = {}) {
   const barrier = options.barrier ?? startupWorkBarrier;
   const router = Router();
+  const leases = options.leases ?? deploymentLeaseService(db, { bootId: barrier.snapshot().bootId });
+  router.use(deploymentLeaseRoutes(db, { bootId: barrier.snapshot().bootId }));
   const qualifyDatabase = options.qualifyDatabase ?? (async () => {
     const rows = await db.execute(sql`select to_regclass('public.issue_comment_requests') is not null
       and to_regclass('public.issue_comment_request_effects') is not null as ready`);
@@ -61,16 +71,27 @@ export function startupWorkBarrierRoutes(db: Db, options: {
     }
     if (getStartupRecoveryState().phase !== "ready") throw new HttpError(503, "Server bootstrap is not ready");
     await qualifyDatabase();
-    // Checks follow the final await; two permits cannot both release this boot.
-    const configured = configuredBoardCommentRequestControls();
-    if (input.expectedProtocolVersion !== BOARD_COMMENT_REQUEST_PROTOCOL_VERSION
-      || input.expectedConfiguredControls.admission !== configured.admission
-      || input.expectedConfiguredControls.dispatch !== configured.dispatch) {
-      throw new HttpError(409, "Qualified protocol controls changed");
+    try {
+      // The final boot CAS occurs while holding the same durable owner row lock
+      // which serializes takeover, renewal, drain and release transitions.
+      const history = await createDeploymentLeaseRouteAudit(db, req, { namespace: "instance.startup_work",
+        details: { qualificationSha256: input.qualificationSha256, startupGeneration: input.expectedGeneration + 1 } });
+      await leases.withOwner(input.deploymentLease, () => {
+        // All asynchronous owner/audit work is complete. Recheck controls and
+        // bootstrap immediately before the synchronous single-use boot CAS.
+        if (getStartupRecoveryState().phase !== "ready") throw new HttpError(503, "Server bootstrap is not ready");
+        const configured = configuredBoardCommentRequestControls();
+        if (input.expectedProtocolVersion !== BOARD_COMMENT_REQUEST_PROTOCOL_VERSION
+          || input.expectedConfiguredControls.admission !== configured.admission
+          || input.expectedConfiguredControls.dispatch !== configured.dispatch) {
+          throw new HttpError(409, "Qualified protocol controls changed");
+        }
+        const inFlight = boardCommentRequestOperationalSnapshot().inFlight;
+        if (inFlight.admission !== 0 || inFlight.dispatch !== 0) throw new HttpError(409, "Protocol operations remain in flight");
+        return barrier.release(input);
+      }, { requireDraining: true, audit: history.audit });
+      history.publish();
     }
-    const inFlight = boardCommentRequestOperationalSnapshot().inFlight;
-    if (inFlight.admission !== 0 || inFlight.dispatch !== 0) throw new HttpError(409, "Protocol operations remain in flight");
-    try { barrier.release(input); }
     catch (error) {
       if (error instanceof StartupWorkBarrierError) throw new HttpError(409, error.code);
       throw error;

@@ -214,6 +214,10 @@ import {
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
   startTaskDrainRequestSchema,
+  deploymentLeasePermitSchema,
+  deploymentLeaseAcquireSchema,
+  deploymentLeaseAdoptSchema,
+  deploymentLeaseRenewSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
@@ -1576,6 +1580,11 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "GET /api/board-comment-request-protocol",
   "GET /api/startup-work-barrier",
   "POST /api/startup-work-barrier/release",
+  "GET /api/instance/deployment-lease",
+  "POST /api/instance/deployment-lease",
+  "POST /api/instance/deployment-lease/adopt",
+  "POST /api/instance/deployment-lease/renew",
+  "DELETE /api/instance/deployment-lease",
   "POST /api/companies",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
@@ -6387,13 +6396,43 @@ registry.registerPath({
 registry.registerPath({
   method: "post", path: "/api/startup-work-barrier/release", tags: ["instance"],
   summary: "Release business work once on the exact qualified process",
-  description: "Instance administrators only. After independent release qualification, submit the observed boot, generation, protocol version and configured controls. The server rechecks schema compatibility, bootstrap readiness and zero in-flight protocol operations before a single-use transition. The digest records operator qualification provenance; it is not proof of its contents. Release can start business work even if the HTTP response is lost: inspect the same boot rather than replaying or restarting. A restart with the hold configured starts held again.",
+  description: "Instance administrators only. After independent release qualification, submit the observed boot, generation, protocol version, configured controls and current deployment lease permit. The server holds the durable owner row lock through the final boot CAS; an owned drain must remain active. The server rechecks schema compatibility, bootstrap readiness and zero in-flight protocol operations before a single-use transition. The digest records operator qualification provenance; it is not proof of its contents. Release can start business work even if the HTTP response is lost: inspect the same boot rather than replaying or restarting. A restart with the hold configured starts held again.",
   request: { body: jsonBody(z.object({
+    deploymentLease: deploymentLeasePermitSchema,
     expectedBootId: z.string().uuid(), expectedGeneration: z.number().int().nonnegative(),
     qualificationSha256: z.string().regex(/^[a-f0-9]{64}$/), expectedProtocolVersion: z.number().int().nonnegative(),
     expectedConfiguredControls: boardRequestControlsSchema,
   }).strict()) },
   responses: { 200: noStoreResponse(startupWorkStatusSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 503: startupUnavailableResponse },
+});
+
+const deploymentLeaseStatusSchema = z.object({
+  protocolVersion: z.literal(1), generation: z.number().int().nonnegative(),
+  bootId: z.string().uuid(), ownerBootId: z.string().uuid().nullable(), owned: z.boolean(), expired: z.boolean(),
+  startedAt: z.string().datetime().nullable(), expiresAt: z.string().datetime().nullable(),
+  draining: z.boolean(), drainStartedAt: z.string().datetime().nullable(),
+});
+registry.registerPath({
+  method: "get", path: "/api/instance/deployment-lease", tags: ["instance"],
+  summary: "Read content-free durable deployment ownership and drain state",
+  description: "Instance administrator only. No owner capability or capability hash is returned. Expiry does not clear an owned drain.",
+  responses: { 200: noStoreResponse(deploymentLeaseStatusSchema), 401: r.unauthorized, 403: r.forbidden, 503: startupUnavailableResponse },
+});
+for (const operation of [
+  { method: "post", path: "/api/instance/deployment-lease", schema: deploymentLeaseAcquireSchema,
+    summary: "Acquire a durable deployment lease with exact boot and generation CAS", acquire: true },
+  { method: "post", path: "/api/instance/deployment-lease/adopt", schema: deploymentLeaseAdoptSchema,
+    summary: "Adopt an owned lease into a replacement server boot", acquire: false },
+  { method: "post", path: "/api/instance/deployment-lease/renew", schema: deploymentLeaseRenewSchema,
+    summary: "Renew the exact deployment owner and advance its generation", acquire: false },
+  { method: "delete", path: "/api/instance/deployment-lease", schema: deploymentLeasePermitSchema,
+    summary: "Release deployment ownership after its drain has been cleared", acquire: false },
+] as const) registry.registerPath({
+  method: operation.method, path: operation.path, tags: ["instance"], summary: operation.summary,
+  description: "Instance administrator only. Row-locked transitions and audit commit together. A capability is returned once on acquisition; preserve it in an exclusive private operator journal and never log it. Every mutation advances the lease generation. Explicit expired takeover preserves the drain; stale owner/boot/generation fail closed. Held startup keeps these authenticated operator controls available.",
+  request: { body: jsonBody(operation.schema) },
+  responses: { 200: noStoreResponse(operation.acquire ? deploymentLeaseStatusSchema.extend({ ownerToken: z.string() }) : deploymentLeaseStatusSchema),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 503: startupUnavailableResponse },
 });
 
 // ─── Instance settings ────────────────────────────────────────────────────────
@@ -6454,7 +6493,7 @@ registry.registerPath({
   path: "/api/instance/task-drain",
   tags: ["instance"],
   summary:
-    "Get the task-drain status for this process only; quiescent counts in-process work, and a process restart clears it even when the database still holds running rows",
+    "Inspect legacy process drain and durable deployment drain; quiescent counts only in-process work",
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -6464,6 +6503,7 @@ registry.registerPath({
   tags: ["instance"],
   summary:
     "Start a task drain, so new run admission holds until active runs finish",
+  description: "An owned deployment lease requires its exact owner permit. Owned drain expiry is independent of lease TTL: expiry never resumes admission. Omit ttlMs (or use null) for an owned drain. The response includes the next deploymentLease generation. Legacy maintenance drains are allowed only when no owned lease exists.",
   request: { body: jsonBody(startTaskDrainRequestSchema) },
   responses: {
     200: r.ok(),
@@ -6478,7 +6518,9 @@ registry.registerPath({
   path: "/api/instance/task-drain",
   tags: ["instance"],
   summary: "End a task drain and restore run admission",
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+  description: "An owned lease, including an expired owner, fences tokenless legacy requests. An unexpired exact owner permit is required to clear an owned drain. The response includes the next lease generation.",
+  request: { body: { ...jsonBody(z.object({ deploymentLease: deploymentLeasePermitSchema.optional() }).strict()), required: false } },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
 });
 
 registry.registerPath({

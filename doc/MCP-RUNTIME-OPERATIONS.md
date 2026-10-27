@@ -33,6 +33,30 @@ Metrics surfaced there include:
 - Secret failures: missing-secret failures in the last hour.
 - Audit write failures: durable `audit_write_failed` counter increments whenever MCP audit-event persistence fails.
 
+## Audit event classification
+
+The local access audit records missing runtime MCP delivery as
+`action=runtime_diagnostic`, `outcome=diagnostic`, with
+`details.eventCategory=diagnostic` and `auditClassificationVersion=1`.
+It is a configuration diagnostic, not evidence of an attempted or failed tool
+invocation. Approval, elicitation and upstream handoff events remain pending
+rather than being counted as failed successful calls. Unknown gateway event
+kinds are explicitly unclassified with unknown outcome.
+
+Diagnostic provenance uses persisted same-company application metadata and
+records production, mixed, unknown, or `fixture_candidate` scope. A Smoke Lab
+candidate requires its exact application key and explicit metadata marker;
+display names and caller run context are ignored. Candidate metadata is mutable
+and therefore never authorizes excluding real tool invocation failures, costs,
+budgets or access checks. Historical audit rows keep their original meaning and
+are not rewritten.
+
+Failed local and SSH environment leases retain an allowlisted causal code from
+the durable same-company heartbeat run. Unknown or unsafe provider codes use
+fixed run-failure categories, and successful releases do not manufacture a
+failure. Raw provider messages and credentials are never copied into this new
+lease diagnostic field.
+
 ## Alerts
 
 | Alert | Severity | Suggested threshold | First responder action |

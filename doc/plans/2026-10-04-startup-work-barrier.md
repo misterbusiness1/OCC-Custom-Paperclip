@@ -4,6 +4,8 @@ A running process is not database quiescence. Backup and migration still require
 
 ## Operator contract
 
+As of 2026-10-26, startup release also requires an active owned deployment drain and a current `deploymentLease` permit. Acquire and drain through the durable operator protocol in [deployment-lease.md](../deployment-lease.md) before posting. The boot barrier below remains a separate safety boundary.
+
 Set `PAPERCLIP_STARTUP_WORK_HELD=true` before starting the target. The setting is read once at module initialization. Missing/`false` preserves normal startup; other spellings fail startup. Every restart creates a new held boot. There is no dynamic rehold or drain claim.
 
 `GET /api/startup-work-barrier` requires instance-admin authentication. It returns:
@@ -18,6 +20,7 @@ After the canonical external release guard succeeds, the authenticated operator 
 
 ```
 {
+  "deploymentLease": { "ownerToken": "<private capability>", "expectedLeaseGeneration": 2, "expectedBootId": "observed UUID" },
   "expectedBootId": "observed UUID",
   "expectedGeneration": 0,
   "qualificationSha256": "64 lowercase hex characters",

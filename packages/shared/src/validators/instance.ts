@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { deploymentLeasePermitSchema } from "./deployment-lease.js";
 import { DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE } from "../types/feedback.js";
 import {
   DAILY_RETENTION_PRESETS,
@@ -125,6 +126,7 @@ export const patchInstanceSettingsSchema = z.object({
 export const MAX_TASK_DRAIN_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const startTaskDrainRequestSchema = z.object({
+  deploymentLease: deploymentLeasePermitSchema.optional(),
   ttlMs: z.number().int().positive().max(MAX_TASK_DRAIN_TTL_MS).nullable().optional(),
 }).strict();
 

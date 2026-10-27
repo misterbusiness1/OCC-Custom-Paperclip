@@ -18,6 +18,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   stopTaskDrain: vi.fn(),
   getTaskDrainStatus: vi.fn(),
 }));
+const mockDeploymentLeaseService = vi.hoisted(() => ({ get: vi.fn(), transitionDrain: vi.fn() }));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
   findManagedSandboxEnvironment: vi.fn(),
@@ -31,6 +32,10 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockPublishActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../services/deployment-lease.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/deployment-lease.js")>("../services/deployment-lease.js");
+    return { ...actual, deploymentLeaseService: () => mockDeploymentLeaseService };
+  });
   vi.doMock("../services/index.js", () => ({
     companyService: () => mockCompanyService,
     heartbeatService: () => mockHeartbeatService,
@@ -89,6 +94,10 @@ describe("instance settings routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDeploymentLeaseService.get.mockResolvedValue({ owned: false, draining: false, generation: 0 });
+    mockDeploymentLeaseService.transitionDrain.mockImplementation(async (_permit, _draining, run) => ({
+      result: await mockDb.transaction(tx => run(tx, null, null)), lease: null,
+    }));
     // vi.clearAllMocks() clears recorded calls only; it does not remove a
     // mockImplementation a prior test installed. Reinstall the default here
     // so a stateful implementation from one test can never leak into the

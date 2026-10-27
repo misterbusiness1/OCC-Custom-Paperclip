@@ -4,6 +4,8 @@ import { pinoHttp } from "pino-http";
 import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
 import {
   isPrivateWebhookHttpRequest,
+  isDeploymentControlHttpRequest,
+  deploymentControlHttpLogUrl,
   isSecretSensitiveHttpRequest,
   shouldSilenceHttpSuccessLog,
 } from "./http-log-policy.js";
@@ -62,6 +64,20 @@ function isPrivateWebhook(req: {
   );
 }
 
+function isDeploymentControl(req: { method?: string; originalUrl?: unknown; url?: unknown }) {
+  return isDeploymentControlHttpRequest(req.method, requestClassificationUrl(req));
+}
+
+function isContentFreeRequest(req: { method?: string; originalUrl?: unknown; url?: unknown }) {
+  return isPrivateWebhook(req) || isDeploymentControl(req);
+}
+
+function privateRequestLogUrl(req: { method?: string; originalUrl?: unknown; url?: unknown }) {
+  const controlUrl = deploymentControlHttpLogUrl(req.method, requestClassificationUrl(req));
+  if (controlUrl) return controlUrl;
+  return privateWebhookLogUrl(requestClassificationUrl(req));
+}
+
 function privateWebhookLogUrl(url: unknown) {
   return typeof url === "string" && /\/routine-triggers\/public(?:\/|$)/i.test(url)
     ? "/api/routine-triggers/public/:publicId/fire"
@@ -73,8 +89,8 @@ function requestLogUrl(req: {
   originalUrl?: unknown;
   url?: unknown;
 }) {
-  return isPrivateWebhook(req)
-    ? privateWebhookLogUrl(requestClassificationUrl(req))
+  return isContentFreeRequest(req)
+    ? privateRequestLogUrl(req)
     : stripSecretBearingUrlParts(typeof req.url === "string" ? req.url : "");
 }
 
@@ -84,7 +100,7 @@ export function createHttpLogger(baseLogger: Logger) {
     serializers: {
       req(req: Record<string, unknown> & { url?: unknown }) {
         if (
-          isPrivateWebhook({
+          isContentFreeRequest({
             method: typeof req.method === "string" ? req.method : undefined,
             url: req.url,
           })
@@ -95,7 +111,7 @@ export function createHttpLogger(baseLogger: Logger) {
           return {
             id: req.id,
             method: req.method,
-            url: privateWebhookLogUrl(req.url),
+            url: privateRequestLogUrl({ method: typeof req.method === "string" ? req.method : undefined, url: req.url }),
           };
         }
         return {
@@ -119,7 +135,7 @@ export function createHttpLogger(baseLogger: Logger) {
       ) {
         // A provider error may also be reflected in response headers. Keep the
         // same content-free contract on both sides of a webhook request.
-        return res.raw?.req && isPrivateWebhook(res.raw.req)
+        return res.raw?.req && isContentFreeRequest(res.raw.req)
           ? { statusCode: res.statusCode }
           : res;
       },
@@ -152,17 +168,17 @@ export function createHttpLogger(baseLogger: Logger) {
     customErrorObject(req, _res, _err, value) {
       // pino-http serializes res.err independently of customProps/errorContext.
       // Do not rely on a particular error handler having sanitized an SDK Error.
-      return isPrivateWebhook(req)
+      return isContentFreeRequest(req)
         ? {
             ...value,
-            err: { type: "Error", message: "Chat webhook request failed" },
+            err: { type: "Error", message: isDeploymentControl(req) ? "Deployment operator request failed" : "Chat webhook request failed" },
           }
         : value;
     },
     customProps(req, res) {
       if (res.statusCode >= 400) {
         const ctx = (res as any).__errorContext;
-        if (isPrivateWebhook(req)) {
+        if (isContentFreeRequest(req)) {
           // Omit, rather than recursively redact, the entire provider payload.
           // This applies equally before/after parsing and with/without context.
           return {

@@ -24,6 +24,12 @@ export const HTTP_LOG_REDACT_PATHS = [
   // `reqBody`. Keep the standard connector credential envelope covered again
   // at the final serialization boundary in case a future custom serializer
   // bypasses the recursive redactor.
+  "reqBody.ownerToken",
+  "reqBody.deploymentLease.ownerToken",
+  "req.body.ownerToken",
+  "req.body.deploymentLease.ownerToken",
+  "errorContext.details.ownerToken",
+  "errorContext.details.deploymentLease.ownerToken",
   "reqBody.credentials",
   "errorContext.details.credentials",
 ] as const;

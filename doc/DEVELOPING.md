@@ -421,6 +421,20 @@ pnpm test
 pnpm test:watch
 ```
 
+`pnpm test:run` and `pnpm test` use the stable runner. Vitest and the
+runner share the project registrations in `scripts/vitest-projects.mjs`; add new
+projects there so no project is silently omitted from the test lanes. General
+server shards include both `server/src/**/*.test.ts` and
+`server/scripts/**/*.test.mjs`, while route/authz suites run in serialized lanes.
+`node scripts/run-vitest-stable.mjs --dry-run` prints the complete JSON inventory.
+
+Each runner invocation pins a private instance home/config and temporary root
+outside the checkout. It removes inherited database URLs, including test-only
+shortcuts, and disables checkout `.env` loading. Database fixtures must create
+their own disposable instance or explicitly configure their isolated child
+process. Keep temporary package/repository fixtures outside any checkout: pnpm
+can otherwise discover an ancestor workspace and install into that workspace.
+
 Browser suites stay separate:
 
 ```sh
@@ -1772,3 +1786,9 @@ Chromium. The test starts its own loopback Vite server and mocks API responses;
 it needs no running Paperclip instance or provider credentials. The same spec lives
 in the default `test:e2e` discovery tree, so the existing Chrome CI shards run it
 on pull requests.
+
+### Qualified production lock baseline
+
+The PR lockfile policy normally permits lock changes only through the existing CI refresh branch or Dependabot. A one-time, verified baseline adoption is also allowed from source commit `cc4c664ed32d32f9beda9570a5a3f1823ebe4e26`: the old lock SHA-256 must be `ba6b70eae06944c2652284cac14ab2a5c038ed1a9a65733418dabeeebc7f65ea` and the adopted lock must be `9fd3ed3a0bb78170aef0e8834e5cf9e4788747b24e63afe2190e41773a3e3d20`. The adopted bytes match the already qualified production dependency graph and build context for image `sha256:4e05e4e26bd64a6727df986868ddc88dce2b1e631a8b98c5b5487f51e965b80f`; the previous tracked lock was stale.
+
+This path rejects changes to any dependency manifest, workspace configuration, npm configuration, pnpm hook, patch, or nested lock. Pinned pnpm 9.15.4 must validate the full tracked workspace with an offline, frozen, lockfile-only install and ignored lifecycle scripts, leaving the lock bytes unchanged. Different source baselines or lock hashes still require the ordinary CI-owned refresh process. Run the dependency-free policy regressions with `node --test '.github/scripts/tests/*.test.mjs'`.

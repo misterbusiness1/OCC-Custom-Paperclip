@@ -29,6 +29,7 @@ const apiPrefixes: Record<string, string> = {
   "board-chat.ts": "/api",
   "board-comment-request-protocol.ts": "/api",
   "startup-work-barrier.ts": "/api",
+  "deployment-lease.ts": "/api",
   "browser-use.ts": "/api",
   "built-in-agents.ts": "/api",
   "chat-channels.ts": "/api",
@@ -269,7 +270,8 @@ describe("openapi routes", () => {
     }
     const body = release.requestBody.content["application/json"].schema;
     expect(body.additionalProperties).toBe(false);
-    expect(body.required).toEqual(["expectedBootId", "expectedGeneration", "qualificationSha256", "expectedProtocolVersion", "expectedConfiguredControls"]);
+    expect(body.required).toEqual(["deploymentLease", "expectedBootId", "expectedGeneration", "qualificationSha256", "expectedProtocolVersion", "expectedConfiguredControls"]);
+    expect(body.properties.deploymentLease.required).toEqual(["ownerToken", "expectedLeaseGeneration", "expectedBootId"]);
     expect(body.properties.expectedConfiguredControls.additionalProperties).toBe(false);
     expect(body.properties.qualificationSha256.pattern).toBe("^[a-f0-9]{64}$");
     expect(release.responses["409"]).toBeDefined();
@@ -767,6 +769,20 @@ describe("openapi routes", () => {
     expect(
       spec.paths["/api/chat-webhooks/{publicId}/{provider}"],
     ).toBeUndefined();
+  });
+
+  it("documents durable deployment controls without publishing capabilities in GET", () => {
+    const { spec } = loadSpecRoutes();
+    for (const [path, method] of [["/api/instance/deployment-lease", "get"], ["/api/instance/deployment-lease", "post"],
+      ["/api/instance/deployment-lease/adopt", "post"], ["/api/instance/deployment-lease/renew", "post"],
+      ["/api/instance/deployment-lease", "delete"]]) {
+      const operation = spec.paths[path][method];
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board", instanceAdmin: true });
+      expect(operation.responses["200"].headers["Cache-Control"].schema.enum).toEqual(["no-store"]);
+    }
+    const status = spec.paths["/api/instance/deployment-lease"].get.responses["200"].content["application/json"].schema;
+    expect(status.properties.ownerToken).toBeUndefined();
+    expect(spec.paths["/api/instance/deployment-lease"].post.responses["200"].content["application/json"].schema.properties.ownerToken).toBeDefined();
   });
 
   it("covers the mounted server routes exactly", () => {

@@ -32,6 +32,8 @@ const SENSITIVE_KEYS = new Set<string>([
   // material. `token` is likewise ambiguous but frequently credential-bearing.
   "value",
   "token",
+  "ownertoken",
+  "owner_token",
   "secret",
   "client_secret",
   "clientsecret",

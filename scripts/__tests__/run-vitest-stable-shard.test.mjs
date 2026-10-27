@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ import {
 } from "../general-server-shard.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "../test-line-shard.mjs";
+import { vitestProjects } from "../vitest-projects.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const script = path.join(repoRoot, "scripts", "run-vitest-stable.mjs");
@@ -49,6 +50,209 @@ function dryRunJson(args, envOverrides = {}) {
   assert.equal(result.status, 0, `expected success for ${args.join(" ")}: ${result.stderr}`);
   return JSON.parse(result.stdout);
 }
+
+test("dry-run flushes a large complete inventory through a pipe before exit", () => {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-plan-"));
+  try {
+    const testsDir = path.join(tempRoot, "server", "src", "__tests__");
+    mkdirSync(testsDir, { recursive: true });
+    const expected = Array.from({ length: 200 }, (_, index) =>
+      `server/src/__tests__/generated-inventory-${String(index).padStart(4, "0")}-route.test.ts`);
+    for (const file of expected) writeFileSync(path.join(tempRoot, file), "");
+    const result = spawnSync(process.execPath, [script, "--dry-run"], {
+      cwd: tempRoot, encoding: "utf8", env: workflowEnv(),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(Buffer.byteLength(result.stdout) > 8192, "fixture must exceed the pipe-sized output that was truncated");
+    const plan = JSON.parse(result.stdout);
+    assert.equal(plan.serializedSuiteCount, expected.length);
+    assert.deepEqual(plan.selectedSerializedSuites, expected);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("general-server shards include server script suites exactly once", () => {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-scripts-"));
+  try {
+    const expected = [
+      "server/scripts/nested/second.test.mjs",
+      "server/scripts/first.test.mjs",
+      "server/src/ordinary.test.ts",
+    ];
+    const other = ["server/src/__tests__/isolated-route.test.ts", "server/scripts/not-a-test.mjs"];
+    for (const file of [...expected, ...other]) {
+      mkdirSync(path.dirname(path.join(tempRoot, file)), { recursive: true });
+      writeFileSync(path.join(tempRoot, file), "");
+    }
+    const files = [];
+    for (let index = 0; index < 2; index += 1) {
+      const result = spawnSync(process.execPath, [script, "--mode", "general", "--group", "general-server",
+        "--shard-index", String(index), "--shard-count", "2", "--dry-run"], {
+        cwd: tempRoot, encoding: "utf8", env: workflowEnv(),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      files.push(...JSON.parse(result.stdout).selectedGeneralServerSuites);
+    }
+    assert.deepEqual(files.sort(), expected.sort());
+    assert.equal(new Set(files).size, expected.length);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+function readActualVitestConfig(configFile = "vitest.config.ts") {
+  // The policy job deliberately has no node_modules. Execute the checked-in
+  // config and its real relative imports, replacing only Vitest's identity
+  // defineConfig helper with a builtin VM module.
+  const probe = `
+    import { readFileSync } from "node:fs";
+    import { stripTypeScriptTypes } from "node:module";
+    import { pathToFileURL } from "node:url";
+    import { SourceTextModule, SyntheticModule } from "node:vm";
+    const modules = new Map();
+    const vitest = new SyntheticModule(["defineConfig"], function () {
+      this.setExport("defineConfig", (value) => value);
+    });
+    async function load(identifier) {
+      if (modules.has(identifier)) return modules.get(identifier);
+      if (identifier.startsWith("node:")) {
+        const namespace = await import(identifier);
+        const module = new SyntheticModule(Object.keys(namespace), function () {
+          for (const name of Object.keys(namespace)) this.setExport(name, namespace[name]);
+        });
+        modules.set(identifier, module);
+        return module;
+      }
+      let source = readFileSync(new URL(identifier), "utf8");
+      if (identifier.endsWith(".ts")) {
+        source = stripTypeScriptTypes(source, { mode: "strip", sourceUrl: identifier });
+      }
+      const module = new SourceTextModule(source, {
+        identifier,
+        initializeImportMeta(meta) { meta.url = identifier; },
+      });
+      modules.set(identifier, module);
+      await module.link((specifier, reference) => {
+        if (specifier === "vitest/config") return vitest;
+        if (specifier.startsWith("node:")) return load(specifier);
+        if (!specifier.startsWith("./") && !specifier.startsWith("../")) {
+          throw new Error("Unexpected config dependency: " + specifier);
+        }
+        return load(new URL(specifier, reference.identifier).href);
+      });
+      return module;
+    }
+    const config = await load(pathToFileURL(process.argv[1]).href);
+    await config.evaluate();
+    console.log(JSON.stringify(config.namespace.default));
+  `;
+  const result = spawnSync(process.execPath, [
+    "--experimental-vm-modules", "--input-type=module", "--eval", probe,
+    path.join(repoRoot, configFile),
+  ], { cwd: repoRoot, encoding: "utf8", env: workflowEnv() });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+test("canonical Vitest projects are covered exactly once across stable workspace lanes", () => {
+  const vitestConfig = readActualVitestConfig();
+  assert.deepEqual(vitestConfig.test.projects, vitestProjects.map((project) => project.path),
+    "the root Vitest project list must use the complete shared registration");
+  for (const project of vitestProjects) {
+    const pkg = JSON.parse(readFileSync(path.join(repoRoot, project.path, "package.json"), "utf8"));
+    assert.equal(project.name, pkg.name, `registered project name must match ${project.path}`);
+  }
+  const laneA = dryRunJson(["--mode", "general", "--group", "general-workspaces-a"]).workspaceProjects;
+  const laneB = dryRunJson(["--mode", "general", "--group", "general-workspaces-b"]).workspaceProjects;
+  const expected = vitestProjects.filter((project) => project.path !== "server").map((project) => project.name);
+  assert.deepEqual([...laneA, ...laneB].sort(), expected.sort());
+  assert.equal(new Set([...laneA, ...laneB]).size, expected.length, "workspace lanes cannot overlap");
+});
+
+test("stable server lanes cover the actual Vitest-configured inventory exactly once", () => {
+  const config = readActualVitestConfig("server/vitest.config.ts");
+  assert.ok(Array.isArray(config.test.include) && config.test.include.length > 0);
+  const serverRoot = path.join(repoRoot, "server");
+  const expected = [];
+  function visit(directory) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!["node_modules", ".git", "dist"].includes(entry.name)) {
+          visit(path.join(directory, entry.name));
+        }
+      } else if (entry.isFile()) {
+        const relative = path.relative(serverRoot, path.join(directory, entry.name)).split(path.sep).join("/");
+        if (config.test.include.some((pattern) => path.matchesGlob(relative, pattern))
+          && !(config.test.exclude ?? []).some((pattern) => path.matchesGlob(relative, pattern))) {
+          expected.push(`server/${relative}`);
+        }
+      }
+    }
+  }
+  visit(serverRoot);
+  assert.ok(expected.length > 0, "the actual project config must select server suites");
+
+  const general = [];
+  const serialized = [];
+  for (let index = 0; index < 2; index += 1) {
+    const flags = ["--shard-index", String(index), "--shard-count", "2"];
+    general.push(...dryRunJson([
+      "--mode", "general", "--group", "general-server-without-chat", ...flags,
+    ], { GITHUB_WORKFLOW: "Release" }).selectedGeneralServerSuites);
+    serialized.push(...dryRunJson(["--mode", "serialized", ...flags]).selectedSerializedSuites);
+  }
+  const actual = [...general, ...serialized, "server/src/__tests__/chat-channels.integration.test.ts"];
+  assert.equal(new Set(actual).size, actual.length, "general, serialized, and chat lanes cannot overlap");
+  const actualSet = new Set(actual);
+  const expectedSet = new Set(expected);
+  assert.deepEqual({
+    uncovered: expected.filter((file) => !actualSet.has(file)).sort(),
+    unexpected: actual.filter((file) => !expectedSet.has(file)).sort(),
+  }, { uncovered: [], unexpected: [] },
+  "stable lanes must cover the independently configured server inventory without omissions");
+});
+
+test("unit bootstrap removes inherited database selectors and pins dotenv guards before invoking Vitest", () => {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-database-"));
+  try {
+    const fakeBin = path.join(tempRoot, "bin");
+    mkdirSync(fakeBin, { recursive: true });
+    mkdirSync(path.join(tempRoot, "server", "src", "__tests__"), { recursive: true });
+    const capturePath = path.join(tempRoot, "environment-capture.json");
+    const databaseSelectors = [
+      "DATABASE_URL", "DATABASE_MIGRATION_URL", "PAPERCLIP_TEST_DATABASE_URL",
+      "PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL", "TEST_DATABASE_URL",
+    ];
+    const fakePnpm = path.join(fakeBin, "pnpm");
+    writeFileSync(fakePnpm, [
+      "#!/usr/bin/env node",
+      'const fs = require("node:fs");',
+      `const selectors = Object.fromEntries(${JSON.stringify(databaseSelectors)}.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));`,
+      'fs.writeFileSync(process.env.CAPTURE_PATH, JSON.stringify({ selectors, config: process.env.PAPERCLIP_CONFIG, disableCwdEnv: process.env.PAPERCLIP_DISABLE_CWD_ENV, disableCwdEnvFile: process.env.PAPERCLIP_DISABLE_CWD_ENV_FILE }));',
+    ].join("\n") + "\n");
+    chmodSync(fakePnpm, 0o700);
+    const result = spawnSync(process.execPath, [script, "--watch", "--"], {
+      cwd: tempRoot, encoding: "utf8",
+      env: { ...workflowEnv(), PATH: `${fakeBin}:${process.env.PATH ?? ""}`, CAPTURE_PATH: capturePath,
+        DATABASE_URL: "postgres://invalid.example/ambient",
+        DATABASE_MIGRATION_URL: "postgres://invalid.example/migration",
+        PAPERCLIP_TEST_DATABASE_URL: "postgres://invalid.example/test",
+        PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL: "postgres://invalid.example/tool-access",
+        TEST_DATABASE_URL: "postgres://invalid.example/fixture",
+        PAPERCLIP_CONFIG: "/production/config.json", PAPERCLIP_DISABLE_CWD_ENV: "false",
+        PAPERCLIP_DISABLE_CWD_ENV_FILE: "false" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const captured = JSON.parse(readFileSync(capturePath, "utf8"));
+    assert.deepEqual(captured.selectors, {});
+    assert.notEqual(captured.config, "/production/config.json");
+    assert.equal(captured.disableCwdEnv, "true");
+    assert.equal(captured.disableCwdEnvFile, "true");
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
 
 const SHARD_COUNT = 12;
 const SERIALIZED_SHARD_COUNT = 9;
@@ -129,6 +333,11 @@ test("vitest subprocesses cannot inherit a live config or worktree identity", { 
         CAPTURE_PATH: capturePath,
         PAPERCLIP_CONFIG: "/production/config.json",
         PAPERCLIP_CONTEXT: "/production/context.json",
+        DATABASE_URL: "postgres://invalid.example/ambient",
+        DATABASE_MIGRATION_URL: "postgres://invalid.example/migration",
+        PAPERCLIP_TEST_DATABASE_URL: "postgres://invalid.example/test",
+        PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL: "postgres://invalid.example/tool-access",
+        TEST_DATABASE_URL: "postgres://invalid.example/fixture",
         PAPERCLIP_IN_WORKTREE: "true",
         PAPERCLIP_WORKTREE_NAME: "production-worktree",
         PAPERCLIP_WORKTREE_COLOR: "#123456",
@@ -145,11 +354,18 @@ test("vitest subprocesses cannot inherit a live config or worktree identity", { 
       path.join(captured.PAPERCLIP_HOME, "instances", captured.PAPERCLIP_INSTANCE_ID, "config.json"),
     );
     assert.equal(captured.PAPERCLIP_CONTEXT, path.join(captured.PAPERCLIP_HOME, "context.json"));
+    assert.equal(captured.PAPERCLIP_DISABLE_CWD_ENV, "true");
+    assert.equal(captured.PAPERCLIP_DISABLE_CWD_ENV_FILE, "true");
     for (const key of [
       "PAPERCLIP_IN_WORKTREE",
       "PAPERCLIP_WORKTREE_NAME",
       "PAPERCLIP_WORKTREE_COLOR",
       "PAPERCLIP_WORKTREES_DIR",
+      "DATABASE_URL",
+      "DATABASE_MIGRATION_URL",
+      "PAPERCLIP_TEST_DATABASE_URL",
+      "PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL",
+      "TEST_DATABASE_URL",
     ]) {
       assert.equal(captured[key], undefined, `${key} must not reach Vitest`);
     }
