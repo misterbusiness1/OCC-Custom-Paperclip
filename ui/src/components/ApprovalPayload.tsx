@@ -234,7 +234,7 @@ export function OriginalRequestBlock({
         : null;
   const provenance: Array<{ key: string; node: ReactNode }> = [
     { key: "channel", node: original.source.kind === "external" ? original.source.channel : null },
-    { key: "sender", node: approvalOriginalRequestSender(original.source, resolveAgentName) },
+    { key: "sender", node: senderName },
     { key: "sentAt", node: sentAt ? <time dateTime={original.source.sentAt}>{sentAt}</time> : null },
     // The comment link below replaces the raw comment reference.
     { key: "reference", node: commentHref ? null : original.source.reference },
@@ -277,16 +277,16 @@ export function OriginalRequestBlock({
         previewLines={isEmail ? 6 : 4}
         expandLabel={isEmail ? "Show more" : undefined}
         subject={senderName && isEmail ? `${sourceLabel} from ${senderName}` : sourceLabel}
-        // Incoming, unverified text: a dashed frame on the page background, so it can never pass for the
-        // outgoing draft, which sits in a solid muted box right below it.
-        boxClassName={isEmail ? "mt-2 rounded-md border border-dashed border-border bg-background p-3" : undefined}
+        // Incoming, unverified text: a clearly dashed frame, so it can never pass for the outgoing draft
+        // below it (a thin solid frame with a muted Via/To/Subject header).
+        boxClassName={isEmail ? "mt-2 rounded-md border border-dashed border-muted-foreground/40 p-3" : undefined}
       />
     </>
   );
 
   // Kept apart from the outgoing draft by its own label and a dashed frame. Never interpret the retained text as HTML.
   return (
-    <div data-approval-original-request={isEmail ? "email" : "request"} className="min-w-0">
+    <div data-approval-original-request={isEmail ? "email" : "request"} className="min-w-0 scroll-mt-20">
       {content}
     </div>
   );
@@ -338,9 +338,10 @@ function OriginalRequestText({
   boxClassName?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // Once opened, the button stays: collapsing must never take away the control that has keyboard focus.
+  const [wasExpanded, setWasExpanded] = useState(false);
   const [overflowing, setOverflowing] = useState(fallbackLong);
   const textRef = useRef<HTMLPreElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
   const clamped = collapsible && !expanded;
 
   // Measured while clamped, again on every resize: a paragraph that fits six lines on a wide card can need
@@ -357,13 +358,24 @@ function OriginalRequestText({
       setOverflowing(element.scrollHeight > element.clientHeight + 1);
     };
     check();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(check);
-    observer.observe(element);
-    return () => observer.disconnect();
+    // The clamped box keeps its size when the text reflows inside it (a web font arriving late can add a
+    // seventh line), so a resize alone is not enough: measure again once fonts finish loading too.
+    const fonts = typeof document !== "undefined" ? document.fonts : undefined;
+    let live = true;
+    fonts?.ready?.then(() => {
+      if (live) check();
+    });
+    fonts?.addEventListener?.("loadingdone", check);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(check);
+    observer?.observe(element);
+    return () => {
+      live = false;
+      fonts?.removeEventListener?.("loadingdone", check);
+      observer?.disconnect();
+    };
   }, [measure, expanded, fallbackLong, text]);
 
-  const showButton = collapsible && (!measure || expanded || overflowing);
+  const showButton = collapsible && (!measure || expanded || wasExpanded || overflowing);
 
   return (
     <>
@@ -382,18 +394,22 @@ function OriginalRequestText({
       </div>
       {showButton && (
         <button
-          ref={buttonRef}
           type="button"
           className="mt-1 inline-flex min-h-6 items-center text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
           aria-expanded={expanded}
           aria-label={expanded ? `Show less: ${subject}` : expandLabel ? `${expandLabel}: ${subject}` : undefined}
-          onClick={() => {
+          onClick={(event) => {
             const collapsing = expanded;
             setExpanded((value) => !value);
-            // After "Show less" the long text is gone from above: bring the collapsed email back into view
-            // instead of leaving the reader somewhere in the draft.
+            setWasExpanded(true);
+            // After "Show less" the long text is gone from above: bring the collapsed email, label first,
+            // back into view (clear of the sticky header) instead of leaving the reader in the draft.
             if (collapsing) {
-              requestAnimationFrame(() => buttonRef.current?.scrollIntoView?.({ block: "nearest" }));
+              const section = (event.currentTarget as HTMLElement).closest<HTMLElement>("[data-approval-original-request]");
+              requestAnimationFrame(() => {
+                if (!section || typeof section.getBoundingClientRect !== "function") return;
+                if (section.getBoundingClientRect().top < 80) section.scrollIntoView?.({ block: "start" });
+              });
             }
           }}
         >

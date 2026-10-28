@@ -46,6 +46,7 @@ describe("original email disclosure", () => {
     expect(block.textContent).not.toContain(payload.body);
     expect(toggle("Show more")?.getAttribute("aria-label")).toBe("Show more: Original email from synthetic@example.test");
     expect(block.querySelector("div.border-dashed")).not.toBeNull();
+    expect(block.querySelector("div.border-dashed")?.className).toMatch(/border-muted-foreground/);
   });
   it("collapses a previously expanded message when its retained source changes", () => {
     act(() => root.render(<OriginalRequestBlock payload={longPayload} compact />));
@@ -71,5 +72,40 @@ describe("original email disclosure", () => {
     expect(container.textContent).not.toContain("Open the linked task");
     expect(container.querySelector("pre")).toBeNull();
     expect(container.textContent).not.toContain(payload.body);
+  });
+  it("measures the rendered text: no button when six lines hold it, a button once a reflow overflows, kept after Show less", () => {
+    const heights = { scroll: 144, client: 144 };
+    const scrollSpy = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const clientSpy = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => heights.scroll });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => heights.client });
+    const callbacks: Array<() => void> = [];
+    const OriginalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(callback: () => void) { callbacks.push(callback); }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    } as unknown as typeof ResizeObserver;
+    try {
+      act(() => root.render(<OriginalRequestBlock payload={payload} compact />));
+      expect(container.querySelector("pre")?.className).toMatch(/line-clamp-6/);
+      expect(toggle("Show more")).toBeUndefined();
+      heights.scroll = 168;
+      act(() => callbacks.forEach((callback) => callback()));
+      expect(toggle("Show more")).toBeDefined();
+      act(() => toggle("Show more")!.click());
+      heights.scroll = 144;
+      act(() => toggle("Show less")!.click());
+      act(() => callbacks.forEach((callback) => callback()));
+      // The text now fits, but the control the reader just used stays where it was.
+      expect(toggle("Show more")).toBeDefined();
+    } finally {
+      globalThis.ResizeObserver = OriginalResizeObserver;
+      if (scrollSpy) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollSpy);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
+      if (clientSpy) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientSpy);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
+    }
   });
 });
