@@ -6,22 +6,14 @@ import {
 } from "../../src/lease-lifecycle.js";
 
 const SANDBOX_GROUP = "agents.x-k8s.io";
-const SANDBOX_VERSION = "v1alpha1";
+const SANDBOX_VERSION = "v1beta1";
 const SANDBOX_PLURAL = "sandboxes";
 
 function notFound(): Error {
   return Object.assign(new Error("not found"), { code: 404 });
 }
 
-function readySandboxCr(podName?: string): Record<string, unknown> {
-  return {
-    metadata: { uid: "uid-1" },
-    status: {
-      conditions: [{ type: "Ready", status: "True" }],
-      ...(podName ? { podName } : {}),
-    },
-  };
-}
+import { betaSandbox, betaPod } from "./sandbox-beta-fixtures.js";
 
 describe("isKubeNotFoundError", () => {
   it("matches code=404 and statusCode=404", () => {
@@ -36,156 +28,98 @@ describe("isKubeNotFoundError", () => {
 });
 
 describe("checkLeaseResumable (sandbox-cr backend)", () => {
-  it("resumes a live lease whose Sandbox is Ready and pod is Running", async () => {
-    const clients = {
-      custom: {
-        getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")),
-      },
+  const input = {
+    namespace: "ns",
+    name: "pc-abc",
+    backend: "sandbox-cr" as const,
+    expectedUid: "uid-1",
+    readyTimeoutMs: 8,
+    pollMs: 1,
+  };
+  function clients(cr: unknown = betaSandbox(), pod: unknown = betaPod()) {
+    return {
+      custom: { getNamespacedCustomObject: vi.fn().mockResolvedValue(cr) },
       core: {
-        readNamespacedPod: vi.fn().mockResolvedValue({
-          metadata: {},
-          status: { phase: "Running" },
-        }),
+        readNamespacedPod: vi.fn().mockResolvedValue(pod),
+        listNamespacedPod: vi.fn().mockResolvedValue({ items: [pod] }),
       },
     };
-    const result = await checkLeaseResumable(clients as never, {
-      namespace: "paperclip-acme",
-      name: "pc-abc",
-      backend: "sandbox-cr",
-      readyTimeoutMs: 1_000,
-      pollMs: 10,
-    });
-    expect(result).toEqual({ resumable: true, podName: "pc-abc-pod", phase: "Running" });
-    expect(clients.core.readNamespacedPod).toHaveBeenCalledWith({
-      namespace: "paperclip-acme",
-      name: "pc-abc-pod",
+  }
+  it("resumes only the exact current UID with an owned ready pod", async () => {
+    expect(await checkLeaseResumable(clients() as never, input)).toEqual({
+      resumable: true,
+      podName: "pc-abc",
+      phase: "Running",
     });
   });
-
-  it("is not resumable when the Sandbox CR is gone (404)", async () => {
-    const clients = {
-      custom: { getNamespacedCustomObject: vi.fn().mockRejectedValue(notFound()) },
-      core: { readNamespacedPod: vi.fn() },
-    };
-    const result = await checkLeaseResumable(clients as never, {
-      namespace: "ns",
-      name: "pc-abc",
-      backend: "sandbox-cr",
-      readyTimeoutMs: 1_000,
-      pollMs: 10,
-    });
-    expect(result.resumable).toBe(false);
-    if (!result.resumable) expect(result.reason).toMatch(/no longer exists/);
-  });
-
-  it("is not resumable when the Sandbox is terminally Failed", async () => {
-    const clients = {
-      custom: {
-        getNamespacedCustomObject: vi.fn().mockResolvedValue({
-          metadata: { uid: "uid-1" },
-          status: {
-            phase: "Failed",
-            conditions: [
-              { type: "Failed", status: "True", reason: "ImagePullFailed", message: "no image" },
-            ],
-          },
-        }),
-      },
-      core: { readNamespacedPod: vi.fn() },
-    };
-    const result = await checkLeaseResumable(clients as never, {
-      namespace: "ns",
-      name: "pc-abc",
-      backend: "sandbox-cr",
-      readyTimeoutMs: 1_000,
-      pollMs: 10,
-    });
-    expect(result.resumable).toBe(false);
-    if (!result.resumable) expect(result.reason).toMatch(/failed/i);
-  });
-
-  it("is not resumable when the Sandbox never reaches Ready within the bounded wait", async () => {
-    const clients = {
-      custom: {
-        getNamespacedCustomObject: vi.fn().mockResolvedValue({
-          metadata: { uid: "uid-1" },
-          status: { phase: "Pending" },
-        }),
-      },
-      core: { readNamespacedPod: vi.fn() },
-    };
-    const result = await checkLeaseResumable(clients as never, {
-      namespace: "ns",
-      name: "pc-abc",
-      backend: "sandbox-cr",
-      readyTimeoutMs: 30,
-      pollMs: 5,
-    });
-    expect(result.resumable).toBe(false);
-    if (!result.resumable) expect(result.reason).toMatch(/did not reach Ready/);
-  });
-
-  it("is not resumable when the backing pod is gone (404)", async () => {
-    const clients = {
-      custom: {
-        getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")),
-      },
-      core: { readNamespacedPod: vi.fn().mockRejectedValue(notFound()) },
-    };
-    const result = await checkLeaseResumable(clients as never, {
-      namespace: "ns",
-      name: "pc-abc",
-      backend: "sandbox-cr",
-      readyTimeoutMs: 1_000,
-      pollMs: 10,
-    });
-    expect(result.resumable).toBe(false);
-    if (!result.resumable) expect(result.reason).toMatch(/pc-abc-pod no longer exists/);
-  });
-
-  it("is not resumable when the pod is being torn down (deletionTimestamp set)", async () => {
-    const clients = {
-      custom: {
-        getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")),
-      },
-      core: {
-        readNamespacedPod: vi.fn().mockResolvedValue({
-          metadata: { deletionTimestamp: "2026-06-10T00:00:00Z" },
-          status: { phase: "Running" },
-        }),
-      },
-    };
-    const result = await checkLeaseResumable(clients as never, {
-      namespace: "ns",
-      name: "pc-abc",
-      backend: "sandbox-cr",
-      readyTimeoutMs: 1_000,
-      pollMs: 10,
-    });
-    expect(result.resumable).toBe(false);
-    if (!result.resumable) expect(result.reason).toMatch(/terminating/);
-  });
-
-  it("rethrows unexpected (non-404) pod read errors", async () => {
-    const clients = {
-      custom: {
-        getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")),
-      },
-      core: {
-        readNamespacedPod: vi
-          .fn()
-          .mockRejectedValue(Object.assign(new Error("forbidden"), { code: 403 })),
-      },
-    };
-    await expect(
-      checkLeaseResumable(clients as never, {
-        namespace: "ns",
-        name: "pc-abc",
-        backend: "sandbox-cr",
-        readyTimeoutMs: 1_000,
-        pollMs: 10,
+  it("expires an old lease with no recorded UID before any API call", async () => {
+    const c = clients();
+    expect(
+      await checkLeaseResumable(c as never, {
+        ...input,
+        expectedUid: undefined,
       }),
-    ).rejects.toThrow("forbidden");
+    ).toMatchObject({ resumable: false });
+    expect(c.custom.getNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+  it("expires a deleted CR and rejects recreation under the same name", async () => {
+    const c = clients();
+    c.custom.getNamespacedCustomObject.mockRejectedValue(notFound());
+    expect(await checkLeaseResumable(c as never, input)).toMatchObject({
+      resumable: false,
+      reason: "Sandbox CR no longer exists",
+    });
+    expect(
+      await checkLeaseResumable(clients() as never, {
+        ...input,
+        expectedUid: "old",
+      }),
+    ).toMatchObject({ resumable: false });
+  });
+  it("expires terminal failure without waiting for the timeout", async () => {
+    const cr = betaSandbox(false);
+    cr.status.conditions[0].reason = "PodFailed";
+    expect(
+      await checkLeaseResumable(clients(cr) as never, input),
+    ).toMatchObject({
+      resumable: false,
+      reason: expect.stringContaining("PodFailed"),
+    });
+  });
+  it("times out boundedly when the current generation is not ready", async () => {
+    expect(
+      await checkLeaseResumable(clients(betaSandbox(false)) as never, input),
+    ).toMatchObject({
+      resumable: false,
+      reason: expect.stringContaining("Ready"),
+    });
+  });
+  it("expires missing or deleting Pods despite a Ready CR", async () => {
+    const c = clients();
+    c.core.readNamespacedPod.mockRejectedValue(notFound());
+    c.core.listNamespacedPod.mockResolvedValue({ items: [] });
+    expect(await checkLeaseResumable(c as never, input)).toMatchObject({
+      resumable: false,
+    });
+    const pod = {
+      ...betaPod(),
+      metadata: {
+        ...betaPod().metadata,
+        deletionTimestamp: "2026-10-28T00:00:00Z",
+      },
+    };
+    expect(
+      await checkLeaseResumable(clients(betaSandbox(), pod) as never, input),
+    ).toMatchObject({ resumable: false });
+  });
+  it("propagates unexpected Kubernetes API failures", async () => {
+    const c = clients();
+    c.core.readNamespacedPod.mockRejectedValue(
+      Object.assign(new Error("forbidden"), { code: 403 }),
+    );
+    await expect(checkLeaseResumable(c as never, input)).rejects.toThrow(
+      "forbidden",
+    );
   });
 });
 
@@ -193,11 +127,15 @@ describe("checkLeaseResumable (job backend)", () => {
   it("resumes a Running Job lease", async () => {
     const clients = {
       batch: {
-        readNamespacedJobStatus: vi.fn().mockResolvedValue({ status: { active: 1 } }),
+        readNamespacedJobStatus: vi
+          .fn()
+          .mockResolvedValue({ status: { active: 1 } }),
       },
       core: {
         listNamespacedPod: vi.fn().mockResolvedValue({
-          items: [{ metadata: { name: "pc-job-pod" }, status: { phase: "Running" } }],
+          items: [
+            { metadata: { name: "pc-job-pod" }, status: { phase: "Running" } },
+          ],
         }),
       },
     };
@@ -206,7 +144,11 @@ describe("checkLeaseResumable (job backend)", () => {
       name: "pc-job",
       backend: "job",
     });
-    expect(result).toEqual({ resumable: true, podName: "pc-job-pod", phase: "Running" });
+    expect(result).toEqual({
+      resumable: true,
+      podName: "pc-job-pod",
+      phase: "Running",
+    });
   });
 
   it("is not resumable when the Job is gone (404)", async () => {
@@ -227,7 +169,10 @@ describe("checkLeaseResumable (job backend)", () => {
     const clients = {
       batch: {
         readNamespacedJobStatus: vi.fn().mockResolvedValue({
-          status: { succeeded: 1, conditions: [{ type: "Complete", status: "True" }] },
+          status: {
+            succeeded: 1,
+            conditions: [{ type: "Complete", status: "True" }],
+          },
         }),
       },
       core: { listNamespacedPod: vi.fn() },
@@ -245,7 +190,10 @@ describe("checkLeaseResumable (job backend)", () => {
 describe("destroyLeaseResources", () => {
   function makeClients() {
     return {
-      custom: { deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}) },
+      custom: {
+        getNamespacedCustomObject: vi.fn().mockResolvedValue(betaSandbox()),
+        deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}),
+      },
       batch: { deleteNamespacedJob: vi.fn().mockResolvedValue({}) },
       core: {
         deleteNamespacedPod: vi.fn().mockResolvedValue({}),
@@ -254,31 +202,27 @@ describe("destroyLeaseResources", () => {
     };
   }
 
-  it("deletes the Sandbox CR, pod, and per-run Secret (sandbox-cr backend)", async () => {
+  it("UID-preconditions the Sandbox CR cascade without deleting cached child names", async () => {
     const clients = makeClients();
     await destroyLeaseResources(clients as never, {
-      namespace: "paperclip-acme",
+      namespace: "ns",
       name: "pc-abc",
       backend: "sandbox-cr",
+      expectedUid: "uid-1",
       podName: "pc-abc-pod",
       secretName: "pc-abc-env",
     });
     expect(clients.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith({
       group: SANDBOX_GROUP,
       version: SANDBOX_VERSION,
-      namespace: "paperclip-acme",
+      namespace: "ns",
       plural: SANDBOX_PLURAL,
       name: "pc-abc",
       propagationPolicy: "Foreground",
+      body: { preconditions: { uid: "uid-1" } },
     });
-    expect(clients.core.deleteNamespacedPod).toHaveBeenCalledWith({
-      namespace: "paperclip-acme",
-      name: "pc-abc-pod",
-    });
-    expect(clients.core.deleteNamespacedSecret).toHaveBeenCalledWith({
-      namespace: "paperclip-acme",
-      name: "pc-abc-env",
-    });
+    expect(clients.core.deleteNamespacedPod).not.toHaveBeenCalled();
+    expect(clients.core.deleteNamespacedSecret).not.toHaveBeenCalled();
     expect(clients.batch.deleteNamespacedJob).not.toHaveBeenCalled();
   });
 
@@ -306,7 +250,10 @@ describe("destroyLeaseResources", () => {
 
   it("is idempotent: every 404 is treated as success", async () => {
     const clients = {
-      custom: { deleteNamespacedCustomObject: vi.fn().mockRejectedValue(notFound()) },
+      custom: {
+        getNamespacedCustomObject: vi.fn().mockRejectedValue(notFound()),
+        deleteNamespacedCustomObject: vi.fn().mockRejectedValue(notFound()),
+      },
       batch: { deleteNamespacedJob: vi.fn() },
       core: {
         deleteNamespacedPod: vi.fn().mockRejectedValue(notFound()),
@@ -318,19 +265,23 @@ describe("destroyLeaseResources", () => {
         namespace: "ns",
         name: "pc-abc",
         backend: "sandbox-cr",
+        expectedUid: "uid-1",
         podName: "pc-abc-pod",
         secretName: "pc-abc-env",
       }),
     ).resolves.toBeUndefined();
-    expect(clients.core.deleteNamespacedSecret).toHaveBeenCalled();
+    expect(clients.core.deleteNamespacedSecret).not.toHaveBeenCalled();
   });
 
   it("rethrows unexpected (non-404) delete errors", async () => {
     const clients = {
       custom: {
+        getNamespacedCustomObject: vi.fn().mockResolvedValue(betaSandbox()),
         deleteNamespacedCustomObject: vi
           .fn()
-          .mockRejectedValue(Object.assign(new Error("forbidden"), { code: 403 })),
+          .mockRejectedValue(
+            Object.assign(new Error("forbidden"), { code: 403 }),
+          ),
       },
       batch: { deleteNamespacedJob: vi.fn() },
       core: { deleteNamespacedPod: vi.fn(), deleteNamespacedSecret: vi.fn() },
@@ -340,6 +291,7 @@ describe("destroyLeaseResources", () => {
         namespace: "ns",
         name: "pc-abc",
         backend: "sandbox-cr",
+        expectedUid: "uid-1",
         podName: null,
         secretName: null,
       }),

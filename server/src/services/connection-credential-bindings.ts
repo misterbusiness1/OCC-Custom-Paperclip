@@ -1,3 +1,4 @@
+import { assertOrdinaryOnecliBinding } from "./managed-onecli-identity.js";
 import { and, eq, inArray } from "drizzle-orm";
 import { type Db, toolConnections, companySecretBindings, connectionGrants, companySecrets, userSecretDefinitions } from "@paperclipai/db";
 import type { ToolCredentialSecretRef } from "@paperclipai/shared";
@@ -10,15 +11,6 @@ export async function syncConnectionCredentialBindings(
     dbClient: Pick<Db, "select" | "insert" | "update" | "delete"> = db,
   ) {
     const secrets = secretService(db);
-    await dbClient
-      .delete(companySecretBindings)
-      .where(
-        and(
-          eq(companySecretBindings.companyId, connection.companyId),
-          eq(companySecretBindings.targetType, "tool_connection"),
-          eq(companySecretBindings.targetId, connection.id),
-        ),
-      );
     // A metadata edit or pause/resume must retain declarations for every
     // active personal/dedicated grant, not just connection-owned credentials.
     const activeGrants = await dbClient.select({ refs: connectionGrants.credentialSecretRefs })
@@ -57,6 +49,7 @@ export async function syncConnectionCredentialBindings(
       ? await dbClient.select({
           id: companySecrets.id,
           scope: companySecrets.scope,
+          providerMetadata: companySecrets.providerMetadata,
           userSecretDefinitionId: companySecrets.userSecretDefinitionId,
         }).from(companySecrets).where(and(
           eq(companySecrets.companyId, connection.companyId),
@@ -64,6 +57,7 @@ export async function syncConnectionCredentialBindings(
         ))
       : [];
     const secretById = new Map(secretRows.map((row) => [row.id, row]));
+    for (const binding of bindings) assertOrdinaryOnecliBinding(secretById.get(binding.secretId)?.providerMetadata, binding.configPath);
     const definitionIds = [...new Set(secretRows.flatMap((row) => row.userSecretDefinitionId ? [row.userSecretDefinitionId] : []))];
     const definitions = definitionIds.length > 0
       ? await dbClient.select({ id: userSecretDefinitions.id, key: userSecretDefinitions.key })
@@ -90,6 +84,15 @@ export async function syncConnectionCredentialBindings(
           }]
         : [];
     }).map((ref) => [`${ref.definitionKey}:${ref.configPath}`, ref])).values()];
+    await dbClient
+      .delete(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.companyId, connection.companyId),
+          eq(companySecretBindings.targetType, "tool_connection"),
+          eq(companySecretBindings.targetId, connection.id),
+        ),
+      );
     await secrets.syncUserSecretDeclarationsForTarget(
       connection.companyId,
       { targetType: "tool_connection", targetId: connection.id },

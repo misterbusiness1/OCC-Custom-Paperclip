@@ -79,7 +79,7 @@ import {
   type RunProcessResult,
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
-import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import { sanitizeManagedWorkerEnv, sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import {
   runWithRuntimeParent,
@@ -181,6 +181,9 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
+  /** Server-owned run binding names. Values/credentials are never target metadata. */
+  readonly trustedRuntimeEnvKeys?: readonly string[];
+
   /**
    * Read-only effective capability snapshot for this sandbox target. The host
    * resolves it from the provider declaration ∩ the verified worker methods ∩
@@ -662,6 +665,26 @@ export function formatAdapterExecutionTimeoutStartLogLine(
   );
 }
 
+/** Accounting must describe the environment visible to the managed worker. */
+export function adapterExecutionTargetMetadataEnv(
+  target: AdapterExecutionTarget | null | undefined,
+  env: Record<string, string>,
+): Record<string, string> {
+  return target?.kind === "remote" && target.transport === "sandbox" && target.trustedRuntimeEnvKeys !== undefined
+    ? sanitizeExecutionTargetEnv(target, env) : env;
+}
+
+function sanitizeExecutionTargetEnv(
+  target: AdapterExecutionTarget | null | undefined,
+  env: Record<string, string>,
+  inheritedEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  if (target?.kind === "remote" && target.transport === "sandbox" && target.trustedRuntimeEnvKeys !== undefined) {
+    return sanitizeManagedWorkerEnv(env, target.trustedRuntimeEnvKeys, process.env);
+  }
+  return sanitizeRemoteExecutionEnv(env, inheritedEnv);
+}
+
 function requireSandboxRunner(target: AdapterSandboxExecutionTarget): CommandManagedRuntimeRunner {
   if (target.runner) return target.runner;
   throw new Error(
@@ -714,7 +737,7 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
     await ensureSandboxCommandResolvable(
       command,
       target,
-      sanitizeRemoteExecutionEnv(Object.fromEntries(
+      sanitizeExecutionTargetEnv(target, Object.fromEntries(
         Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
       )),
       options.installCommand?.trim() || null,
@@ -864,7 +887,7 @@ export async function runAdapterExecutionTargetProcess(
 ): Promise<RunProcessResult> {
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
-    const env = sanitizeRemoteExecutionEnv(options.env);
+    const env = sanitizeExecutionTargetEnv(target, options.env);
     await options.onRuntimeProgress?.({
       phase: "adapter_startup",
       message: "Starting adapter in environment",
@@ -913,7 +936,7 @@ export async function runAdapterExecutionTargetProcess(
 
   const env =
     target?.kind === "remote" && target.transport === "ssh"
-      ? sanitizeRemoteExecutionEnv(options.env)
+      ? sanitizeExecutionTargetEnv(target, options.env)
       : options.env;
 
   const result = await runChildProcess(runId, command, args, {
@@ -946,7 +969,7 @@ export async function runAdapterExecutionTargetShellCommand(
   const onLog = options.onLog ?? (async () => {});
   if (target?.kind === "remote") {
     const startedAt = new Date().toISOString();
-    const env = sanitizeRemoteExecutionEnv(options.env);
+    const env = sanitizeExecutionTargetEnv(target, options.env);
     if (target.transport === "ssh") {
       try {
         // Pass the raw command — `runSshCommand` owns profile sourcing and
@@ -1583,7 +1606,7 @@ async function githubOperationLauncherBasePath(
   env: Record<string, string>,
 ): Promise<string> {
   if (!target) return env.PATH || process.env.PATH || "/usr/bin:/bin";
-  const configuredPath = sanitizeRemoteExecutionEnv(env).PATH;
+  const configuredPath = sanitizeExecutionTargetEnv(target, env).PATH;
   if (configuredPath !== undefined) return configuredPath;
 
   // The provider owns login/profile setup. Query its effective PATH before
@@ -2057,7 +2080,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     // adapter/runtime inputs and registered contributions. Compare against an
     // empty inherited baseline so an explicit identity value (notably PATH)
     // is not reclassified as ambient merely because it equals the host value.
-    env: sanitizeRemoteExecutionEnv(launchEnv, {}),
+    env: sanitizeExecutionTargetEnv(target, launchEnv, {}),
   }), "utf8").toString("base64");
   // Base64 plus JSON escaping can push an otherwise valid child environment
   // past Linux's per-argument/per-variable exec limit. Keep small launches on

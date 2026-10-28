@@ -896,6 +896,7 @@ describe("secret routes", () => {
       expect.objectContaining({
         externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/repointed",
       }),
+      { userId: "user-1", agentId: null },
     );
     expect(mockLogActivity).not.toHaveBeenCalled();
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("shared/repointed");
@@ -1028,6 +1029,7 @@ describe("secret routes", () => {
     expect(res.body).toEqual({ ok: true });
     expect(mockSecretService.remove).toHaveBeenCalledWith(
       "33333333-3333-4333-8333-333333333333",
+      { userId: "user-1", agentId: null },
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
