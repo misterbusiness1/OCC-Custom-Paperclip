@@ -114,10 +114,3 @@ jobs:
             --title "chore(lockfile): refresh pnpm-lock.yaml" \
             --body "CI-generated lockfile for $REFRESH_BASE_REF at $REFRESH_EXPECTED_SHA. Only pnpm-lock.yaml changes.")"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
-
-      - name: Enable auto-merge for lockfile PR
-        if: steps.upsert-pr.outputs.pr_url != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh pr merge --auto --squash --delete-branch "${{ steps.upsert-pr.outputs.pr_url }}"
