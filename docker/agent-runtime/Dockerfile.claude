@@ -1,10 +1,14 @@
 # syntax=docker/dockerfile:1.6
 ARG BASE_TAG=dev
-FROM paperclipai/agent-runtime-base:${BASE_TAG}
+ARG BASE_IMAGE=paperclipai/agent-runtime-base:${BASE_TAG}
+FROM ${BASE_IMAGE}
+
+ARG CLAUDE_VERSION=2.1.308
 
 USER root
-RUN npm install -g @anthropic-ai/claude-code@latest \
-    && { chown -R 1000:1000 /usr/lib/node_modules || true; }
+RUN printf '%s\n' "$CLAUDE_VERSION" | grep -Ex '[0-9]+\.[0-9]+\.[0-9]+' \
+    && npm install -g @anthropic-ai/claude-code@"$CLAUDE_VERSION" \
+    && chown -R 1000:1000 /usr/lib/node_modules
 
 # @anthropic-ai/claude-code installs as 'claude', but the shim expects 'claude-code'.
 # Resolve the real install path and fail the build if claude is missing.
@@ -15,3 +19,6 @@ USER 1000:1000
 
 # Verify the CLI is on PATH for the shim's exec.LookPath
 RUN command -v claude-code >/dev/null 2>&1 || (echo "claude-code not on PATH"; exit 1)
+
+LABEL io.paperclip.claude.version=$CLAUDE_VERSION
+RUN --network=none claude-code --version | grep -Fx "$CLAUDE_VERSION (Claude Code)"

@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1.6
+ARG BASE_TAG=dev
+FROM paperclipai/agent-runtime-base:${BASE_TAG}
+
+# Public native CGO-disabled linux/amd64 CLI, supplied by an explicit named
+# BuildKit context. Source and binary pins come from the reviewed CLI release.
+ARG ONECLI_SOURCE_COMMIT
+ARG ONECLI_SOURCE_TREE
+ARG ONECLI_BINARY_SHA256
+
+USER root
+COPY --from=onecli-cli --chmod=0755 /onecli /usr/local/bin/onecli
+RUN printf '%s\n' "$ONECLI_SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' \
+    && printf '%s\n' "$ONECLI_SOURCE_TREE" | grep -Eq '^[0-9a-f]{40}$' \
+    && printf '%s\n' "$ONECLI_BINARY_SHA256" | grep -Ex '[0-9a-f]{64}' \
+    && printf '%s  %s\n' "$ONECLI_BINARY_SHA256" /usr/local/bin/onecli | sha256sum --check --strict -
+
+LABEL io.paperclip.onecli.source-commit=$ONECLI_SOURCE_COMMIT \
+      io.paperclip.onecli.source-tree=$ONECLI_SOURCE_TREE \
+      io.paperclip.onecli.binary-sha256=$ONECLI_BINARY_SHA256
+
+USER 1000:1000
+RUN command -v onecli >/dev/null
+
+# Native version proves the binary's embedded source commit without a server
+# external request. The native health attempt targets only a closed loopback
+# port. Never reuse a builder's HOME, config, or management credential.
+RUN --network=none isolated_home="$(mktemp -d)" \
+    && HOME="$isolated_home" XDG_CONFIG_HOME="$isolated_home" ONECLI_API_KEY= ONECLI_API_HOST=http://127.0.0.1:1 \
+       onecli version > "$isolated_home/version.json" \
+    && node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[2],"utf8"));if(v.version!==process.argv[1]||v.server_status!=="unreachable")process.exit(1);' \
+       "$ONECLI_SOURCE_COMMIT" "$isolated_home/version.json" \
+    && rm "$isolated_home/version.json" && rmdir "$isolated_home"
