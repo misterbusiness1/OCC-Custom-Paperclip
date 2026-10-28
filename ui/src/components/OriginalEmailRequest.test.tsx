@@ -44,7 +44,8 @@ describe("original email disclosure", () => {
     expect(block.querySelector("script")).toBeNull();
     expect(block.textContent).toContain("Quoted by the requesting agent, not verified");
     expect(block.textContent).not.toContain(payload.body);
-    expect(toggle("Show more")?.getAttribute("aria-label")).toBe("Show more: Original email");
+    expect(toggle("Show more")?.getAttribute("aria-label")).toBe("Show more: Original email from synthetic@example.test");
+    expect(block.querySelector("div.border-dashed")).not.toBeNull();
   });
   it("collapses a previously expanded message when its retained source changes", () => {
     act(() => root.render(<OriginalRequestBlock payload={longPayload} compact />));
@@ -67,6 +68,7 @@ describe("original email disclosure", () => {
   it("shows an explicit missing-source state without presenting the outgoing draft as incoming", () => {
     act(() => root.render(<OriginalRequestBlock payload={{ body: payload.body, recipient: payload.recipient }} />));
     expect(container.textContent).toContain("did not attach the email this reply answers");
+    expect(container.textContent).not.toContain("Open the linked task");
     expect(container.querySelector("pre")).toBeNull();
     expect(container.textContent).not.toContain(payload.body);
   });

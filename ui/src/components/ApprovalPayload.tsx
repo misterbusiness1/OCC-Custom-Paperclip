@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -200,7 +200,7 @@ export function OriginalRequestBlock({
             Original email
           </ApprovalSectionLabel>
           <p className="mt-1 text-sm leading-5 text-muted-foreground">
-            The requesting agent did not attach the email this reply answers. Open the linked task to read it.
+            The requesting agent did not attach the email this reply answers. Ask the agent for it, or read it in the linked task if there is one.
           </p>
         </div>
       );
@@ -219,6 +219,7 @@ export function OriginalRequestBlock({
 
   // "Original email" only when the source is an outside message; a reply drafted from a Paperclip comment keeps "Original request".
   const sourceLabel = isEmail && original.source.kind === "external" ? "Original email" : "Original request";
+  const senderName = approvalOriginalRequestSender(original.source, resolveAgentName);
   const commentHref =
     original.source.kind === "paperclip_comment" && original.source.issueId && original.source.commentId
       ? `/issues/${original.source.issueId}#comment-${original.source.commentId}`
@@ -267,17 +268,23 @@ export function OriginalRequestBlock({
         // A new source text starts collapsed again: a revision must not inherit "Show more" from the old one.
         key={original.text}
         text={original.text}
-        // On the queue an email reply shows the start of the email it answers, with the rest behind
-        // "Show more"; the request's own page shows it whole. Other requests are previewed on compact surfaces.
-        collapsible={compact && (isEmail ? isLongOriginalEmail(original.text) : isLongOriginalRequest(original.text))}
+        // On the queue an email reply always shows at most six lines of the email it answers, with the rest
+        // behind "Show more" (the button appears when the text really overflows); the request's own page shows
+        // it whole. Other requests are previewed on compact surfaces, as before.
+        collapsible={compact && (isEmail || isLongOriginalRequest(original.text))}
+        measure={compact && isEmail}
+        fallbackLong={isEmail ? isLongOriginalEmail(original.text) : true}
         previewLines={isEmail ? 6 : 4}
         expandLabel={isEmail ? "Show more" : undefined}
-        subject={sourceLabel}
+        subject={senderName && isEmail ? `${sourceLabel} from ${senderName}` : sourceLabel}
+        // Incoming, unverified text: a dashed frame on the page background, so it can never pass for the
+        // outgoing draft, which sits in a solid muted box right below it.
+        boxClassName={isEmail ? "mt-2 rounded-md border border-dashed border-border bg-background p-3" : undefined}
       />
     </>
   );
 
-  // Kept apart from the outgoing draft by its own label and box. Never interpret the retained text as HTML.
+  // Kept apart from the outgoing draft by its own label and a dashed frame. Never interpret the retained text as HTML.
   return (
     <div data-approval-original-request={isEmail ? "email" : "request"} className="min-w-0">
       {content}
@@ -311,25 +318,59 @@ function isLongOriginalRequest(text: string) {
 function OriginalRequestText({
   text,
   collapsible,
+  measure = false,
+  fallbackLong = true,
   previewLines = 4,
   expandLabel,
   subject = "Original request",
+  boxClassName,
 }: {
   text: string;
   collapsible: boolean;
+  /** Decide whether "Show more" is needed from the rendered height, not from counting characters. */
+  measure?: boolean;
+  /** Used when the height cannot be measured (no layout, as in tests). */
+  fallbackLong?: boolean;
   previewLines?: 4 | 6;
   /** The button text while collapsed; defaults to one that states the request's size. */
   expandLabel?: string;
   subject?: string;
+  boxClassName?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(fallbackLong);
+  const textRef = useRef<HTMLPreElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const clamped = collapsible && !expanded;
+
+  // Measured while clamped, again on every resize: a paragraph that fits six lines on a wide card can need
+  // fifteen on a phone. Without layout (scrollHeight 0) the length rule stands.
+  useLayoutEffect(() => {
+    if (!measure || expanded) return;
+    const element = textRef.current;
+    if (!element) return;
+    const check = () => {
+      if (element.scrollHeight === 0) {
+        setOverflowing(fallbackLong);
+        return;
+      }
+      setOverflowing(element.scrollHeight > element.clientHeight + 1);
+    };
+    check();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(check);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [measure, expanded, fallbackLong, text]);
+
+  const showButton = collapsible && (!measure || expanded || overflowing);
 
   return (
     <>
-      <div className="mt-2 rounded-md bg-muted/40 p-3">
+      <div className={boxClassName ?? "mt-2 rounded-md bg-muted/40 p-3"}>
         {/* Shown whole or behind the announced preview: never in a box that scrolls its end out of sight. */}
         <pre
+          ref={textRef}
           className={cn(
             // A pre is monospace by default. This is a person's message, so it takes the text face.
             "whitespace-pre-wrap wrap-anywhere font-sans text-sm leading-6 text-foreground",
@@ -339,13 +380,22 @@ function OriginalRequestText({
           {text}
         </pre>
       </div>
-      {collapsible && (
+      {showButton && (
         <button
+          ref={buttonRef}
           type="button"
           className="mt-1 inline-flex min-h-6 items-center text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
           aria-expanded={expanded}
           aria-label={expanded ? `Show less: ${subject}` : expandLabel ? `${expandLabel}: ${subject}` : undefined}
-          onClick={() => setExpanded((value) => !value)}
+          onClick={() => {
+            const collapsing = expanded;
+            setExpanded((value) => !value);
+            // After "Show less" the long text is gone from above: bring the collapsed email back into view
+            // instead of leaving the reader somewhere in the draft.
+            if (collapsing) {
+              requestAnimationFrame(() => buttonRef.current?.scrollIntoView?.({ block: "nearest" }));
+            }
+          }}
         >
           {expanded ? "Show less" : (expandLabel ?? `Show full request (${text.length.toLocaleString()} characters)`)}
         </button>

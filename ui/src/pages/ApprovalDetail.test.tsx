@@ -243,7 +243,11 @@ describe("ApprovalDetail", () => {
     expect(source[0].textContent).not.toContain("Last line of the draft.");
     // Owner request 2026-10-28: the original email is shown open, after the pros and risks and right above the draft.
     expect(controlsAboveDecision()).toEqual([]);
-    expect(panel().textContent ?? "").toMatch(/Risks[\s\S]*Original email[\s\S]*Draft reply|Risks[\s\S]*Original email/);
+    expect(panel().textContent ?? "").toMatch(/Risks[\s\S]*Original email[\s\S]*Draft reply/);
+    // The incoming email is framed apart from the outgoing draft (dashed frame vs the draft's solid box).
+    const originalBlock = panel().querySelector<HTMLElement>("[data-approval-original-request='email']")!;
+    expect(originalBlock.contains(draft)).toBe(false);
+    expect(originalBlock.querySelector("div.border-dashed")).not.toBeNull();
   });
 
   it("names who wrote the original comment instead of printing an id, above the buttons and in Full request", async () => {
