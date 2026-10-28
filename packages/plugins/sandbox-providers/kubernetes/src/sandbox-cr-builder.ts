@@ -1,3 +1,4 @@
+import { SANDBOX_API_VERSION } from "./sandbox-api.js";
 /**
  * Builds a kubernetes-sigs/agent-sandbox Sandbox CR manifest.
  *
@@ -40,7 +41,7 @@ export function buildSandboxCrManifest(
     "paperclip.io/role": "agent",
   };
   return {
-    apiVersion: "agents.x-k8s.io/v1alpha1",
+    apiVersion: SANDBOX_API_VERSION,
     kind: "Sandbox",
     metadata: {
       name: input.sandboxName,

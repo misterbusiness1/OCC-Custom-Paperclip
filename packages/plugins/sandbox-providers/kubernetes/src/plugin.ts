@@ -1,3 +1,4 @@
+import { SANDBOX_API_VERSION } from "./sandbox-api.js";
 import { randomBytes } from "node:crypto";
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
@@ -101,15 +102,12 @@ function getOrCreateUploadInterceptor(leaseId: string): FastUploadInterceptor {
   return interceptor;
 }
 
-// In-memory cache of sandbox CR names we've already observed reaching the
-// Ready condition during the current plugin-worker lifetime. The k8s
-// sandbox-cr lifecycle means once a Sandbox pod is Running, subsequent
-// execs into it don't need another readiness poll — saves one
-// `getNamespacedCustomObject` round-trip per exec, which adds up across
-// dozens of sequential exec calls in a typical adapter workflow.
-// On worker restart this resets, which is fine: the first exec on each
-// lease then re-confirms readiness from scratch.
-const readySandboxesByLease = new Set<string>();
+// A lease name alone cannot identify a Sandbox after deletion/recreation.
+function requireSandboxUid(metadata: Record<string, unknown> | null | undefined): string {
+  const uid = metadata?.workloadUid;
+  if (typeof uid !== "string" || uid.length === 0) throw new Error("Sandbox lease has no verified workload UID; acquire a fresh lease");
+  return uid;
+}
 
 // How long onEnvironmentResumeLease waits for an existing Sandbox pod to
 // report Ready before declaring the lease non-resumable. Deliberately short:
@@ -135,7 +133,7 @@ function resolveSyncRemoteDir(lease: PluginEnvironmentLease): string {
  * Resolve the running Sandbox-CR pod for a native file-sync operation and return
  * a `PodStreamExec` bound to it, exactly like `onEnvironmentExecute` resolves its exec
  * target: parse config, derive the namespace, wait for the Sandbox pod to reach
- * Ready (cached per lease), and find the pod name. The `job` backend carries no
+ * Ready for the exact lease UID, and validate the pod owner. The `job` backend carries no
  * file path and is out of scope — file sync is only supported on `sandbox-cr`.
  */
 async function resolveSyncPodExec(
@@ -171,20 +169,9 @@ async function resolveSyncPodExec(
   const clients = makeKubeClients(kc);
   const timeoutMs = config.podActivityDeadlineSec * 1000;
 
-  // Ensure the Sandbox pod is Ready (wait only the first time for this lease),
-  // then resolve the pod name — mirrors the onEnvironmentExecute resolution.
-  if (!readySandboxesByLease.has(lease.providerLeaseId)) {
-    await sandboxCrOrchestrator.waitForCompletion(clients, namespace, lease.providerLeaseId, {
-      timeoutMs,
-      pollMs: 2000,
-    });
-    readySandboxesByLease.add(lease.providerLeaseId);
-  }
-
-  const podName =
-    typeof lease.metadata?.podName === "string" && lease.metadata.podName
-      ? lease.metadata.podName
-      : await sandboxCrOrchestrator.findPod(clients, namespace, lease.providerLeaseId);
+  const expectedUid = requireSandboxUid(lease.metadata);
+  await sandboxCrOrchestrator.waitForCompletion(clients, namespace, lease.providerLeaseId, { timeoutMs, pollMs: 2000, expectedUid });
+  const podName = await sandboxCrOrchestrator.findPod(clients, namespace, lease.providerLeaseId, expectedUid);
   if (!podName) {
     throw new Error("Kubernetes file sync could not resolve the Sandbox pod name.");
   }
@@ -409,7 +396,7 @@ const plugin = definePlugin({
         runId: params.runId,
         workloadName: jobName,
         ownerReference: {
-          apiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
+          apiVersion: isSandboxCrBackend ? SANDBOX_API_VERSION : "batch/v1",
           kind: isSandboxCrBackend ? "Sandbox" : "Job",
           name: jobName,
           uid: ownerUid,
@@ -418,7 +405,7 @@ const plugin = definePlugin({
         },
         grant: scopedNetworkEgress,
       },
-      () => orchestrator.release(clients, namespace, jobName),
+      () => orchestrator.release(clients, namespace, jobName, ownerUid),
     );
 
     // defaultEnv (non-secret base, e.g. the inference base URL) is layered first;
@@ -439,18 +426,19 @@ const plugin = definePlugin({
       secretName,
       runId: params.runId,
       ownerKind: isSandboxCrBackend ? "Sandbox" : "Job",
-      ownerApiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
+      ownerApiVersion: isSandboxCrBackend ? SANDBOX_API_VERSION : "batch/v1",
       ownerName: jobName,
       ownerUid,
       bootstrapToken,
       adapterEnv,
     });
 
-    const podName = await orchestrator.findPod(clients, namespace, jobName);
+    const podName = await orchestrator.findPod(clients, namespace, jobName, ownerUid);
 
     const leaseMetadata: KubernetesLeaseMetadata = {
       namespace,
       jobName,
+      workloadUid: ownerUid,
       podName,
       secretName,
       ...(params.onecliBootstrapPolicy ? { onecliBootstrapPolicy: params.onecliBootstrapPolicy } : {}),
@@ -503,6 +491,7 @@ const plugin = definePlugin({
       namespace,
       name: params.providerLeaseId,
       backend: leaseBackend,
+      expectedUid: leaseBackend === "sandbox-cr" && typeof params.leaseMetadata?.workloadUid === "string" ? params.leaseMetadata.workloadUid : undefined,
       readyTimeoutMs: RESUME_READY_TIMEOUT_MS,
       pollMs: RESUME_READY_POLL_MS,
     });
@@ -522,15 +511,11 @@ const plugin = definePlugin({
     // A resumed lease starts with clean per-lease state: drop any stale upload
     // interceptor buffers a previous run on this lease may have left behind.
     uploadInterceptorsByLease.delete(params.providerLeaseId);
-    if (leaseBackend === "sandbox-cr") {
-      // We just observed the Sandbox pod Ready, so the first exec on the
-      // resumed lease can skip its readiness poll.
-      readySandboxesByLease.add(params.providerLeaseId);
-    }
 
     const leaseMetadata: KubernetesLeaseMetadata = {
       namespace,
       jobName: params.providerLeaseId,
+      ...(leaseBackend === "sandbox-cr" ? { workloadUid: requireSandboxUid(params.leaseMetadata) } : {}),
       ...(params.leaseMetadata?.onecliBootstrapPolicy === "run-bindings-only-v1" ? { onecliBootstrapPolicy: "run-bindings-only-v1" as const } : {}),
       podName: check.podName,
       secretName,
@@ -603,10 +588,9 @@ const plugin = definePlugin({
     // Each lease has its own interceptor instance via uploadInterceptorsByLease,
     // so unrelated concurrent leases keep their in-flight buffers intact.
     uploadInterceptorsByLease.delete(params.providerLeaseId);
-    readySandboxesByLease.delete(params.providerLeaseId);
 
     try {
-      await releaseOrchestrator.release(clients, namespace, params.providerLeaseId);
+      await releaseOrchestrator.release(clients, namespace, params.providerLeaseId, leaseBackend === "sandbox-cr" ? requireSandboxUid(params.leaseMetadata) : undefined);
     } catch (err) {
       // If the resource is already gone (404), that's fine.
       const code = (err as { code?: number; statusCode?: number }).code
@@ -641,7 +625,6 @@ const plugin = definePlugin({
     // Clear per-lease in-memory state up front, regardless of what the
     // cluster says — the lease is dead either way.
     uploadInterceptorsByLease.delete(params.providerLeaseId);
-    readySandboxesByLease.delete(params.providerLeaseId);
 
     const kc = createKubeConfig({
       inCluster: config.inCluster,
@@ -655,6 +638,7 @@ const plugin = definePlugin({
       namespace,
       name: params.providerLeaseId,
       backend: leaseBackend,
+      expectedUid: leaseBackend === "sandbox-cr" ? requireSandboxUid(params.leaseMetadata) : undefined,
       podName,
       secretName,
     });
@@ -702,34 +686,25 @@ const plugin = definePlugin({
 
     if (leaseBackend === "sandbox-cr") {
       // ── Sandbox-CR backend ──────────────────────────────────────────────────
-      // 1. Ensure the Sandbox pod is Ready (wait only on first exec for this lease).
+      // 1. Ensure the current Sandbox generation and lease UID are Ready.
       // 2. Exec the command into the running pod.
       // 3. Return exec result directly (no log scraping needed).
 
-      let podName =
-        typeof lease.metadata?.podName === "string" && lease.metadata.podName
-          ? lease.metadata.podName
-          : null;
-
-      // Skip the readiness poll if we've already observed this Sandbox CR
-      // reaching Ready during this worker's lifetime. See readySandboxesByLease
-      // declaration for rationale.
-      const podAlreadyKnownReady = readySandboxesByLease.has(lease.providerLeaseId);
+      const expectedUid = requireSandboxUid(lease.metadata);
 
       // The caller's timeout is a budget for the WHOLE execute call: readiness
       // wait + exec must share it, or the first exec on a fresh lease could
       // block for up to twice the requested timeout.
       const executeStartedAt = Date.now();
 
-      if (!podAlreadyKnownReady) {
+      {
         try {
           await sandboxCrOrchestrator.waitForCompletion(
             clients,
             namespace,
             lease.providerLeaseId,
-            { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
+            { timeoutMs: effectiveTimeoutMs, pollMs: 2000, expectedUid },
           );
-          readySandboxesByLease.add(lease.providerLeaseId);
         } catch (err) {
           if (err instanceof SandboxCrTimeoutError) {
             return {
@@ -749,14 +724,9 @@ const plugin = definePlugin({
         }
       }
 
-      // Resolve pod name (may now be populated in Sandbox status).
-      if (!podName) {
-        podName = await sandboxCrOrchestrator.findPod(
-          clients,
-          namespace,
-          lease.providerLeaseId,
-        );
-      }
+      // Never trust a cached name: validate the current CR and pod controller UID.
+      const podName = await sandboxCrOrchestrator.findPod(clients, namespace, lease.providerLeaseId, expectedUid);
+
 
       if (!podName) {
         return {
