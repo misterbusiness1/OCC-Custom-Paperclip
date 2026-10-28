@@ -395,7 +395,11 @@ function OriginalRequestText({
       {showButton && (
         <button
           type="button"
-          className="mt-1 inline-flex min-h-6 items-center text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          className={cn(
+            "mt-1 inline-flex min-h-6 items-center text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground",
+            // The email's own toggle is a 44px touch target on phones (the mobile operator rule).
+            measure && "min-h-11 sm:min-h-6",
+          )}
           aria-expanded={expanded}
           aria-label={expanded ? `Show less: ${subject}` : expandLabel ? `${expandLabel}: ${subject}` : undefined}
           onClick={(event) => {
