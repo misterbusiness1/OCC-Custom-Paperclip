@@ -189,9 +189,22 @@ export function OriginalRequestBlock({
   resolveAgentName?: OriginalRequestSenderResolver;
 }) {
   const original = approvalOriginalRequest(payload);
+  const isEmail = isEmailReplyPayload(payload);
   if (!original) {
     // Compact surfaces state this once in their header line (approvalMissingSourceNote).
     if (compact) return null;
+    if (isEmail) {
+      return (
+        <div>
+          <ApprovalSectionLabel className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+            Original email
+          </ApprovalSectionLabel>
+          <p className="mt-1 text-sm leading-5 text-muted-foreground">
+            The requesting agent did not attach the email this reply answers. Open the linked task to read it.
+          </p>
+        </div>
+      );
+    }
     return (
       <div>
         <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
@@ -204,6 +217,8 @@ export function OriginalRequestBlock({
     );
   }
 
+  // "Original email" only when the source is an outside message; a reply drafted from a Paperclip comment keeps "Original request".
+  const sourceLabel = isEmail && original.source.kind === "external" ? "Original email" : "Original request";
   const commentHref =
     original.source.kind === "paperclip_comment" && original.source.issueId && original.source.commentId
       ? `/issues/${original.source.issueId}#comment-${original.source.commentId}`
@@ -235,11 +250,9 @@ export function OriginalRequestBlock({
 
   const content = (
     <>
-      {!isEmailReplyPayload(payload) && (
-        <ApprovalSectionLabel className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-          Original request
-        </ApprovalSectionLabel>
-      )}
+      <ApprovalSectionLabel className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+        {sourceLabel}
+      </ApprovalSectionLabel>
       {provenance.length > 0 && (
         <p className="mt-1 break-words text-xs text-muted-foreground">
           {provenance.map((part, index) => (
@@ -250,25 +263,37 @@ export function OriginalRequestBlock({
           ))}
         </p>
       )}
-      <OriginalRequestText text={original.text} collapsible={!isEmailReplyPayload(payload) && compact && isLongOriginalRequest(original.text)} />
+      <OriginalRequestText
+        text={original.text}
+        // On the queue an email reply shows the start of the email it answers, with the rest behind
+        // "Show more"; the request's own page shows it whole. Other requests are previewed on compact surfaces.
+        collapsible={compact && (isEmail ? isLongOriginalEmail(original.text) : isLongOriginalRequest(original.text))}
+        previewLines={isEmail ? 6 : 4}
+        expandLabel={isEmail ? "Show more" : undefined}
+        subject={sourceLabel}
+      />
     </>
   );
 
-  // Native disclosure is keyboard/touch accessible and keeps incoming email
-  // separate from the outgoing draft. Never interpret the retained text as HTML.
-  if (isEmailReplyPayload(payload)) {
-    return (
-      <details key={original.text} className="min-w-0 rounded-md border border-border p-3">
-        <summary className="cursor-pointer text-sm font-medium" aria-label={original.source.kind === "external" && original.source.channel === "email" ? "Original email request" : "Original request"}>Original request</summary>
-        {content}
-      </details>
-    );
-  }
-  return <div>{content}</div>;
+  // Kept apart from the outgoing draft by its own label and box. Never interpret the retained text as HTML.
+  return (
+    <div data-approval-original-request={isEmail ? "email" : "request"} className="min-w-0">
+      {content}
+    </div>
+  );
 }
 
 const ORIGINAL_REQUEST_PREVIEW_LENGTH = 480;
 const ORIGINAL_REQUEST_PREVIEW_LINES = 16;
+
+const ORIGINAL_EMAIL_PREVIEW_LENGTH = 600;
+const ORIGINAL_EMAIL_PREVIEW_LINES = 6;
+
+/** An original email this long shows its start, with the rest behind "Show more". */
+function isLongOriginalEmail(text: string) {
+  if (text.length > ORIGINAL_EMAIL_PREVIEW_LENGTH) return true;
+  return text.split("\n").length > ORIGINAL_EMAIL_PREVIEW_LINES;
+}
 
 /** A request this long is previewed on compact surfaces, behind a button that states its size. */
 function isLongOriginalRequest(text: string) {
@@ -281,7 +306,20 @@ function isLongOriginalRequest(text: string) {
   return false;
 }
 
-function OriginalRequestText({ text, collapsible }: { text: string; collapsible: boolean }) {
+function OriginalRequestText({
+  text,
+  collapsible,
+  previewLines = 4,
+  expandLabel,
+  subject = "Original request",
+}: {
+  text: string;
+  collapsible: boolean;
+  previewLines?: 4 | 6;
+  /** The button text while collapsed; defaults to one that states the request's size. */
+  expandLabel?: string;
+  subject?: string;
+}) {
   const [expanded, setExpanded] = useState(false);
   const clamped = collapsible && !expanded;
 
@@ -293,7 +331,7 @@ function OriginalRequestText({ text, collapsible }: { text: string; collapsible:
           className={cn(
             // A pre is monospace by default. This is a person's message, so it takes the text face.
             "whitespace-pre-wrap wrap-anywhere font-sans text-sm leading-6 text-foreground",
-            clamped && "line-clamp-4",
+            clamped && (previewLines === 6 ? "line-clamp-6" : "line-clamp-4"),
           )}
         >
           {text}
@@ -304,10 +342,10 @@ function OriginalRequestText({ text, collapsible }: { text: string; collapsible:
           type="button"
           className="mt-1 inline-flex min-h-6 items-center text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
           aria-expanded={expanded}
-          aria-label={expanded ? "Show less: Original request" : undefined}
+          aria-label={expanded ? `Show less: ${subject}` : expandLabel ? `${expandLabel}: ${subject}` : undefined}
           onClick={() => setExpanded((value) => !value)}
         >
-          {expanded ? "Show less" : `Show full request (${text.length.toLocaleString()} characters)`}
+          {expanded ? "Show less" : (expandLabel ?? `Show full request (${text.length.toLocaleString()} characters)`)}
         </button>
       )}
     </>
@@ -1000,7 +1038,6 @@ export function EmailReplyPayload({
           <p className="mt-1 leading-6 text-foreground">{brief.recommendation}</p>
         </div>
       )}
-      <OriginalRequestBlock payload={payload} resolveAgentName={resolveAgentName} />
       {reasoning && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Why</p>
@@ -1013,6 +1050,8 @@ export function EmailReplyPayload({
           <DecisionList label="Risks" items={brief.cons} />
         </div>
       )}
+      {/* The email being answered, right above the reply to it. */}
+      <OriginalRequestBlock payload={payload} resolveAgentName={resolveAgentName} />
       <div className="space-y-1">
         <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
           Draft reply

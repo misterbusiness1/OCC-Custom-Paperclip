@@ -192,7 +192,7 @@ describe("ApprovalDetail", () => {
     expect(isBefore(lastRisk, button(panel(), "Approve"))).toBe(true);
   });
 
-  it("shows the whole email draft and an original-request disclosure above the decision buttons", async () => {
+  it("shows the whole email draft and the whole original email above the decision buttons", async () => {
     // Longer than the 1,500 characters a card or inbox row shows before "Show full reply".
     const body = `Hi Sam,\n\n${"Our wholesale price list is attached. ".repeat(60)}\n\nLast line of the draft.`;
     expect(body.length).toBeGreaterThan(1500);
@@ -241,7 +241,9 @@ describe("ApprovalDetail", () => {
     expect(isBefore(effect, button(panel(), "Approve"))).toBe(true);
     // The draft is never offered as the original request.
     expect(source[0].textContent).not.toContain("Last line of the draft.");
-    expect(controlsAboveDecision()).toEqual(["Original request"]);
+    // Owner request 2026-10-28: the original email is shown open, after the pros and risks and right above the draft.
+    expect(controlsAboveDecision()).toEqual([]);
+    expect(panel().textContent ?? "").toMatch(/Risks[\s\S]*Original email[\s\S]*Draft reply|Risks[\s\S]*Original email/);
   });
 
   it("names who wrote the original comment instead of printing an id, above the buttons and in Full request", async () => {

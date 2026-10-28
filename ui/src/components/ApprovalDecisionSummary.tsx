@@ -609,7 +609,7 @@ export function ApprovalDecisionSummary({
         emptyText={emptyText}
       />
       {/* Compact: an announced preview, and a missing source is noted once in the header line. In full: all of it. */}
-      {isBoardApproval && (
+      {isBoardApproval && !draft && (
         <OriginalRequestBlock payload={payload} compact={!full} resolveAgentName={resolveAgentName} />
       )}
       <DecisionField label="Why" value={brief.reasoning} {...WHY_PREVIEW} full={full} emptyText={emptyText} />
@@ -625,6 +625,10 @@ export function ApprovalDecisionSummary({
       )}
       {hasNoSourceOrPoints && (
         <p className="text-sm leading-5 text-muted-foreground">No pros or risks were recorded.</p>
+      )}
+      {/* An email reply: the email it answers sits right above the draft, after the pros and risks. */}
+      {isBoardApproval && draft && (
+        <OriginalRequestBlock payload={payload} compact={!full} resolveAgentName={resolveAgentName} />
       )}
       {draft && <ApprovalEmailDraftBlock draft={draft} full={full} control={draftControl} />}
       {/*
