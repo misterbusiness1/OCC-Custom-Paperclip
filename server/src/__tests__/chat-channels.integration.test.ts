@@ -62054,6 +62054,65 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
+  it("exposes deferred scheduler completion through the native tracked work promise", async () => {
+    const fixture = await seedCompany();
+    const deferred: Array<() => void | Promise<void>> = [];
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredGitHubEndpoint(fixture, {
+        deferWebhookProcessing: true,
+        scheduleDeferredWork: (task) => deferred.push(task),
+        wakeup: async () => {
+          entered();
+          await held;
+          return { accepted: true };
+        },
+      });
+    const { thread } = makeThread({
+      channelId: "paperclipai/paperclip",
+      id: "github:paperclipai/paperclip:issue:8901",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "github",
+      thread,
+      trigger: "mention",
+      message: makeMessage({
+        id: "8901001",
+        mentioned: true,
+        text: "@maya controlled scheduler completion",
+        userId: "7001",
+      }),
+    });
+    expect(deferred).toHaveLength(1);
+    const pending = deferred.shift()?.();
+    let completed = false;
+    const completion = Promise.resolve(pending).then(() => {
+      completed = true;
+    });
+    try {
+      expect(pending).toBeInstanceOf(Promise);
+      await started;
+      expect(completed).toBe(false);
+      release();
+      await completion;
+      expect(completed).toBe(true);
+      expect(wakeup).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      await pending;
+      await service.shutdown();
+    }
+  });
+
   it("orders reversed GitHub edit and delete callbacks behind their durable root", async () => {
     const fixture = await seedCompany();
     const deferred: Array<() => void | Promise<void>> = [];
@@ -62065,9 +62124,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const drainDeferred = async () => {
       let processed = 0;
       while (deferred.length > 0) {
-        if (processed++ >= 20)
-          throw new Error("GitHub deferred test work did not quiesce");
-        await deferred.shift()?.();
+        await Promise.all(
+          deferred.splice(0).map((task) => {
+            if (processed++ >= 20)
+              throw new Error("GitHub deferred test work did not quiesce");
+            return task();
+          }),
+        );
       }
     };
     const thread = makeThread({
@@ -62198,8 +62261,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).resolves.toMatchObject({ ok: true });
     expect(deferred).toHaveLength(1);
     await drainDeferred();
-    await vi.waitFor(() => expect(deferred).toHaveLength(1));
-    await drainDeferred();
+    // The injected drain now awaits every newly scheduled batch as well.
+    expect(deferred).toHaveLength(0);
     await vi.waitFor(async () => {
       await expect(
         db
