@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -189,9 +189,22 @@ export function OriginalRequestBlock({
   resolveAgentName?: OriginalRequestSenderResolver;
 }) {
   const original = approvalOriginalRequest(payload);
+  const isEmail = isEmailReplyPayload(payload);
   if (!original) {
     // Compact surfaces state this once in their header line (approvalMissingSourceNote).
     if (compact) return null;
+    if (isEmail) {
+      return (
+        <div>
+          <ApprovalSectionLabel className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+            Original email
+          </ApprovalSectionLabel>
+          <p className="mt-1 text-sm leading-5 text-muted-foreground">
+            The requesting agent did not attach the email this reply answers. Ask the agent for it, or read it in the linked task if there is one.
+          </p>
+        </div>
+      );
+    }
     return (
       <div>
         <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
@@ -204,6 +217,9 @@ export function OriginalRequestBlock({
     );
   }
 
+  // "Original email" only when the source is an outside message; a reply drafted from a Paperclip comment keeps "Original request".
+  const sourceLabel = isEmail && original.source.kind === "external" ? "Original email" : "Original request";
+  const senderName = approvalOriginalRequestSender(original.source, resolveAgentName);
   const commentHref =
     original.source.kind === "paperclip_comment" && original.source.issueId && original.source.commentId
       ? `/issues/${original.source.issueId}#comment-${original.source.commentId}`
@@ -218,7 +234,7 @@ export function OriginalRequestBlock({
         : null;
   const provenance: Array<{ key: string; node: ReactNode }> = [
     { key: "channel", node: original.source.kind === "external" ? original.source.channel : null },
-    { key: "sender", node: approvalOriginalRequestSender(original.source, resolveAgentName) },
+    { key: "sender", node: senderName },
     { key: "sentAt", node: sentAt ? <time dateTime={original.source.sentAt}>{sentAt}</time> : null },
     // The comment link below replaces the raw comment reference.
     { key: "reference", node: commentHref ? null : original.source.reference },
@@ -235,11 +251,9 @@ export function OriginalRequestBlock({
 
   const content = (
     <>
-      {!isEmailReplyPayload(payload) && (
-        <ApprovalSectionLabel className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-          Original request
-        </ApprovalSectionLabel>
-      )}
+      <ApprovalSectionLabel className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+        {sourceLabel}
+      </ApprovalSectionLabel>
       {provenance.length > 0 && (
         <p className="mt-1 break-words text-xs text-muted-foreground">
           {provenance.map((part, index) => (
@@ -250,25 +264,45 @@ export function OriginalRequestBlock({
           ))}
         </p>
       )}
-      <OriginalRequestText text={original.text} collapsible={!isEmailReplyPayload(payload) && compact && isLongOriginalRequest(original.text)} />
+      <OriginalRequestText
+        // A new source text starts collapsed again: a revision must not inherit "Show more" from the old one.
+        key={original.text}
+        text={original.text}
+        // On the queue an email reply always shows at most six lines of the email it answers, with the rest
+        // behind "Show more" (the button appears when the text really overflows); the request's own page shows
+        // it whole. Other requests are previewed on compact surfaces, as before.
+        collapsible={compact && (isEmail || isLongOriginalRequest(original.text))}
+        measure={compact && isEmail}
+        fallbackLong={isEmail ? isLongOriginalEmail(original.text) : true}
+        previewLines={isEmail ? 6 : 4}
+        expandLabel={isEmail ? "Show more" : undefined}
+        subject={senderName && isEmail ? `${sourceLabel} from ${senderName}` : sourceLabel}
+        // Incoming, unverified text: a clearly dashed frame, so it can never pass for the outgoing draft
+        // below it (a thin solid frame with a muted Via/To/Subject header).
+        boxClassName={isEmail ? "mt-2 rounded-md border border-dashed border-muted-foreground/40 p-3" : undefined}
+      />
     </>
   );
 
-  // Native disclosure is keyboard/touch accessible and keeps incoming email
-  // separate from the outgoing draft. Never interpret the retained text as HTML.
-  if (isEmailReplyPayload(payload)) {
-    return (
-      <details key={original.text} className="min-w-0 rounded-md border border-border p-3">
-        <summary className="cursor-pointer text-sm font-medium" aria-label={original.source.kind === "external" && original.source.channel === "email" ? "Original email request" : "Original request"}>Original request</summary>
-        {content}
-      </details>
-    );
-  }
-  return <div>{content}</div>;
+  // Kept apart from the outgoing draft by its own label and a dashed frame. Never interpret the retained text as HTML.
+  return (
+    <div data-approval-original-request={isEmail ? "email" : "request"} className="min-w-0 scroll-mt-20">
+      {content}
+    </div>
+  );
 }
 
 const ORIGINAL_REQUEST_PREVIEW_LENGTH = 480;
 const ORIGINAL_REQUEST_PREVIEW_LINES = 16;
+
+const ORIGINAL_EMAIL_PREVIEW_LENGTH = 600;
+const ORIGINAL_EMAIL_PREVIEW_LINES = 6;
+
+/** An original email this long shows its start, with the rest behind "Show more". */
+function isLongOriginalEmail(text: string) {
+  if (text.length > ORIGINAL_EMAIL_PREVIEW_LENGTH) return true;
+  return text.split("\n").length > ORIGINAL_EMAIL_PREVIEW_LINES;
+}
 
 /** A request this long is previewed on compact surfaces, behind a button that states its size. */
 function isLongOriginalRequest(text: string) {
@@ -281,33 +315,109 @@ function isLongOriginalRequest(text: string) {
   return false;
 }
 
-function OriginalRequestText({ text, collapsible }: { text: string; collapsible: boolean }) {
+function OriginalRequestText({
+  text,
+  collapsible,
+  measure = false,
+  fallbackLong = true,
+  previewLines = 4,
+  expandLabel,
+  subject = "Original request",
+  boxClassName,
+}: {
+  text: string;
+  collapsible: boolean;
+  /** Decide whether "Show more" is needed from the rendered height, not from counting characters. */
+  measure?: boolean;
+  /** Used when the height cannot be measured (no layout, as in tests). */
+  fallbackLong?: boolean;
+  previewLines?: 4 | 6;
+  /** The button text while collapsed; defaults to one that states the request's size. */
+  expandLabel?: string;
+  subject?: string;
+  boxClassName?: string;
+}) {
   const [expanded, setExpanded] = useState(false);
+  // Once opened, the button stays: collapsing must never take away the control that has keyboard focus.
+  const [wasExpanded, setWasExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(fallbackLong);
+  const textRef = useRef<HTMLPreElement>(null);
   const clamped = collapsible && !expanded;
+
+  // Measured while clamped, again on every resize: a paragraph that fits six lines on a wide card can need
+  // fifteen on a phone. Without layout (scrollHeight 0) the length rule stands.
+  useLayoutEffect(() => {
+    if (!measure || expanded) return;
+    const element = textRef.current;
+    if (!element) return;
+    const check = () => {
+      if (element.scrollHeight === 0) {
+        setOverflowing(fallbackLong);
+        return;
+      }
+      setOverflowing(element.scrollHeight > element.clientHeight + 1);
+    };
+    check();
+    // The clamped box keeps its size when the text reflows inside it (a web font arriving late can add a
+    // seventh line), so a resize alone is not enough: measure again once fonts finish loading too.
+    const fonts = typeof document !== "undefined" ? document.fonts : undefined;
+    let live = true;
+    fonts?.ready?.then(() => {
+      if (live) check();
+    });
+    fonts?.addEventListener?.("loadingdone", check);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(check);
+    observer?.observe(element);
+    return () => {
+      live = false;
+      fonts?.removeEventListener?.("loadingdone", check);
+      observer?.disconnect();
+    };
+  }, [measure, expanded, fallbackLong, text]);
+
+  const showButton = collapsible && (!measure || expanded || wasExpanded || overflowing);
 
   return (
     <>
-      <div className="mt-2 rounded-md bg-muted/40 p-3">
+      <div className={boxClassName ?? "mt-2 rounded-md bg-muted/40 p-3"}>
         {/* Shown whole or behind the announced preview: never in a box that scrolls its end out of sight. */}
         <pre
+          ref={textRef}
           className={cn(
             // A pre is monospace by default. This is a person's message, so it takes the text face.
             "whitespace-pre-wrap wrap-anywhere font-sans text-sm leading-6 text-foreground",
-            clamped && "line-clamp-4",
+            clamped && (previewLines === 6 ? "line-clamp-6" : "line-clamp-4"),
           )}
         >
           {text}
         </pre>
       </div>
-      {collapsible && (
+      {showButton && (
         <button
           type="button"
-          className="mt-1 inline-flex min-h-6 items-center text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          className={cn(
+            "mt-1 inline-flex min-h-6 items-center text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground",
+            // The email's own toggle is a 44px touch target on phones (the mobile operator rule).
+            measure && "min-h-11 sm:min-h-6",
+          )}
           aria-expanded={expanded}
-          aria-label={expanded ? "Show less: Original request" : undefined}
-          onClick={() => setExpanded((value) => !value)}
+          aria-label={expanded ? `Show less: ${subject}` : expandLabel ? `${expandLabel}: ${subject}` : undefined}
+          onClick={(event) => {
+            const collapsing = expanded;
+            setExpanded((value) => !value);
+            setWasExpanded(true);
+            // After "Show less" the long text is gone from above: bring the collapsed email, label first,
+            // back into view (clear of the sticky header) instead of leaving the reader in the draft.
+            if (collapsing) {
+              const section = (event.currentTarget as HTMLElement).closest<HTMLElement>("[data-approval-original-request]");
+              requestAnimationFrame(() => {
+                if (!section || typeof section.getBoundingClientRect !== "function") return;
+                if (section.getBoundingClientRect().top < 80) section.scrollIntoView?.({ block: "start" });
+              });
+            }
+          }}
         >
-          {expanded ? "Show less" : `Show full request (${text.length.toLocaleString()} characters)`}
+          {expanded ? "Show less" : (expandLabel ?? `Show full request (${text.length.toLocaleString()} characters)`)}
         </button>
       )}
     </>
@@ -1000,7 +1110,6 @@ export function EmailReplyPayload({
           <p className="mt-1 leading-6 text-foreground">{brief.recommendation}</p>
         </div>
       )}
-      <OriginalRequestBlock payload={payload} resolveAgentName={resolveAgentName} />
       {reasoning && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Why</p>
@@ -1013,6 +1122,8 @@ export function EmailReplyPayload({
           <DecisionList label="Risks" items={brief.cons} />
         </div>
       )}
+      {/* The email being answered, right above the reply to it. */}
+      <OriginalRequestBlock payload={payload} resolveAgentName={resolveAgentName} />
       <div className="space-y-1">
         <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
           Draft reply
