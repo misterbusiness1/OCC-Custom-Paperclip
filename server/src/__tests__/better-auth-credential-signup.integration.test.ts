@@ -16,25 +16,31 @@
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { authAccounts, createDb } from "@paperclipai/db";
+import { authAccounts, authUsers, createDb } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { createBetterAuthHandler, createBetterAuthInstance } from "../auth/better-auth.js";
+import {
+  createBetterAuthHandler,
+  createBetterAuthInstance,
+} from "../auth/better-auth.js";
 import type { Config } from "../config.js";
 
 const ORIGIN = "http://127.0.0.1:41999";
 const EMAIL = "founder@example.com";
 const PASSWORD = "correct-horse-battery-staple";
 
-// The issuer Better Auth stamps on an email/password account:
-// `createLocalAccountIssuer("credential")`. Sign-in matches on it, so a row
-// written with anything else is a row nobody can sign in as.
-const CREDENTIAL_ISSUER = "local:credential";
+// Generated with the native Better Auth 1.7.2 hashPassword implementation.
+// Synthetic fixture only; proves existing password hashes remain usable.
+const LEGACY_PASSWORD = "legacy-account-password-for-upgrade-test";
+const LEGACY_PASSWORD_HASH =
+  "5f4775a6764ef6f89017baf08652179f:6350ee9f8ca55df338b223fd8ab46d4768b0c63418310e93d75e56cd1c66f0bc5e20de55edeba9fcfafc7c97581a98a9b4561c7ed50e94971cb52a78ea66e8f7";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported
+  ? describe
+  : describe.skip;
 
 function testConfig(): Config {
   // Only the auth-relevant fields are read by `createBetterAuthInstance`; the
@@ -57,67 +63,122 @@ function sessionCookies(response: request.Response): string[] {
   return cookies.filter((cookie) => cookie.includes("session_token"));
 }
 
-describeEmbeddedPostgres("Better Auth credential sign-up against the real schema", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  let db!: ReturnType<typeof createDb>;
-  let app!: express.Express;
-  const originalEnv = {
-    secret: process.env.BETTER_AUTH_SECRET,
-    rateLimit: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
-  };
+describeEmbeddedPostgres(
+  "Better Auth credential sign-up against the real schema",
+  () => {
+    let database: Awaited<
+      ReturnType<typeof startEmbeddedPostgresTestDatabase>
+    > | null = null;
+    let db!: ReturnType<typeof createDb>;
+    let app!: express.Express;
+    const originalEnv = {
+      secret: process.env.BETTER_AUTH_SECRET,
+      rateLimit: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
+    };
 
-  beforeAll(async () => {
-    process.env.BETTER_AUTH_SECRET = "better-auth-secret-for-credential-signup-tests";
-    // The rate limiter is on by default in `authenticated` mode and would score
-    // the sign-up and sign-in this suite issues back to back.
-    process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED = "false";
+    beforeAll(async () => {
+      process.env.BETTER_AUTH_SECRET =
+        "better-auth-secret-for-credential-signup-tests";
+      // The rate limiter is on by default in `authenticated` mode and would score
+      // the sign-up and sign-in this suite issues back to back.
+      process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED = "false";
 
-    database = await startEmbeddedPostgresTestDatabase("paperclip-better-auth-signup-");
-    db = createDb(database.connectionString);
+      database = await startEmbeddedPostgresTestDatabase(
+        "paperclip-better-auth-signup-",
+      );
+      db = createDb(database.connectionString);
 
-    const auth = createBetterAuthInstance(db, testConfig(), [ORIGIN]);
-    app = express();
-    // Mounted exactly as `createApp` mounts it, and with no body parser in
-    // front of it: Better Auth reads the raw request body itself.
-    app.all("/api/auth/{*authPath}", createBetterAuthHandler(auth));
-  }, 30_000);
+      const auth = createBetterAuthInstance(db, testConfig(), [ORIGIN]);
+      app = express();
+      // Mounted exactly as `createApp` mounts it, and with no body parser in
+      // front of it: Better Auth reads the raw request body itself.
+      app.all("/api/auth/{*authPath}", createBetterAuthHandler(auth));
+    }, 30_000);
 
-  afterAll(async () => {
-    await database?.cleanup();
-    if (originalEnv.secret === undefined) delete process.env.BETTER_AUTH_SECRET;
-    else process.env.BETTER_AUTH_SECRET = originalEnv.secret;
-    if (originalEnv.rateLimit === undefined) delete process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED;
-    else process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED = originalEnv.rateLimit;
-  });
-
-  it("creates the user and its credential account, then signs that user in", async () => {
-    const signUp = await request(app)
-      .post("/api/auth/sign-up/email")
-      .set("origin", ORIGIN)
-      .send({ email: EMAIL, password: PASSWORD, name: "Founder" });
-
-    // A missing `account` column fails here with a 500 and an empty body.
-    expect(signUp.status).toBe(200);
-    expect(signUp.body?.user?.email).toBe(EMAIL);
-
-    // Sign-up has to leave a usable account row behind. A half-created user —
-    // a `user` row with no `account` — cannot sign in, cannot sign up again,
-    // and cannot reset its password.
-    const accounts = await db.select().from(authAccounts);
-    expect(accounts).toHaveLength(1);
-    expect(accounts[0]).toMatchObject({
-      providerId: "credential",
-      issuer: CREDENTIAL_ISSUER,
+    afterAll(async () => {
+      await database?.cleanup();
+      if (originalEnv.secret === undefined)
+        delete process.env.BETTER_AUTH_SECRET;
+      else process.env.BETTER_AUTH_SECRET = originalEnv.secret;
+      if (originalEnv.rateLimit === undefined)
+        delete process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED;
+      else
+        process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED = originalEnv.rateLimit;
     });
-    expect(accounts[0]?.password).toBeTruthy();
 
-    const signIn = await request(app)
-      .post("/api/auth/sign-in/email")
-      .set("origin", ORIGIN)
-      .send({ email: EMAIL, password: PASSWORD });
+    it("signs in an existing 1.7.2 credential account without rewriting its issuer or password", async () => {
+      const userId = "legacy-1-7-2-user";
+      const now = new Date();
+      await db
+        .insert(authUsers)
+        .values({
+          id: userId,
+          name: "Legacy",
+          email: "legacy@example.test",
+          createdAt: now,
+          updatedAt: now,
+        });
+      await db
+        .insert(authAccounts)
+        .values({
+          id: "legacy-1-7-2-account",
+          accountId: userId,
+          providerId: "credential",
+          issuer: "local:credential",
+          userId,
+          password: LEGACY_PASSWORD_HASH,
+          createdAt: now,
+          updatedAt: now,
+        });
+      const result = await request(app)
+        .post("/api/auth/sign-in/email")
+        .set("origin", ORIGIN)
+        .send({ email: "legacy@example.test", password: LEGACY_PASSWORD });
+      expect(result.status).toBe(200);
+      expect(result.body?.user?.id).toBe(userId);
+      expect(sessionCookies(result).length).toBeGreaterThan(0);
+      const accounts = await db.select().from(authAccounts);
+      expect(
+        accounts.find((account) => account.id === "legacy-1-7-2-account"),
+      ).toMatchObject({
+        issuer: "local:credential",
+        password: LEGACY_PASSWORD_HASH,
+      });
+    });
 
-    expect(signIn.status).toBe(200);
-    expect(signIn.body?.user?.email).toBe(EMAIL);
-    expect(sessionCookies(signIn).length).toBeGreaterThan(0);
-  });
-});
+    it("creates the user and its credential account, then signs that user in", async () => {
+      const signUp = await request(app)
+        .post("/api/auth/sign-up/email")
+        .set("origin", ORIGIN)
+        .send({ email: EMAIL, password: PASSWORD, name: "Founder" });
+
+      // A missing `account` column fails here with a 500 and an empty body.
+      expect(signUp.status).toBe(200);
+      expect(signUp.body?.user?.email).toBe(EMAIL);
+
+      // Sign-up has to leave a usable account row behind. A half-created user —
+      // a `user` row with no `account` — cannot sign in, cannot sign up again,
+      // and cannot reset its password.
+      const accounts = (await db.select().from(authAccounts)).filter(
+        (account) =>
+          account.providerId === "credential" &&
+          account.id !== "legacy-1-7-2-account",
+      );
+      expect(accounts).toHaveLength(1);
+      expect(accounts[0]).toMatchObject({
+        providerId: "credential",
+        issuer: null,
+      });
+      expect(accounts[0]?.password).toBeTruthy();
+
+      const signIn = await request(app)
+        .post("/api/auth/sign-in/email")
+        .set("origin", ORIGIN)
+        .send({ email: EMAIL, password: PASSWORD });
+
+      expect(signIn.status).toBe(200);
+      expect(signIn.body?.user?.email).toBe(EMAIL);
+      expect(sessionCookies(signIn).length).toBeGreaterThan(0);
+    });
+  },
+);

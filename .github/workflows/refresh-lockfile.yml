@@ -5,6 +5,15 @@ on:
     branches:
       - master
   workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Exact release branch to receive the CI-owned lockfile PR
+        required: true
+        type: string
+      expected_source_sha:
+        description: Reviewed full source SHA currently at that branch
+        required: true
+        type: string
 
 concurrency:
   group: refresh-lockfile-master
@@ -21,6 +30,26 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      - name: Pin refresh target and refuse occupied refresh scope
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REFRESH_EVENT: ${{ github.event_name }}
+          REFRESH_BASE_REF: ${{ inputs.base_ref }}
+          REFRESH_EXPECTED_SHA: ${{ inputs.expected_source_sha }}
+          REFRESH_EVENT_SHA: ${{ github.sha }}
+        run: |
+          cp .github/scripts/lockfile-refresh-target.mjs "$RUNNER_TEMP/lockfile-refresh-target.mjs"
+          node "$RUNNER_TEMP/lockfile-refresh-target.mjs" > "$RUNNER_TEMP/lockfile-refresh-target.json"
+          echo "sha=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP+"/lockfile-refresh-target.json")).expectedSha')" >> "$GITHUB_OUTPUT"
+          echo "base=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP+"/lockfile-refresh-target.json")).baseRef')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact target source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.target.outputs.sha }}
+          persist-credentials: true
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -52,11 +81,14 @@ jobs:
             exit 1
           fi
 
-      - name: Create or update pull request
+      - name: Create an unoccupied CI-owned refresh pull request
         id: upsert-pr
         env:
           GH_TOKEN: ${{ github.token }}
-          REPO_OWNER: ${{ github.repository_owner }}
+          REFRESH_EVENT: ${{ github.event_name }}
+          REFRESH_BASE_REF: ${{ steps.target.outputs.base }}
+          REFRESH_EXPECTED_SHA: ${{ steps.target.outputs.sha }}
+          REFRESH_EVENT_SHA: ${{ steps.target.outputs.sha }}
         run: |
           if git diff --quiet -- pnpm-lock.yaml; then
             echo "Lockfile unchanged, nothing to do."
@@ -71,28 +103,14 @@ jobs:
           git checkout -B "$BRANCH"
           git add pnpm-lock.yaml
           git commit -m "chore(lockfile): refresh pnpm-lock.yaml"
-          git push --force origin "$BRANCH"
-
-          # Only reuse an open PR from this repository owner, not a fork with the same branch name.
-          pr_url="$(
-            gh pr list --state open --head "$BRANCH" --json url,headRepositoryOwner \
-              --jq ".[] | select(.headRepositoryOwner.login == \"$REPO_OWNER\") | .url" |
-            head -n 1
-          )"
-          if [ -z "$pr_url" ]; then
-            pr_url="$(gh pr create \
-              --head "$BRANCH" \
-              --title "chore(lockfile): refresh pnpm-lock.yaml" \
-              --body "Auto-generated lockfile refresh after dependencies changed on master. This PR only updates pnpm-lock.yaml.")"
-            echo "Created new PR: $pr_url"
-          else
-            echo "PR already exists: $pr_url"
-          fi
+          # Recheck exact source and vacancy immediately before an atomic create-only push.
+          node "$RUNNER_TEMP/lockfile-refresh-target.mjs" > /dev/null
+          git push --force-with-lease="refs/heads/$BRANCH:" origin "HEAD:refs/heads/$BRANCH"
+          export OWNED_REFRESH_SHA="$(git rev-parse HEAD)"
+          node "$RUNNER_TEMP/lockfile-refresh-target.mjs" > /dev/null
+          pr_url="$(gh pr create \
+            --base "$REFRESH_BASE_REF" \
+            --head "$BRANCH" \
+            --title "chore(lockfile): refresh pnpm-lock.yaml" \
+            --body "CI-generated lockfile for $REFRESH_BASE_REF at $REFRESH_EXPECTED_SHA. Only pnpm-lock.yaml changes.")"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
-
-      - name: Enable auto-merge for lockfile PR
-        if: steps.upsert-pr.outputs.pr_url != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh pr merge --auto --squash --delete-branch "${{ steps.upsert-pr.outputs.pr_url }}"
