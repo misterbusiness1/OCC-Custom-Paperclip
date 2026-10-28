@@ -26,28 +26,48 @@ describe("original email disclosure", () => {
     act(() => root.unmount());
     container.remove();
   });
-  it("keeps the incoming message in a collapsed, labelled disclosure as literal selectable text", () => {
-    act(() => root.render(<OriginalRequestBlock payload={payload} compact />));
-    const disclosure = container.querySelector("details")!;
-    expect(disclosure.open).toBe(false);
-    expect(disclosure.querySelector("summary")?.textContent).toBe("Original request");
-    expect(disclosure.querySelector("pre")?.textContent).toBe(payload.originalRequest.text);
-    expect(disclosure.querySelector("script")).toBeNull();
-    expect(disclosure.textContent).toContain("Quoted by the requesting agent, not verified");
-    expect(disclosure.textContent).not.toContain(payload.body);
+  const longPayload = {
+    ...payload,
+    originalRequest: {
+      ...payload.originalRequest,
+      text: Array.from({ length: 10 }, (_, index) => `Incoming line ${index + 1}.`).join("\n") + "\n<script>alert('untrusted')</script>",
+    },
+  };
+  const toggle = (label: string) =>
+    Array.from(container.querySelectorAll("button")).find((button) => button.textContent === label);
+  it("previews the incoming message under its own label as literal selectable text, with Show more", () => {
+    act(() => root.render(<OriginalRequestBlock payload={longPayload} compact />));
+    const block = container.querySelector<HTMLElement>("[data-approval-original-request]")!;
+    expect(block.textContent).toContain("Original email");
+    expect(block.querySelector("pre")?.textContent).toBe(longPayload.originalRequest.text);
+    expect(block.querySelector("pre")?.className).toMatch(/line-clamp-6/);
+    expect(block.querySelector("script")).toBeNull();
+    expect(block.textContent).toContain("Quoted by the requesting agent, not verified");
+    expect(block.textContent).not.toContain(payload.body);
+    expect(toggle("Show more")?.getAttribute("aria-label")).toBe("Show more: Original email");
   });
-  it("collapses a previously opened message when its retained source changes", () => {
-    act(() => root.render(<OriginalRequestBlock payload={payload} />));
-    container.querySelector("details")!.open = true;
-    const updated = { ...payload, originalRequest: { ...payload.originalRequest, text: "New incoming question" } };
-    act(() => root.render(<OriginalRequestBlock payload={updated} />));
-    expect(container.querySelector("details")?.open).toBe(false);
+  it("collapses a previously expanded message when its retained source changes", () => {
+    act(() => root.render(<OriginalRequestBlock payload={longPayload} compact />));
+    act(() => toggle("Show more")!.click());
+    expect(container.querySelector("pre")?.className).not.toMatch(/line-clamp/);
+    const updated = {
+      ...longPayload,
+      originalRequest: { ...longPayload.originalRequest, text: `${longPayload.originalRequest.text}\nRevised.` },
+    };
+    act(() => root.render(<OriginalRequestBlock payload={updated} compact />));
+    expect(container.querySelector("pre")?.className).toMatch(/line-clamp-6/);
     expect(container.querySelector("pre")?.textContent).toBe(updated.originalRequest.text);
+    expect(toggle("Show more")).toBeDefined();
+  });
+  it("shows a whole message on the full page, with no clamp and no button", () => {
+    act(() => root.render(<OriginalRequestBlock payload={longPayload} />));
+    expect(container.querySelector("pre")?.className).not.toMatch(/line-clamp|max-h-|overflow-/);
+    expect(container.querySelector("button")).toBeNull();
   });
   it("shows an explicit missing-source state without presenting the outgoing draft as incoming", () => {
     act(() => root.render(<OriginalRequestBlock payload={{ body: payload.body, recipient: payload.recipient }} />));
-    expect(container.textContent).toContain("No original request was attached");
-    expect(container.querySelector("details")).toBeNull();
+    expect(container.textContent).toContain("did not attach the email this reply answers");
+    expect(container.querySelector("pre")).toBeNull();
     expect(container.textContent).not.toContain(payload.body);
   });
 });

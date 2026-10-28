@@ -264,6 +264,8 @@ export function OriginalRequestBlock({
         </p>
       )}
       <OriginalRequestText
+        // A new source text starts collapsed again: a revision must not inherit "Show more" from the old one.
+        key={original.text}
         text={original.text}
         // On the queue an email reply shows the start of the email it answers, with the rest behind
         // "Show more"; the request's own page shows it whole. Other requests are previewed on compact surfaces.
