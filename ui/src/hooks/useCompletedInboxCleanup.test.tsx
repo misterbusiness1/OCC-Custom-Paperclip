@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  COMPLETED_INBOX_CLEANUP_REFRESH_MS,
+  COMPLETED_INBOX_CLEANUP_RETRY_MS,
   completedInboxCleanupKey,
   completedInboxCleanupQueryKey,
   useCompletedInboxCleanup,
@@ -193,7 +193,7 @@ describe("completed inbox cleanup at its query/API seam", () => {
     await refresh();
     // A refetch inside the retry window (e.g. a live update) does not retry yet.
     expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(1);
-    const later = Date.now() + COMPLETED_INBOX_CLEANUP_REFRESH_MS + 1;
+    const later = Date.now() + COMPLETED_INBOX_CLEANUP_RETRY_MS + 1;
     vi.spyOn(Date, "now").mockReturnValue(later);
     await refresh();
     expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(2);

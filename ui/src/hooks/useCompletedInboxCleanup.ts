@@ -11,6 +11,7 @@ export const COMPLETED_INBOX_CLEANUP_BATCH_SIZE = 10;
  * large inbox (where the Mine list is filled by higher-priority open work) cannot hide them. */
 export const COMPLETED_INBOX_CLEANUP_SCAN_LIMIT = 200;
 export const COMPLETED_INBOX_CLEANUP_REFRESH_MS = 60_000;
+export const COMPLETED_INBOX_CLEANUP_RETRY_MS = COMPLETED_INBOX_CLEANUP_REFRESH_MS - 10_000;
 /** Completion keys remembered per user and company, so a completed task that stays visible
  * (new mention or comment after completion) is not re-sent on every Inbox visit. */
 export const COMPLETED_INBOX_CLEANUP_HANDLED_LIMIT = 1000;
@@ -44,10 +45,12 @@ function loadHandled(scope: string): Set<string> {
 
 function saveHandled(scope: string, handled: Set<string>) {
   try {
+    // Merge with what other tabs saved meanwhile, newest last, then keep the most recent keys.
+    const merged = new Set([...loadHandled(scope), ...handled]);
     window.localStorage.setItem(handledStorageKey(scope),
-      JSON.stringify([...handled].slice(-COMPLETED_INBOX_CLEANUP_HANDLED_LIMIT)));
+      JSON.stringify([...merged].slice(-COMPLETED_INBOX_CLEANUP_HANDLED_LIMIT)));
   } catch {
-    // Remembering is an optimisation; the server refuses repeats anyway.
+    // Remembering is an optimisation: it saves repeat requests for tasks that stay visible.
   }
 }
 
@@ -95,7 +98,8 @@ export function useCompletedInboxCleanup({ companyId, userId }: {
   const running = useRef(false);
   const attempted = useRef(new Map<string, Set<string>>());
   // A failed or changed item is skipped until the next scheduled refresh (so it cannot block the
-  // items behind it, and live-update refetches do not retry it immediately).
+  // items behind it, and live-update refetches do not retry it immediately). The window is a little
+  // shorter than the refresh interval so the next scheduled refresh does retry it.
   const deferredUntil = useRef(new Map<string, number>());
   const setEnabled = useCallback((value: boolean) => {
     if (!scope) return;
@@ -128,7 +132,7 @@ export function useCompletedInboxCleanup({ companyId, userId }: {
           const current = latest.current.issues.find((row) => row.id === issue.id);
           const key = completionKey(issue)!;
           if (!current || completionKey(current) !== key) {
-            deferredUntil.current.set(key, Date.now() + COMPLETED_INBOX_CLEANUP_REFRESH_MS);
+            deferredUntil.current.set(key, Date.now() + COMPLETED_INBOX_CLEANUP_RETRY_MS);
             continue;
           }
           try {
@@ -139,7 +143,7 @@ export function useCompletedInboxCleanup({ companyId, userId }: {
             deferredUntil.current.delete(key);
             changed ||= result.archived;
           } catch (cause) {
-            deferredUntil.current.set(key, Date.now() + COMPLETED_INBOX_CLEANUP_REFRESH_MS);
+            deferredUntil.current.set(key, Date.now() + COMPLETED_INBOX_CLEANUP_RETRY_MS);
             lastError = cause instanceof Error ? cause.message : "Automatic inbox cleanup failed. Try refreshing the inbox.";
           }
         }

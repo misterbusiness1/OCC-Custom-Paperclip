@@ -468,6 +468,24 @@ describe("Inbox toolbar", () => {
     }
   });
 
+  it("keeps the Recent tab listing touched tasks when the Mine list fails to load", async () => {
+    routerMock.location.pathname = "/inbox/recent";
+    const open = createIssue({ id: "open-task", identifier: "PAP-1", title: "Still in the inbox" });
+    apiMocks.issuesList.mockImplementation(async (_companyId: string, filters?: { inboxArchivedByUserId?: string; touchedByUserId?: string }) => {
+      if (filters?.inboxArchivedByUserId) throw new Error("mine list unavailable");
+      return filters?.touchedByUserId ? [open] : [];
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Still in the inbox"));
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it("offers completed-task cleanup only as an explicit inbox opt-in", async () => {
     routerMock.location.pathname = "/inbox/mine";
     const completedAt = new Date("2026-10-22T12:00:00Z");

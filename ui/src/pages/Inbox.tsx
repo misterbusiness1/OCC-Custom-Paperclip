@@ -1284,9 +1284,13 @@ function StreamlinedInbox() {
   // The touched list includes inbox-archived tasks (archived search needs them). Recent, Unread
   // and All show only tasks still in the inbox: the Mine list is the same server order with
   // archives removed, so every unarchived row of the touched window is also in Mine's window.
-  const inboxIssueIds = useMemo(() => new Set(mineIssuesRaw.map((issue) => issue.id)), [mineIssuesRaw]);
+  // Until the Mine list has loaded (or if it fails), fall back to the unfiltered list rather than an empty inbox.
+  const inboxIssueIds = useMemo(
+    () => (mineIssuesUpdatedAt > 0 ? new Set(mineIssuesRaw.map((issue) => issue.id)) : null),
+    [mineIssuesRaw, mineIssuesUpdatedAt],
+  );
   const inboxTouchedIssues = useMemo(
-    () => visibleTouchedIssues.filter((issue) => inboxIssueIds.has(issue.id)),
+    () => (inboxIssueIds ? visibleTouchedIssues.filter((issue) => inboxIssueIds.has(issue.id)) : visibleTouchedIssues),
     [inboxIssueIds, visibleTouchedIssues],
   );
   const unreadTouchedIssues = useMemo(
