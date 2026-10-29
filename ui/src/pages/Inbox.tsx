@@ -1145,6 +1145,8 @@ function StreamlinedInbox() {
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
         touchedByUserId: "me",
+        // Recent, Unread and All honour inbox archives too, including automatic cleanup's.
+        inboxArchivedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
         includeRoutineExecutions: true,
         includeLiveDescendantSummary: true,
@@ -1195,7 +1197,6 @@ function StreamlinedInbox() {
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
   const completedInboxCleanup = useCompletedInboxCleanup({
     companyId: selectedCompanyId, userId: currentUserId,
-    issues: mineIssuesRaw, updatedAt: mineIssuesUpdatedAt,
   });
   const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
   const [undoableArchiveIssueIds, setUndoableArchiveIssueIds] = useState<string[]>([]);
