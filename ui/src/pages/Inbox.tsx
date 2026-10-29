@@ -1145,8 +1145,6 @@ function StreamlinedInbox() {
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
         touchedByUserId: "me",
-        // Recent, Unread and All honour inbox archives too, including automatic cleanup's.
-        inboxArchivedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
         includeRoutineExecutions: true,
         includeLiveDescendantSummary: true,
@@ -1283,9 +1281,17 @@ function StreamlinedInbox() {
     () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
     [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
   );
+  // The touched list includes inbox-archived tasks (archived search needs them). Recent, Unread
+  // and All show only tasks still in the inbox: the Mine list is the same server order with
+  // archives removed, so every unarchived row of the touched window is also in Mine's window.
+  const inboxIssueIds = useMemo(() => new Set(mineIssuesRaw.map((issue) => issue.id)), [mineIssuesRaw]);
+  const inboxTouchedIssues = useMemo(
+    () => visibleTouchedIssues.filter((issue) => inboxIssueIds.has(issue.id)),
+    [inboxIssueIds, visibleTouchedIssues],
+  );
   const unreadTouchedIssues = useMemo(
-    () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
-    [visibleTouchedIssues],
+    () => inboxTouchedIssues.filter((issue) => issue.isUnreadForMe),
+    [inboxTouchedIssues],
   );
   const creatorOptions = useMemo<CreatorOption[]>(() => {
     const options = new Map<string, CreatorOption>();
@@ -1351,9 +1357,9 @@ function StreamlinedInbox() {
     () => {
       if (tab === "mine") return visibleMineIssues;
       if (tab === "unread") return unreadTouchedIssues;
-      return visibleTouchedIssues;
+      return inboxTouchedIssues;
     },
-    [tab, visibleMineIssues, visibleTouchedIssues, unreadTouchedIssues],
+    [tab, visibleMineIssues, inboxTouchedIssues, unreadTouchedIssues],
   );
 
   const agentById = useMemo(() => {

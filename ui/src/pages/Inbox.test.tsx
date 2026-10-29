@@ -446,6 +446,28 @@ describe("Inbox toolbar", () => {
     },
   );
 
+  it.each(["recent", "unread", "all"])("leaves inbox-archived tasks out of the %s tab", async (tab) => {
+    routerMock.location.pathname = `/inbox/${tab}`;
+    const open = createIssue({ id: "open-task", identifier: "PAP-1", title: "Still in the inbox", isUnreadForMe: true });
+    const archived = createIssue({
+      id: "archived-task", identifier: "PAP-2", title: "Archived completed task", status: "done",
+      completedAt: new Date("2026-10-22T12:00:00Z"), isUnreadForMe: true,
+    });
+    // The Mine query (inboxArchivedByUserId=me) leaves archived tasks out; the touched list keeps them.
+    apiMocks.issuesList.mockImplementation(async (_companyId: string, filters?: { inboxArchivedByUserId?: string; touchedByUserId?: string }) =>
+      filters?.touchedByUserId ? (filters.inboxArchivedByUserId ? [open] : [open, archived]) : []);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Still in the inbox"));
+      expect(container.textContent).not.toContain("Archived completed task");
+    } finally {
+      act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it("offers completed-task cleanup only as an explicit inbox opt-in", async () => {
     routerMock.location.pathname = "/inbox/mine";
     const completedAt = new Date("2026-10-22T12:00:00Z");

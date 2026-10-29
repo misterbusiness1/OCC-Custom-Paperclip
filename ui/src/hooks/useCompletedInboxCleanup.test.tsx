@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  COMPLETED_INBOX_CLEANUP_REFRESH_MS,
   completedInboxCleanupKey,
   completedInboxCleanupQueryKey,
   useCompletedInboxCleanup,
@@ -55,7 +56,7 @@ describe("completed inbox cleanup at its query/API seam", () => {
     document.body.append(container);
     root = createRoot(container);
   });
-  afterEach(async () => { await act(async () => root.unmount()); container.remove(); client.clear(); });
+  afterEach(async () => { vi.restoreAllMocks(); await act(async () => root.unmount()); container.remove(); client.clear(); });
 
   it("does nothing by default and scopes persisted opt-in by user and company", async () => {
     await render();
@@ -112,11 +113,21 @@ describe("completed inbox cleanup at its query/API seam", () => {
     });
     localStorage.setItem(completedInboxCleanupKey(companyId!, userId!), "true");
     await render();
-    const calls = api.archiveCompletedFromInbox.mock.calls.map(([id]) => id);
-    // "fine" changed the inbox, so the refreshed list retries "broken" once more; "fine" is not repeated.
-    expect(calls.slice(0, 2)).toEqual(["broken", "fine"]);
-    expect(calls.filter((id) => id === "fine")).toHaveLength(1);
+    // "fine" changed the inbox and triggered a refetch; "broken" waits for the next scheduled refresh.
+    expect(api.archiveCompletedFromInbox.mock.calls.map(([id]) => id)).toEqual(["broken", "fine"]);
     expect(observed.error).toBe("server said no");
+  });
+
+  it("remembers handled completions across Inbox visits", async () => {
+    localStorage.setItem(completedInboxCleanupKey(companyId!, userId!), "true");
+    api.archiveCompletedFromInbox.mockResolvedValue({ archived: false, reason: "already_archived" });
+    await render();
+    expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    client.clear();
+    await render();
+    expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a resurfaced completed task visible instead of repeatedly archiving new activity", async () => {
@@ -179,6 +190,11 @@ describe("completed inbox cleanup at its query/API seam", () => {
     expect(observed.error).toBe("network unavailable");
     expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(1);
     expect(invalidate).not.toHaveBeenCalled();
+    await refresh();
+    // A refetch inside the retry window (e.g. a live update) does not retry yet.
+    expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(1);
+    const later = Date.now() + COMPLETED_INBOX_CLEANUP_REFRESH_MS + 1;
+    vi.spyOn(Date, "now").mockReturnValue(later);
     await refresh();
     expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(2);
     expect(observed.error).toBeNull();
