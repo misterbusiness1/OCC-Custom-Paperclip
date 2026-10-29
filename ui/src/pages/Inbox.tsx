@@ -1195,7 +1195,6 @@ function StreamlinedInbox() {
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
   const completedInboxCleanup = useCompletedInboxCleanup({
     companyId: selectedCompanyId, userId: currentUserId,
-    issues: mineIssuesRaw, updatedAt: mineIssuesUpdatedAt,
   });
   const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
   const [undoableArchiveIssueIds, setUndoableArchiveIssueIds] = useState<string[]>([]);
@@ -1282,9 +1281,21 @@ function StreamlinedInbox() {
     () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
     [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
   );
+  // The touched list includes inbox-archived tasks (archived search needs them). Recent, Unread
+  // and All show only tasks still in the inbox: the Mine list is the same server order with
+  // archives removed, so every unarchived row of the touched window is also in Mine's window.
+  // Until the Mine list has loaded (or if it fails), fall back to the unfiltered list rather than an empty inbox.
+  const inboxIssueIds = useMemo(
+    () => (mineIssuesUpdatedAt > 0 ? new Set(mineIssuesRaw.map((issue) => issue.id)) : null),
+    [mineIssuesRaw, mineIssuesUpdatedAt],
+  );
+  const inboxTouchedIssues = useMemo(
+    () => (inboxIssueIds ? visibleTouchedIssues.filter((issue) => inboxIssueIds.has(issue.id)) : visibleTouchedIssues),
+    [inboxIssueIds, visibleTouchedIssues],
+  );
   const unreadTouchedIssues = useMemo(
-    () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
-    [visibleTouchedIssues],
+    () => inboxTouchedIssues.filter((issue) => issue.isUnreadForMe),
+    [inboxTouchedIssues],
   );
   const creatorOptions = useMemo<CreatorOption[]>(() => {
     const options = new Map<string, CreatorOption>();
@@ -1350,9 +1361,9 @@ function StreamlinedInbox() {
     () => {
       if (tab === "mine") return visibleMineIssues;
       if (tab === "unread") return unreadTouchedIssues;
-      return visibleTouchedIssues;
+      return inboxTouchedIssues;
     },
-    [tab, visibleMineIssues, visibleTouchedIssues, unreadTouchedIssues],
+    [tab, visibleMineIssues, inboxTouchedIssues, unreadTouchedIssues],
   );
 
   const agentById = useMemo(() => {
