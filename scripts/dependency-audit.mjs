@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 const SEVERITY_RANK = { info: 0, low: 1, moderate: 2, high: 3, critical: 4 };
 const DEFAULT_ALLOWLIST = new URL("../security/dependency-audit-allowlist.json", import.meta.url);
+// npm package name, optionally scoped. Allowlisted modules are passed to `pnpm why` as an argument.
+const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-zA-Z0-9][a-zA-Z0-9._~-]*$/;
 
 function fail(message) {
   throw new Error(`Dependency audit policy error: ${message}`);
@@ -21,7 +23,11 @@ function validateAllowlist(document) {
     }
     if (seen.has(exception.advisory)) fail(`duplicate exception for ${exception.advisory}`);
     seen.add(exception.advisory);
-    if (typeof exception.module !== "string" || !(exception.severity in SEVERITY_RANK)) {
+    if (
+      typeof exception.module !== "string"
+      || !PACKAGE_NAME.test(exception.module)
+      || !(exception.severity in SEVERITY_RANK)
+    ) {
       fail(`${exception.advisory} must specify a module and valid severity`);
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(exception.expiresOn ?? "")) {
@@ -64,12 +70,13 @@ function pathEndsWith(actual, expected) {
   );
 }
 
-export function evaluateAudit({ auditReport, whyReport, allowlist, today }) {
+// whyReports maps each allowlisted module name to its `pnpm -r why <module> --json` report.
+export function evaluateAudit({ auditReport, whyReports, allowlist, today }) {
   const exceptions = validateAllowlist(allowlist);
   if (!auditReport || typeof auditReport !== "object" || !auditReport.advisories) {
     fail("pnpm audit returned an unsupported report shape");
   }
-  if (!Array.isArray(whyReport)) fail("pnpm why returned an unsupported report shape");
+  if (!whyReports || typeof whyReports !== "object") fail("pnpm why reports must be keyed by module");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) fail("today must use YYYY-MM-DD");
 
   const blocking = Object.values(auditReport.advisories).filter(
@@ -86,6 +93,8 @@ export function evaluateAudit({ auditReport, whyReport, allowlist, today }) {
       fail(`${ghsa} no longer matches its allowlisted module and severity`);
     }
 
+    const whyReport = Object.hasOwn(whyReports, exception.module) ? whyReports[exception.module] : undefined;
+    if (!Array.isArray(whyReport)) fail(`pnpm why returned an unsupported report shape for ${exception.module}`);
     const observedPaths = collectDependencyPaths(whyReport, exception.module);
     const matchedPaths = observedPaths.filter((path) => pathEndsWith(path, exception.dependencyPath));
     if (matchedPaths.length === 0) {
@@ -121,12 +130,19 @@ function runJson(command, args) {
   }
 }
 
+export function runDependencyAudit({ allowlist, today, run = runJson }) {
+  const auditReport = run("pnpm", ["audit", "--prod", "--audit-level=high", "--json"]);
+  const whyReports = {};
+  for (const moduleName of new Set(validateAllowlist(allowlist).map((exception) => exception.module))) {
+    whyReports[moduleName] = run("pnpm", ["-r", "why", moduleName, "--prod", "--json"]);
+  }
+  return evaluateAudit({ auditReport, whyReports, allowlist, today });
+}
+
 export function main() {
   const allowlist = JSON.parse(readFileSync(DEFAULT_ALLOWLIST, "utf8"));
-  const auditReport = runJson("pnpm", ["audit", "--prod", "--audit-level=high", "--json"]);
-  const whyReport = runJson("pnpm", ["-r", "why", "http-cache-semantics", "--prod", "--json"]);
   const today = new Date().toISOString().slice(0, 10);
-  const accepted = evaluateAudit({ auditReport, whyReport, allowlist, today });
+  const accepted = runDependencyAudit({ allowlist, today });
 
   for (const exception of accepted) {
     console.log(`Accepted advisory: ${exception.advisory}`);
