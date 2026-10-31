@@ -100,7 +100,7 @@ const manifest: PaperclipPluginManifestV1 = {
           adapterType: {
             type: "string",
             description:
-              "The adapter type that Jobs in this environment will run (e.g. `claude_local`, `codex_local`). Defaults to `claude_local`. Each environment is bound to one adapter; create multiple environments for different adapters.",
+              "The adapter type that Jobs in this environment will run (e.g. `claude_local`, `codex_local`). Defaults to `claude_local`. `cursor` (legacy alias `cursor_local`) has no built-in runtime image and requires an `adapters` registry entry. Each environment is bound to one adapter; create multiple environments for different adapters.",
           },
           backend: {
             type: "string",

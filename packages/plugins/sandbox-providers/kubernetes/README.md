@@ -61,7 +61,8 @@ Common optional fields:
 | Field | Default | Purpose |
 |---|---|---|
 | `backend` | `"sandbox-cr"` | `sandbox-cr` (alpha, requires agent-sandbox controller) or `job` (stable, one-shot entrypoint). |
-| `adapterType` | `"claude_local"` | One of the supported adapter types (claude_local, codex_local, gemini_local, cursor, opencode_local, pi_local; `cursor_local` is accepted as a legacy alias for `cursor`). Determines runtime image + env keys + egress allow-list. |
+| `adapterType` | `"claude_local"` | One of the supported adapter types (claude_local, codex_local, gemini_local, opencode_local, pi_local, cursor). Determines runtime image + env keys + egress allow-list. `cursor_local` is accepted as a legacy alias and normalised to `cursor`. `cursor` has no built-in defaults and requires an `adapters` entry (see below). |
+| `adapters` | (none) | Declarative adapter registry (`adapterType`, `runtimeImage`, `envKeys`, `allowFqdns`, `probeCommand`, `defaultEnv`). When set it is authoritative (replaces the built-in defaults) and every adapter run in the environment must have an entry. |
 | `namespacePrefix` | `"paperclip-"` | Prefix for the per-company tenant namespace. |
 | `companySlug` | derived from companyId | Override the auto-derived company slug. |
 | `imageRegistry` | (none) | Override the default registry for agent runtime images. |
@@ -76,6 +77,27 @@ Common optional fields:
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |
 
 Full JSON Schema in `src/manifest.ts`.
+
+### Cursor
+
+No `agent-runtime-cursor` image is built or published, so Cursor has no built-in Kubernetes defaults. An environment (or run) using adapter type `cursor` fails validation / lease acquisition with an actionable error until an `adapters` entry for `"cursor"` (in the environment config, or the server's `PAPERCLIP_ADAPTERS` registry) supplies your own runtime image, the secret env keys it needs (`CURSOR_API_KEY`) and the Cursor backend hosts it must reach (`allowFqdns`; exact FQDN allow-listing needs `egressMode: "cilium"`):
+
+```json
+{
+  "adapterType": "cursor",
+  "adapters": [
+    {
+      "adapterType": "cursor",
+      "runtimeImage": "registry.example.com/agent-runtime-cursor:v1",
+      "envKeys": ["CURSOR_API_KEY"],
+      "allowFqdns": ["<cursor backend hosts>"],
+      "probeCommand": ["cursor-agent", "--version"]
+    }
+  ]
+}
+```
+
+Because the registry replaces the built-in defaults, also list any other adapter the environment runs.
 
 ## What gets created in your cluster
 

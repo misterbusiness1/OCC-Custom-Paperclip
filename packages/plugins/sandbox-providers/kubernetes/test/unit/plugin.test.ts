@@ -83,6 +83,41 @@ describe("plugin", () => {
     expect(result.warnings?.some((w) => w.includes("api.anthropic.com"))).toBe(true);
   });
 
+  it("validateConfig rejects cursor without an adapters registry entry, with an actionable error", async () => {
+    for (const adapterType of ["cursor", "cursor_local"]) {
+      const result = await plugin.definition.onEnvironmentValidateConfig!({
+        driverKey: "kubernetes",
+        config: { inCluster: true, adapterType },
+      });
+      expect(result.ok).toBe(false);
+      expect(result.errors?.[0]).toMatch(
+        /Cursor has no built-in Kubernetes runtime image; add an adapters registry entry for "cursor"/,
+      );
+      expect(result.errors?.[0]).toMatch(/CURSOR_API_KEY/);
+    }
+  });
+
+  it("validateConfig accepts legacy cursor_local with a registry entry keyed \"cursor\" and normalises it", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: {
+        inCluster: true,
+        adapterType: "cursor_local",
+        adapters: [
+          {
+            adapterType: "cursor",
+            runtimeImage: "registry.example/cursor:v1",
+            envKeys: ["CURSOR_API_KEY"],
+            allowFqdns: ["api2.cursor.sh"],
+          },
+        ],
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.normalizedConfig?.adapterType).toBe("cursor");
+    expect(result.warnings?.some((w) => w.includes("api2.cursor.sh"))).toBe(true);
+  });
+
   it("validateConfig does NOT warn when egressMode is cilium", async () => {
     const result = await plugin.definition.onEnvironmentValidateConfig!({
       driverKey: "kubernetes",

@@ -9,13 +9,6 @@ export interface AdapterDefaults {
   defaultEnv?: Record<string, string>;
 }
 
-const CURSOR_DEFAULTS: AdapterDefaults = {
-  runtimeImage: "ghcr.io/paperclipai/agent-runtime-cursor:v1",
-  envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
-  allowFqdns: ["api.anthropic.com", "api.openai.com"],
-  probeCommand: ["cursor-agent", "--version"],
-};
-
 const REGISTRY: Record<string, AdapterDefaults> = {
   claude_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-claude:v1",
@@ -35,10 +28,6 @@ const REGISTRY: Record<string, AdapterDefaults> = {
     allowFqdns: ["generativelanguage.googleapis.com"],
     probeCommand: ["gemini", "--version"],
   },
-  // Paperclip's Cursor adapter type is "cursor" (packages/shared AGENT_ADAPTER_TYPES).
-  cursor: CURSOR_DEFAULTS,
-  // Deprecated alias kept so environments saved with the old key still validate.
-  cursor_local: CURSOR_DEFAULTS,
   opencode_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-opencode:v1",
     envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
@@ -53,7 +42,41 @@ const REGISTRY: Record<string, AdapterDefaults> = {
   },
 };
 
-export const KNOWN_ADAPTER_TYPES: ReadonlySet<string> = new Set(Object.keys(REGISTRY));
+/**
+ * Adapter types the config schema accepts that ship NO built-in runtime
+ * defaults: they only run when a declarative `adapters` registry entry supplies
+ * runtimeImage / envKeys / allowFqdns. The value is the actionable error raised
+ * when no such entry is configured.
+ *
+ * Cursor (Paperclip adapter type "cursor") is registry-only because no
+ * agent-runtime-cursor image is built or published (docker/agent-runtime has no
+ * Cursor target); built-in defaults would only ever end in ImagePullBackOff.
+ */
+const REGISTRY_ONLY_ADAPTER_TYPES: ReadonlyMap<string, string> = new Map([
+  [
+    "cursor",
+    'Cursor has no built-in Kubernetes runtime image; add an adapters registry entry for "cursor" with runtimeImage, envKeys (CURSOR_API_KEY) and allowFqdns (the Cursor backend hosts)',
+  ],
+]);
+
+/** Legacy adapter-type keys mapped to Paperclip's canonical adapter type. */
+const ADAPTER_TYPE_ALIASES: ReadonlyMap<string, string> = new Map([["cursor_local", "cursor"]]);
+
+/**
+ * Map a legacy alias (e.g. "cursor_local") to Paperclip's canonical adapter
+ * type ("cursor"); any other value is returned unchanged. Applied by the config
+ * schema and before every registry lookup / label so an alias behaves exactly
+ * like its canonical type.
+ */
+export function normalizeAdapterType(adapterType: string): string {
+  return ADAPTER_TYPE_ALIASES.get(adapterType) ?? adapterType;
+}
+
+/** Canonical adapter types accepted by the config schema (aliases normalise onto these). */
+export const KNOWN_ADAPTER_TYPES: ReadonlySet<string> = new Set([
+  ...Object.keys(REGISTRY),
+  ...REGISTRY_ONLY_ADAPTER_TYPES.keys(),
+]);
 
 function fromRegistryEntry(entry: AdapterRegistryEntry): AdapterDefaults {
   // Only runtimeImage is strictly required. The array fields are optional and
@@ -77,22 +100,30 @@ function fromRegistryEntry(entry: AdapterRegistryEntry): AdapterDefaults {
 /**
  * Resolve the runtime defaults for an adapter. When a `registry` is supplied it
  * is authoritative (replace semantics): the type MUST be present and complete,
- * else this throws. With no registry, falls back to the built-in REGISTRY.
+ * else this throws. With no registry, falls back to the built-in REGISTRY;
+ * registry-only types (e.g. "cursor") throw an actionable error there. Legacy
+ * aliases are normalised on both sides of the registry lookup.
  */
 export function getAdapterDefaults(
   adapterType: string,
   registry?: readonly AdapterRegistryEntry[],
 ): AdapterDefaults {
+  const type = normalizeAdapterType(adapterType);
+  const registryOnlyHint = REGISTRY_ONLY_ADAPTER_TYPES.get(type);
   if (registry && registry.length > 0) {
-    const entry = registry.find((e) => e.adapterType === adapterType);
+    const entry = registry.find((e) => normalizeAdapterType(e.adapterType) === type);
     if (!entry) {
-      throw new Error(`Adapter "${adapterType}" is not in the configured adapter registry`);
+      const base = `Adapter "${type}" is not in the configured adapter registry`;
+      throw new Error(registryOnlyHint ? `${base}. ${registryOnlyHint}` : base);
     }
     return fromRegistryEntry(entry);
   }
-  const defaults = REGISTRY[adapterType];
+  if (registryOnlyHint) {
+    throw new Error(registryOnlyHint);
+  }
+  const defaults = REGISTRY[type];
   if (!defaults) {
-    throw new Error(`Unknown adapter type: ${adapterType}`);
+    throw new Error(`Unknown adapter type: ${type}`);
   }
   return defaults;
 }
@@ -101,13 +132,15 @@ export function getAdapterDefaults(
  * Resolve the adapter type for a single run: prefer the run's adapter (the agent's,
  * from the lease params) so one environment can serve mixed harnesses; fall back to
  * the environment's configured default adapter when the run does not specify one.
+ * The result is normalised (legacy aliases -> canonical type), so labels and
+ * registry lookups downstream never see an alias.
  */
 export function resolveRunAdapterType(
   runAdapterType: string | null | undefined,
   configAdapterType: string,
 ): string {
   const trimmed = typeof runAdapterType === "string" ? runAdapterType.trim() : "";
-  return trimmed.length > 0 ? trimmed : configAdapterType;
+  return normalizeAdapterType(trimmed.length > 0 ? trimmed : configAdapterType);
 }
 
 /**

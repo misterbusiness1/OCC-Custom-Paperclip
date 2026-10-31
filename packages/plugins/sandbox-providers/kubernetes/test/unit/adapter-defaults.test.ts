@@ -3,6 +3,7 @@ import {
   getAdapterDefaults,
   buildAdapterEnv,
   resolveRunAdapterType,
+  normalizeAdapterType,
   KNOWN_ADAPTER_TYPES,
   type AdapterDefaults,
 } from "../../src/adapter-defaults.js";
@@ -28,25 +29,40 @@ describe("adapter-defaults (built-in)", () => {
     expect(() => getAdapterDefaults("nonexistent_local")).toThrow(/unknown adapter type/i);
   });
 
-  it("KNOWN_ADAPTER_TYPES contains all 6 supported adapters plus the legacy cursor alias", () => {
+  it("KNOWN_ADAPTER_TYPES contains the 5 built-in adapters plus registry-only cursor (no aliases)", () => {
     expect(KNOWN_ADAPTER_TYPES).toEqual(
       new Set([
         "claude_local",
         "codex_local",
         "gemini_local",
-        "cursor",
-        "cursor_local",
         "opencode_local",
         "pi_local",
+        "cursor",
       ]),
     );
   });
 
-  it("resolves defaults for Paperclip's real cursor adapter type", () => {
-    const d = getAdapterDefaults("cursor");
-    expect(d.runtimeImage).toContain("agent-runtime-cursor");
-    expect(d.probeCommand).toEqual(["cursor-agent", "--version"]);
-    expect(getAdapterDefaults("cursor_local")).toEqual(d);
+  it("ships NO built-in Cursor defaults (no agent-runtime-cursor image exists): throws an actionable error", () => {
+    for (const type of ["cursor", "cursor_local"]) {
+      expect(() => getAdapterDefaults(type)).toThrow(
+        /Cursor has no built-in Kubernetes runtime image; add an adapters registry entry for "cursor"/,
+      );
+      expect(() => getAdapterDefaults(type)).toThrow(/CURSOR_API_KEY/);
+      expect(() => getAdapterDefaults(type)).toThrow(/allowFqdns/);
+      expect(() => getAdapterDefaults(type, [])).toThrow(/no built-in Kubernetes runtime image/);
+    }
+  });
+});
+
+describe("normalizeAdapterType", () => {
+  it("maps the legacy cursor_local alias to Paperclip's canonical cursor type", () => {
+    expect(normalizeAdapterType("cursor_local")).toBe("cursor");
+  });
+  it("leaves canonical and unknown types unchanged", () => {
+    expect(normalizeAdapterType("cursor")).toBe("cursor");
+    expect(normalizeAdapterType("claude_local")).toBe("claude_local");
+    expect(normalizeAdapterType("nope")).toBe("nope");
+    expect(normalizeAdapterType("toString")).toBe("toString");
   });
 });
 
@@ -114,6 +130,44 @@ describe("getAdapterDefaults", () => {
   });
 });
 
+describe("getAdapterDefaults (cursor via the adapters registry)", () => {
+  const cursorEntry: AdapterRegistryEntry = {
+    adapterType: "cursor",
+    enabled: true,
+    runtimeImage: "registry.example/cursor:v1",
+    envKeys: ["CURSOR_API_KEY"],
+    allowFqdns: ["api2.cursor.sh"],
+    probeCommand: ["cursor-agent", "--version"],
+  };
+
+  it("resolves cursor from a registry entry", () => {
+    const d = getAdapterDefaults("cursor", [cursorEntry]);
+    expect(d.runtimeImage).toBe("registry.example/cursor:v1");
+    expect(d.envKeys).toEqual(["CURSOR_API_KEY"]);
+    expect(d.allowFqdns).toEqual(["api2.cursor.sh"]);
+  });
+
+  it("resolves the legacy cursor_local alias against a registry entry keyed \"cursor\"", () => {
+    expect(getAdapterDefaults("cursor_local", [cursorEntry])).toEqual(
+      getAdapterDefaults("cursor", [cursorEntry]),
+    );
+  });
+
+  it("matches a registry entry still keyed with the legacy alias", () => {
+    const legacy: AdapterRegistryEntry = { ...cursorEntry, adapterType: "cursor_local" };
+    expect(getAdapterDefaults("cursor", [legacy]).runtimeImage).toBe("registry.example/cursor:v1");
+  });
+
+  it("explains how to add cursor when a registry is configured without it", () => {
+    const registry: AdapterRegistryEntry[] = [
+      { adapterType: "claude_local", enabled: true, runtimeImage: "img" },
+    ];
+    expect(() => getAdapterDefaults("cursor_local", registry)).toThrow(
+      /Adapter "cursor" is not in the configured adapter registry\. Cursor has no built-in Kubernetes runtime image/,
+    );
+  });
+});
+
 describe("buildAdapterEnv", () => {
   it("layers process-env (secret) over defaultEnv (non-secret base)", () => {
     const defaults: AdapterDefaults = {
@@ -152,5 +206,9 @@ describe("resolveRunAdapterType", () => {
   });
   it("trims the run adapter", () => {
     expect(resolveRunAdapterType("  pi_local  ", "opencode_local")).toBe("pi_local");
+  });
+  it("normalises the legacy cursor_local alias (run hint or environment default)", () => {
+    expect(resolveRunAdapterType("cursor_local", "claude_local")).toBe("cursor");
+    expect(resolveRunAdapterType(undefined, "cursor_local")).toBe("cursor");
   });
 });

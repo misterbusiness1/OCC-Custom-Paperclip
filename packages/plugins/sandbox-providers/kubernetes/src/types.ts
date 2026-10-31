@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { adapterRegistrySchema } from "./adapter-registry.js";
-import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
+import { KNOWN_ADAPTER_TYPES, normalizeAdapterType } from "./adapter-defaults.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
@@ -37,11 +37,14 @@ export const kubernetesProviderConfigSchema = z
      * The adapter type that Jobs in this environment will run.
      * Each Kubernetes environment is bound to one adapter; create multiple
      * environments for different adapters.
-     * Defaults to `"claude_local"`.
+     * Defaults to `"claude_local"`. Legacy aliases (`"cursor_local"`) are
+     * normalised to the canonical type (`"cursor"`). `"cursor"` is accepted but
+     * has no built-in runtime defaults: it needs an `adapters` registry entry.
      */
     adapterType: z
       .string()
       .default("claude_local")
+      .transform(normalizeAdapterType)
       .refine((v) => KNOWN_ADAPTER_TYPES.has(v), {
         message: "adapterType must be one of the known adapter types",
       }),
