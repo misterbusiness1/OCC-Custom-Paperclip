@@ -3239,7 +3239,9 @@ export function agentRoutes(
     // open, delegate to approvalsSvc.reject(), which both resolves the approval
     // (clearing the inbox "Approve/Reject" card) and terminates the agent.
     // Mirror the approve path's branch-or-fallback so we never terminate twice:
-    // reject() already calls agentsSvc.terminate() internally.
+    // reject() already terminates the agent while it is still pending. If it
+    // left pending_approval first (a concurrent approval), terminate it here,
+    // since that is what this request asked for.
     let agent: Awaited<ReturnType<typeof svc.terminate>> = null;
     if (existing.status === "pending_approval") {
       const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
@@ -3248,7 +3250,7 @@ export function agentRoutes(
         agent = await svc.getById(id);
       }
     }
-    if (!agent) {
+    if (!agent || agent.status !== "terminated") {
       agent = await svc.terminate(id);
     }
     if (!agent) {

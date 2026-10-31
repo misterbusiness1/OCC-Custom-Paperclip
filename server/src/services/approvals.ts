@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
+import { isUuidLike } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { logger } from "../middleware/logger.js";
 import { redactSensitiveText } from "../redaction.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
@@ -36,10 +38,33 @@ export function approvalService(db: Db) {
     };
   }
 
-  async function getHireTargetAgent(companyId: string, agentId: string) {
+  type HireTargetSkipReason = "invalid_agent_id" | "agent_not_in_company" | "agent_not_pending";
+
+  // Resolves payload.agentId to an agent in the approval's company that is
+  // still pending_approval. Anything else is reported as a skip reason so the
+  // approval resolves without touching that agent.
+  async function getPendingHireTarget(
+    companyId: string,
+    agentId: string,
+  ): Promise<{ ok: true } | { ok: false; reason: HireTargetSkipReason }> {
+    // A non-uuid id would fail the uuid column cast (22P02) and surface as a 500.
+    if (!isUuidLike(agentId) || agentId !== agentId.trim()) return { ok: false, reason: "invalid_agent_id" };
     const agent = await agentsSvc.getById(agentId);
-    if (!agent || agent.companyId !== companyId) return null;
-    return agent;
+    if (!agent || agent.companyId !== companyId) return { ok: false, reason: "agent_not_in_company" };
+    if (agent.status !== "pending_approval") return { ok: false, reason: "agent_not_pending" };
+    return { ok: true };
+  }
+
+  function warnHireTargetSkipped(
+    approval: ApprovalRecord,
+    agentId: string,
+    decision: "approved" | "rejected",
+    reason: HireTargetSkipReason,
+  ) {
+    logger.warn(
+      { approvalId: approval.id, companyId: approval.companyId, agentId, decision, reason },
+      "hire approval resolved without acting on payload.agentId",
+    );
   }
 
   async function reconcileApprovedBuiltInAgent(companyId: string, payload: Record<string, unknown>) {
@@ -166,7 +191,11 @@ export function approvalService(db: Db) {
             inArray(approvals.status, resolvableStatuses),
             sql`${approvals.payload} ->> 'agentId' = ${agentId}`,
           ),
-        );
+        )
+        // Oldest first, so callers that resolve "the" open hire approval for an
+        // agent always pick the one created with the agent.
+        .orderBy(asc(approvals.createdAt), asc(approvals.id))
+        .limit(1);
       return rows[0] ?? null;
     },
 
@@ -235,11 +264,18 @@ export function approvalService(db: Db) {
           // Only activate an agent that belongs to the approval's company and is
           // still awaiting this approval. A payload naming any other agent must
           // not reconfigure or wake it.
-          const target = await getHireTargetAgent(updated.companyId, payloadAgentId);
-          if (target && target.status === "pending_approval") {
-            await agentsSvc.activatePendingApproval(payloadAgentId, payload);
-            await reconcileApprovedBuiltInAgent(updated.companyId, payload);
-            hireApprovedAgentId = payloadAgentId;
+          const target = await getPendingHireTarget(updated.companyId, payloadAgentId);
+          if (!target.ok) {
+            warnHireTargetSkipped(updated, payloadAgentId, "approved", target.reason);
+          } else {
+            const activation = await agentsSvc.activatePendingApproval(payloadAgentId, payload);
+            if (activation?.activated) {
+              await reconcileApprovedBuiltInAgent(updated.companyId, payload);
+              hireApprovedAgentId = payloadAgentId;
+            } else {
+              // Another resolution activated or removed the agent first.
+              warnHireTargetSkipped(updated, payloadAgentId, "approved", "agent_not_pending");
+            }
           }
         } else {
           const created = await agentsSvc.create(updated.companyId, {
@@ -308,10 +344,13 @@ export function approvalService(db: Db) {
         if (payloadAgentId) {
           // Rejecting a hire only discards the agent that was waiting on it.
           // Never terminate an agent from another company or one that is
-          // already active.
-          const target = await getHireTargetAgent(updated.companyId, payloadAgentId);
-          if (target && target.status === "pending_approval") {
-            await agentsSvc.terminate(payloadAgentId);
+          // already active; terminatePendingApproval re-checks the status in
+          // the same update so a concurrent approval cannot be undone.
+          const target = await getPendingHireTarget(updated.companyId, payloadAgentId);
+          if (!target.ok) {
+            warnHireTargetSkipped(updated, payloadAgentId, "rejected", target.reason);
+          } else if (!(await agentsSvc.terminatePendingApproval(payloadAgentId))) {
+            warnHireTargetSkipped(updated, payloadAgentId, "rejected", "agent_not_pending");
           }
         }
       }

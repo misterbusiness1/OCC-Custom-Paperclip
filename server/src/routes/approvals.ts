@@ -170,20 +170,17 @@ export function approvalRoutes(
     res.json(redacted);
   });
 
-  // hire_agent approvals that reference an existing agent may only target a
-  // pending agent in the same company: approving activates it and rejecting
-  // terminates it.
-  async function assertHirePayloadAgentInCompany(payload: Record<string, unknown>, companyId: string) {
-    const payloadAgentId = readPayloadAgentId(payload);
-    if (!payloadAgentId) return;
-    const target = await db
-      .select({ companyId: agents.companyId, status: agents.status })
-      .from(agents)
-      .where(eq(agents.id, payloadAgentId))
-      .then((rows) => rows[0] ?? null);
-    if (!target || target.companyId !== companyId || target.status !== "pending_approval") {
-      throw unprocessable("payload.agentId must reference a pending agent in this company");
-    }
+  // A hire_agent approval that names payload.agentId activates (and applies its
+  // config to) that agent on approval and terminates it on rejection. Only the
+  // agent-hires flow creates the pending agent and its approval together, so the
+  // generic route never accepts one: a second approval for an agent that is
+  // already awaiting its own would let the board approve a payload it never saw.
+  function assertGenericHirePayloadHasNoAgentId(payload: Record<string, unknown>) {
+    if (payload.agentId === undefined || payload.agentId === null) return;
+    throw unprocessable(
+      "hire_agent approvals created here cannot reference an existing agent (payload.agentId). " +
+        "Use POST /api/companies/:companyId/agent-hires to create a pending hire approval.",
+    );
   }
 
   // The requester is woken when an approval resolves, so it must be the calling
@@ -194,7 +191,8 @@ export function approvalRoutes(
     bodyRequestedByAgentId: string | null,
   ): Promise<string | null> {
     if (actor.actorType === "agent") {
-      if (bodyRequestedByAgentId && bodyRequestedByAgentId !== actor.actorId) {
+      // UUIDs are case-insensitive; always store the caller's own id.
+      if (bodyRequestedByAgentId && bodyRequestedByAgentId.toLowerCase() !== actor.actorId.toLowerCase()) {
         throw forbidden("Agents can only request approvals as themselves");
       }
       return actor.actorId;
@@ -235,7 +233,7 @@ export function approvalRoutes(
 
     let normalizedPayload: Record<string, unknown> = approvalInput.payload;
     if (approvalInput.type === "hire_agent") {
-      await assertHirePayloadAgentInCompany(approvalInput.payload, companyId);
+      assertGenericHirePayloadHasNoAgentId(approvalInput.payload);
       normalizedPayload = await secretsSvc.normalizeHireApprovalPayloadForPersistence(
         companyId,
         approvalInput.payload,

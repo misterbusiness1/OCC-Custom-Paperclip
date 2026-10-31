@@ -26,7 +26,8 @@ const mockSecretService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({ decide: vi.fn() }));
 
-const AGENT_SELF = "11111111-1111-4111-8111-111111111111";
+// Contains hex letters so case-insensitive comparison is exercised.
+const AGENT_SELF = "abcdef11-1111-4111-8111-111111111111";
 const AGENT_OTHER = "22222222-2222-4222-8222-222222222222";
 
 function registerModuleMocks() {
@@ -44,21 +45,23 @@ function registerModuleMocks() {
  * Minimal db stub: run lookups (selections containing contextSnapshot) return
  * an active run for the calling agent; every other lookup returns `agentRows`.
  */
-function createRouteDb(agentRows: Array<Record<string, unknown>>) {
+function createRouteDb(agentRows: Array<Record<string, unknown>> | Error) {
   const runRows = [{ id: "run-1", companyId: "company-1", agentId: AGENT_SELF, contextSnapshot: {} }];
   return {
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
-          then: async (resolve: (rows: unknown[]) => unknown) =>
-            resolve(Object.keys(selection).includes("contextSnapshot") ? runRows : agentRows),
+          then: async (resolve: (rows: unknown[]) => unknown, reject: (error: unknown) => unknown) => {
+            if (Object.keys(selection).includes("contextSnapshot")) return resolve(runRows);
+            return agentRows instanceof Error ? reject(agentRows) : resolve(agentRows);
+          },
         })),
       })),
     })),
   } as any;
 }
 
-async function createApp(actor: Record<string, unknown>, agentRows: Array<Record<string, unknown>> = []) {
+async function createApp(actor: Record<string, unknown>, agentRows: Array<Record<string, unknown>> | Error = []) {
   const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/approvals.js"),
@@ -141,6 +144,18 @@ describe("approval routes requester and hire-target scoping", () => {
     expect(mockApprovalService.create).not.toHaveBeenCalled();
   });
 
+  it("accepts an agent naming itself with a differently-cased uuid and stores its own id", async () => {
+    const res = await request(await createApp(agentActor))
+      .post("/api/companies/company-1/approvals")
+      .send({ type: "approve_ceo_strategy", requestedByAgentId: AGENT_SELF.toUpperCase(), payload: {} });
+
+    expect(res.status).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ requestedByAgentId: AGENT_SELF }),
+    );
+  });
+
   it("attributes an agent-created approval to the calling agent", async () => {
     const res = await request(await createApp(agentActor))
       .post("/api/companies/company-1/approvals")
@@ -194,14 +209,35 @@ describe("approval routes requester and hire-target scoping", () => {
     expect(mockApprovalService.create).not.toHaveBeenCalled();
   });
 
-  it("accepts a hire_agent approval for a pending agent in the same company", async () => {
+  it("rejects a hire_agent approval naming a pending agent in the same company and points to agent-hires", async () => {
+    // The pending agent already has the approval agent-hires created with it;
+    // a second one would let the board approve a payload it never reviewed.
     const res = await request(
-      await createApp(boardActor, [{ companyId: "company-1", status: "pending_approval" }]),
+      await createApp(agentActor, [{ companyId: "company-1", status: "pending_approval" }]),
     )
       .post("/api/companies/company-1/approvals")
-      .send({ type: "hire_agent", payload: { agentId: AGENT_OTHER } });
+      .send({
+        type: "hire_agent",
+        payload: { agentId: AGENT_OTHER, adapterConfig: { command: "echo attacker" } },
+      });
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("POST /api/companies/:companyId/agent-hires");
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(mockApprovalService.createWithIdempotency).not.toHaveBeenCalled();
+  });
+
+  it("rejects a hire_agent approval with a non-uuid payload.agentId with 422, not a database error", async () => {
+    // Simulate Postgres refusing a non-uuid literal for the uuid id column.
+    const invalidUuid = Object.assign(new Error('invalid input syntax for type uuid: "not-a-uuid"'), {
+      code: "22P02",
+    });
+    const res = await request(await createApp(boardActor, invalidUuid))
+      .post("/api/companies/company-1/approvals")
+      .send({ type: "hire_agent", payload: { agentId: "not-a-uuid" } });
+
+    expect(res.status).toBe(422);
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
   });
 
   it("accepts a hire_agent approval without an agentId", async () => {
@@ -210,6 +246,29 @@ describe("approval routes requester and hire-target scoping", () => {
       .send({ type: "hire_agent", payload: { name: "New Agent" } });
 
     expect(res.status).toBe(201);
+  });
+
+  it("allows a hire resubmission that keeps the agent-hires payload.agentId", async () => {
+    mockApprovalService.getById.mockResolvedValue(
+      approvalRecord({
+        type: "hire_agent",
+        status: "revision_requested",
+        payload: { agentId: AGENT_OTHER, name: "Coder" },
+      }),
+    );
+    mockApprovalService.resubmit.mockImplementation(async (_id: string, payload: Record<string, unknown>) =>
+      approvalRecord({ type: "hire_agent", status: "pending", payload }),
+    );
+
+    const res = await request(await createApp(boardActor))
+      .post("/api/approvals/approval-1/resubmit")
+      .send({ payload: { agentId: AGENT_OTHER, name: "Coder v2" } });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.resubmit).toHaveBeenCalledWith(
+      "approval-1",
+      expect.objectContaining({ agentId: AGENT_OTHER, name: "Coder v2" }),
+    );
   });
 
   it("refuses a hire resubmission that changes payload.agentId", async () => {

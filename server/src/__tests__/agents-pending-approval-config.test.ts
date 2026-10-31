@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
+  agentApiKeys,
   agents,
   approvals,
   activityLog,
@@ -42,6 +43,7 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     await db.delete(activityLog);
     await db.delete(budgetPolicies);
     await db.delete(approvals);
+    await db.delete(agentApiKeys);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -153,6 +155,155 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
       runtimeConfig: { maxConcurrentRuns: 1 },
       budgetMonthlyCents: 1234,
       metadata: { source: "hire-form" },
+    });
+  });
+  async function seedAgent(
+    companyId: string,
+    overrides: Partial<Parameters<ReturnType<typeof agentService>["create"]>[1]> = {},
+  ) {
+    return agentService(db).create(companyId, {
+      name: `Agent ${randomUUID().slice(0, 8)}`,
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      status: "idle",
+      spentMonthlyCents: 0,
+      permissions: {},
+      lastHeartbeatAt: null,
+      ...overrides,
+    });
+  }
+
+  async function seedHireApproval(
+    companyId: string,
+    payload: Record<string, unknown>,
+    overrides: Partial<Parameters<ReturnType<typeof approvalService>["create"]>[1]> = {},
+  ) {
+    return approvalService(db).create(companyId, {
+      type: "hire_agent",
+      requestedByAgentId: null,
+      requestedByUserId: "board-user",
+      status: "pending",
+      payload,
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      updatedAt: new Date(),
+      ...overrides,
+    });
+  }
+
+  it("resolves the oldest open hire approval when several name the same agent", async () => {
+    const companyId = await seedCompany();
+    const pending = await seedAgent(companyId, { status: "pending_approval" });
+    // Insert the newer approval first so physical row order disagrees with age.
+    await seedHireApproval(
+      companyId,
+      { agentId: pending.id, adapterConfig: { command: "echo injected" } },
+      { createdAt: new Date("2026-10-31T12:00:00.000Z") },
+    );
+    const original = await seedHireApproval(
+      companyId,
+      { agentId: pending.id, adapterConfig: { command: "echo reviewed" } },
+      { createdAt: new Date("2026-10-30T12:00:00.000Z") },
+    );
+
+    const found = await approvalService(db).findOpenHireApprovalForAgent(companyId, pending.id);
+
+    expect(found?.id).toBe(original.id);
+  });
+
+  it("refuses to activate a pending hire whose approved payload reports to another company's agent", async () => {
+    const companyId = await seedCompany();
+    const otherCompanyId = await seedCompany();
+    const foreignManager = await seedAgent(otherCompanyId);
+    const pending = await seedAgent(companyId, { status: "pending_approval" });
+    const approval = await seedHireApproval(companyId, {
+      name: pending.name,
+      agentId: pending.id,
+      reportsTo: foreignManager.id,
+    });
+
+    await expect(approvalService(db).approve(approval.id, "board-user")).rejects.toMatchObject({
+      status: 422,
+      message: "Manager must belong to same company",
+    });
+
+    await expect(agentService(db).getById(pending.id)).resolves.toMatchObject({
+      status: "pending_approval",
+      reportsTo: null,
+    });
+  });
+
+  it("refuses to activate a pending hire whose approved payload creates a reporting cycle", async () => {
+    const companyId = await seedCompany();
+    const agentSvc = agentService(db);
+    const pending = await seedAgent(companyId, { status: "pending_approval" });
+    const report = await seedAgent(companyId, { reportsTo: pending.id });
+
+    await expect(agentSvc.activatePendingApproval(pending.id, { reportsTo: pending.id })).rejects.toMatchObject({
+      status: 422,
+      message: "Agent cannot report to itself",
+    });
+    await expect(agentSvc.activatePendingApproval(pending.id, { reportsTo: report.id })).rejects.toMatchObject({
+      status: 422,
+      message: "Reporting relationship would create cycle",
+    });
+    await expect(agentSvc.getById(pending.id)).resolves.toMatchObject({
+      status: "pending_approval",
+      reportsTo: null,
+    });
+  });
+
+  it("applies a same-company manager from the approved payload on activation", async () => {
+    const companyId = await seedCompany();
+    const manager = await seedAgent(companyId);
+    const pending = await seedAgent(companyId, { status: "pending_approval" });
+
+    const result = await agentService(db).activatePendingApproval(pending.id, { reportsTo: manager.id });
+
+    expect(result).toMatchObject({ activated: true, agent: { status: "idle", reportsTo: manager.id } });
+  });
+
+  it("terminatePendingApproval leaves an agent that is no longer pending and its keys untouched", async () => {
+    const companyId = await seedCompany();
+    const active = await seedAgent(companyId);
+    await db.insert(agentApiKeys).values({ agentId: active.id, companyId, name: "default", keyHash: "hash-active" });
+
+    await expect(agentService(db).terminatePendingApproval(active.id)).resolves.toBeNull();
+
+    await expect(agentService(db).getById(active.id)).resolves.toMatchObject({ status: "idle" });
+    const [key] = await db.select().from(agentApiKeys).where(eq(agentApiKeys.agentId, active.id));
+    expect(key?.revokedAt).toBeNull();
+  });
+
+  it("terminatePendingApproval terminates a pending agent and revokes its keys", async () => {
+    const companyId = await seedCompany();
+    const pending = await seedAgent(companyId, { status: "pending_approval" });
+    await db.insert(agentApiKeys).values({ agentId: pending.id, companyId, name: "default", keyHash: "hash-pending" });
+
+    await expect(agentService(db).terminatePendingApproval(pending.id)).resolves.toMatchObject({
+      id: pending.id,
+      status: "terminated",
+    });
+
+    const [key] = await db.select().from(agentApiKeys).where(eq(agentApiKeys.agentId, pending.id));
+    expect(key?.revokedAt).toBeInstanceOf(Date);
+  });
+
+  it("resolves hire approvals whose payload.agentId is not a uuid without a database error", async () => {
+    const companyId = await seedCompany();
+    const approvalSvc = approvalService(db);
+    const toApprove = await seedHireApproval(companyId, { agentId: "not-a-uuid" });
+    const toReject = await seedHireApproval(companyId, { agentId: "not-a-uuid" });
+
+    await expect(approvalSvc.approve(toApprove.id, "board-user")).resolves.toMatchObject({
+      applied: true,
+      approval: { status: "approved" },
+    });
+    await expect(approvalSvc.reject(toReject.id, "board-user")).resolves.toMatchObject({
+      applied: true,
+      approval: { status: "rejected" },
     });
   });
 });

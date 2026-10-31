@@ -36,6 +36,8 @@ POST /api/companies/{companyId}/approvals
 }
 ```
 
+An agent caller can only name itself as `requestedByAgentId`; board callers can name any agent in the same company. A `hire_agent` request on this endpoint cannot set `payload.agentId` (the server answers `422`). To hire an agent that waits for approval, use `agent-hires` below, which creates the pending agent and its approval together.
+
 ## Create Hire Request
 
 ```

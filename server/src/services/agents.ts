@@ -728,6 +728,34 @@ export function agentService(db: Db) {
       return getById(id);
     },
 
+    // Terminates the agent only while it is still pending_approval, in one
+    // conditional update, so a hire rejection that races an approval of the
+    // same agent cannot terminate the agent that approval just activated.
+    // Returns null (and revokes nothing) when the agent was not pending.
+    terminatePendingApproval: async (id: string) => {
+      const terminated = await db.transaction(async (tx) => {
+        const updated = await tx
+          .update(agents)
+          .set({
+            status: "terminated",
+            pauseReason: null,
+            pausedAt: null,
+            errorReason: null,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(agents.id, id), eq(agents.status, "pending_approval")))
+          .returning({ id: agents.id })
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+        await tx
+          .update(agentApiKeys)
+          .set({ revokedAt: new Date() })
+          .where(eq(agentApiKeys.agentId, id));
+        return updated;
+      });
+      return terminated ? getById(terminated.id) : null;
+    },
+
     remove: async (id: string) => {
       const existing = await getById(id);
       if (!existing) return null;
@@ -776,6 +804,12 @@ export function agentService(db: Db) {
         if (!existing || existing.status !== "pending_approval") return null;
         const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
         let patch = { ...approvedPatch } as Partial<typeof agents.$inferInsert>;
+        // The approved payload's manager gets the same checks as create/update:
+        // same company and no reporting cycle.
+        if (patch.reportsTo) {
+          await ensureManager(existing.companyId, patch.reportsTo);
+          await assertNoCycle(id, patch.reportsTo);
+        }
         if (
           Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&
           isPlainRecord(patch.adapterConfig)
