@@ -135,7 +135,16 @@ export function approvalOriginalRequest(
  * or of the draft. `language` is the language of the text it translates, when
  * the agent named one the interface knows.
  */
-export type ApprovalTranslation = { text: string; language: string | null };
+export type ApprovalTranslation = {
+  text: string;
+  language: string | null;
+  /**
+   * Set by approvalTranslationFor when the agent named a language the text it
+   * translates is plainly not written in ("Chinese" for an English draft): the
+   * translation may belong to another version of that text.
+   */
+  mismatchedLanguage?: string;
+};
 
 /**
  * Bidi marks and controls (Arabic letter mark, left-to-right and right-to-left marks, embeddings, overrides,
@@ -176,20 +185,34 @@ const QUALIFIER_SCRIPT_CODES = [
 ];
 /** Spoken forms that may qualify "Chinese". */
 const QUALIFIER_WORDS = ["Mandarin", "Cantonese", "Simplified", "Traditional"];
+/**
+ * Region codes that name no place a language is spoken in: unknown and private-use
+ * codes, pseudo-locales ("Pseudo-Accents"), groupings ("European Union", "United Nations").
+ * XK stays: it is Kosovo.
+ */
+const NON_REGION_CODE_PATTERN = /^(?:AA|Q[M-Z]|X[A-JL-Z]|ZZ|EU|EZ|UN)$/;
+/** Languages also written in Latin letters every day (Serbian, romanized Hindi): their script says nothing about a text. */
+const ALSO_LATIN_LANGUAGES = new Set(["sr", "bs", "hi", "ur", "pa", "kk", "uz", "az", "tk", "mn"]);
 
-type LanguageEntry = { name: string; latin: boolean };
-/** A qualifier; `latin` is set when it names a script ("Latin", "Cyrillic"). */
-type LanguageQualifier = { name: string; latin: boolean | null };
+/**
+ * A known language, in English. `script` is its usual script (ISO 15924: "Latn",
+ * "Hans", "Jpan", "Cyrl"), null when unknown or when it is often written in two.
+ */
+type LanguageEntry = { name: string; script: string | null };
+/** A qualifier; `script` is set when it names a script ("Latin", "Cyrillic"). */
+type LanguageQualifier = { name: string; script: string | null };
 
 const LETTERS = "abcdefghijklmnopqrstuvwxyz";
 let languageNames: Map<string, LanguageEntry> | null | undefined;
 let languageQualifiers: Map<string, LanguageQualifier> | null | undefined;
 
-function tagIsLatin(tag: string): boolean {
+function tagScript(tag: string): string | null {
   try {
-    return new Intl.Locale(tag).maximize().script === "Latn";
+    const locale = new Intl.Locale(tag);
+    if (!locale.script && ALSO_LATIN_LANGUAGES.has(locale.language)) return null;
+    return locale.maximize().script ?? null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -210,13 +233,13 @@ function getLanguageNames(): Map<string, LanguageEntry> | null {
     for (const first of LETTERS) for (const second of LETTERS) codes.push(first + second);
     for (const tag of [...codes, ...LANGUAGE_VARIANT_TAGS]) {
       const name = languageName.of(tag);
-      if (name && name.toLowerCase() !== tag.toLowerCase()) add(name, { name, latin: tagIsLatin(tag) });
+      if (name && name.toLowerCase() !== tag.toLowerCase()) add(name, { name, script: tagScript(tag) });
     }
-    for (const [name, tag] of LANGUAGE_ALIASES) add(name, { name, latin: tagIsLatin(tag) });
+    for (const [name, tag] of LANGUAGE_ALIASES) add(name, { name, script: tagScript(tag) });
     for (const tag of AUTONYM_TAGS) {
       const english = languageName.of(tag);
       if (!english) continue;
-      add(new Intl.DisplayNames([tag], { type: "language", fallback: "none" }).of(tag), { name: english, latin: tagIsLatin(tag) });
+      add(new Intl.DisplayNames([tag], { type: "language", fallback: "none" }).of(tag), { name: english, script: tagScript(tag) });
     }
     languageNames = languages;
   } catch {
@@ -230,15 +253,20 @@ function getLanguageQualifiers(): Map<string, LanguageQualifier> | null {
   if (languageQualifiers !== undefined) return languageQualifiers;
   try {
     const qualifiers = new Map<string, LanguageQualifier>();
-    const addQualifier = (name: string | undefined, latin: boolean | null) => {
-      if (name && !qualifiers.has(name.toLowerCase())) qualifiers.set(name.toLowerCase(), { name, latin });
+    const addQualifier = (name: string | undefined, script: string | null) => {
+      if (name && !qualifiers.has(name.toLowerCase())) qualifiers.set(name.toLowerCase(), { name, script });
     };
     const scriptName = new Intl.DisplayNames(["en"], { type: "script", fallback: "none" });
-    for (const code of QUALIFIER_SCRIPT_CODES) addQualifier(scriptName.of(code), code === "Latn");
+    for (const code of QUALIFIER_SCRIPT_CODES) addQualifier(scriptName.of(code), code);
     for (const word of QUALIFIER_WORDS) addQualifier(word, null);
     for (const style of ["long", "short"] as const) {
       const regionName = new Intl.DisplayNames(["en"], { type: "region", fallback: "none", style });
-      for (const first of LETTERS) for (const second of LETTERS) addQualifier(regionName.of(`${first}${second}`.toUpperCase()), null);
+      for (const first of LETTERS) {
+        for (const second of LETTERS) {
+          const code = `${first}${second}`.toUpperCase();
+          if (!NON_REGION_CODE_PATTERN.test(code)) addQualifier(regionName.of(code), null);
+        }
+      }
     }
     languageQualifiers = qualifiers;
   } catch {
@@ -250,7 +278,7 @@ function getLanguageQualifiers(): Map<string, LanguageQualifier> | null {
 /**
  * Reads the agent's language name: kept only when it names a language the
  * interface knows ("Chinese (Simplified)", "Russian", "zh-CN"), in its English
- * form, with whether that language is written in Latin letters. It is shown
+ * form, with the script that language is written in. It is shown
  * beside the interface's own labels, so a claim ("Board approved",
  * "Chinese (verified)") or a placeholder ("Unknown", "Same as original") must
  * never pass for one.
@@ -265,7 +293,7 @@ function readLanguage(value: unknown): LanguageEntry | null {
     try {
       const name = new Intl.DisplayNames(["en"], { type: "language", fallback: "none" }).of(input);
       const base = name ? languages.get(name.replace(/\s*\(.*$/, "").toLowerCase()) : undefined;
-      if (name && base) return { name, latin: tagIsLatin(input) };
+      if (name && base) return { name, script: tagScript(input) };
     } catch {
       // Not a well-formed tag: read it as a name below.
     }
@@ -278,10 +306,10 @@ function readLanguage(value: unknown): LanguageEntry | null {
   if (!known) return null;
   const qualifiers = parts[2].split(",").map((part) => known.get(part.trim().toLowerCase()));
   if (qualifiers.some((qualifier) => !qualifier)) return null;
-  const script = qualifiers.find((qualifier) => qualifier!.latin !== null);
+  const script = qualifiers.find((qualifier) => qualifier!.script !== null);
   return {
     name: `${base.name} (${qualifiers.map((qualifier) => qualifier!.name).join(", ")})`,
-    latin: script ? script.latin! : base.latin,
+    script: script ? script.script : base.script,
   };
 }
 
@@ -317,12 +345,17 @@ export function approvalDraftTranslation(payload?: Record<string, unknown> | nul
   return approvalTranslation(payload?.bodyTranslation);
 }
 
+/** "English", "British English", "English (United States)": the language the board reads. */
+const ENGLISH_NAME_PATTERN = /\benglish\b/i;
+
 /**
- * The translation as shown under `source`, the text it translates. A language
- * name that contradicts the text's script is dropped, so the interface never
- * repeats it: one in Latin letters ("English", "Spanish") for a Chinese draft,
- * one in another script ("Japanese") for a draft in Latin letters. "English" is
- * always dropped: "translated from English" is no claim to show.
+ * The translation as shown under `source`, the text it translates. "English",
+ * in any form, is dropped without a word: "translated from English" is no
+ * claim to show, and agents often name the translation's own language there.
+ * A language the text is plainly not written in ("Chinese" for a draft in
+ * Latin letters, "Korean" for a Japanese one, "Spanish" for a Russian one) is
+ * dropped too, and kept in `mismatchedLanguage`: the translation may belong to
+ * another version of the text, and the board is told so.
  */
 export function approvalTranslationFor(
   translation: ApprovalTranslation | null,
@@ -330,25 +363,18 @@ export function approvalTranslationFor(
 ): ApprovalTranslation | null {
   if (!translation?.language) return translation;
   const language = readLanguage(translation.language);
-  const script = textScript(source);
-  if (
-    !language ||
-    /^english\b/i.test(language.name) ||
-    (language.latin && script === "non-latin") ||
-    (!language.latin && script === "latin")
-  ) {
-    return { ...translation, language: null };
-  }
-  return translation;
+  if (!language || ENGLISH_NAME_PATTERN.test(language.name)) return { ...translation, language: null };
+  if (languageFitsText(language, source)) return translation;
+  return { ...translation, language: null, mismatchedLanguage: language.name };
 }
 
-/** Letters a text needs before its script is judged: a greeting or a name alone says nothing. */
+/** Letters (weighted, see weigh) a text needs before its script is judged: a greeting or a name alone says nothing. */
 const SCRIPT_MIN_LETTERS = 8;
 /** The share of letters outside the Latin script above which a text is taken as not English. */
 const NON_LATIN_SHARE = 0.3;
 /** Where a quoted thread is looked for: past this a message is not read. */
 const SCRIPT_SCAN_LENGTH = 200_000;
-/** A very long new message is judged on its start and its end, this much of each. */
+/** A very long text is judged on its start and its end, this much of each. */
 const SCRIPT_SAMPLE_PART = 10_000;
 const LETTER_PATTERN = /\p{L}/gu;
 /** A letter that is not a Latin one. */
@@ -356,26 +382,84 @@ const NON_LATIN_LETTER_PATTERN = /(?=\p{L})\P{Script=Latin}/gu;
 /** Scripts in which one character carries about a word: each counts as this many Latin letters. */
 const WORD_SCRIPT_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
 const WORD_SCRIPT_WEIGHT = 3;
+const HAN_PATTERN = /\p{Script=Han}/gu;
+const KANA_PATTERN = /[\p{Script=Hiragana}\p{Script=Katakana}]/gu;
+const HANGUL_PATTERN = /\p{Script=Hangul}/gu;
+/** Japanese prose is at least this share kana; Chinese has none. */
+const JAPANESE_KANA_SHARE = 0.1;
+/** The other scripts a language may be named for, by their ISO 15924 code. */
+const TEXT_SCRIPTS: Array<[string, RegExp]> = [
+  ["Cyrl", /\p{Script=Cyrillic}/gu],
+  ["Arab", /\p{Script=Arabic}/gu],
+  ["Hebr", /\p{Script=Hebrew}/gu],
+  ["Thai", /\p{Script=Thai}/gu],
+  ["Deva", /\p{Script=Devanagari}/gu],
+  ["Beng", /\p{Script=Bengali}/gu],
+  ["Grek", /\p{Script=Greek}/gu],
+  ["Geor", /\p{Script=Georgian}/gu],
+  ["Armn", /\p{Script=Armenian}/gu],
+  ["Ethi", /\p{Script=Ethiopic}/gu],
+  ["Khmr", /\p{Script=Khmer}/gu],
+  ["Laoo", /\p{Script=Lao}/gu],
+  ["Mymr", /\p{Script=Myanmar}/gu],
+  ["Sinh", /\p{Script=Sinhala}/gu],
+  ["Taml", /\p{Script=Tamil}/gu],
+  ["Telu", /\p{Script=Telugu}/gu],
+  ["Knda", /\p{Script=Kannada}/gu],
+  ["Mlym", /\p{Script=Malayalam}/gu],
+  ["Gujr", /\p{Script=Gujarati}/gu],
+  ["Guru", /\p{Script=Gurmukhi}/gu],
+  ["Orya", /\p{Script=Oriya}/gu],
+  ["Tibt", /\p{Script=Tibetan}/gu],
+  ["Thaa", /\p{Script=Thaana}/gu],
+  ["Mong", /\p{Script=Mongolian}/gu],
+];
+/** The text scripts each Chinese, Japanese or Korean language script is written in (see mainScript). */
+const WORD_LANGUAGE_SCRIPTS: Record<string, string[]> = {
+  Hans: ["Hani"],
+  Hant: ["Hani"],
+  Hani: ["Hani"],
+  // Japanese may be written in kanji alone.
+  Jpan: ["Jpan", "Hani"],
+  Kore: ["Kore"],
+  Hang: ["Kore"],
+};
 /**
  * A link or an email address, in ASCII only: text in another script often runs on with no space after one.
  * Linear on any input: an address may only start where a run of address characters starts, and every part is bounded.
  */
 const ADDRESS_PATTERN =
   /(?:https?:\/\/|www\.)[!-~]+|(?<![\w.+-])[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}/giu;
-/** A line ending a sentence: a closing line of a message is kept as content, a short line without one may be a signature. */
-const SENTENCE_END_PATTERN = /[.!?。！？…]$/u;
-const SIGNATURE_LINE_MAX_LENGTH = 40;
-/** A signature is a few lines: a longer closing run of short lines is the message itself, written line by line. */
-const SIGNATURE_MAX_LINES = 5;
-/** A short line before the signature that closes the message ("Thanks!", "谢谢！"). */
-const SIGN_OFF_MAX_LENGTH = 24;
-/** A line of data, not prose: a short label and a colon ("Address: …", "收货人：王伟", "Tel: …"). */
-const FIELD_LINE_PATTERN = /^[^\s:：]{1,12} ?[:：]/u;
-const FIELD_LINE_MAX_LENGTH = 60;
-const FIELD_MAX_LINES = 4;
 
+function countOf(text: string, pattern: RegExp): number {
+  return text.match(pattern)?.length ?? 0;
+}
+
+/** Letters, without links and addresses. */
 function letterCount(text: string): number {
-  return text.replace(ADDRESS_PATTERN, " ").match(LETTER_PATTERN)?.length ?? 0;
+  return countOf(text.replace(ADDRESS_PATTERN, " "), LETTER_PATTERN);
+}
+
+type ScriptWeight = { letters: number; nonLatin: number };
+
+/**
+ * A text's letters and those outside the Latin script, a Chinese, Japanese or
+ * Korean character counted as a short word. Links, addresses, digits and
+ * punctuation are not counted. A very long text is weighed on its start and end.
+ */
+function weigh(text: string): ScriptWeight {
+  let sample = text;
+  if (sample.length > SCRIPT_SAMPLE_PART * 2) {
+    sample = `${sample.slice(0, SCRIPT_SAMPLE_PART)}\n${sample.slice(-SCRIPT_SAMPLE_PART)}`;
+  }
+  sample = sample.replace(ADDRESS_PATTERN, " ");
+  const extra = countOf(sample, WORD_SCRIPT_PATTERN) * (WORD_SCRIPT_WEIGHT - 1);
+  return { letters: countOf(sample, LETTER_PATTERN) + extra, nonLatin: countOf(sample, NON_LATIN_LETTER_PATTERN) + extra };
+}
+
+function judge(weight: ScriptWeight): "latin" | "non-latin" | null {
+  if (weight.letters < SCRIPT_MIN_LETTERS) return null;
+  return weight.nonLatin / weight.letters > NON_LATIN_SHARE ? "non-latin" : "latin";
 }
 
 /**
@@ -395,13 +479,12 @@ function isQuoteHeader(lines: string[], index: number): boolean {
 }
 
 /**
- * The lines of a message its writer wrote now: the quoted thread below it
- * (lines starting with ">", or everything after a quote header or a "--"
- * signature line) is left out. A header with nothing written above it starts
- * a message pasted whole, so it is passed over; a message that is all quote is
- * read whole.
+ * The part of a message its writer wrote now: the lines above the quoted
+ * thread (lines starting with ">", or everything after a quote header or a
+ * "--" signature line). A header with nothing written above it starts a
+ * message pasted whole, so it is passed over.
  */
-function newMessageLines(text: string): string[] {
+function newMessagePart(text: string): string {
   const lines = text.slice(0, SCRIPT_SCAN_LENGTH).split("\n").map((line) => line.trim());
   const kept: string[] = [];
   let keptLetters = 0;
@@ -413,100 +496,99 @@ function newMessageLines(text: string): string[] {
       continue;
     }
     kept.push(line);
-    if (keptLetters < SCRIPT_MIN_LETTERS) keptLetters += letterCount(line);
+    if (keptLetters < SCRIPT_MIN_LETTERS) keptLetters += weigh(line).letters;
   }
-  if (keptLetters >= SCRIPT_MIN_LETTERS) return kept;
-  return lines.map((line) => line.replace(/^(?:[>＞] ?)+/u, ""));
+  return kept.join("\n");
 }
 
 /**
- * Leaves out what is not prose, when it is a small part of the message: a
- * closing signature (at most a few short lines that end no sentence, after a
- * blank line, a short closing line such as "Thanks!", or starting with a
- * sign-off such as "Thanks,") and a few lines of data ("Address: …"). Never
- * most of the message: a Chinese text written in short lines under an English
- * greeting is judged as written. A sign-off marks a signature plainly, so that
- * signature may outweigh the message up to twice; any other may not outweigh it.
+ * The script most of a text's other letters are in: an ISO 15924 code from
+ * TEXT_SCRIPTS, or for Chinese, Japanese and Korean "Hani" (Han alone), "Jpan"
+ * (Han with kana) or "Kore" (mostly Hangul). Null when it has none of these.
  */
-function proseLines(lines: string[]): string[] {
-  let end = lines.length;
-  while (end > 0 && lines[end - 1] === "") end -= 1;
-  let kept = lines.slice(0, end);
-  let start = end;
-  while (
-    start > 0 &&
-    end - start < SIGNATURE_MAX_LINES &&
-    lines[start - 1] !== "" &&
-    lines[start - 1].length <= SIGNATURE_LINE_MAX_LENGTH &&
-    !SENTENCE_END_PATTERN.test(lines[start - 1])
-  ) {
-    start -= 1;
+function mainScript(text: string): string | null {
+  const sample = text.slice(0, SCRIPT_SAMPLE_PART * 2);
+  const han = countOf(sample, HAN_PATTERN);
+  const kana = countOf(sample, KANA_PATTERN);
+  const hangul = countOf(sample, HANGUL_PATTERN);
+  let main: string | null = null;
+  let mainCount = han + kana + hangul;
+  if (mainCount > 0) main = hangul > han + kana ? "Kore" : kana >= (han + kana) * JAPANESE_KANA_SHARE ? "Jpan" : "Hani";
+  for (const [code, pattern] of TEXT_SCRIPTS) {
+    const count = countOf(sample, pattern);
+    if (count > mainCount) [main, mainCount] = [code, count];
   }
-  if (start < end) {
-    const before = start > 0 ? lines[start - 1] : "";
-    const signOff = /[,，]$/u.test(lines[start]);
-    if (before === "" || before.length <= SIGN_OFF_MAX_LENGTH || signOff) {
-      const body = lines.slice(0, start);
-      const bodyLetters = letterCount(body.join("\n"));
-      const signatureLetters = letterCount(lines.slice(start, end).join("\n"));
-      if (bodyLetters >= SCRIPT_MIN_LETTERS && signatureLetters <= bodyLetters * (signOff ? 2 : 1)) kept = body;
-    }
-  }
-  const fields = kept.filter((line) => line.length <= FIELD_LINE_MAX_LENGTH && FIELD_LINE_PATTERN.test(line));
-  if (fields.length > 0 && fields.length <= FIELD_MAX_LINES) {
-    const prose = kept.filter((line) => !fields.includes(line));
-    const proseLetters = letterCount(prose.join("\n"));
-    if (proseLetters >= SCRIPT_MIN_LETTERS && letterCount(fields.join("\n")) <= proseLetters) kept = prose;
-  }
-  return kept;
+  return main;
 }
 
-type ScriptReading = { script: "latin" | "non-latin" | null; weightedLetters: number };
+type ScriptReading = {
+  script: "latin" | "non-latin" | null;
+  /** The new part of the message or the whole of it reads as Latin letters. */
+  latinPart: boolean;
+  /** The weighted letters of the part read as not Latin (the new part first), or of the whole text. */
+  weightedLetters: number;
+};
 const SCRIPT_CACHE_SIZE = 256;
 const scriptCache = new Map<string, ScriptReading>();
 
 /**
  * Reads a text's script once: it is judged on every render of every queue row,
- * up to four times per card.
+ * up to four times per card. A text is not in Latin letters when its new part
+ * (see newMessagePart) is not, or the text as a whole is not: a Chinese reply
+ * above a long English thread, and a Chinese email forwarded under a line of
+ * English, both need a translation.
  */
 function readScript(text: string): ScriptReading {
   const cached = scriptCache.get(text);
   if (cached) return cached;
-  let sample = proseLines(newMessageLines(text)).join("\n");
-  if (sample.length > SCRIPT_SAMPLE_PART * 2) {
-    sample = `${sample.slice(0, SCRIPT_SAMPLE_PART)}\n${sample.slice(-SCRIPT_SAMPLE_PART)}`;
-  }
-  sample = sample.replace(ADDRESS_PATTERN, " ");
-  const letters = sample.match(LETTER_PATTERN)?.length ?? 0;
-  const extra = (sample.match(WORD_SCRIPT_PATTERN)?.length ?? 0) * (WORD_SCRIPT_WEIGHT - 1);
-  const nonLatin = (sample.match(NON_LATIN_LETTER_PATTERN)?.length ?? 0) + extra;
+  const whole = weigh(text);
+  const part = newMessagePart(text);
+  const fresh = part.length === text.length ? whole : weigh(part);
+  const [wholeScript, freshScript] = [judge(whole), judge(fresh)];
+  const nonLatin = freshScript === "non-latin" || wholeScript === "non-latin";
+  const latinPart = freshScript === "latin" || wholeScript === "latin";
   const reading: ScriptReading = {
-    script: letters < SCRIPT_MIN_LETTERS ? null : nonLatin / (letters + extra) > NON_LATIN_SHARE ? "non-latin" : "latin",
-    weightedLetters: letters + extra,
+    script: nonLatin ? "non-latin" : latinPart ? "latin" : null,
+    latinPart,
+    weightedLetters: freshScript === "non-latin" ? fresh.letters : whole.letters,
   };
   if (scriptCache.size >= SCRIPT_CACHE_SIZE) scriptCache.clear();
   scriptCache.set(text, reading);
   return reading;
 }
 
-/** "latin", "non-latin", or null when the text has too few letters to tell. */
-function textScript(text: string): ScriptReading["script"] {
-  return readScript(text).script;
+/**
+ * Whether `text` may be written in `language`. Only a plain contradiction
+ * counts: a language in Latin letters for a text that has no part in them,
+ * another for a text in Latin letters, or one in another script than the
+ * text's ("Korean" for Japanese). A language or a text whose script is not
+ * known may be anything.
+ */
+function languageFitsText(language: LanguageEntry, text: string): boolean {
+  const reading = readScript(text);
+  if (!language.script || !reading.script) return true;
+  if (language.script === "Latn") return reading.latinPart;
+  if (reading.script === "latin") return false;
+  const fits = WORD_LANGUAGE_SCRIPTS[language.script] ?? [language.script];
+  if (!WORD_LANGUAGE_SCRIPTS[language.script] && !TEXT_SCRIPTS.some(([code]) => code === language.script)) return true;
+  const main = mainScript(text.replace(ADDRESS_PATTERN, " "));
+  return main === null || fits.includes(main);
 }
 
 /**
  * Whether a text is written mostly outside the Latin script (Chinese,
  * Japanese, Korean, Cyrillic, Arabic, Hebrew, Thai, Devanagari, ...), so a
- * board that reads English needs a translation. Only the new part of a
- * message is read (see newMessageLines), without a short signature or a few
- * lines of data (see proseLines). Links and addresses are left out, and so are
+ * board that reads English needs a translation: its new part, or the whole
+ * of it (see readScript). Links and addresses are left out, and so are
  * digits and punctuation, which are not letters; a Chinese, Japanese or Korean
- * character weighs as much as a short word. A language written in Latin
- * letters (Spanish, German) cannot be told from English this way and is never
- * flagged.
+ * character weighs as much as a short word. A signature or a quote in another
+ * script can tip an English text over: the board then asks for a translation
+ * it does not need, which costs less than one it needed and never got. A
+ * language written in Latin letters (Spanish, German) cannot be told from
+ * English this way and is never flagged.
  */
 export function isMostlyNonLatinScript(text: string): boolean {
-  return textScript(text) === "non-latin";
+  return readScript(text).script === "non-latin";
 }
 
 /** A translation shorter than this share of the English the source would give looks cut. */
@@ -516,9 +598,9 @@ const TRANSLATION_ESTIMATE_MIN_LETTERS = 80;
 
 /**
  * Whether a translation of a text in another script looks much shorter than a
- * full one: its letters against the source's, a Chinese, Japanese or Korean
- * character counted as a short word. A hint only; it cannot tell a summary from
- * a terse translation.
+ * full one: its letters against those of the part of the source not in Latin
+ * letters (see readScript), a Chinese, Japanese or Korean character counted as
+ * a short word. A hint only; it cannot tell a summary from a terse translation.
  */
 export function approvalTranslationLooksShort(translation: ApprovalTranslation, source: string): boolean {
   const reading = readScript(source);
@@ -581,6 +663,8 @@ const MISSING_TRANSLATION_TEXT = {
   comment: "Not in English. A Paperclip comment is saved as posted, so no translation can be attached.",
   "not-english": "The attached translation is not in English. Request a revision to get one.",
   short: "The translation looks much shorter than the original. Request a revision if parts are missing.",
+  // Written with the language and the text's name (see approvalTranslationMismatchText).
+  mismatch: "",
 } as const;
 
 const MISSING_TRANSLATION_ATTRIBUTE: Record<keyof typeof MISSING_TRANSLATION_TEXT, string> = {
@@ -588,43 +672,72 @@ const MISSING_TRANSLATION_ATTRIBUTE: Record<keyof typeof MISSING_TRANSLATION_TEX
   comment: "data-approval-translation-missing",
   "not-english": "data-approval-translation-not-english",
   short: "data-approval-translation-short",
+  mismatch: "data-approval-translation-mismatch",
 };
+
+/** Said under a translation whose named language the text it translates is not written in. */
+export function approvalTranslationMismatchText(language: string, noun: string): string {
+  return `The agent says the ${noun} is in ${language}, but it is not. The translation may not match it. Request a revision.`;
+}
 
 /**
  * Shown under a received email or a draft that is not in English and carries
- * no translation, or under a translation that is not in English itself or
- * looks cut.
+ * no translation, or under a translation that is not in English itself, looks
+ * cut, or names a language its source is not in.
  */
 export function ApprovalMissingTranslationNote({
   of,
   reason = "missing",
+  text,
 }: {
   of: "original" | "draft";
   reason?: keyof typeof MISSING_TRANSLATION_TEXT;
+  /** The note's text, where the reason's own needs the details (a mismatch). */
+  text?: string;
 }) {
   return (
     <p
       className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-700 dark:text-amber-300"
       {...{ [MISSING_TRANSLATION_ATTRIBUTE[reason]]: of }}
     >
-      {MISSING_TRANSLATION_TEXT[reason]}
+      {text ?? MISSING_TRANSLATION_TEXT[reason]}
     </p>
   );
 }
 
-/** What is wrong with a translation of `source`, under it: not in English, or much shorter than the source. */
+/**
+ * What is wrong with a translation of `source`, under it: a named language the
+ * source is not in, and not in English or much shorter than the source.
+ */
 function ApprovalTranslationNotes({
   of,
+  noun,
   translation,
   source,
 }: {
   of: "original" | "draft";
+  /** What the source is called on the card: "draft", "original email". */
+  noun: string;
   translation: ApprovalTranslation;
   source: string;
 }) {
-  if (isMostlyNonLatinScript(translation.text)) return <ApprovalMissingTranslationNote of={of} reason="not-english" />;
-  if (approvalTranslationLooksShort(translation, source)) return <ApprovalMissingTranslationNote of={of} reason="short" />;
-  return null;
+  const reason = isMostlyNonLatinScript(translation.text)
+    ? "not-english"
+    : approvalTranslationLooksShort(translation, source)
+      ? "short"
+      : null;
+  return (
+    <>
+      {translation.mismatchedLanguage && (
+        <ApprovalMissingTranslationNote
+          of={of}
+          reason="mismatch"
+          text={approvalTranslationMismatchText(translation.mismatchedLanguage, noun)}
+        />
+      )}
+      {reason && <ApprovalMissingTranslationNote of={of} reason={reason} />}
+    </>
+  );
 }
 
 /** The frame of a translation: a rule on its left, so it reads as part of the block above it and not as a block of its own. */
@@ -670,7 +783,7 @@ export function ApprovalDraftTranslation({
         </pre>
       </div>
       {continues}
-      <ApprovalTranslationNotes of="draft" translation={translation} source={draft} />
+      <ApprovalTranslationNotes of="draft" noun="draft" translation={translation} source={draft} />
     </div>
   );
 }
@@ -846,7 +959,12 @@ export function OriginalRequestBlock({
             subject={`English translation of the ${sourceLabel.toLowerCase()}`}
             boxClassName={isEmail ? "mt-2 rounded-md border border-dashed border-muted-foreground/30 bg-muted/20 p-3" : undefined}
           />
-          <ApprovalTranslationNotes of="original" translation={translation} source={original.text} />
+          <ApprovalTranslationNotes
+            of="original"
+            noun={sourceLabel.toLowerCase()}
+            translation={translation}
+            source={original.text}
+          />
         </div>
       ) : (
         needsTranslation && (

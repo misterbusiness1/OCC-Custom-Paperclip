@@ -129,6 +129,8 @@ export const APPROVAL_DRAFT_UNREAD_APPROVE_LABEL = "Read full reply to approve";
 /** The same two, when the reply is shown whole and only its translation is cut. */
 export const APPROVAL_TRANSLATION_UNREAD_MESSAGE = "Read the full translation, then approve.";
 export const APPROVAL_TRANSLATION_UNREAD_APPROVE_LABEL = "Read full translation to approve";
+/** The room the sticky header takes above the draft block: its scroll-mt-20. */
+const DRAFT_SCROLL_MARGIN = 80;
 
 /**
  * Keeps an outgoing email from being approved unread. A compact summary cuts a
@@ -142,19 +144,24 @@ export function useApprovalDraftGate(type: string, payload?: Record<string, unkn
   const ref = useRef<HTMLDivElement>(null);
   const revealRequested = useRef(false);
   const draft = summaryEmailDraft(type, payload);
-  // The board may read the reply through its translation, so a cut translation holds Approve back too.
-  const translation = draft ? approvalDraftTranslation(payload) : null;
+  // The board may read the reply through its translation, so a cut translation holds Approve back too:
+  // unless it names a language the reply is not in, as when the reply was rewritten in English after it.
+  const shownTranslation = draft ? approvalTranslationFor(approvalDraftTranslation(payload), draft.body) : null;
+  const translation = shownTranslation?.mismatchedLanguage ? null : shownTranslation;
   const replyCut = draft !== null && approvalDraftPreview(draft.body) !== null;
   const isCut = replyCut || (translation !== null && approvalDraftPreview(translation.text) !== null);
 
-  // Runs once the whole draft is on the page, so the scroll sees its real height.
+  // Runs once the whole draft is on the page, so the scroll sees its real height. A block that fits on screen
+  // scrolls only as far as needed; a taller one (a long reply and its translation) to its start, the "Draft
+  // reply" label and the email that is sent, clear of the sticky header: never into the translation below it.
   useEffect(() => {
     if (!revealRequested.current) return;
     revealRequested.current = false;
     const block = ref.current;
     if (!block) return;
     block.focus({ preventScroll: true });
-    block.scrollIntoView?.({ block: "nearest" });
+    const fits = block.getBoundingClientRect().height <= window.innerHeight - DRAFT_SCROLL_MARGIN;
+    block.scrollIntoView?.({ block: fits ? "nearest" : "start" });
   });
 
   /** The message to show when Approve is held back, or null when it may send. */
@@ -213,7 +220,7 @@ function ApprovalEmailDraftBlock({
   return (
     <div
       ref={control?.ref}
-      className="min-w-0 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="min-w-0 scroll-mt-20 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       data-approval-draft
       role="group"
       aria-labelledby={labelId}
