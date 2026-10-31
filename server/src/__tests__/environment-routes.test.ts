@@ -1390,6 +1390,8 @@ describe("environment routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.provider).toBe("ssh");
+    expect(res.body.providerLeaseId).toBe("ssh://ssh-user@example.test:22/workspace");
+    expect(res.body.metadata).toEqual({ remoteCwd: "/workspace" });
     expect(mockEnvironmentService.getLeaseById).toHaveBeenCalledWith("lease-1");
   });
 
@@ -1427,6 +1429,71 @@ describe("environment routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.map((lease: { id: string }) => lease.id)).toEqual(["lease-own"]);
+    expect(mockEnvironmentService.listLeases).toHaveBeenCalledWith(environment.id, {
+      companyIds: ["company-1"],
+    });
+  });
+
+  it("redacts provider lease details from own-company leases for non-admin members", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    const sshLease = {
+      id: "lease-own",
+      companyId: "company-1",
+      environmentId: environment.id,
+      executionWorkspaceId: "workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      status: "active",
+      leasePolicy: "ephemeral",
+      provider: "ssh",
+      providerLeaseId: "ssh://ssh-user@example.test:22/srv/paperclip/workspace",
+      acquiredAt: new Date("2026-04-16T05:00:00.000Z"),
+      lastUsedAt: new Date("2026-04-16T05:05:00.000Z"),
+      expiresAt: null,
+      releasedAt: null,
+      failureReason: null,
+      cleanupStatus: null,
+      metadata: {
+        driver: "ssh",
+        host: "example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteWorkspacePath: "/srv/paperclip",
+        remoteCwd: "/srv/paperclip/workspace",
+      },
+      createdAt: new Date("2026-04-16T05:00:00.000Z"),
+      updatedAt: new Date("2026-04-16T05:05:00.000Z"),
+    };
+    mockEnvironmentService.listLeases.mockResolvedValue([sshLease]);
+    mockEnvironmentService.getLeaseById.mockResolvedValue(sshLease);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const listRes = await request(app).get(`/api/environments/${environment.id}/leases`);
+    const getRes = await request(app).get("/api/environment-leases/lease-own");
+
+    expect(listRes.status).toBe(200);
+    expect(getRes.status).toBe(200);
+    for (const lease of [listRes.body[0], getRes.body]) {
+      expect(lease).toMatchObject({
+        id: "lease-own",
+        companyId: "company-1",
+        issueId: "issue-1",
+        heartbeatRunId: "run-1",
+        status: "active",
+        provider: "ssh",
+        providerLeaseId: null,
+        metadata: null,
+      });
+    }
+    expect(JSON.stringify([listRes.body, getRes.body])).not.toContain("example.test");
+    expect(JSON.stringify([listRes.body, getRes.body])).not.toContain("ssh-user");
   });
 
   it("returns 404 for a lease that belongs to another company", async () => {
@@ -1452,13 +1519,19 @@ describe("environment routes", () => {
   });
 
   it("lets instance admins read leases from any company", async () => {
-    mockEnvironmentService.getLeaseById.mockResolvedValue({
+    const environment = createEnvironment();
+    const foreignLease = {
       id: "lease-foreign",
       companyId: "company-2",
-      environmentId: "env-1",
+      environmentId: environment.id,
       status: "active",
-      metadata: {},
-    });
+      provider: "ssh",
+      providerLeaseId: "ssh://ssh-user@example.test:22/workspace",
+      metadata: { host: "example.test", remoteCwd: "/workspace" },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.listLeases.mockResolvedValue([foreignLease]);
+    mockEnvironmentService.getLeaseById.mockResolvedValue(foreignLease);
     const app = createApp({
       type: "board",
       userId: "admin-1",
@@ -1468,8 +1541,14 @@ describe("environment routes", () => {
     });
 
     const res = await request(app).get("/api/environment-leases/lease-foreign");
+    const listRes = await request(app).get(`/api/environments/${environment.id}/leases`);
 
     expect(res.status).toBe(200);
+    expect(res.body.providerLeaseId).toBe("ssh://ssh-user@example.test:22/workspace");
+    expect(res.body.metadata).toEqual({ host: "example.test", remoteCwd: "/workspace" });
+    expect(listRes.status).toBe(200);
+    expect(listRes.body).toEqual([foreignLease]);
+    expect(mockEnvironmentService.listLeases.mock.calls[0]?.[1]).not.toHaveProperty("companyIds");
   });
 
   it("rejects agent access regardless of company when environment management is instance-scoped", async () => {
