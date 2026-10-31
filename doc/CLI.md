@@ -386,13 +386,25 @@ By default the command creates a `todo` issue assigned to the target agent and w
 
 ### Board environment setup
 
-`board setup` prints the shell exports that board tooling, such as the `paperclip-board` skill, reads: `PAPERCLIP_API_URL` and `PAPERCLIP_COMPANY_ID`. It resolves the API base and company the same way other client commands do. With no company configured, it picks the only company the board can see. If there are several, it lists them as comments. It never prints API keys.
+`board setup` prints the shell exports that board tooling, such as the `paperclip-board` skill, reads: `PAPERCLIP_API_URL` and `PAPERCLIP_COMPANY_ID`. It resolves the API base and company the same way other client commands do. With no company configured, it picks the only unarchived company the board can see. If there are several, it lists them on stderr, so they stay visible under `eval`, and leaves `PAPERCLIP_COMPANY_ID` unset. Only exports go to stdout, and a company id from the server that is not a UUID is refused instead of printed.
 
 ```sh
+# Installed CLI
+eval "$(paperclipai board setup)"
+# From a Paperclip repo checkout
 eval "$(pnpm -s paperclipai board setup)"
 eval "$(pnpm -s paperclipai board setup --company-id <company-id>)"
 pnpm paperclipai board setup --json
 ```
+
+It never prints or exports API keys. On an `authenticated` deployment, set a board API key in the same shell first. `board setup` uses it, and the `paperclip-board` skill sends it as `Authorization: Bearer $PAPERCLIP_API_KEY`:
+
+```sh
+export PAPERCLIP_API_KEY=<board-api-key>   # create one with: paperclipai token board create
+eval "$(paperclipai board setup)"
+```
+
+Under `eval "$(...)"` the CLI cannot open an interactive login. Without a key, `board setup` can still use a board login stored by `paperclipai auth login`, and then warns that tools calling the API directly still need `PAPERCLIP_API_KEY`. With neither, it fails with a hint on stderr.
 
 ## Skills Commands
 

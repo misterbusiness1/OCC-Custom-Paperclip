@@ -9,7 +9,12 @@ import {
   resolveCommandContext,
   type BaseClientOptions,
 } from "./common.js";
-import { formatBoardSetupExports, runBoardSetup, type BoardSetupOptions } from "./board-setup.js";
+import {
+  formatBoardSetupExports,
+  formatBoardSetupNotice,
+  runBoardSetup,
+  type BoardSetupOptions,
+} from "./board-setup.js";
 
 interface PromptOptions extends BaseClientOptions {
   agent?: string;
@@ -97,11 +102,14 @@ export function registerPromptCommands(program: Command): void {
       .option("-C, --company-id <id>", "Company ID")
       .action(async (opts: BoardSetupOptions) => {
         try {
-          const result = await runBoardSetup(opts);
+          // stdout is meant for eval: only exports go there; notes go to stderr.
+          const result = await runBoardSetup(opts, { warn: (message) => console.error(message) });
           if (opts.json) {
             printOutput(result, { json: true });
           } else {
             console.log(formatBoardSetupExports(result));
+            const notice = formatBoardSetupNotice(result);
+            if (notice) console.error(notice);
           }
         } catch (err) {
           handleCommandError(err);
