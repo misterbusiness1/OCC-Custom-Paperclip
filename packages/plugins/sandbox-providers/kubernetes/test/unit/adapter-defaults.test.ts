@@ -28,17 +28,25 @@ describe("adapter-defaults (built-in)", () => {
     expect(() => getAdapterDefaults("nonexistent_local")).toThrow(/unknown adapter type/i);
   });
 
-  it("KNOWN_ADAPTER_TYPES contains all 6 supported adapters", () => {
+  it("KNOWN_ADAPTER_TYPES contains all 6 supported adapters plus the legacy cursor alias", () => {
     expect(KNOWN_ADAPTER_TYPES).toEqual(
       new Set([
         "claude_local",
         "codex_local",
         "gemini_local",
+        "cursor",
         "cursor_local",
         "opencode_local",
         "pi_local",
       ]),
     );
+  });
+
+  it("resolves defaults for Paperclip's real cursor adapter type", () => {
+    const d = getAdapterDefaults("cursor");
+    expect(d.runtimeImage).toContain("agent-runtime-cursor");
+    expect(d.probeCommand).toEqual(["cursor-agent", "--version"]);
+    expect(getAdapterDefaults("cursor_local")).toEqual(d);
   });
 });
 

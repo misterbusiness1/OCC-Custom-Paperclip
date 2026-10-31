@@ -9,6 +9,13 @@ export interface AdapterDefaults {
   defaultEnv?: Record<string, string>;
 }
 
+const CURSOR_DEFAULTS: AdapterDefaults = {
+  runtimeImage: "ghcr.io/paperclipai/agent-runtime-cursor:v1",
+  envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+  allowFqdns: ["api.anthropic.com", "api.openai.com"],
+  probeCommand: ["cursor-agent", "--version"],
+};
+
 const REGISTRY: Record<string, AdapterDefaults> = {
   claude_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-claude:v1",
@@ -28,12 +35,10 @@ const REGISTRY: Record<string, AdapterDefaults> = {
     allowFqdns: ["generativelanguage.googleapis.com"],
     probeCommand: ["gemini", "--version"],
   },
-  cursor_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-cursor:v1",
-    envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
-    allowFqdns: ["api.anthropic.com", "api.openai.com"],
-    probeCommand: ["cursor-agent", "--version"],
-  },
+  // Paperclip's Cursor adapter type is "cursor" (packages/shared AGENT_ADAPTER_TYPES).
+  cursor: CURSOR_DEFAULTS,
+  // Deprecated alias kept so environments saved with the old key still validate.
+  cursor_local: CURSOR_DEFAULTS,
   opencode_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-opencode:v1",
     envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
