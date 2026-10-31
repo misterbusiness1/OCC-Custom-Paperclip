@@ -1,8 +1,8 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import { badRequest, notFound } from "../errors.js";
-import { assertBoardOrgAccess, assertCompanyAccess } from "./authz.js";
-import { cloudUpstreamService, instanceSettingsService } from "../services/index.js";
+import { assertBoardOrgAccess, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { cloudUpstreamService, instanceSettingsService, logActivity } from "../services/index.js";
 
 export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {}) {
   const router = Router();
@@ -14,6 +14,23 @@ export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {
     if (experimental.enableCloudSync !== true) {
       throw notFound("Cloud sync is not enabled");
     }
+  }
+
+  async function logCloudUpstreamActivity(
+    req: Request,
+    input: { companyId: string; action: string; entityType: string; entityId: string; details: Record<string, unknown> },
+  ) {
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: input.action,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      details: input.details,
+    });
   }
 
   router.get("/cloud-upstreams", async (req, res) => {
@@ -31,18 +48,47 @@ export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {
     assertCompanyAccess(req, companyId);
     const remoteUrl = stringBody(req.body, "remoteUrl");
     const redirectUri = stringBody(req.body, "redirectUri");
-    res.json(await service.startConnect({ companyId, remoteUrl, redirectUri }));
+    const started = await service.startConnect({ companyId, remoteUrl, redirectUri });
+    await logCloudUpstreamActivity(req, {
+      companyId,
+      action: "cloud_upstream.connect_started",
+      entityType: "cloud_upstream_connection",
+      entityId: started.connection.id,
+      details: {
+        remoteUrl: started.connection.remoteUrl,
+        targetOrigin: started.connection.target.origin,
+        targetStackId: started.connection.target.stackId,
+      },
+    });
+    res.json(started);
   });
 
   router.post("/cloud-upstreams/connect/finish", async (req, res) => {
     assertBoardOrgAccess(req);
     await assertEnabled();
-    res.json(await service.finishConnect({
+    const connection = await service.finishConnect({
       pendingConnectionId: stringBody(req.body, "pendingConnectionId"),
       code: stringBody(req.body, "code"),
       state: stringBody(req.body, "state"),
-      authorizeCompany: (companyId) => assertCompanyAccess(req, companyId),
-    }));
+      authorizeCompany: (companyId) => {
+        // Same 404 as a missing id, so the response does not reveal whether a
+        // connection exists in another company.
+        if (!hasCompanyAccess(req, companyId)) throw notFound("Cloud upstream connection was not found");
+        assertCompanyAccess(req, companyId);
+      },
+    });
+    await logCloudUpstreamActivity(req, {
+      companyId: connection.companyId,
+      action: "cloud_upstream.connected",
+      entityType: "cloud_upstream_connection",
+      entityId: connection.id,
+      details: {
+        remoteUrl: connection.remoteUrl,
+        targetOrigin: connection.target.origin,
+        targetStackId: connection.target.stackId,
+      },
+    });
+    res.json(connection);
   });
 
   router.post("/cloud-upstreams/:connectionId/push-runs/preview", async (req, res) => {
@@ -58,11 +104,24 @@ export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {
     await assertEnabled();
     const companyId = stringBody(req.body, "companyId");
     assertCompanyAccess(req, companyId);
-    res.json(await service.createRun({
+    const run = await service.createRun({
       connectionId: req.params.connectionId,
       companyId,
       retryOfRunId: optionalString(req.body?.retryOfRunId),
-    }));
+    });
+    await logCloudUpstreamActivity(req, {
+      companyId,
+      action: "cloud_upstream.push_run_created",
+      entityType: "cloud_upstream_run",
+      entityId: run.id,
+      details: {
+        connectionId: run.connectionId,
+        status: run.status,
+        targetUrl: run.targetUrl,
+        retryOfRunId: run.retryOfRunId,
+      },
+    });
+    res.json(run);
   });
 
   router.get("/cloud-upstreams/:connectionId/push-runs/:runId", async (req, res) => {
@@ -78,7 +137,19 @@ export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {
     await assertEnabled();
     const companyId = stringBody(req.body, "companyId");
     assertCompanyAccess(req, companyId);
-    res.json(await service.cancelRun(req.params.connectionId, req.params.runId, companyId));
+    const before = await service.readRun(req.params.connectionId, req.params.runId, companyId);
+    const run = await service.cancelRun(req.params.connectionId, req.params.runId, companyId);
+    // cancelRun returns finished runs unchanged; only log an actual cancellation.
+    if (before.status === "running" && run.status === "cancelled") {
+      await logCloudUpstreamActivity(req, {
+        companyId,
+        action: "cloud_upstream.push_run_cancelled",
+        entityType: "cloud_upstream_run",
+        entityId: run.id,
+        details: { connectionId: run.connectionId },
+      });
+    }
+    res.json(run);
   });
 
   router.post("/cloud-upstreams/:connectionId/push-runs/:runId/activation", async (req, res) => {
@@ -86,12 +157,21 @@ export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {
     await assertEnabled();
     const companyId = stringBody(req.body, "companyId");
     assertCompanyAccess(req, companyId);
-    res.json(await service.activateRunEntities({
+    const entityType = activationEntityTypeBody(req.body);
+    const run = await service.activateRunEntities({
       connectionId: req.params.connectionId,
       runId: req.params.runId,
       companyId,
-      entityType: activationEntityTypeBody(req.body),
-    }));
+      entityType,
+    });
+    await logCloudUpstreamActivity(req, {
+      companyId,
+      action: "cloud_upstream.push_run_entities_activated",
+      entityType: "cloud_upstream_run",
+      entityId: run.id,
+      details: { connectionId: run.connectionId, activatedEntityType: entityType },
+    });
+    res.json(run);
   });
 
   return router;
