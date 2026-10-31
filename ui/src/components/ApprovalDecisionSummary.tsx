@@ -13,7 +13,6 @@ import {
   ApprovalDraftLanguageChip,
   ApprovalDraftTranslation,
   approvalTranslationFor,
-  isMostlyNonLatinScript,
   approvalHireFacts,
   approvalOriginalRequest,
   approvalReadableText,
@@ -145,12 +144,9 @@ export function useApprovalDraftGate(type: string, payload?: Record<string, unkn
   const ref = useRef<HTMLDivElement>(null);
   const revealRequested = useRef(false);
   const draft = summaryEmailDraft(type, payload);
-  // The board may read the reply through its translation, so a cut translation holds Approve back too:
-  // unless it names a language the reply is not in and the reply is one the board reads itself, as when
-  // the reply was rewritten in English after it. A doubtful translation of a reply in another script still holds it.
-  const shownTranslation = draft ? approvalTranslationFor(approvalDraftTranslation(payload), draft.body) : null;
-  const translation =
-    shownTranslation?.mismatchedLanguage && !isMostlyNonLatinScript(draft!.body) ? null : shownTranslation;
+  // The board may read the reply through its translation, so a cut translation holds Approve back too, a
+  // doubtful one included: its note asks for a revision, and reading it costs one press.
+  const translation = draft ? approvalTranslationFor(approvalDraftTranslation(payload), draft.body) : null;
   const replyCut = draft !== null && approvalDraftPreview(draft.body) !== null;
   const isCut = replyCut || (translation !== null && approvalDraftPreview(translation.text) !== null);
 

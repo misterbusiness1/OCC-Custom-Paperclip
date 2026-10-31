@@ -227,6 +227,10 @@ describe("approvalTranslation", () => {
       expect(approvalTranslationFor(named("Chinese (Simplified)"), text)?.mismatchedLanguage).toBeUndefined();
       expect(approvalTranslationFor(named("Chinese (Simplified)"), text)?.language).toBe("Chinese (Simplified)");
     }
+    // A short reply above a long quoted English thread is still in its own language.
+    const thread = `On Mon, Oct 27, 2026 at 10:14 AM Sales <info@shop.example> wrote:\n${"> Hello, thank you for your order. The invoice is attached and payment is due in thirty days.\n".repeat(20)}`;
+    expect(approvalTranslationFor(named("Russian"), `Здравствуйте, спасибо, согласен с ценой. Отправьте счёт, пожалуйста.\n\n${thread}`)?.language).toBe("Russian");
+    expect(approvalTranslationFor(named("Chinese (Simplified)"), `您好，我的订单到现在还没有收到，请尽快退款。\n\n${thread}`)?.language).toBe("Chinese (Simplified)");
     // An English text with a Chinese name in the signature is still not Chinese.
     const english = `${"Hello, we agree to refund the full amount and to cover all return shipping. ".repeat(3)}\n李伟`;
     expect(approvalTranslationFor(named("Chinese (Simplified)"), english)?.mismatchedLanguage).toBe("Chinese (Simplified)");
@@ -248,6 +252,15 @@ describe("approvalTranslation", () => {
 describe("isMostlyNonLatinScript", () => {
   it.each([
     ["Chinese", CHINESE_EMAIL],
+    // A real Chinese passage needs a translation however much English is around it.
+    [
+      "a Chinese paragraph above long English terms",
+      `王经理您好，感谢您的询价。我们的批发价目表已附上，首次订购最低二十五盒。如有任何问题，请随时与我们联系。\n\n${"Payment is due within thirty days of the invoice date. Prices are quoted in US dollars and exclude shipping. ".repeat(6)}`,
+    ],
+    [
+      "a Chinese email above a long English confidentiality footer",
+      `我的订单到现在还没有收到，已经过了一个月了。请立即退款五千美元，否则我会投诉。\n${"CONFIDENTIALITY NOTICE: This email and any attachments are confidential and intended only for the named recipient. ".repeat(6)}`,
+    ],
     ["Japanese kana and kanji", "お問い合わせありがとうございます。サンプルを送ります。"],
     ["Korean", "안녕하세요. 도매 가격을 알고 싶습니다."],
     ["Russian", RUSSIAN_DRAFT],
@@ -789,7 +802,7 @@ describe("translations on email approval cards", () => {
     }
   });
 
-  it("notes a translation whose language the draft is not in, keeps it shown, and does not hold Approve for it", () => {
+  it("notes a translation whose language the draft is not in, keeps it shown, and still holds Approve for it", () => {
     // The reply was rewritten in English after the revision; the old translation of the Chinese one stayed.
     const english = "Hello, we agree to refund the full $5,000 and to cover all return shipping.";
     const stale = `Hello, we can offer a $50 store credit. ${"Our wholesale price list is attached. ".repeat(60)}`;
@@ -805,12 +818,13 @@ describe("translations on email approval cards", () => {
     expect(draftTranslation()!.querySelector("[data-approval-translation-mismatch='draft']")!.textContent).toBe(note);
     expect(draftTranslation()!.textContent).toContain("Hello, we can offer a $50 store credit.");
     expect(container.querySelector("[data-approval-draft-language]")).toBeNull();
-    expect(gateRef.current!.approveLabel).toBeUndefined();
+    // The note asks for a revision; reading the cut translation still costs one press before Approve.
+    expect(gateRef.current!.approveLabel).toBe(APPROVAL_TRANSLATION_UNREAD_APPROVE_LABEL);
     let held: string | null = "not run";
     act(() => {
       held = gateRef.current!.approveGuard();
     });
-    expect(held).toBeNull();
+    expect(held).toBe(APPROVAL_TRANSLATION_UNREAD_MESSAGE);
 
     for (const element of [
       <ApprovalDecisionSummary type="request_board_approval" payload={payload} full />,

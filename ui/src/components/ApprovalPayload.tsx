@@ -391,8 +391,19 @@ const HIRAGANA_PATTERN = /\p{Script=Hiragana}/gu;
  * writes Japanese brand names in katakana and borrows a stray の, so neither counts.
  */
 const JAPANESE_HIRAGANA_SHARE = 0.2;
-/** A named script is in a text when it holds at least this share of the weighted letters (and SCRIPT_MIN_LETTERS). */
-const NAMED_SCRIPT_SHARE = 0.05;
+/**
+ * A named script is absent from a text below this many of its characters: one
+ * for each Chinese, Japanese or Korean character, one for each letter of the
+ * others. Only absence is a contradiction: a share would call a short Chinese
+ * reply above a long quoted English thread "not Chinese".
+ */
+const NAMED_SCRIPT_MIN_WORD_CHARACTERS = 3;
+const NAMED_SCRIPT_MIN_LETTERS = 8;
+/**
+ * Weighted letters outside the Latin script that make a passage the board
+ * cannot read, however much English is around it (about 20 Chinese characters).
+ */
+const NON_LATIN_PASSAGE = 60;
 /** The other scripts a language may be named for, by their ISO 15924 code. */
 const TEXT_SCRIPTS: Array<[string, RegExp]> = [
   ["Cyrl", /\p{Script=Cyrillic}/gu],
@@ -513,17 +524,17 @@ function newMessagePart(text: string): string {
 }
 
 /**
- * Whether a text holds a real part in the script a language is named for: not
- * the text as a whole, since a Chinese draft may carry English terms or an
- * English footer that outweighs it. Han text that is mostly hiragana is
- * Japanese, not Chinese.
+ * Whether the script a language is named for is in a text at all. A Chinese
+ * draft may carry English terms, a footer or a quoted thread that outweighs it,
+ * so any real presence fits. Han text that is mostly hiragana is Japanese, not
+ * Chinese.
  */
 function namedScriptIsIn(script: string, text: string): boolean {
   const pattern = WORD_LANGUAGE_SCRIPTS[script] ?? TEXT_SCRIPTS.find(([code]) => code === script)?.[1];
   if (!pattern) return true;
   const sample = weighSample(text);
-  const count = countOf(sample, pattern) * (WORD_LANGUAGE_SCRIPTS[script] ? WORD_SCRIPT_WEIGHT : 1);
-  if (count < SCRIPT_MIN_LETTERS || count < weigh(text).letters * NAMED_SCRIPT_SHARE) return false;
+  const minimum = WORD_LANGUAGE_SCRIPTS[script] ? NAMED_SCRIPT_MIN_WORD_CHARACTERS : NAMED_SCRIPT_MIN_LETTERS;
+  if (countOf(sample, pattern) < minimum) return false;
   if (pattern !== HAN_PATTERN) return true;
   const han = countOf(sample, HAN_PATTERN);
   const hiragana = countOf(sample, HIRAGANA_PATTERN);
@@ -545,7 +556,8 @@ const scriptCache = new Map<string, ScriptReading>();
  * up to four times per card. A text is not in Latin letters when its new part
  * (see newMessagePart) is not, or the text as a whole is not: a Chinese reply
  * above a long English thread, and a Chinese email forwarded under a line of
- * English, both need a translation.
+ * English, both need a translation. So does a text with a real passage in
+ * another script (NON_LATIN_PASSAGE), however long the English around it.
  */
 function readScript(text: string): ScriptReading {
   const cached = scriptCache.get(text);
@@ -554,7 +566,7 @@ function readScript(text: string): ScriptReading {
   const part = newMessagePart(text);
   const fresh = part.length === text.length ? whole : weigh(part);
   const [wholeScript, freshScript] = [judge(whole), judge(fresh)];
-  const nonLatin = freshScript === "non-latin" || wholeScript === "non-latin";
+  const nonLatin = freshScript === "non-latin" || wholeScript === "non-latin" || whole.nonLatin >= NON_LATIN_PASSAGE;
   const latinPart = freshScript === "latin" || wholeScript === "latin";
   const reading: ScriptReading = {
     script: nonLatin ? "non-latin" : latinPart ? "latin" : null,
