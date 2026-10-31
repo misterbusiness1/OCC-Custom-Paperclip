@@ -384,6 +384,16 @@ pnpm paperclipai board prompt --company-id <company-id> --agent <agent-name-or-i
 
 By default the command creates a `todo` issue assigned to the target agent and wakes the agent. Use `--issue <issue-id>` to add a comment to existing work, and `--no-wake` to skip the wakeup.
 
+### Board environment setup
+
+`board setup` prints the shell exports that board tooling, such as the `paperclip-board` skill, reads: `PAPERCLIP_API_URL` and `PAPERCLIP_COMPANY_ID`. It resolves the API base and company the same way other client commands do. With no company configured, it picks the only company the board can see. If there are several, it lists them as comments. It never prints API keys.
+
+```sh
+eval "$(pnpm -s paperclipai board setup)"
+eval "$(pnpm -s paperclipai board setup --company-id <company-id>)"
+pnpm paperclipai board setup --json
+```
+
 ## Skills Commands
 
 `paperclipai skills` covers three distinct operations:
