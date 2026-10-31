@@ -68,6 +68,9 @@ jobs:
       - name: Test PR lockfile qualification
         run: node --test ./scripts/__tests__/pr-lockfile-workflow.test.mjs
 
+      - name: Test agent runtime images registry
+        run: node --test ./scripts/__tests__/agent-runtime-images-workflow.test.mjs
+
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 

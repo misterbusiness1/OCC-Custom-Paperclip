@@ -20,16 +20,25 @@ permissions:
   id-token: write   # cosign keyless OIDC
 
 env:
-  # Publish to the registry of the repository that runs the workflow. A fork's
-  # GITHUB_TOKEN cannot push to ghcr.io/paperclipai. buildx bake reads REGISTRY
-  # from the environment and overrides the HCL default.
-  REGISTRY: ghcr.io/${{ github.repository_owner }}
+  # REGISTRY is not set here: the "Resolve image registry" step writes it to
+  # $GITHUB_ENV so every later step (bake env and the cosign refs) sees the
+  # lowercased value.
   VERSION: ${{ github.event.inputs.version || format('git-{0}', github.sha) }}
 
 jobs:
   build-and-sign:
     runs-on: ubuntu-22.04
     steps:
+      # Publish to the GHCR namespace of the repository owner that runs the
+      # workflow (upstream: ghcr.io/paperclipai). A fork's GITHUB_TOKEN cannot
+      # push to ghcr.io/paperclipai. OCI repository names must be lowercase and
+      # github.repository_owner keeps the account's casing; expressions have no
+      # lowercase function, so lowercase it in bash. buildx bake reads REGISTRY
+      # from the environment and overrides the HCL default.
+      - name: Resolve image registry
+        shell: bash
+        run: echo "REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
