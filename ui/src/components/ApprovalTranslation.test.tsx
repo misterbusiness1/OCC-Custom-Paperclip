@@ -234,6 +234,27 @@ describe("approvalTranslation", () => {
     // An English reply above the customer's quoted Chinese email is not Chinese: a translation of an older Chinese draft is noted.
     const englishReply = `Hello Mr. Wang,\n\nWe can offer a $50 store credit only. We cannot refund the order.\n\nBest regards,\nSupport\n\nOn Mon, Oct 27, 2026 at 10:14 AM 王伟 <wang@buyer.example> wrote:\n> 您好，我的订单到现在还没有收到，已经过了一个月了。\n> 请立即全额退款五千美元，否则我会投诉到平台。\n> 谢谢。`;
     expect(approvalTranslationFor(named("Chinese (Simplified)"), englishReply)?.mismatchedLanguage).toBe("Chinese (Simplified)");
+    // A Chinese email forwarded under a short English note is Chinese.
+    const forwarded = "Please see the message from my customer below.\n\n---------- Forwarded message ---------\nFrom: 王伟 <wang@example.cn>\nDate: Mon, 26 Oct 2026 at 09:12\nSubject: 订单\nTo: <sales@example.test>\n\n您好，我的订单到现在还没有收到，已经过了一个月了。请立即退款五千美元，否则我会投诉。";
+    expect(approvalTranslationFor(named("Chinese (Simplified)"), forwarded)?.language).toBe("Chinese (Simplified)");
+    // So is Chinese under an English greeting or a cover note above a header.
+    for (const text of [
+      `Dear Mr. Wang,\n您在十月二十七日的邮件中写道：\n“我的订单到现在还没有收到。”\n我们已经查询了物流，包裹明天送到。如果仍未收到，我们将全额退款。`,
+      `Hi team,\n\nPlease handle this one.\n\n-----Original Message-----\nFrom: 王伟\nSent: Monday\n您好，我的订单到现在还没有收到，已经过了一个月了。请立即退款五千美元。`,
+    ]) {
+      expect(approvalTranslationFor(named("Chinese (Simplified)"), text)?.language).toBe("Chinese (Simplified)");
+    }
+    expect(
+      approvalTranslationFor(named("Russian"), "FYI, see the customer message below:\nFrom: Ivan\nSent: Monday\nЗдравствуйте! Спасибо за ваше письмо. Мы хотим заказать пятьсот коробок.")?.language,
+    ).toBe("Russian");
+    // An English reply above a quoted Japanese or Korean Outlook header is neither.
+    const reply = "Hello,\n\nWe can offer a $50 store credit only. We cannot refund the order.\n\nBest regards,\nSupport\n\n";
+    const japaneseThread = "差出人: 田中 <tanaka@buyer.example>\n送信日時: 2026年10月27日 10:14\n件名: 注文\n\nお世話になっております。注文した商品がまだ届いていません。すぐに全額返金してください。";
+    const koreanThread = "보낸 사람: 김민수 <kim@buyer.example>\n보낸 날짜: 2026년 10월 27일 월요일 오전 10:14\n제목: 주문\n\n안녕하세요. 주문한 상품이 아직 도착하지 않았습니다. 즉시 전액 환불해 주세요.";
+    expect(approvalTranslationFor(named("Japanese"), reply + japaneseThread)?.mismatchedLanguage).toBe("Japanese");
+    expect(approvalTranslationFor(named("Korean"), reply + koreanThread)?.mismatchedLanguage).toBe("Korean");
+    const traditionalThread = "2026年10月27日 週一 上午10:14 王偉 <wang@buyer.example> 寫道：\n\n> 您好，我的訂單到現在還沒有收到，請立即全額退款。";
+    expect(approvalTranslationFor(named("Chinese (Traditional)"), reply + traditionalThread)?.mismatchedLanguage).toBe("Chinese (Traditional)");
     // An English text with a Chinese name in the signature is still not Chinese.
     const english = `${"Hello, we agree to refund the full amount and to cover all return shipping. ".repeat(3)}\n李伟`;
     expect(approvalTranslationFor(named("Chinese (Simplified)"), english)?.mismatchedLanguage).toBe("Chinese (Simplified)");
@@ -964,6 +985,23 @@ describe("translations on email approval cards", () => {
     });
     act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={keptNames} />));
     expect(container.querySelector("[data-approval-translation-not-english]")).toBeNull();
+    // A sentence left untranslated is still "not in English".
+    const untranslated = emailPayload({
+      bodyTranslation: {
+        language: "Chinese (Simplified)",
+        text: `Hello Manager Wang,\n\n${"Thank you for your inquiry; our wholesale price list is attached and we are happy to help with any further questions. ".repeat(4)}\n我们同意全额退款五千美元并承担所有退货运费，另外赠送下一单百分之二十的折扣。\n\nLi Wei`,
+      },
+    });
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={untranslated} />));
+    expect(container.querySelector("[data-approval-translation-not-english='draft']")).not.toBeNull();
+    // Short ones too: a one-paragraph reply, and an address.
+    for (const text of [
+      "Hello Manager Wang (王经理), thank you for your inquiry. Our price list is attached. Shanghai Hongda Trading Co., Ltd. (上海宏达贸易有限公司), 88 Keyuan Road, Pudong (上海市浦东新区张江高科技园区科苑路八十八号). Li Wei (李伟)",
+      "Please ship the samples to: 88 Keyuan Road, Pudong, Shanghai (上海市浦东新区张江高科技园区科苑路八十八号). Thank you.",
+    ]) {
+      act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={emailPayload({}, { translation: { language: "Chinese (Simplified)", text } })} />));
+      expect(container.querySelector("[data-approval-translation-not-english]")).toBeNull();
+    }
   });
 
   it("frames the draft's translation apart from the draft that is sent, and marks it inside its box", () => {

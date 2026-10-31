@@ -492,10 +492,12 @@ function judge(weight: ScriptWeight): "latin" | "non-latin" | null {
 function isQuoteHeader(lines: string[], index: number): boolean {
   const line = lines[index];
   if (/^-{2,} ?Original Message ?-{2,}$/i.test(line) || /^_{10,}$/.test(line)) return true;
-  if (line.length <= 200 && (/写道[:：]$/u.test(line) || /\bwrote:$/i.test(line))) return true;
+  if (line.length <= 200 && (/(?:写道|寫道)[:：]$/u.test(line) || /\bwrote:$/i.test(line))) return true;
   if (/^On\s/i.test(line) && line.length <= 200 && (lines[index + 1] ?? "").endsWith("wrote:")) return true;
-  if (/^(?:From|发件人|寄件者) ?[:：]/iu.test(line)) {
-    return lines.slice(index + 1, index + 4).some((next) => /^(?:Sent|Date|发送时间|日期|寄件日期) ?[:：]/iu.test(next));
+  if (/^(?:From|发件人|寄件者|差出人|送信者|보낸 ?사람) ?[:：]/iu.test(line)) {
+    return lines
+      .slice(index + 1, index + 4)
+      .some((next) => /^(?:Sent|Date|发送时间|日期|寄件日期|送信日時|日付|보낸 ?날짜|날짜) ?[:：]/iu.test(next));
   }
   return false;
 }
@@ -547,12 +549,6 @@ type ScriptReading = {
   latinPart: boolean;
   /** The weighted letters of the part read as not Latin (the new part first), or of the whole text. */
   weightedLetters: number;
-  /**
-   * The new part or the whole text is mostly not Latin, without the passage
-   * rule: what an English translation is judged by, since one may keep names
-   * and an address in their own script.
-   */
-  mostlyNonLatin: boolean;
 };
 const SCRIPT_CACHE_SIZE = 256;
 const scriptCache = new Map<string, ScriptReading>();
@@ -572,15 +568,13 @@ function readScript(text: string): ScriptReading {
   const part = newMessagePart(text);
   const fresh = part.length === text.length ? whole : weigh(part);
   const [wholeScript, freshScript] = [judge(whole), judge(fresh)];
-  const mostlyNonLatin = freshScript === "non-latin" || wholeScript === "non-latin";
-  const nonLatin = mostlyNonLatin || whole.nonLatin >= NON_LATIN_PASSAGE;
+  const nonLatin = freshScript === "non-latin" || wholeScript === "non-latin" || whole.nonLatin >= NON_LATIN_PASSAGE;
   const latinPart = freshScript === "latin" || wholeScript === "latin";
   const reading: ScriptReading = {
     script: nonLatin ? "non-latin" : latinPart ? "latin" : null,
     latinPart,
     // A passage under English terms or a footer: its translation covers the passage, not the English.
     weightedLetters: freshScript === "non-latin" ? fresh.letters : wholeScript === "non-latin" ? whole.letters : whole.nonLatin,
-    mostlyNonLatin,
   };
   if (scriptCache.size >= SCRIPT_CACHE_SIZE) scriptCache.clear();
   scriptCache.set(text, reading);
@@ -599,10 +593,22 @@ function languageFitsText(language: LanguageEntry, text: string): boolean {
   const reading = readScript(text);
   if (!language.script || !reading.script) return true;
   if (language.script === "Latn") return reading.latinPart;
-  // An English reply above the customer's quoted Chinese email is not Chinese: judge the new part when it says enough.
-  const part = newMessagePart(text);
-  return namedScriptIsIn(language.script, weigh(part).letters >= SCRIPT_MIN_LETTERS ? part : text);
+  // An English reply above the customer's quoted Chinese email is not Chinese: judge the new part when it is a
+  // reply of its own. A greeting or a cover note ("Dear Mr. Wang,", "FYI, see below") over the message, and a
+  // forwarded email, are judged whole.
+  const part = FORWARD_PATTERN.test(text) ? text : newMessagePart(text);
+  return namedScriptIsIn(language.script, weigh(part).letters >= REPLY_PART_MIN_LETTERS ? part : text);
 }
+
+/** Weighted letters the new part of a message needs to be judged alone: about one sentence. */
+const REPLY_PART_MIN_LETTERS = 40;
+
+/** A forwarded email: Gmail, Thunderbird and Apple Mail markers, their Chinese forms, or an FW/Fwd subject line. */
+const FORWARD_PATTERN =
+  /^(?:-{2,} ?(?:Forwarded message|转发的邮件|轉寄的郵件) ?-{2,}|Begin forwarded message:|(?:Subject|主题|主旨) ?[:：] ?(?:FW|Fwd|转发|轉寄)\b)/imu;
+
+/** Text in brackets: an English translation may keep names, a company or an address there in their own script. */
+const BRACKETED_PATTERN = /\([^()\n]{0,200}\)|（[^（）\n]{0,200}）|\[[^[\]\n]{0,200}\]|【[^【】\n]{0,200}】/gu;
 
 /**
  * Whether a text is written mostly outside the Latin script (Chinese,
@@ -620,9 +626,12 @@ export function isMostlyNonLatinScript(text: string): boolean {
   return readScript(text).script === "non-latin";
 }
 
-/** Whether an English translation is in fact not in English: names and an address kept in their own script do not count. */
+/**
+ * Whether an English translation is in fact not in English, or leaves a passage untranslated: names and an
+ * address kept in brackets do not count.
+ */
 function translationIsNotEnglish(text: string): boolean {
-  return readScript(text).mostlyNonLatin;
+  return isMostlyNonLatinScript(text.replace(BRACKETED_PATTERN, " "));
 }
 
 /** A translation shorter than this share of the English the source would give looks cut. */
