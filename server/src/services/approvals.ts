@@ -36,6 +36,12 @@ export function approvalService(db: Db) {
     };
   }
 
+  async function getHireTargetAgent(companyId: string, agentId: string) {
+    const agent = await agentsSvc.getById(agentId);
+    if (!agent || agent.companyId !== companyId) return null;
+    return agent;
+  }
+
   async function reconcileApprovedBuiltInAgent(companyId: string, payload: Record<string, unknown>) {
     const sourceBuiltInAgentKey = typeof payload.sourceBuiltInAgentKey === "string" ? payload.sourceBuiltInAgentKey : null;
     if (!sourceBuiltInAgentKey) return;
@@ -226,9 +232,15 @@ export function approvalService(db: Db) {
         const payload = updated.payload as Record<string, unknown>;
         const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
         if (payloadAgentId) {
-          await agentsSvc.activatePendingApproval(payloadAgentId, payload);
-          await reconcileApprovedBuiltInAgent(updated.companyId, payload);
-          hireApprovedAgentId = payloadAgentId;
+          // Only activate an agent that belongs to the approval's company and is
+          // still awaiting this approval. A payload naming any other agent must
+          // not reconfigure or wake it.
+          const target = await getHireTargetAgent(updated.companyId, payloadAgentId);
+          if (target && target.status === "pending_approval") {
+            await agentsSvc.activatePendingApproval(payloadAgentId, payload);
+            await reconcileApprovedBuiltInAgent(updated.companyId, payload);
+            hireApprovedAgentId = payloadAgentId;
+          }
         } else {
           const created = await agentsSvc.create(updated.companyId, {
             name: String(payload.name ?? "New Agent"),
@@ -294,7 +306,13 @@ export function approvalService(db: Db) {
         const payload = updated.payload as Record<string, unknown>;
         const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
         if (payloadAgentId) {
-          await agentsSvc.terminate(payloadAgentId);
+          // Rejecting a hire only discards the agent that was waiting on it.
+          // Never terminate an agent from another company or one that is
+          // already active.
+          const target = await getHireTargetAgent(updated.companyId, payloadAgentId);
+          if (target && target.status === "pending_approval") {
+            await agentsSvc.terminate(payloadAgentId);
+          }
         }
       }
 

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   buildHydratedApprovalDetail,
@@ -23,9 +23,14 @@ import {
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
-import { badRequest } from "../errors.js";
+import { badRequest, forbidden, unprocessable } from "../errors.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+
+function readPayloadAgentId(payload: Record<string, unknown> | null | undefined): string | null {
+  const value = payload?.agentId;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -165,6 +170,47 @@ export function approvalRoutes(
     res.json(redacted);
   });
 
+  // hire_agent approvals that reference an existing agent may only target a
+  // pending agent in the same company: approving activates it and rejecting
+  // terminates it.
+  async function assertHirePayloadAgentInCompany(payload: Record<string, unknown>, companyId: string) {
+    const payloadAgentId = readPayloadAgentId(payload);
+    if (!payloadAgentId) return;
+    const target = await db
+      .select({ companyId: agents.companyId, status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, payloadAgentId))
+      .then((rows) => rows[0] ?? null);
+    if (!target || target.companyId !== companyId || target.status !== "pending_approval") {
+      throw unprocessable("payload.agentId must reference a pending agent in this company");
+    }
+  }
+
+  // The requester is woken when an approval resolves, so it must be the calling
+  // agent itself, or (for board users) an agent in the same company.
+  async function resolveRequestedByAgentId(
+    actor: ReturnType<typeof getActorInfo>,
+    companyId: string,
+    bodyRequestedByAgentId: string | null,
+  ): Promise<string | null> {
+    if (actor.actorType === "agent") {
+      if (bodyRequestedByAgentId && bodyRequestedByAgentId !== actor.actorId) {
+        throw forbidden("Agents can only request approvals as themselves");
+      }
+      return actor.actorId;
+    }
+    if (!bodyRequestedByAgentId) return null;
+    const requester = await db
+      .select({ companyId: agents.companyId })
+      .from(agents)
+      .where(eq(agents.id, bodyRequestedByAgentId))
+      .then((rows) => rows[0] ?? null);
+    if (!requester || requester.companyId !== companyId) {
+      throw unprocessable("requestedByAgentId must reference an agent in this company");
+    }
+    return bodyRequestedByAgentId;
+  }
+
   router.post("/companies/:companyId/approvals", validate(createApprovalSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -180,12 +226,16 @@ export function approvalRoutes(
     const idempotencyKey = headerIdempotencyKey || bodyIdempotencyKey || null;
 
     const actor = getActorInfo(req);
-    const requestedByAgentId =
-      approvalInput.requestedByAgentId ?? (actor.actorType === "agent" ? actor.actorId : null);
+    const requestedByAgentId = await resolveRequestedByAgentId(
+      actor,
+      companyId,
+      approvalInput.requestedByAgentId ?? null,
+    );
     const requestedByUserId = actor.actorType === "user" ? actor.actorId : null;
 
     let normalizedPayload: Record<string, unknown> = approvalInput.payload;
     if (approvalInput.type === "hire_agent") {
+      await assertHirePayloadAgentInCompany(approvalInput.payload, companyId);
       normalizedPayload = await secretsSvc.normalizeHireApprovalPayloadForPersistence(
         companyId,
         approvalInput.payload,
@@ -410,6 +460,11 @@ export function approvalRoutes(
     let normalizedPayload: Record<string, unknown> | undefined;
     if (req.body.payload) {
       if (existing.type === "hire_agent") {
+        const previousAgentId = readPayloadAgentId(existing.payload as Record<string, unknown>);
+        const nextAgentId = readPayloadAgentId(req.body.payload);
+        if (nextAgentId !== previousAgentId) {
+          throw unprocessable("Resubmitting a hire approval cannot change payload.agentId");
+        }
         normalizedPayload = await secretsSvc.normalizeHireApprovalPayloadForPersistence(
           existing.companyId,
           req.body.payload,

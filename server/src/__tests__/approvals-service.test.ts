@@ -4,6 +4,7 @@ import { approvalService } from "../services/approvals.ts";
 const mockAgentService = vi.hoisted(() => ({
   activatePendingApproval: vi.fn(),
   create: vi.fn(),
+  getById: vi.fn(),
   terminate: vi.fn(),
 }));
 
@@ -79,6 +80,11 @@ describe("approvalService resolution idempotency", () => {
     mockAgentService.activatePendingApproval.mockResolvedValue({ agent: { id: "agent-1" }, activated: true });
     mockAgentService.create.mockResolvedValue({ id: "agent-1" });
     mockAgentService.terminate.mockResolvedValue(undefined);
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      status: "pending_approval",
+    });
     mockNotifyHireApproved.mockResolvedValue(undefined);
   });
 
@@ -151,6 +157,79 @@ describe("approvalService resolution idempotency", () => {
         adapterConfig: approved.payload.adapterConfig,
       }),
     );
+  });
+});
+
+describe("approvalService hire target scoping", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAgentService.activatePendingApproval.mockResolvedValue({ agent: { id: "agent-1" }, activated: true });
+    mockAgentService.terminate.mockResolvedValue(undefined);
+    mockNotifyHireApproved.mockResolvedValue(undefined);
+  });
+
+  it("does not activate an agent that belongs to another company", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-2",
+      status: "pending_approval",
+    });
+    const approved = createApproval("approved");
+    const dbStub = createDbStub([[createApproval("pending")]], [approved]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "ship it");
+
+    expect(result.applied).toBe(true);
+    expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockNotifyHireApproved).not.toHaveBeenCalled();
+  });
+
+  it("does not terminate an agent that belongs to another company on reject", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-2",
+      status: "pending_approval",
+    });
+    const rejected = createApproval("rejected");
+    const dbStub = createDbStub([[createApproval("pending")]], [rejected]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.reject("approval-1", "board", "no");
+
+    expect(result.applied).toBe(true);
+    expect(mockAgentService.terminate).not.toHaveBeenCalled();
+  });
+
+  it("does not terminate an already-active agent on reject", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      status: "idle",
+    });
+    const rejected = createApproval("rejected");
+    const dbStub = createDbStub([[createApproval("pending")]], [rejected]);
+
+    const svc = approvalService(dbStub.db as any);
+    await svc.reject("approval-1", "board", "no");
+
+    expect(mockAgentService.terminate).not.toHaveBeenCalled();
+  });
+
+  it("terminates the pending agent in the same company on reject", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      status: "pending_approval",
+    });
+    const rejected = createApproval("rejected");
+    const dbStub = createDbStub([[createApproval("pending")]], [rejected]);
+
+    const svc = approvalService(dbStub.db as any);
+    await svc.reject("approval-1", "board", "no");
+
+    expect(mockAgentService.terminate).toHaveBeenCalledWith("agent-1");
   });
 });
 
