@@ -16,8 +16,9 @@ export const createFinanceEventSchema = z.object({
   biller: z.string().min(1),
   provider: z.string().min(1).optional().nullable(),
   // Open string, like every other adapterType field: external adapters register
-  // their own types at runtime.
-  executionAdapterType: optionalAgentAdapterTypeSchema.nullable(),
+  // their own types at runtime. Capped at 100 chars like plugin-declared adapter
+  // types (validators/plugin.ts); the execution_adapter_type column is unbounded.
+  executionAdapterType: optionalAgentAdapterTypeSchema.unwrap().max(100).optional().nullable(),
   pricingTier: z.string().min(1).optional().nullable(),
   region: z.string().min(1).optional().nullable(),
   model: z.string().min(1).optional().nullable(),

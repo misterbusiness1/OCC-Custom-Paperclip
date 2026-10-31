@@ -27,4 +27,13 @@ describe("createFinanceEventSchema executionAdapterType", () => {
   it("rejects empty adapter types", () => {
     expect(() => createFinanceEventSchema.parse({ ...baseEvent, executionAdapterType: "   " })).toThrow();
   });
+
+  it("caps adapter types at 100 characters", () => {
+    const atLimit = "a".repeat(100);
+    expect(createFinanceEventSchema.parse({ ...baseEvent, executionAdapterType: atLimit }).executionAdapterType).toBe(atLimit);
+    expect(
+      createFinanceEventSchema.parse({ ...baseEvent, executionAdapterType: `  ${atLimit}  ` }).executionAdapterType,
+    ).toBe(atLimit);
+    expect(createFinanceEventSchema.safeParse({ ...baseEvent, executionAdapterType: "a".repeat(101) }).success).toBe(false);
+  });
 });
