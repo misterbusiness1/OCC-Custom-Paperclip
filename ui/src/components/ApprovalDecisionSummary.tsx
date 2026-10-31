@@ -6,8 +6,15 @@ import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import {
   approvalDecisionBrief,
   approvalDraftPreview,
+  approvalDraftTranslation,
   approvalEmailDraft,
   type ApprovalEmailDraft,
+  type ApprovalTranslation,
+  ApprovalDraftLanguageChip,
+  ApprovalMissingTranslationNote,
+  ApprovalTranslationLabel,
+  APPROVAL_TRANSLATION_FRAME_CLASS,
+  isMostlyNonLatinScript,
   approvalHireFacts,
   approvalOriginalRequest,
   approvalReadableText,
@@ -134,7 +141,11 @@ export function useApprovalDraftGate(type: string, payload?: Record<string, unkn
   const ref = useRef<HTMLDivElement>(null);
   const revealRequested = useRef(false);
   const draft = summaryEmailDraft(type, payload);
-  const isCut = draft !== null && approvalDraftPreview(draft.body) !== null;
+  // The board may read the reply through its translation, so a cut translation holds Approve back too.
+  const translation = draft ? approvalDraftTranslation(payload) : null;
+  const isCut =
+    draft !== null &&
+    (approvalDraftPreview(draft.body) !== null || (translation !== null && approvalDraftPreview(translation.text) !== null));
 
   // Runs once the whole draft is on the page, so the scroll sees its real height.
   useEffect(() => {
@@ -162,10 +173,13 @@ export function useApprovalDraftGate(type: string, payload?: Record<string, unkn
 
 function ApprovalEmailDraftBlock({
   draft,
+  translation,
   full,
   control,
 }: {
   draft: ApprovalEmailDraft;
+  /** The English translation the requesting agent attached; shown under the draft, never part of it. */
+  translation: ApprovalTranslation | null;
   /** Show the whole draft, with nothing to expand. */
   full: boolean;
   /** Without it the block keeps its own expanded state. */
@@ -177,8 +191,16 @@ function ApprovalEmailDraftBlock({
   const setExpanded = control ? control.onExpandedChange : setOwnExpanded;
   // A long draft is cut on compact surfaces only, and always behind a button that states its size.
   const preview = full ? null : approvalDraftPreview(draft.body);
-  const canExpand = preview !== null;
+  // The translation is cut by the same rule, and opens and closes with the draft: one control for both.
+  const translationPreview = full || !translation ? null : approvalDraftPreview(translation.text);
+  const canExpand = preview !== null || translationPreview !== null;
   const hiddenLength = preview === null ? 0 : draft.body.length - preview.length;
+  const hiddenTranslationLength =
+    translation === null || translationPreview === null ? 0 : translation.text.length - translationPreview.length;
+  const expandText =
+    preview !== null
+      ? `Show full reply (${draft.body.length.toLocaleString()} characters)`
+      : `Show full translation (${(translation?.text.length ?? 0).toLocaleString()} characters)`;
   // "Via" is the payload's free-text channel; "From" appears only when the request names a sender.
   const envelope = [
     ["Via", draft.via],
@@ -197,9 +219,12 @@ function ApprovalEmailDraftBlock({
       // Focusable so a held-back Approve can put the reader on the draft it opened.
       tabIndex={canExpand ? -1 : undefined}
     >
-      <ApprovalSectionLabel id={labelId} className={labelClass}>
-        Draft reply
-      </ApprovalSectionLabel>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <ApprovalSectionLabel id={labelId} className={labelClass}>
+          Draft reply
+        </ApprovalSectionLabel>
+        <ApprovalDraftLanguageChip language={translation?.language ?? null} />
+      </div>
       <div className="mt-2 overflow-hidden rounded-lg border border-border/60">
         {envelope.length > 0 && (
           <dl className="space-y-1 border-b border-border/60 bg-muted/30 px-3.5 py-2.5 text-sm">
@@ -218,10 +243,32 @@ function ApprovalEmailDraftBlock({
         </div>
       </div>
       {/* Outside the body box: nothing the interface writes may pass for a part of the email. */}
-      {canExpand && !expanded && (
+      {preview !== null && !expanded && (
         <p className="mt-2 text-xs leading-5 text-muted-foreground" data-approval-draft-continues>
           The reply continues: {hiddenLength.toLocaleString()} more {hiddenLength === 1 ? "character" : "characters"}.
         </p>
+      )}
+      {translation ? (
+        <div data-approval-translation="draft" className={APPROVAL_TRANSLATION_FRAME_CLASS}>
+          <ApprovalTranslationLabel
+            label="English translation of the draft"
+            translation={translation}
+            languageLead="written in"
+          />
+          <div className="mt-2 rounded-md bg-muted/20 px-3.5 py-3">
+            <div className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground" data-approval-draft-translation-body>
+              {translationPreview !== null && !expanded ? translationPreview : translation.text}
+            </div>
+          </div>
+          {translationPreview !== null && !expanded && (
+            <p className="mt-2 text-xs leading-5 text-muted-foreground" data-approval-draft-translation-continues>
+              The translation continues: {hiddenTranslationLength.toLocaleString()} more{" "}
+              {hiddenTranslationLength === 1 ? "character" : "characters"}.
+            </p>
+          )}
+        </div>
+      ) : (
+        isMostlyNonLatinScript(draft.body) && <ApprovalMissingTranslationNote of="draft" />
       )}
       {canExpand && (
         <button
@@ -231,7 +278,7 @@ function ApprovalEmailDraftBlock({
           aria-label={expanded ? "Show less: Draft reply" : undefined}
           onClick={() => setExpanded(!expanded)}
         >
-          {expanded ? "Show less" : `Show full reply (${draft.body.length.toLocaleString()} characters)`}
+          {expanded ? "Show less" : expandText}
         </button>
       )}
     </div>
@@ -560,6 +607,7 @@ export function ApprovalDecisionSummary({
 
   const isBoardApproval = type === "request_board_approval";
   const draft = summaryEmailDraft(type, payload);
+  const draftTranslation = draft ? approvalDraftTranslation(payload) : null;
   const hasBrief =
     isBoardApproval ||
     Boolean(
@@ -630,7 +678,14 @@ export function ApprovalDecisionSummary({
       {isBoardApproval && draft && (
         <OriginalRequestBlock payload={payload} compact={!full} resolveAgentName={resolveAgentName} />
       )}
-      {draft && <ApprovalEmailDraftBlock draft={draft} full={full} control={draftControl} />}
+      {draft && (
+        <ApprovalEmailDraftBlock
+          draft={draft}
+          translation={draftTranslation}
+          full={full}
+          control={draftControl}
+        />
+      )}
       {/*
         Written by the interface, from what the server does: a decision wakes the requesting agent.
         Paperclip sends no email itself, so the line says who is told, not that the reply is sent.

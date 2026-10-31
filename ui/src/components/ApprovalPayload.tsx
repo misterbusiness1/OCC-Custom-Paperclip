@@ -130,6 +130,130 @@ export function approvalOriginalRequest(
   };
 }
 
+/**
+ * An English translation the requesting agent attached, of the received email
+ * or of the draft. `language` is the language of the text it translates, when
+ * the agent named it.
+ */
+export type ApprovalTranslation = { text: string; language: string | null };
+
+/**
+ * Reads one translation field: `{ text, language }`, or the text alone (the
+ * language is then unknown). Text that is empty or only white space is no
+ * translation. The text is kept as written, line breaks included.
+ */
+export function approvalTranslation(value: unknown): ApprovalTranslation | null {
+  if (typeof value === "string") return value.trim() ? { text: value, language: null } : null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.text !== "string" || !record.text.trim()) return null;
+  return { text: record.text, language: firstNonEmptyString(record.language) };
+}
+
+/** The English translation of the received email (`originalRequest.translation`). */
+export function approvalOriginalRequestTranslation(
+  payload?: Record<string, unknown> | null,
+): ApprovalTranslation | null {
+  const value = payload?.originalRequest;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return approvalTranslation((value as Record<string, unknown>).translation);
+}
+
+/** The English translation of the outgoing draft (`bodyTranslation`). The executor never sends it. */
+export function approvalDraftTranslation(payload?: Record<string, unknown> | null): ApprovalTranslation | null {
+  return approvalTranslation(payload?.bodyTranslation);
+}
+
+/** Letters a text needs before its script is judged: a greeting or a name alone says nothing. */
+const SCRIPT_MIN_LETTERS = 8;
+/** The share of letters outside the Latin script above which a text is taken as not English. */
+const NON_LATIN_SHARE = 0.3;
+/** Only the start of a very long text is read: it is judged on every render of a queue row. */
+const SCRIPT_SAMPLE_LENGTH = 20_000;
+const LETTER_PATTERN = /\p{L}/gu;
+/** A letter that is not a Latin one. */
+const NON_LATIN_LETTER_PATTERN = /(?=\p{L})\P{Script=Latin}/gu;
+/** A link or an email address, in ASCII only: text in another script often runs on with no space after one. */
+const ADDRESS_PATTERN = /(?:https?:\/\/|www\.)[!-~]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/giu;
+
+/**
+ * Whether a text is written mostly outside the Latin script (Chinese,
+ * Japanese, Korean, Cyrillic, Arabic, Hebrew, Thai, Devanagari, ...), so a
+ * board that reads English needs a translation. Links and addresses are left
+ * out, and so are digits and punctuation, which are not letters. A language
+ * written in Latin letters (Spanish, German) cannot be told from English this
+ * way and is never flagged.
+ */
+export function isMostlyNonLatinScript(text: string): boolean {
+  const sample = text.slice(0, SCRIPT_SAMPLE_LENGTH).replace(ADDRESS_PATTERN, " ");
+  const letters = sample.match(LETTER_PATTERN)?.length ?? 0;
+  const nonLatin = sample.match(NON_LATIN_LETTER_PATTERN)?.length ?? 0;
+  return letters >= SCRIPT_MIN_LETTERS && nonLatin / letters > NON_LATIN_SHARE;
+}
+
+const translationLabelClass =
+  "text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground";
+
+/** What the board must keep in mind about any translation it reads on a request. */
+export const APPROVAL_TRANSLATION_NOTE =
+  "Translated by the requesting agent. Check it against the original before approving.";
+
+/** The label of a translation sub-block, with the language it was made from when known. Text, not color. */
+export function ApprovalTranslationLabel({
+  label,
+  translation,
+  languageLead,
+}: {
+  label: string;
+  translation: ApprovalTranslation;
+  /** Words before the language: "from" for the received email, "written in" for the draft. */
+  languageLead: string;
+}) {
+  return (
+    <>
+      <p className={translationLabelClass}>
+        {label}
+        {translation.language && (
+          <span className="normal-case tracking-normal">
+            {" · "}
+            {languageLead} {translation.language}
+          </span>
+        )}
+      </p>
+      <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{APPROVAL_TRANSLATION_NOTE}</p>
+    </>
+  );
+}
+
+/** The language a draft is written in, beside its label. */
+export function ApprovalDraftLanguageChip({ language }: { language: string | null }) {
+  if (!language) return null;
+  return (
+    <span
+      className="min-w-0 break-words rounded bg-muted px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground"
+      data-approval-draft-language=""
+    >
+      <span className="sr-only">Written in </span>
+      {language}
+    </span>
+  );
+}
+
+/** Shown under a received email or a draft that is not in English and carries no translation. */
+export function ApprovalMissingTranslationNote({ of }: { of: "original" | "draft" }) {
+  return (
+    <p
+      className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-700 dark:text-amber-300"
+      data-approval-translation-missing={of}
+    >
+      Not in English and no translation attached. Request a revision to get one.
+    </p>
+  );
+}
+
+/** The frame of a translation: a rule on its left, so it reads as part of the block above it and not as a block of its own. */
+export const APPROVAL_TRANSLATION_FRAME_CLASS = "mt-3 min-w-0 scroll-mt-20 border-l-2 border-border pl-3";
+
 /** Resolves an agent id to a display name; null or undefined when it is not known. */
 type OriginalRequestSenderResolver = (agentId: string) => string | null | undefined;
 
@@ -225,6 +349,8 @@ export function OriginalRequestBlock({
       ? `/issues/${original.source.issueId}#comment-${original.source.commentId}`
       : null;
   const sentAt = originalRequestSentAt(original.source.sentAt);
+  const translation = approvalOriginalRequestTranslation(payload);
+  const needsTranslation = !translation && isMostlyNonLatinScript(original.text);
   // What the board needs to know about the text below, not how it is stored.
   const sourceNote =
     original.source.kind === "external" && original.source.snapshotOrigin === "requester"
@@ -281,6 +407,25 @@ export function OriginalRequestBlock({
         // below it (a thin solid frame with a muted Via/To/Subject header).
         boxClassName={isEmail ? "mt-2 rounded-md border border-dashed border-muted-foreground/40 p-3" : undefined}
       />
+      {translation ? (
+        // Right under the text it translates, behind its own label and a rule; previewed the same way.
+        <div data-approval-translation="original" className={APPROVAL_TRANSLATION_FRAME_CLASS}>
+          <ApprovalTranslationLabel label="English translation" translation={translation} languageLead="from" />
+          <OriginalRequestText
+            key={translation.text}
+            text={translation.text}
+            collapsible={compact && (isEmail || isLongOriginalRequest(translation.text))}
+            measure={compact && isEmail}
+            fallbackLong={isEmail ? isLongOriginalEmail(translation.text) : true}
+            previewLines={isEmail ? 6 : 4}
+            expandLabel={isEmail ? "Show more" : undefined}
+            subject={`English translation of the ${sourceLabel.toLowerCase()}`}
+            boxClassName={isEmail ? "mt-2 rounded-md border border-dashed border-muted-foreground/30 bg-muted/20 p-3" : undefined}
+          />
+        </div>
+      ) : (
+        needsTranslation && <ApprovalMissingTranslationNote of="original" />
+      )}
     </>
   );
 
@@ -409,7 +554,10 @@ function OriginalRequestText({
             // After "Show less" the long text is gone from above: bring the collapsed email, label first,
             // back into view (clear of the sticky header) instead of leaving the reader in the draft.
             if (collapsing) {
-              const section = (event.currentTarget as HTMLElement).closest<HTMLElement>("[data-approval-original-request]");
+              // A translation's own Show less returns to the translation, not to the email above it.
+              const section = (event.currentTarget as HTMLElement).closest<HTMLElement>(
+                "[data-approval-translation], [data-approval-original-request]",
+              );
               requestAnimationFrame(() => {
                 if (!section || typeof section.getBoundingClientRect !== "function") return;
                 if (section.getBoundingClientRect().top < 80) section.scrollIntoView?.({ block: "start" });
@@ -1073,6 +1221,7 @@ export function EmailReplyPayload({
   const body = firstNonEmptyString(payload.body) ?? "";
   const intent = firstNonEmptyString(payload.intent);
   const reasoning = brief.reasoning === intent ? null : brief.reasoning;
+  const bodyTranslation = approvalDraftTranslation(payload);
 
   return (
     <div className="mt-4 space-y-3.5 text-sm">
@@ -1124,13 +1273,31 @@ export function EmailReplyPayload({
       )}
       {/* The email being answered, right above the reply to it. */}
       <OriginalRequestBlock payload={payload} resolveAgentName={resolveAgentName} />
-      <div className="space-y-1">
-        <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-          Draft reply
-        </p>
+      <div className="min-w-0 space-y-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+            Draft reply
+          </p>
+          <ApprovalDraftLanguageChip language={bodyTranslation?.language ?? null} />
+        </div>
         <pre className="whitespace-pre-wrap wrap-anywhere rounded-md bg-muted/40 p-3 font-sans text-sm leading-6 text-foreground">
           {body}
         </pre>
+        {/* Never sent: the executor sends the draft above and nothing else. */}
+        {bodyTranslation ? (
+          <div data-approval-translation="draft" className={APPROVAL_TRANSLATION_FRAME_CLASS}>
+            <ApprovalTranslationLabel
+              label="English translation of the draft"
+              translation={bodyTranslation}
+              languageLead="written in"
+            />
+            <pre className="mt-2 whitespace-pre-wrap wrap-anywhere rounded-md bg-muted/20 p-3 font-sans text-sm leading-6 text-foreground">
+              {bodyTranslation.text}
+            </pre>
+          </div>
+        ) : (
+          isMostlyNonLatinScript(body) && <ApprovalMissingTranslationNote of="draft" />
+        )}
       </div>
     </div>
   );
