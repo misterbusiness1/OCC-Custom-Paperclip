@@ -1763,17 +1763,36 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     });
   }
 
-  function exchangeTokenUrl(connection: typeof toolConnections.$inferSelect, isPages: boolean): string {
+  function exchangeTokenUrl(
+    connection: typeof toolConnections.$inferSelect,
+    isPages: boolean,
+  ): { url: string; source: "connection_config" | "operator_env" } {
     const broker = tokenBrokerConfig(connection);
     const config = asRecord(connection.config);
     const url = readConfigString(broker, "tokenUrl")
       ?? readConfigString(broker, "exchangeTokenUrl")
       ?? readConfigString(config, "tokenExchangeUrl")
       ?? readConfigString(config, "pagesTokenExchangeUrl");
-    if (url) return url;
+    if (url) return { url, source: "connection_config" };
     const pagesApiBase = process.env.PAPERCLIP_PAGES_API_URL?.trim();
-    if (isPages && pagesApiBase) return new URL("/v1/tokens/exchange", pagesApiBase.endsWith("/") ? pagesApiBase : `${pagesApiBase}/`).toString();
+    if (isPages && pagesApiBase) {
+      return {
+        url: new URL("/v1/tokens/exchange", pagesApiBase.endsWith("/") ? pagesApiBase : `${pagesApiBase}/`).toString(),
+        source: "operator_env",
+      };
+    }
     throw unprocessable("Connection token exchange URL is not configured", { code: "exchange_url_missing" });
+  }
+
+  // The exchange request carries the parent credential. A URL taken from the
+  // connection config is tenant-controlled, so it goes through the same
+  // private-network and redirect guard as other remote HTTP calls. The
+  // operator-set PAPERCLIP_PAGES_API_URL is trusted as before.
+  function postTokenExchange(target: { url: string; source: string }, init: RequestInit): Promise<Response> {
+    if (target.source === "connection_config") {
+      return fetchRemoteHttpUrl(target.url, init);
+    }
+    return fetch(target.url, init);
   }
 
   function pagesNamespaceFromScope(scope: string[]): string | null {
@@ -1797,7 +1816,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const parentToken = await resolveBrokerParentCredential(input);
     const broker = tokenBrokerConfig(input.connection);
     const protocol = readConfigString(broker, "protocol") ?? readConfigString(broker, "exchangeProtocol") ?? (isPages ? "pages" : "generic");
-    const url = exchangeTokenUrl(input.connection, isPages);
+    const exchangeTarget = exchangeTokenUrl(input.connection, isPages);
     const actor = {
       type: "agent",
       id: input.agentId,
@@ -1816,7 +1835,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       body.set("requested_token_type", readConfigString(broker, "requestedTokenType") ?? "urn:ietf:params:oauth:token-type:access_token");
       body.set("actor_token", Buffer.from(JSON.stringify(actor)).toString("base64url"));
       body.set("actor_token_type", readConfigString(broker, "actorTokenType") ?? "urn:ietf:params:oauth:token-type:jwt");
-      response = await fetch(url, {
+      response = await postTokenExchange(exchangeTarget, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body,
@@ -1826,7 +1845,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const body = isPages && namespace
         ? { namespace, ttlSeconds: input.ttlSeconds, actions: ["publish"], actor }
         : { scope: input.scope, ttlSeconds: input.ttlSeconds, actor, audience: readConfigString(broker, "audience") };
-      response = await fetch(url, {
+      response = await postTokenExchange(exchangeTarget, {
         method: "POST",
         headers: { authorization: `Bearer ${parentToken}`, "content-type": "application/json" },
         body: JSON.stringify(body),

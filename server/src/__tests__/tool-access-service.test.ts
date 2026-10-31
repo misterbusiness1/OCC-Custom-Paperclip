@@ -465,6 +465,56 @@ describeEmbeddedPostgres("tool access service", () => {
     await tempDb?.cleanup();
   });
 
+  it("refuses to send the parent credential to a private token exchange URL in public deployments", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id, {
+      tokenUrl: "http://169.254.169.254/latest/meta-data/iam",
+    });
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(
+      db,
+      agentJwtActor(company.id, agent.id, run.id),
+      undefined,
+      { deploymentMode: "authenticated", deploymentExposure: "public" },
+    );
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .set("X-Paperclip-Run-Id", run.id)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.details).toMatchObject({ code: "remote_http_private_endpoint" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not follow redirects from the token exchange endpoint", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id);
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 307,
+      headers: new Headers({ location: "http://169.254.169.254/latest/meta-data" }),
+      json: async () => ({}),
+    } as Response);
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .set("X-Paperclip-Run-Id", run.id)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(502);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
+  });
+
   it("mints generic exchange connection tokens through the agent route and stores only hashes", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
