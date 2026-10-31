@@ -146,7 +146,7 @@ export function useApprovalDraftGate(type: string, payload?: Record<string, unkn
   const draft = summaryEmailDraft(type, payload);
   // The board may read the reply through its translation, so a cut translation holds Approve back too, a
   // doubtful one included: its note asks for a revision, and reading it costs one press.
-  const translation = draft ? approvalTranslationFor(approvalDraftTranslation(payload), draft.body) : null;
+  const translation = draft ? approvalTranslationFor(approvalDraftTranslation(payload), draft.body, "draft") : null;
   const replyCut = draft !== null && approvalDraftPreview(draft.body) !== null;
   const isCut = replyCut || (translation !== null && approvalDraftPreview(translation.text) !== null);
 
@@ -611,7 +611,7 @@ export function ApprovalDecisionSummary({
 
   const isBoardApproval = type === "request_board_approval";
   const draft = summaryEmailDraft(type, payload);
-  const draftTranslation = draft ? approvalTranslationFor(approvalDraftTranslation(payload), draft.body) : null;
+  const draftTranslation = draft ? approvalTranslationFor(approvalDraftTranslation(payload), draft.body, "draft") : null;
   const hasBrief =
     isBoardApproval ||
     Boolean(

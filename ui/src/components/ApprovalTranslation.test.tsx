@@ -255,6 +255,18 @@ describe("approvalTranslation", () => {
     expect(approvalTranslationFor(named("Korean"), reply + koreanThread)?.mismatchedLanguage).toBe("Korean");
     const traditionalThread = "2026年10月27日 週一 上午10:14 王偉 <wang@buyer.example> 寫道：\n\n> 您好，我的訂單到現在還沒有收到，請立即全額退款。";
     expect(approvalTranslationFor(named("Chinese (Traditional)"), reply + traditionalThread)?.mismatchedLanguage).toBe("Chinese (Traditional)");
+    // A forward marker inside the quoted thread is not a forward of the draft; a one-sentence reply to the
+    // customer over a plain quote is judged alone; Gmail's Japanese and Korean reply headers end the reply.
+    const subjectFw = "Hello,\n\nWe can offer a $50 store credit only. We cannot refund the order.\n\nFrom: 王伟 <wang@buyer.example>\nSent: Monday, October 27, 2026 10:14 AM\nSubject: FW: 订单\n\n您好，我的订单到现在还没有收到，请立即全额退款五千美元。";
+    const quotedForward = "Hello,\n\nWe can offer a $50 store credit only. We cannot refund the order.\n\nOn Mon, Oct 27, 2026 at 10:14 AM 王伟 <wang@buyer.example> wrote:\n> ---------- Forwarded message ---------\n> 您好，我的订单到现在还没有收到，请立即全额退款五千美元。";
+    const shortReply = "Mr. Wang, we cannot refund this order.\n\nFrom: 王伟 <wang@buyer.example>\nSent: Monday, October 27, 2026 10:14 AM\n\n您好，我的订单到现在还没有收到，请立即全额退款五千美元。";
+    for (const text of [subjectFw, quotedForward, shortReply]) {
+      expect(approvalTranslationFor(named("Chinese (Simplified)"), text, "draft")?.mismatchedLanguage).toBe("Chinese (Simplified)");
+    }
+    const jaGmail = `${reply}2026年10月27日(月) 10:14 田中太郎 <tanaka@example.test>:\n\n> お世話になっております。注文した商品がまだ届いていません。すぐに全額返金してください。`;
+    const koGmail = `${reply}2026년 10월 27일 (월) 오전 10:14, 김민수 <kim@example.test>님이 작성:\n\n> 안녕하세요. 주문한 상품이 아직 도착하지 않았습니다. 즉시 전액 환불해 주세요.`;
+    expect(approvalTranslationFor(named("Japanese"), jaGmail, "draft")?.mismatchedLanguage).toBe("Japanese");
+    expect(approvalTranslationFor(named("Korean"), koGmail, "draft")?.mismatchedLanguage).toBe("Korean");
     // An English text with a Chinese name in the signature is still not Chinese.
     const english = `${"Hello, we agree to refund the full amount and to cover all return shipping. ".repeat(3)}\n李伟`;
     expect(approvalTranslationFor(named("Chinese (Simplified)"), english)?.mismatchedLanguage).toBe("Chinese (Simplified)");
@@ -985,7 +997,15 @@ describe("translations on email approval cards", () => {
     });
     act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={keptNames} />));
     expect(container.querySelector("[data-approval-translation-not-english]")).toBeNull();
-    // A sentence left untranslated is still "not in English".
+    // A sentence left untranslated is still "not in English", in brackets too.
+    const bracketed = emailPayload({
+      bodyTranslation: {
+        language: "Chinese (Simplified)",
+        text: `Regarding the refund (我们同意全额退款五千美元并承担全部退货运费，退款将在五个工作日内到账), please contact us. ${"Thank you for your patience. ".repeat(6)}`,
+      },
+    });
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={bracketed} />));
+    expect(container.querySelector("[data-approval-translation-not-english='draft']")).not.toBeNull();
     const untranslated = emailPayload({
       bodyTranslation: {
         language: "Chinese (Simplified)",

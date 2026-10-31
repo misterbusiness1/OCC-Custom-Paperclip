@@ -355,16 +355,19 @@ const ENGLISH_NAME_PATTERN = /\benglish\b/i;
  * A language the text is plainly not written in ("Chinese" for a draft in
  * Latin letters, "Korean" for a Japanese one, "Spanish" for a Russian one) is
  * dropped too, and kept in `mismatchedLanguage`: the translation may belong to
- * another version of the text, and the board is told so.
+ * another version of the text, and the board is told so. `of` says whether
+ * the source is the outgoing draft, which is always a reply to the customer,
+ * or the received email, which may be a cover note over a forwarded one.
  */
 export function approvalTranslationFor(
   translation: ApprovalTranslation | null,
   source: string,
+  of: "draft" | "original" = "original",
 ): ApprovalTranslation | null {
   if (!translation?.language) return translation;
   const language = readLanguage(translation.language);
   if (!language || ENGLISH_NAME_PATTERN.test(language.name)) return { ...translation, language: null };
-  if (languageFitsText(language, source)) return translation;
+  if (languageFitsText(language, source, of)) return translation;
   return { ...translation, language: null, mismatchedLanguage: language.name };
 }
 
@@ -493,6 +496,8 @@ function isQuoteHeader(lines: string[], index: number): boolean {
   const line = lines[index];
   if (/^-{2,} ?Original Message ?-{2,}$/i.test(line) || /^_{10,}$/.test(line)) return true;
   if (line.length <= 200 && (/(?:写道|寫道)[:：]$/u.test(line) || /\bwrote:$/i.test(line))) return true;
+  // Gmail in Korean and Japanese: "…, 김민수 <kim@…>님이 작성:", "2026年10月27日(月) 10:14 田中 <tanaka@…>:".
+  if (line.length <= 200 && (/님이 작성:$/u.test(line) || /のメール:$/u.test(line) || /<[^<>\s]+@[^<>\s]+> ?:$/u.test(line))) return true;
   if (/^On\s/i.test(line) && line.length <= 200 && (lines[index + 1] ?? "").endsWith("wrote:")) return true;
   if (/^(?:From|发件人|寄件者|差出人|送信者|보낸 ?사람) ?[:：]/iu.test(line)) {
     return lines
@@ -589,26 +594,63 @@ function readScript(text: string): ScriptReading {
  * languages fits both. A language or a text whose script is not known may be
  * anything.
  */
-function languageFitsText(language: LanguageEntry, text: string): boolean {
+function languageFitsText(language: LanguageEntry, text: string, of: "draft" | "original"): boolean {
   const reading = readScript(text);
   if (!language.script || !reading.script) return true;
   if (language.script === "Latn") return reading.latinPart;
-  // An English reply above the customer's quoted Chinese email is not Chinese: judge the new part when it is a
-  // reply of its own. A greeting or a cover note ("Dear Mr. Wang,", "FYI, see below") over the message, and a
-  // forwarded email, are judged whole.
-  const part = FORWARD_PATTERN.test(text) ? text : newMessagePart(text);
-  return namedScriptIsIn(language.script, weigh(part).letters >= REPLY_PART_MIN_LETTERS ? part : text);
+  // An English reply above the customer's quoted Chinese email is not Chinese: the new part is judged alone when
+  // it is a reply of its own, about a sentence long, or when it sits on a plain quote ("> " lines, a From:/Sent:
+  // block, "Original Message") in a draft, which always answers the customer. A greeting over the message ("Dear
+  // Mr. Wang," above a 写道： line), a cover note over a received email, and a forward are judged whole.
+  const { part, forwarded, plainQuote } = splitReply(text);
+  const letters = weigh(part).letters;
+  const alone =
+    !forwarded && (letters >= REPLY_PART_MIN_LETTERS || (of === "draft" && plainQuote && letters >= SCRIPT_MIN_LETTERS));
+  return namedScriptIsIn(language.script, alone ? part : text);
 }
 
 /** Weighted letters the new part of a message needs to be judged alone: about one sentence. */
 const REPLY_PART_MIN_LETTERS = 40;
 
-/** A forwarded email: Gmail, Thunderbird and Apple Mail markers, their Chinese forms, or an FW/Fwd subject line. */
-const FORWARD_PATTERN =
-  /^(?:-{2,} ?(?:Forwarded message|转发的邮件|轉寄的郵件) ?-{2,}|Begin forwarded message:|(?:Subject|主题|主旨) ?[:：] ?(?:FW|Fwd|转发|轉寄)\b)/imu;
+/** A line that starts a forwarded email: Gmail, Thunderbird and Apple Mail markers and their Chinese forms. */
+const FORWARD_LINE_PATTERN = /^(?:-{2,} ?(?:Forwarded message|转发的邮件|轉寄的郵件) ?-{2,}|Begin forwarded message:)$/iu;
+/** A reply header line that says who wrote what follows, not where a plain quote starts. */
+const WROTE_LINE_PATTERN = /(?:wrote:|写道[:：]|寫道[:：]|님이 작성:|のメール:)$/iu;
 
-/** Text in brackets: an English translation may keep names, a company or an address there in their own script. */
-const BRACKETED_PATTERN = /\([^()\n]{0,200}\)|（[^（）\n]{0,200}）|\[[^[\]\n]{0,200}\]|【[^【】\n]{0,200}】/gu;
+/**
+ * The new part of a message (see newMessagePart), whether a forward marker
+ * comes before the quoted thread, and whether that thread is a plain quote:
+ * "> " lines, a From:/Sent: block or an "Original Message" rule.
+ */
+function splitReply(text: string): { part: string; forwarded: boolean; plainQuote: boolean } {
+  const lines = text.slice(0, SCRIPT_SCAN_LENGTH).split("\n").map((line) => line.trim());
+  let forwarded = false;
+  let plainQuote = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.startsWith(">") || line.startsWith("＞")) {
+      plainQuote = true;
+      break;
+    }
+    if (FORWARD_LINE_PATTERN.test(line)) {
+      forwarded = true;
+      break;
+    }
+    if (isQuoteHeader(lines, index)) {
+      const next = lines.slice(index + 1).find((later) => later.length > 0) ?? "";
+      plainQuote = !WROTE_LINE_PATTERN.test(line) || next.startsWith(">") || next.startsWith("＞");
+      break;
+    }
+  }
+  return { part: newMessagePart(text), forwarded, plainQuote };
+}
+
+/**
+ * Text in brackets: an English translation may keep names, a company or an
+ * address there in their own script. Only short spans: a sentence left
+ * untranslated in brackets still counts.
+ */
+const BRACKETED_PATTERN = /\([^()\n]{0,30}\)|（[^（）\n]{0,30}）|\[[^[\]\n]{0,30}\]|【[^【】\n]{0,30}】/gu;
 
 /**
  * Whether a text is written mostly outside the Latin script (Chinese,
@@ -1812,7 +1854,7 @@ export function EmailReplyPayload({
   const body = firstNonEmptyString(payload.body) ?? "";
   const intent = firstNonEmptyString(payload.intent);
   const reasoning = brief.reasoning === intent ? null : brief.reasoning;
-  const bodyTranslation = approvalTranslationFor(approvalDraftTranslation(payload), body);
+  const bodyTranslation = approvalTranslationFor(approvalDraftTranslation(payload), body, "draft");
 
   return (
     <div className="mt-4 space-y-3.5 text-sm">
