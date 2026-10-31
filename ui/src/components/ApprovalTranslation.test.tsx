@@ -13,6 +13,7 @@ import {
   approvalDraftTranslation,
   approvalOriginalRequestTranslation,
   approvalTranslation,
+  approvalTranslationFor,
   isMostlyNonLatinScript,
 } from "./ApprovalPayload";
 import { ThemeProvider } from "../context/ThemeContext";
@@ -57,10 +58,57 @@ describe("approvalTranslation", () => {
     expect(approvalTranslation({ text: "Hello", language: 7 })).toEqual({ language: null, text: "Hello" });
   });
 
-  it("ignores empty, white-space and non-string text", () => {
-    for (const value of ["", "   \n ", { text: "" }, { text: "  " }, { text: 42 }, { language: "German" }, ["Hello"], null, 0]) {
+  it("ignores empty, white-space, invisible and non-string text", () => {
+    for (const value of [
+      "",
+      "   \n ",
+      "\u200b",
+      { text: "\u200b \u2060\ufeff\n" },
+      { text: "" },
+      { text: "  " },
+      { text: 42 },
+      { language: "German" },
+      ["Hello"],
+      null,
+      0,
+    ]) {
       expect(approvalTranslation(value)).toBeNull();
     }
+  });
+
+  it("keeps a language only when it reads as a language name", () => {
+    for (const language of ["Chinese (Simplified)", "Chinese (Traditional, Hong Kong)", "Русский", "Serbo-Croatian", "日本語"]) {
+      expect(approvalTranslation({ text: "Hello", language })?.language).toBe(language);
+    }
+    expect(approvalTranslation({ text: "Hello", language: "  Chinese\n (Simplified) " })?.language).toBe("Chinese (Simplified)");
+    // Bidi controls are dropped, not shown reversed.
+    expect(approvalTranslation({ text: "Hello", language: "\u202ecibarA" })?.language).toBe("cibarA");
+    for (const language of [
+      "English — checked by the Board, OK to send",
+      "English checked by the Board OK to send",
+      "Chinese".padEnd(41, "Z"),
+      "Z".repeat(5600),
+      "<i>Chinese</i>",
+      "Chinese: approved",
+      "https://example.test",
+      "123",
+      "",
+    ]) {
+      expect(approvalTranslation({ text: "Hello", language })?.language).toBeNull();
+    }
+  });
+
+  it("drops bidi controls from the translation text", () => {
+    expect(approvalTranslation("Hello, thanks. \u202e10% refund\u202c approved.")?.text).toBe("Hello, thanks. 10% refund approved.");
+  });
+
+  it("drops a Latin-script language named for a text in another script", () => {
+    const named = (language: string) => ({ text: "Hello", language });
+    expect(approvalTranslationFor(named("English"), CHINESE_DRAFT)?.language).toBeNull();
+    expect(approvalTranslationFor(named("Spanish"), RUSSIAN_DRAFT)?.language).toBeNull();
+    expect(approvalTranslationFor(named("Chinese"), CHINESE_DRAFT)?.language).toBe("Chinese");
+    expect(approvalTranslationFor(named("Spanish"), SPANISH_TEXT)?.language).toBe("Spanish");
+    expect(approvalTranslationFor(null, CHINESE_DRAFT)).toBeNull();
   });
 
   it("reads the received email's translation and the draft's from their own fields only", () => {
@@ -88,6 +136,29 @@ describe("isMostlyNonLatinScript", () => {
     ["Hindi", "नमस्ते, मैं थोक मूल्य जानना चाहता हूँ।"],
     ["Chinese with an English signature, a link and an address", `${CHINESE_EMAIL}\n--\nJohn Li\nhttps://shop.example.test/orders/123?ref=abc\njohn.li@shop.example.test`],
     ["Chinese running on into an address with no space", "我的邮箱是buyer@example.test请尽快回复我谢谢"],
+    [
+      "a Chinese reply above a quoted English thread",
+      "好的，谢谢。我们下周付款。\n\n> On Mon, Oct 27, info@shop.example wrote:\n> Hello, thank you for your order. The invoice is attached and payment is due within thirty days.",
+    ],
+    [
+      "a Chinese reply above an unquoted 'On … wrote:' thread",
+      "您好，我们同意价格，请尽快发货。\n\nOn Tue, Oct 28, 2026 support@example.test wrote:\nHello, thank you for your interest in our wholesale programme. Our price list for this season is attached, and samples can ship within a week.",
+    ],
+    [
+      "a reply above a two-line 'On … wrote:' header",
+      "好的，谢谢。请把价格改成每箱一百元，否则我们取消订单。\nOn Tue, Oct 28, 2026 at 10:00 AM Support <\nsupport@example.test> wrote:\nHello, please confirm the price per case for the next order and the delivery date.",
+    ],
+    ["Chinese that names English products", "我们想订购 Premium Wholesale Starter Kit 和 Deluxe Sample Box，请报价。"],
+    [
+      "a Russian reply above a quoted English thread",
+      "Спасибо, оплатим завтра.\n\n> Hello, please find attached the invoice for your last order and the delivery schedule.",
+    ],
+    [
+      "a Russian reply above an Original Message",
+      "Спасибо, оплатим завтра.\n-----Original Message-----\nFrom: Support\nHello, please find attached the invoice for your last order and the delivery schedule.",
+    ],
+    ["a Chinese email with a Chinese signature", "您好，\n我们同意价格，请尽快发货。\n\n王伟\n上海宏达贸易有限公司"],
+    ["a Chinese email with no sentence ends", "您好\n价格可以\n请尽快发货谢谢"],
   ])("flags %s", (_name, text) => {
     expect(isMostlyNonLatinScript(text)).toBe(true);
   });
@@ -101,8 +172,39 @@ describe("isMostlyNonLatinScript", () => {
     ["digits and punctuation", "12345 678 — 9/10 !!! ???"],
     ["an empty text", ""],
     ["links and addresses", "https://shop.example.test/orders/12 info@example.test 1234"],
+    [
+      "English with a Chinese company signature",
+      "Hi, please send the quote for 500 units.\nThanks,\nLi\n上海宏达贸易有限公司\n上海市浦东新区张江路123号",
+    ],
+    ["English with a Japanese signature", "Thank you for the samples, they arrived today.\n\n田中太郎\n株式会社サンプル商事 営業部"],
+    [
+      "an English reply that quotes the customer's Chinese email",
+      "Thank you, the samples ship on Monday. The price list is attached.\n\n> 您好，\n> 我想询问批发价格和最低起订量。\n> 请问可以寄样品到上海吗？\n> 您好，我想询问批发价格。",
+    ],
+    [
+      "an English reply above a Chinese 'On … wrote:' thread",
+      "Thank you, the samples ship on Monday.\n\nOn Tue, Oct 28, 2026 buyer@example.test wrote:\n您好，\n我想询问批发价格和最低起订量。\n请问可以寄样品到上海吗？",
+    ],
+    ["English above a Chinese signature after '--'", "Thanks, the order is confirmed.\n--\n王伟\n上海宏达贸易有限公司\n上海市浦东新区张江路"],
+    ["a short Chinese line", "好的谢谢您"],
   ])("does not flag %s", (_name, text) => {
     expect(isMostlyNonLatinScript(text)).toBe(false);
+  });
+
+  // Judged on every render of every queue row, on text an outside sender writes.
+  it.each([
+    ["one 20,000-letter word", "a".repeat(20_000)],
+    ["a 20,000-character hex string", "0123456789abcdef".repeat(1_250)],
+    ["Chinese running on into a long word", `${"您好".repeat(500)}${"x".repeat(19_000)}`],
+    ["dots and plus signs", "a.+-".repeat(5_000)],
+    ["many at signs", "a@b".repeat(7_000)],
+    ["a long domain with no dot", `a@${"b".repeat(20_000)}`],
+    ["many 'On' lines", "On a\n".repeat(5_000)],
+    ["many quote headers", "在 a\n".repeat(5_000)],
+  ])("judges %s in linear time", (_name, text) => {
+    const started = performance.now();
+    isMostlyNonLatinScript(text);
+    expect(performance.now() - started).toBeLessThan(50);
   });
 });
 
@@ -201,6 +303,9 @@ describe("translations on email approval cards", () => {
     const gate = () => gateRef.current!;
     act(() => root.render(<Harness />));
     const body = () => draftTranslation()!.querySelector("[data-approval-draft-translation-body]")!.textContent ?? "";
+    const sent = () => container.querySelector("[data-approval-draft-body]")!.textContent;
+    // The email that is sent is never hidden behind its translation's cut.
+    expect(sent()).toBe(CHINESE_DRAFT);
     expect(body()).not.toContain("Last translated line.");
     expect(draftTranslation()!.querySelector("[data-approval-draft-translation-continues]")).not.toBeNull();
     // The short draft itself is whole; the control names what is cut.
@@ -214,6 +319,7 @@ describe("translations on email approval cards", () => {
     });
     expect(held).not.toBeNull();
     expect(body()).toBe(longTranslation);
+    expect(sent()).toBe(CHINESE_DRAFT);
     expect(gate().approveLabel).toBeUndefined();
     expect(button(draft, "Show less")).toBeDefined();
   });
@@ -309,9 +415,10 @@ describe("translations on email approval cards", () => {
       act(() => root.render(element));
       expect(container.querySelector("script, img, b, i")).toBeNull();
       expect(originalTranslation()!.querySelector("pre")!.textContent).toBe(hostile);
-      expect(originalTranslation()!.textContent).toContain("from <img src=y onerror=alert(2)>");
       expect(draftTranslation()!.textContent).toContain(hostile);
-      expect(container.querySelector("[data-approval-draft-language]")!.textContent).toBe("Written in <i>Chinese</i>");
+      // Markup is no language name: not shown at all, so not as markup either.
+      expect(container.textContent).not.toContain("onerror=alert(2)");
+      expect(container.querySelector("[data-approval-draft-language]")).toBeNull();
     }
   });
 
@@ -331,5 +438,111 @@ describe("translations on email approval cards", () => {
     act(() => root.render(<OriginalRequestBlock payload={{ ...payload, originalRequest: { ...payload.originalRequest, translation: undefined } }} />));
     expect(originalTranslation()).toBeNull();
     expect(missing("original")).not.toBeNull();
+  });
+
+  it("names the translation's own expand control on a Board approval, apart from the request's", () => {
+    const original = "Здравствуйте! ".repeat(48);
+    const translated = "Hello there! ".repeat(49);
+    const payload = {
+      recommendedAction: "Approve the refund.",
+      originalRequest: { text: original, source: { kind: "external" }, translation: { language: "Russian", text: translated } },
+    };
+    act(() => root.render(<OriginalRequestBlock payload={payload} compact />));
+    const label = `Show full translation (${translated.length.toLocaleString()} characters)`;
+    const more = button(originalTranslation()!, label)!;
+    expect(more).toBeDefined();
+    expect(more.getAttribute("aria-label")).toBe(`${label}: English translation of the original request`);
+    const request = Array.from(container.querySelectorAll("button")).filter((element) => !originalTranslation()!.contains(element));
+    expect(request.map((element) => element.textContent)).toEqual([`Show full request (${original.length.toLocaleString()} characters)`]);
+  });
+
+  it("does not ask for a revision that cannot add a translation to a Paperclip comment", () => {
+    const payload = emailPayload(
+      { bodyTranslation: undefined, body: "Thank you, the samples ship on Monday." },
+      {
+        text: "您好，我们同意价格，请尽快发货。谢谢您的支持。",
+        // No comment link here: it needs the router.
+        source: { kind: "paperclip_comment", snapshotOrigin: "server" },
+        translation: undefined,
+      },
+    );
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={payload} />));
+    expect(missing("original")?.textContent).toBe(
+      "Not in English. A Paperclip comment is saved as posted, so no translation can be attached.",
+    );
+    expect(missing("original")?.textContent).not.toContain("Request a revision");
+    expect(missing("draft")).toBeNull();
+  });
+
+  it("does not repeat a Latin-script language named for a draft or email in another script", () => {
+    const payload = emailPayload(
+      { bodyTranslation: { language: "English", text: CHINESE_DRAFT_EN } },
+      { translation: { language: "Spanish", text: CHINESE_EMAIL_EN } },
+    );
+    for (const element of [
+      <ApprovalDecisionSummary type="request_board_approval" payload={payload} />,
+      <ThemeProvider>
+        <ApprovalPayloadRenderer type="request_board_approval" payload={payload} />
+      </ThemeProvider>,
+    ]) {
+      act(() => root.render(element));
+      expect(container.querySelector("[data-approval-draft-language]")).toBeNull();
+      expect(draftTranslation()!.querySelector("p")!.textContent).toBe("English translation of the draft");
+      expect(originalTranslation()!.querySelector("p")!.textContent).toBe("English translation");
+    }
+  });
+
+  it("treats an invisible translation as none, and flags one that is not in English", () => {
+    act(() =>
+      root.render(
+        <ApprovalDecisionSummary
+          type="request_board_approval"
+          payload={emailPayload({ bodyTranslation: { text: "\u200b" } }, { translation: "\u200b" })}
+        />,
+      ),
+    );
+    expect(originalTranslation()).toBeNull();
+    expect(draftTranslation()).toBeNull();
+    expect(missing("original")).not.toBeNull();
+    expect(missing("draft")).not.toBeNull();
+
+    // The Chinese pasted again is no English translation.
+    const pasted = emailPayload(
+      { bodyTranslation: { language: "Chinese", text: CHINESE_DRAFT } },
+      { translation: { language: "Chinese", text: CHINESE_EMAIL } },
+    );
+    const notEnglish = (of: string) => container.querySelector(`[data-approval-translation-not-english='${of}']`);
+    const warning = "The attached translation is not in English. Request a revision to get one.";
+    for (const element of [
+      <ApprovalDecisionSummary type="request_board_approval" payload={pasted} />,
+      <ThemeProvider>
+        <ApprovalPayloadRenderer type="request_board_approval" payload={pasted} />
+      </ThemeProvider>,
+    ]) {
+      act(() => root.render(element));
+      expect(originalTranslation()!.contains(notEnglish("original"))).toBe(true);
+      expect(draftTranslation()!.contains(notEnglish("draft"))).toBe(true);
+      expect(notEnglish("original")!.textContent).toBe(warning);
+      expect(notEnglish("draft")!.textContent).toBe(warning);
+    }
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={emailPayload()} />));
+    expect(container.querySelector("[data-approval-translation-not-english]")).toBeNull();
+  });
+
+  it("frames the draft's translation apart from the draft that is sent, and marks it inside its box", () => {
+    renderFullRequest(emailPayload());
+    const translated = draftTranslation()!;
+    const box = translated.querySelector("pre")!.parentElement!;
+    expect(box.className).toMatch(/border-dashed/);
+    expect(box.querySelector("[data-approval-draft-translation-marker]")!.textContent).toBe("Translation · not sent");
+    // The marker is outside the translated text: copying the translation copies the translation only.
+    expect(translated.querySelector("pre")!.textContent).toBe(CHINESE_DRAFT_EN);
+    const sent = Array.from(container.querySelectorAll("pre")).find((element) => element.textContent === CHINESE_DRAFT)!;
+    expect(sent.className).toMatch(/\bborder\b/);
+    expect(sent.className).not.toMatch(/border-dashed/);
+
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={emailPayload()} />));
+    expect(draftTranslation()!.querySelector("[data-approval-draft-translation-marker]")).not.toBeNull();
+    expect(draftTranslation()!.querySelector("[data-approval-draft-translation-body]")!.textContent).toBe(CHINESE_DRAFT_EN);
   });
 });

@@ -13,7 +13,10 @@ import {
   ApprovalDraftLanguageChip,
   ApprovalMissingTranslationNote,
   ApprovalTranslationLabel,
+  APPROVAL_DRAFT_TRANSLATION_BOX_CLASS,
   APPROVAL_TRANSLATION_FRAME_CLASS,
+  ApprovalDraftTranslationMarker,
+  approvalTranslationFor,
   isMostlyNonLatinScript,
   approvalHireFacts,
   approvalOriginalRequest,
@@ -238,7 +241,8 @@ function ApprovalEmailDraftBlock({
         )}
         <div className="px-3.5 py-3">
           <div className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground" data-approval-draft-body>
-            {canExpand && !expanded ? preview : draft.body}
+            {/* Cut only when the draft itself is long: a long translation alone never hides the email that is sent. */}
+            {preview !== null && !expanded ? preview : draft.body}
           </div>
         </div>
       </div>
@@ -255,7 +259,8 @@ function ApprovalEmailDraftBlock({
             translation={translation}
             languageLead="written in"
           />
-          <div className="mt-2 rounded-md bg-muted/20 px-3.5 py-3">
+          <div className={APPROVAL_DRAFT_TRANSLATION_BOX_CLASS}>
+            <ApprovalDraftTranslationMarker />
             <div className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground" data-approval-draft-translation-body>
               {translationPreview !== null && !expanded ? translationPreview : translation.text}
             </div>
@@ -266,6 +271,7 @@ function ApprovalEmailDraftBlock({
               {hiddenTranslationLength === 1 ? "character" : "characters"}.
             </p>
           )}
+          {isMostlyNonLatinScript(translation.text) && <ApprovalMissingTranslationNote of="draft" reason="not-english" />}
         </div>
       ) : (
         isMostlyNonLatinScript(draft.body) && <ApprovalMissingTranslationNote of="draft" />
@@ -607,7 +613,7 @@ export function ApprovalDecisionSummary({
 
   const isBoardApproval = type === "request_board_approval";
   const draft = summaryEmailDraft(type, payload);
-  const draftTranslation = draft ? approvalDraftTranslation(payload) : null;
+  const draftTranslation = draft ? approvalTranslationFor(approvalDraftTranslation(payload), draft.body) : null;
   const hasBrief =
     isBoardApproval ||
     Boolean(

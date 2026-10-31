@@ -137,17 +137,43 @@ export function approvalOriginalRequest(
  */
 export type ApprovalTranslation = { text: string; language: string | null };
 
+/** Bidi embedding, override and isolate controls: they can make text read in another order than it is written. */
+const BIDI_CONTROL_PATTERN = /[‪-‮⁦-⁩]/g;
+/** Invisible format characters (zero-width spaces, joiners, bidi controls): text made only of them shows nothing. */
+const FORMAT_CHARACTER_PATTERN = /\p{Cf}/gu;
+/** A language name: letters in any script, with spaces, parentheses, hyphens and commas ("Chinese (Traditional, Hong Kong)"). */
+const LANGUAGE_NAME_PATTERN = /^\p{L}[\p{L}\p{M} (),-]*$/u;
+const LANGUAGE_NAME_MAX_LENGTH = 40;
+const LANGUAGE_NAME_MAX_WORDS = 4;
+
+/**
+ * The agent's language name, kept only when it reads as one: it is shown
+ * beside the interface's own labels, so a sentence ("English, checked by the
+ * Board") must not pass for one.
+ */
+function approvalTranslationLanguage(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const name = value.replace(FORMAT_CHARACTER_PATTERN, "").replace(/\s+/g, " ").trim();
+  if (!name || name.length > LANGUAGE_NAME_MAX_LENGTH || name.split(" ").length > LANGUAGE_NAME_MAX_WORDS) return null;
+  return LANGUAGE_NAME_PATTERN.test(name) ? name : null;
+}
+
 /**
  * Reads one translation field: `{ text, language }`, or the text alone (the
- * language is then unknown). Text that is empty or only white space is no
- * translation. The text is kept as written, line breaks included.
+ * language is then unknown). Text that is empty, only white space or only
+ * invisible characters is no translation. The text is kept as written, line
+ * breaks included, without bidi controls: a translation into English needs none.
  */
 export function approvalTranslation(value: unknown): ApprovalTranslation | null {
-  if (typeof value === "string") return value.trim() ? { text: value, language: null } : null;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (typeof record.text !== "string" || !record.text.trim()) return null;
-  return { text: record.text, language: firstNonEmptyString(record.language) };
+  const record =
+    typeof value === "string"
+      ? { text: value }
+      : value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : null;
+  if (!record || typeof record.text !== "string") return null;
+  if (!record.text.replace(FORMAT_CHARACTER_PATTERN, "").trim()) return null;
+  return { text: record.text.replace(BIDI_CONTROL_PATTERN, ""), language: approvalTranslationLanguage(record.language) };
 }
 
 /** The English translation of the received email (`originalRequest.translation`). */
@@ -164,6 +190,26 @@ export function approvalDraftTranslation(payload?: Record<string, unknown> | nul
   return approvalTranslation(payload?.bodyTranslation);
 }
 
+/** Languages written in Latin letters: named for a text in another script, the name is wrong. */
+const LATIN_SCRIPT_LANGUAGE_PATTERN =
+  /^(?:english|spanish|french|german|portuguese|italian|dutch|polish|turkish|vietnamese|indonesian|malay|filipino|tagalog|swedish|norwegian|danish|finnish|czech|romanian|hungarian)\b/i;
+
+/**
+ * The translation as shown under `source`, the text it translates: a language
+ * name that contradicts the text's script ("English" for a Chinese draft) is
+ * dropped, so the interface never repeats it.
+ */
+export function approvalTranslationFor(
+  translation: ApprovalTranslation | null,
+  source: string,
+): ApprovalTranslation | null {
+  if (!translation?.language) return translation;
+  if (LATIN_SCRIPT_LANGUAGE_PATTERN.test(translation.language) && isMostlyNonLatinScript(source)) {
+    return { ...translation, language: null };
+  }
+  return translation;
+}
+
 /** Letters a text needs before its script is judged: a greeting or a name alone says nothing. */
 const SCRIPT_MIN_LETTERS = 8;
 /** The share of letters outside the Latin script above which a text is taken as not English. */
@@ -173,26 +219,71 @@ const SCRIPT_SAMPLE_LENGTH = 20_000;
 const LETTER_PATTERN = /\p{L}/gu;
 /** A letter that is not a Latin one. */
 const NON_LATIN_LETTER_PATTERN = /(?=\p{L})\P{Script=Latin}/gu;
-/** A link or an email address, in ASCII only: text in another script often runs on with no space after one. */
-const ADDRESS_PATTERN = /(?:https?:\/\/|www\.)[!-~]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/giu;
+/** Scripts in which one character carries about a word: each counts as this many Latin letters. */
+const WORD_SCRIPT_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
+const WORD_SCRIPT_WEIGHT = 3;
+/**
+ * A link or an email address, in ASCII only: text in another script often runs on with no space after one.
+ * Linear on any input: an address may only start where a run of address characters starts, and every part is bounded.
+ */
+const ADDRESS_PATTERN =
+  /(?:https?:\/\/|www\.)[!-~]+|(?<![\w.+-])[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}/giu;
+/** A line ending a sentence: a closing line of a message is kept as content, a short line without one may be a signature. */
+const SENTENCE_END_PATTERN = /[.!?。！？…]$/u;
+const SIGNATURE_LINE_MAX_LENGTH = 40;
+
+/** Where the quoted thread under a reply starts: "On … wrote:" (one or two lines), "-----Original Message-----", "在 … 写道：". */
+function isQuoteHeader(line: string, next: string): boolean {
+  if (/^-{2,} ?Original Message ?-{2,}$/i.test(line) || /^在.*写道[:：]$/u.test(line)) return true;
+  return /^On\s/i.test(line) && (line.endsWith("wrote:") || (line.length <= 200 && next.endsWith("wrote:")));
+}
+
+/**
+ * The part of a message its writer wrote now: the quoted thread below it
+ * (lines starting with ">", or everything after an "On … wrote:" line or a
+ * "--" signature line) is left out, and so is a closing run of short lines
+ * that end no sentence (a name, a company, an address), unless that leaves
+ * too little to judge.
+ */
+function newMessageText(text: string): string {
+  const lines = text.slice(0, SCRIPT_SAMPLE_LENGTH).split("\n").map((line) => line.trim());
+  const kept: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line === "--" || isQuoteHeader(line, lines[index + 1] ?? "")) break;
+    if (line.startsWith(">") || line.startsWith("＞")) continue;
+    kept.push(line);
+  }
+  let end = kept.length;
+  while (end > 0 && (kept[end - 1] === "" || (kept[end - 1].length <= SIGNATURE_LINE_MAX_LENGTH && !SENTENCE_END_PATTERN.test(kept[end - 1])))) {
+    end -= 1;
+  }
+  const body = kept.slice(0, end).join("\n");
+  const bodyLetters = body.replace(ADDRESS_PATTERN, " ").match(LETTER_PATTERN)?.length ?? 0;
+  return bodyLetters >= SCRIPT_MIN_LETTERS ? body : kept.join("\n");
+}
 
 /**
  * Whether a text is written mostly outside the Latin script (Chinese,
  * Japanese, Korean, Cyrillic, Arabic, Hebrew, Thai, Devanagari, ...), so a
- * board that reads English needs a translation. Links and addresses are left
- * out, and so are digits and punctuation, which are not letters. A language
- * written in Latin letters (Spanish, German) cannot be told from English this
- * way and is never flagged.
+ * board that reads English needs a translation. Only the new part of a
+ * message is read (see newMessageText). Links and addresses are left out, and
+ * so are digits and punctuation, which are not letters; a Chinese, Japanese or
+ * Korean character weighs as much as a short word. A language written in
+ * Latin letters (Spanish, German) cannot be told from English this way and is
+ * never flagged.
  */
 export function isMostlyNonLatinScript(text: string): boolean {
-  const sample = text.slice(0, SCRIPT_SAMPLE_LENGTH).replace(ADDRESS_PATTERN, " ");
+  const sample = newMessageText(text).replace(ADDRESS_PATTERN, " ");
   const letters = sample.match(LETTER_PATTERN)?.length ?? 0;
-  const nonLatin = sample.match(NON_LATIN_LETTER_PATTERN)?.length ?? 0;
-  return letters >= SCRIPT_MIN_LETTERS && nonLatin / letters > NON_LATIN_SHARE;
+  if (letters < SCRIPT_MIN_LETTERS) return false;
+  const extra = (sample.match(WORD_SCRIPT_PATTERN)?.length ?? 0) * (WORD_SCRIPT_WEIGHT - 1);
+  const nonLatin = (sample.match(NON_LATIN_LETTER_PATTERN)?.length ?? 0) + extra;
+  return nonLatin / (letters + extra) > NON_LATIN_SHARE;
 }
 
 const translationLabelClass =
-  "text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground";
+  "break-words text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground";
 
 /** What the board must keep in mind about any translation it reads on a request. */
 export const APPROVAL_TRANSLATION_NOTE =
@@ -225,12 +316,13 @@ export function ApprovalTranslationLabel({
   );
 }
 
-/** The language a draft is written in, beside its label. */
+/** The language a draft is written in, as the requesting agent named it, beside its label. */
 export function ApprovalDraftLanguageChip({ language }: { language: string | null }) {
   if (!language) return null;
   return (
     <span
-      className="min-w-0 break-words rounded bg-muted px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground"
+      className="min-w-0 break-words rounded bg-muted px-1.5 py-0.5 text-(length:--text-micro) font-medium text-foreground/80"
+      title="Language named by the requesting agent"
       data-approval-draft-language=""
     >
       <span className="sr-only">Written in </span>
@@ -239,20 +331,57 @@ export function ApprovalDraftLanguageChip({ language }: { language: string | nul
   );
 }
 
-/** Shown under a received email or a draft that is not in English and carries no translation. */
-export function ApprovalMissingTranslationNote({ of }: { of: "original" | "draft" }) {
+const MISSING_TRANSLATION_TEXT = {
+  missing: "Not in English and no translation attached. Request a revision to get one.",
+  // The server saves a Paperclip comment as posted and keeps nothing else with it, so a revision cannot add one.
+  comment: "Not in English. A Paperclip comment is saved as posted, so no translation can be attached.",
+  "not-english": "The attached translation is not in English. Request a revision to get one.",
+} as const;
+
+/**
+ * Shown under a received email or a draft that is not in English and carries
+ * no translation, or under a translation that is not in English itself.
+ */
+export function ApprovalMissingTranslationNote({
+  of,
+  reason = "missing",
+}: {
+  of: "original" | "draft";
+  reason?: keyof typeof MISSING_TRANSLATION_TEXT;
+}) {
   return (
     <p
       className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-700 dark:text-amber-300"
-      data-approval-translation-missing={of}
+      {...(reason === "not-english"
+        ? { "data-approval-translation-not-english": of }
+        : { "data-approval-translation-missing": of })}
     >
-      Not in English and no translation attached. Request a revision to get one.
+      {MISSING_TRANSLATION_TEXT[reason]}
     </p>
   );
 }
 
 /** The frame of a translation: a rule on its left, so it reads as part of the block above it and not as a block of its own. */
 export const APPROVAL_TRANSLATION_FRAME_CLASS = "mt-3 min-w-0 scroll-mt-20 border-l-2 border-border pl-3";
+
+/**
+ * The box of a draft's translation: dashed, unlike the solid frame of the
+ * draft that is sent, and marked inside so it says what it is when its label
+ * has scrolled away.
+ */
+export const APPROVAL_DRAFT_TRANSLATION_BOX_CLASS =
+  "mt-2 rounded-md border border-dashed border-muted-foreground/40 bg-muted/20 px-3.5 py-3";
+
+export function ApprovalDraftTranslationMarker() {
+  return (
+    <p
+      className="mb-1 text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground"
+      data-approval-draft-translation-marker=""
+    >
+      Translation · not sent
+    </p>
+  );
+}
 
 /** Resolves an agent id to a display name; null or undefined when it is not known. */
 type OriginalRequestSenderResolver = (agentId: string) => string | null | undefined;
@@ -349,7 +478,7 @@ export function OriginalRequestBlock({
       ? `/issues/${original.source.issueId}#comment-${original.source.commentId}`
       : null;
   const sentAt = originalRequestSentAt(original.source.sentAt);
-  const translation = approvalOriginalRequestTranslation(payload);
+  const translation = approvalTranslationFor(approvalOriginalRequestTranslation(payload), original.text);
   const needsTranslation = !translation && isMostlyNonLatinScript(original.text);
   // What the board needs to know about the text below, not how it is stored.
   const sourceNote =
@@ -418,13 +547,22 @@ export function OriginalRequestBlock({
             measure={compact && isEmail}
             fallbackLong={isEmail ? isLongOriginalEmail(translation.text) : true}
             previewLines={isEmail ? 6 : 4}
-            expandLabel={isEmail ? "Show more" : undefined}
+            // Never the request's own wording: the two buttons must not read alike.
+            expandLabel={
+              isEmail ? "Show more" : `Show full translation (${translation.text.length.toLocaleString()} characters)`
+            }
             subject={`English translation of the ${sourceLabel.toLowerCase()}`}
             boxClassName={isEmail ? "mt-2 rounded-md border border-dashed border-muted-foreground/30 bg-muted/20 p-3" : undefined}
           />
+          {isMostlyNonLatinScript(translation.text) && <ApprovalMissingTranslationNote of="original" reason="not-english" />}
         </div>
       ) : (
-        needsTranslation && <ApprovalMissingTranslationNote of="original" />
+        needsTranslation && (
+          <ApprovalMissingTranslationNote
+            of="original"
+            reason={original.source.kind === "paperclip_comment" ? "comment" : "missing"}
+          />
+        )
       )}
     </>
   );
@@ -1221,7 +1359,7 @@ export function EmailReplyPayload({
   const body = firstNonEmptyString(payload.body) ?? "";
   const intent = firstNonEmptyString(payload.intent);
   const reasoning = brief.reasoning === intent ? null : brief.reasoning;
-  const bodyTranslation = approvalDraftTranslation(payload);
+  const bodyTranslation = approvalTranslationFor(approvalDraftTranslation(payload), body);
 
   return (
     <div className="mt-4 space-y-3.5 text-sm">
@@ -1280,7 +1418,10 @@ export function EmailReplyPayload({
           </p>
           <ApprovalDraftLanguageChip language={bodyTranslation?.language ?? null} />
         </div>
-        <pre className="whitespace-pre-wrap wrap-anywhere rounded-md bg-muted/40 p-3 font-sans text-sm leading-6 text-foreground">
+        {/* The text that is sent sits in a solid frame; its translation below in a dashed one. */}
+        <pre
+          className="whitespace-pre-wrap wrap-anywhere rounded-md border border-border bg-muted/40 p-3 font-sans text-sm leading-6 text-foreground"
+        >
           {body}
         </pre>
         {/* Never sent: the executor sends the draft above and nothing else. */}
@@ -1291,9 +1432,18 @@ export function EmailReplyPayload({
               translation={bodyTranslation}
               languageLead="written in"
             />
-            <pre className="mt-2 whitespace-pre-wrap wrap-anywhere rounded-md bg-muted/20 p-3 font-sans text-sm leading-6 text-foreground">
-              {bodyTranslation.text}
-            </pre>
+            <div className={APPROVAL_DRAFT_TRANSLATION_BOX_CLASS}>
+              <ApprovalDraftTranslationMarker />
+              <pre
+                className="whitespace-pre-wrap wrap-anywhere font-sans text-sm leading-6 text-foreground"
+                data-approval-draft-translation-body=""
+              >
+                {bodyTranslation.text}
+              </pre>
+            </div>
+            {isMostlyNonLatinScript(bodyTranslation.text) && (
+              <ApprovalMissingTranslationNote of="draft" reason="not-english" />
+            )}
           </div>
         ) : (
           isMostlyNonLatinScript(body) && <ApprovalMissingTranslationNote of="draft" />
