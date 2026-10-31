@@ -547,6 +547,12 @@ type ScriptReading = {
   latinPart: boolean;
   /** The weighted letters of the part read as not Latin (the new part first), or of the whole text. */
   weightedLetters: number;
+  /**
+   * The new part or the whole text is mostly not Latin, without the passage
+   * rule: what an English translation is judged by, since one may keep names
+   * and an address in their own script.
+   */
+  mostlyNonLatin: boolean;
 };
 const SCRIPT_CACHE_SIZE = 256;
 const scriptCache = new Map<string, ScriptReading>();
@@ -566,12 +572,15 @@ function readScript(text: string): ScriptReading {
   const part = newMessagePart(text);
   const fresh = part.length === text.length ? whole : weigh(part);
   const [wholeScript, freshScript] = [judge(whole), judge(fresh)];
-  const nonLatin = freshScript === "non-latin" || wholeScript === "non-latin" || whole.nonLatin >= NON_LATIN_PASSAGE;
+  const mostlyNonLatin = freshScript === "non-latin" || wholeScript === "non-latin";
+  const nonLatin = mostlyNonLatin || whole.nonLatin >= NON_LATIN_PASSAGE;
   const latinPart = freshScript === "latin" || wholeScript === "latin";
   const reading: ScriptReading = {
     script: nonLatin ? "non-latin" : latinPart ? "latin" : null,
     latinPart,
-    weightedLetters: freshScript === "non-latin" ? fresh.letters : whole.letters,
+    // A passage under English terms or a footer: its translation covers the passage, not the English.
+    weightedLetters: freshScript === "non-latin" ? fresh.letters : wholeScript === "non-latin" ? whole.letters : whole.nonLatin,
+    mostlyNonLatin,
   };
   if (scriptCache.size >= SCRIPT_CACHE_SIZE) scriptCache.clear();
   scriptCache.set(text, reading);
@@ -590,7 +599,9 @@ function languageFitsText(language: LanguageEntry, text: string): boolean {
   const reading = readScript(text);
   if (!language.script || !reading.script) return true;
   if (language.script === "Latn") return reading.latinPart;
-  return namedScriptIsIn(language.script, text);
+  // An English reply above the customer's quoted Chinese email is not Chinese: judge the new part when it says enough.
+  const part = newMessagePart(text);
+  return namedScriptIsIn(language.script, weigh(part).letters >= SCRIPT_MIN_LETTERS ? part : text);
 }
 
 /**
@@ -607,6 +618,11 @@ function languageFitsText(language: LanguageEntry, text: string): boolean {
  */
 export function isMostlyNonLatinScript(text: string): boolean {
   return readScript(text).script === "non-latin";
+}
+
+/** Whether an English translation is in fact not in English: names and an address kept in their own script do not count. */
+function translationIsNotEnglish(text: string): boolean {
+  return readScript(text).mostlyNonLatin;
 }
 
 /** A translation shorter than this share of the English the source would give looks cut. */
@@ -739,7 +755,7 @@ function ApprovalTranslationNotes({
   translation: ApprovalTranslation;
   source: string;
 }) {
-  const reason = isMostlyNonLatinScript(translation.text)
+  const reason = translationIsNotEnglish(translation.text)
     ? "not-english"
     : approvalTranslationLooksShort(translation, source)
       ? "short"

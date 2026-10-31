@@ -231,6 +231,9 @@ describe("approvalTranslation", () => {
     const thread = `On Mon, Oct 27, 2026 at 10:14 AM Sales <info@shop.example> wrote:\n${"> Hello, thank you for your order. The invoice is attached and payment is due in thirty days.\n".repeat(20)}`;
     expect(approvalTranslationFor(named("Russian"), `Здравствуйте, спасибо, согласен с ценой. Отправьте счёт, пожалуйста.\n\n${thread}`)?.language).toBe("Russian");
     expect(approvalTranslationFor(named("Chinese (Simplified)"), `您好，我的订单到现在还没有收到，请尽快退款。\n\n${thread}`)?.language).toBe("Chinese (Simplified)");
+    // An English reply above the customer's quoted Chinese email is not Chinese: a translation of an older Chinese draft is noted.
+    const englishReply = `Hello Mr. Wang,\n\nWe can offer a $50 store credit only. We cannot refund the order.\n\nBest regards,\nSupport\n\nOn Mon, Oct 27, 2026 at 10:14 AM 王伟 <wang@buyer.example> wrote:\n> 您好，我的订单到现在还没有收到，已经过了一个月了。\n> 请立即全额退款五千美元，否则我会投诉到平台。\n> 谢谢。`;
+    expect(approvalTranslationFor(named("Chinese (Simplified)"), englishReply)?.mismatchedLanguage).toBe("Chinese (Simplified)");
     // An English text with a Chinese name in the signature is still not Chinese.
     const english = `${"Hello, we agree to refund the full amount and to cover all return shipping. ".repeat(3)}\n李伟`;
     expect(approvalTranslationFor(named("Chinese (Simplified)"), english)?.mismatchedLanguage).toBe("Chinese (Simplified)");
@@ -453,6 +456,14 @@ describe("approvalTranslationLooksShort", () => {
     const reply = `${longChinese}\n\n> On Mon, Oct 27, info@shop.example wrote:\n> ${"Hello, thank you for your order. ".repeat(40)}`;
     const full = "We have received your order and will ship it within three days. If you have any questions, please contact us at any time. ".repeat(8);
     expect(approvalTranslationLooksShort({ text: full, language: null }, reply)).toBe(false);
+  });
+
+  it("weighs a Chinese passage above an English footer by the passage alone", () => {
+    const footer = "CONFIDENTIALITY NOTICE: This email and any attachments are confidential and intended only for the named recipient. ".repeat(6);
+    const source = `我的订单到现在还没有收到，已经过了一个月了。请立即退款五千美元，否则我会投诉。\n${footer}`;
+    const passage = { text: "My order still has not arrived, and it has been a month. Refund the $5,000 immediately, or I will file a complaint.", language: null };
+    expect(approvalTranslationLooksShort(passage, source)).toBe(false);
+    expect(approvalTranslationLooksShort({ text: "My order has not arrived.", language: null }, source)).toBe(true);
   });
 });
 
@@ -942,6 +953,16 @@ describe("translations on email approval cards", () => {
     expect(notEnglish("draft")!.textContent).toBe(warning);
 
     act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={emailPayload()} />));
+    expect(container.querySelector("[data-approval-translation-not-english]")).toBeNull();
+
+    // An English translation may keep names and an address in their own script.
+    const keptNames = emailPayload({
+      bodyTranslation: {
+        language: "Chinese (Simplified)",
+        text: `Hello Manager Wang (王经理), ${"thank you for your inquiry; our wholesale price list is attached. ".repeat(8)}Shanghai Hongda Trading Co., Ltd. (上海宏达贸易有限公司), 88 Keyuan Road, Zhangjiang, Pudong, Shanghai (上海市浦东新区张江高科技园区科苑路八十八号). Li Wei (李伟)`,
+      },
+    });
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={keptNames} />));
     expect(container.querySelector("[data-approval-translation-not-english]")).toBeNull();
   });
 
