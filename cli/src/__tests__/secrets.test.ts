@@ -139,6 +139,13 @@ describe("secrets CLI helpers", () => {
     delete process.env.AWS_DEFAULT_REGION;
     delete process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID;
     delete process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID;
+    // The doctor reports a warning when static AWS credentials are visible, so
+    // a host or CI runner that has them exported must not leak into these
+    // expectations.
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    delete process.env.AWS_SESSION_TOKEN;
+    delete process.env.AWS_PROFILE;
   });
 
   afterEach(() => {
