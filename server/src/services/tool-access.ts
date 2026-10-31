@@ -1787,12 +1787,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   // The exchange request carries the parent credential. A URL taken from the
   // connection config is tenant-controlled, so it goes through the same
   // private-network and redirect guard as other remote HTTP calls. The
-  // operator-set PAPERCLIP_PAGES_API_URL is trusted as before.
+  // operator-set PAPERCLIP_PAGES_API_URL is trusted for its address, but a
+  // redirect from it is still not followed with the parent credential; a 3xx
+  // fails as a non-OK exchange response.
   function postTokenExchange(target: { url: string; source: string }, init: RequestInit): Promise<Response> {
     if (target.source === "connection_config") {
       return fetchRemoteHttpUrl(target.url, init);
     }
-    return fetch(target.url, init);
+    return fetch(target.url, { ...init, redirect: "manual" });
   }
 
   function pagesNamespaceFromScope(scope: string[]): string | null {
@@ -2795,6 +2797,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const endpoint = await assertRemoteEndpointAllowed(connection.config);
     const response = await fetch(endpoint, {
       method: "POST",
+      // Only the configured endpoint is validated, and the request carries the
+      // connection's credential headers, so a redirect (e.g. to an internal
+      // host) is not followed; it surfaces as a non-OK response below, as for
+      // tools/call in tool-gateway.
+      redirect: "manual",
       // MCP Streamable HTTP requires advertising that we accept both a JSON body
       // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
       headers: mcpHttpRequestHeaders(headers),
