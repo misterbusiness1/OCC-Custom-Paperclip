@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   policy:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
       lockfile_regenerated: ${{ steps.regen_lockfile.outputs.regenerated }}
@@ -71,6 +71,9 @@ jobs:
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 
+      - name: Test local CI runner
+        run: node --test ./scripts/__tests__/run-local-ci.test.mjs
+
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
@@ -105,7 +108,7 @@ jobs:
   typecheck_release_registry:
     name: Typecheck + Release Registry
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 20
 
     steps:
@@ -142,7 +145,7 @@ jobs:
   dependency_audit:
     name: Dependency Audit
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 10
 
     steps:
@@ -176,7 +179,7 @@ jobs:
   typesafe_skill_suggestion:
     name: TypeSafe skill-suggestion standalone
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 15
 
     steps:
@@ -222,7 +225,7 @@ jobs:
   general_tests:
     name: General tests (${{ matrix.group_label }})
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -287,7 +290,7 @@ jobs:
     name: verify
     if: ${{ always() }}
     needs: [typecheck_release_registry, dependency_audit, typesafe_skill_suggestion, general_tests, build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 5
 
     steps:
@@ -308,7 +311,7 @@ jobs:
   build:
     name: Build
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 20
 
     steps:
@@ -342,7 +345,7 @@ jobs:
   verify_serialized_server:
     name: Verify serialized server suites (${{ matrix.shard_label }})
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -392,7 +395,7 @@ jobs:
   canary_dry_run:
     name: Canary Dry Run
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 20
 
     steps:
@@ -447,7 +450,7 @@ jobs:
   e2e_shards:
     name: e2e shard (${{ matrix.shard_label }})
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -539,7 +542,7 @@ jobs:
     name: e2e
     if: ${{ always() }}
     needs: [e2e_shards]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 5
 
     steps:
