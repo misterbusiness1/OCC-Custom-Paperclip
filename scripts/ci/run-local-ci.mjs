@@ -6,25 +6,31 @@
  * without GitHub Actions. Use it when hosted runners are unavailable (billing
  * refusals, outages, queue delays) or to pre-flight a branch.
  *
- * With --report, each gate result is posted to GitHub as a commit status on
- * HEAD (context "local-ci/<gate>", plus an aggregate "local-ci/verify"), so a
- * PR shows the self-hosted results next to (or instead of) Actions checks.
- *
  * Usage:
- *   node scripts/ci/run-local-ci.mjs [--base <ref>] [--gates a,b,...]
- *     [--with-e2e] [--with-canary] [--report] [--keep-going] [--dry-run]
+ *   pnpm ci:local [--base <ref>] [--gates a,b,...] [--with-e2e]
+ *     [--with-canary] [--report] [--keep-going] [--dry-run]
  *
  * Gates (default order): policy, install, typecheck, audit, typesafe-skill,
  * general-tests, serialized-tests, build. Opt-in: e2e (--with-e2e, needs a
- * local Chrome), canary (--with-canary, runs release.sh in a throwaway
- * worktree).
+ * local Chrome), canary (--with-canary, runs release.sh in a throwaway clone
+ * of HEAD).
  *
- * The run is non-destructive to the working tree: a lockfile regenerated for
- * the run (as CI's policy job does) is restored afterwards.
+ * What is tested: the working tree (HEAD plus uncommitted changes; the canary
+ * gate uses HEAD only). Pull request CI tests the merge of the PR with its
+ * base branch instead, so rebase first if the base has moved.
+ *
+ * With --report, results are posted as informational commit statuses on HEAD
+ * ("local-ci/<gate>"). This needs a clean working tree, and the aggregate
+ * "local-ci/verify" is only posted when every default gate ran. Statuses are
+ * self-reported by whoever runs this; they are not an Actions check.
+ *
+ * The run leaves the working tree as it found it: a lockfile regenerated for
+ * the run (as CI's policy job does) is restored afterwards, also on Ctrl-C or
+ * SIGTERM (exit 130/143), and temporary directories are removed.
  */
 
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,7 +48,30 @@ export const DEFAULT_GATES = [
   "build",
 ];
 export const OPTIONAL_GATES = ["e2e", "canary"];
+
+/**
+ * Every pr.yml job, mapped to the local gates that run its commands. Aggregate
+ * jobs that only check other jobs' results map to []. The test suite fails when
+ * pr.yml gains a job or a command that is missing here.
+ */
+export const PR_JOB_GATES = {
+  policy: ["policy", "install"],
+  typecheck_release_registry: ["install", "typecheck"],
+  dependency_audit: ["install", "audit"],
+  typesafe_skill_suggestion: ["install", "typesafe-skill"],
+  general_tests: ["install", "general-tests"],
+  verify: [],
+  build: ["install", "build"],
+  verify_serialized_server: ["install", "serialized-tests"],
+  canary_dry_run: ["canary"],
+  e2e_shards: ["install", "e2e"],
+  e2e: [],
+};
+
 const STATUS_CONTEXT_PREFIX = "local-ci";
+const STATUS_LABEL = "Informational, self-reported by pnpm ci:local: ";
+const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
+const LOCKFILE_QUALIFY = ["pnpm", ["install", "--lockfile-only", "--ignore-scripts", "--no-frozen-lockfile"]];
 
 export function parseArgs(argv) {
   const options = {
@@ -54,10 +83,12 @@ export function parseArgs(argv) {
     keepGoing: false,
     dryRun: false,
   };
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
+  // `pnpm ci:local -- --flag` forwards the literal `--` to the script.
+  const args = argv[0] === "--" ? argv.slice(1) : argv;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
     const next = () => {
-      const value = argv[index + 1];
+      const value = args[index + 1];
       if (value === undefined || value.startsWith("--")) throw new Error(`${arg} requires a value`);
       index += 1;
       return value;
@@ -90,6 +121,11 @@ export function selectGates(options) {
   return selected;
 }
 
+/** The aggregate local-ci/verify status only means something when every default gate ran. */
+export function coversDefaultGates(gates) {
+  return DEFAULT_GATES.every((gate) => gates.includes(gate));
+}
+
 /** Mirrors pr.yml "Block manual lockfile edits". */
 export function lockfileEditViolation(changedPaths, branchName) {
   if (branchName === "chore/refresh-lockfile") return null;
@@ -104,19 +140,100 @@ export function parseGitHubRemote(url) {
   return match ? `${match[1]}/${match[2]}` : null;
 }
 
+/**
+ * Environment for gates that boot Paperclip or its test suites. The server and
+ * `onboard` prefer DATABASE_URL over embedded Postgres, and PAPERCLIP_* points
+ * at instance homes, configs and secrets, so an operator's exported values
+ * could aim tests at a real database or instance. CI runners have none of
+ * them; neither do these gates, apart from what the gate sets itself.
+ */
+export function isolatedEnv(baseEnv, gateEnv = {}) {
+  const env = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (key === "DATABASE_URL" || key === "DATABASE_MIGRATION_URL" || key.startsWith("PAPERCLIP_")) continue;
+    env[key] = value;
+  }
+  return { ...env, ...gateEnv };
+}
+
+// ---------------------------------------------------------------------------
+// Interrupt handling. Children run asynchronously so SIGINT/SIGTERM reach this
+// process while a gate is running; the signal is forwarded to the active
+// child, its gate unwinds through its `finally` blocks, and registered cleanups
+// (lockfile restore, temporary clones) run before exiting with 130/143. A
+// second signal skips the wait for the child and cleans up immediately.
+
+class Interrupted extends Error {
+  constructor(signal) {
+    super(`Interrupted by ${signal}`);
+    this.signal = signal;
+  }
+}
+
+const cleanupTasks = [];
+let interruptedBy = null;
+let activeChild = null;
+
+/** Registers a synchronous cleanup. The returned function runs it at most once. */
+function onCleanup(task) {
+  let done = false;
+  const runOnce = () => {
+    if (done) return;
+    done = true;
+    const index = cleanupTasks.indexOf(runOnce);
+    if (index !== -1) cleanupTasks.splice(index, 1);
+    try {
+      task();
+    } catch (error) {
+      console.error(`[local-ci] cleanup failed: ${error instanceof Error ? error.message : error}`);
+    }
+  };
+  cleanupTasks.push(runOnce);
+  return runOnce;
+}
+
+function handleSignal(signal) {
+  if (interruptedBy) {
+    activeChild?.kill("SIGKILL");
+    while (cleanupTasks.length > 0) cleanupTasks[cleanupTasks.length - 1]();
+    process.exit(SIGNAL_EXIT_CODES[interruptedBy]);
+  }
+  interruptedBy = signal;
+  console.error(`\n[local-ci] ${signal} received: stopping and cleaning up (send it again to force)`);
+  activeChild?.kill(signal);
+}
+
+function childEnv(opts) {
+  const env = opts.isolated ? isolatedEnv(process.env, opts.env) : { ...process.env, ...(opts.env ?? {}) };
+  for (const key of opts.unsetEnv ?? []) delete env[key];
+  return env;
+}
+
 function run(command, args, opts = {}) {
-  const printable = [command, ...args].join(" ");
-  console.log(`\n$ ${printable}`);
-  if (opts.dryRun) return { status: 0 };
-  const result = spawnSync(command, args, {
-    cwd: opts.cwd ?? repoRoot,
-    stdio: opts.capture ? ["ignore", "pipe", "pipe"] : "inherit",
-    encoding: "utf8",
-    env: { ...process.env, ...(opts.env ?? {}) },
-    shell: false,
+  const cwd = opts.cwd ?? repoRoot;
+  console.log(`\n$ ${[command, ...args].join(" ")}${cwd === repoRoot ? "" : `   # in ${cwd}`}`);
+  if (opts.dryRun) return Promise.resolve({ status: 0, signal: null });
+  if (interruptedBy) return Promise.reject(new Interrupted(interruptedBy));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      activeChild = null;
+      fn(value);
+    };
+    const child = spawn(command, args, { cwd, stdio: "inherit", env: childEnv(opts), shell: false });
+    activeChild = child;
+    child.once("error", (error) => settle(reject, error));
+    child.once("close", (status, signal) => {
+      // Let a signal delivered to this process alongside the child (Ctrl-C
+      // reaches the whole process group) be handled before deciding.
+      setImmediate(() => {
+        if (interruptedBy) settle(reject, new Interrupted(interruptedBy));
+        else settle(resolve, { status, signal });
+      });
+    });
   });
-  if (result.error) throw result.error;
-  return result;
 }
 
 function capture(command, args, opts = {}) {
@@ -127,9 +244,9 @@ function capture(command, args, opts = {}) {
   return result.stdout.trim();
 }
 
-function steps(list, opts) {
+async function steps(list, ctx) {
   for (const [command, args, extra] of list) {
-    const result = run(command, args, { ...opts, ...(extra ?? {}) });
+    const result = await run(command, args, { ...ctx, ...(extra ?? {}) });
     if (result.status !== 0) return false;
   }
   return true;
@@ -164,12 +281,113 @@ function gatePolicy(ctx) {
   );
 }
 
-function gateInstall(ctx) {
+async function gateInstall(ctx) {
   // Same as the policy job's "Qualify dependency lockfile": regenerate the
   // lockfile for this checkout, then install frozen against it. The original
-  // lockfile bytes are restored when the run ends.
-  if (!steps([["pnpm", ["install", "--lockfile-only", "--ignore-scripts", "--no-frozen-lockfile"]]], ctx)) return false;
+  // lockfile bytes are restored when the run ends; the canary gate reuses the
+  // qualified one, as pr.yml does with the policy job's artifact.
+  if (!(await steps([LOCKFILE_QUALIFY], ctx))) return false;
+  if (!ctx.dryRun) ctx.qualifiedLockfile = readFileSync(path.join(repoRoot, "pnpm-lock.yaml"));
   return steps([["pnpm", ["install", "--frozen-lockfile"]]], ctx);
+}
+
+async function gateTypesafeSkill(ctx) {
+  const dir = "packages/plugins/plugin-typesafe-skill-suggestion";
+  if (!existsSync(path.join(repoRoot, dir, "package.json"))) {
+    console.log(`${dir} not present; skipping.`);
+    return true;
+  }
+  const ok = await steps(
+    [
+      ["pnpm", ["--dir", dir, "install", "--ignore-workspace", "--frozen-lockfile"]],
+      ["node", ["scripts/link-plugin-dev-sdk.mjs"]],
+      ["pnpm", ["--filter", "@paperclipai/plugin-sdk", "build"]],
+      ["pnpm", ["--ignore-workspace", "--dir", dir, "audit", "--prod", "--audit-level=high"]],
+      ["pnpm", ["--dir", dir, "test"]],
+      ["pnpm", ["--dir", dir, "typecheck"]],
+      ["pnpm", ["--dir", dir, "build"]],
+    ],
+    ctx,
+  );
+  if (!ok || ctx.dryRun) return ok;
+  return ["manifest.js", "worker.js"].every((file) => existsSync(path.join(repoRoot, dir, "dist", file)));
+}
+
+function gateE2e(ctx) {
+  // tests/e2e/playwright.config.ts boots the server in its own temporary
+  // PAPERCLIP_HOME/PAPERCLIP_CONFIG, so no config or HOME is prepared here.
+  // PAPERCLIP_E2E_PORT (default 3199) is passed through so two runs on one
+  // host can use different ports.
+  const env = {
+    PAPERCLIP_E2E_SKIP_LLM: "true",
+    PAPERCLIP_PLAYWRIGHT_CHANNEL: process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL || "chrome",
+    ...(process.env.PAPERCLIP_E2E_PORT ? { PAPERCLIP_E2E_PORT: process.env.PAPERCLIP_E2E_PORT } : {}),
+  };
+  return steps([["pnpm", ["run", "test:e2e"], { isolated: true, env }]], ctx);
+}
+
+async function gateCanary(ctx) {
+  // release.sh insists on a clean tree on a branch named exactly `master`, and
+  // it runs `git fetch --prune --tags` against its remote. Do all of that in a
+  // throwaway clone of HEAD, whose only remote is this checkout, so the
+  // caller's working tree, branches, tags and remote-tracking refs are never
+  // touched. Mirrors pr.yml's canary_dry_run job.
+  const clone = ctx.dryRun
+    ? path.join(os.tmpdir(), "paperclip-local-ci-canary-XXXXXX")
+    : mkdtempSync(path.join(os.tmpdir(), "paperclip-local-ci-canary-"));
+  const removeClone = ctx.dryRun ? () => {} : onCleanup(() => rmSync(clone, { recursive: true, force: true }));
+  try {
+    const inClone = { cwd: clone };
+    const cloned = await steps(
+      [
+        ["git", ["clone", "--quiet", "--shared", "--no-checkout", repoRoot, clone]],
+        ["git", ["checkout", "--quiet", "-B", "master", ctx.headSha], inClone],
+      ],
+      ctx,
+    );
+    if (!cloned) return false;
+
+    // pr.yml stages the policy job's regenerated lockfile into an ephemeral
+    // commit so release.sh sees a clean tree and a lockfile matching the
+    // manifests. Reuse the install gate's lockfile, or qualify one here.
+    if (ctx.qualifiedLockfile) {
+      console.log("\n[local-ci] using the lockfile qualified by the install gate");
+      writeFileSync(path.join(clone, "pnpm-lock.yaml"), ctx.qualifiedLockfile);
+    } else if (!(await steps([[...LOCKFILE_QUALIFY, inClone]], ctx))) {
+      return false;
+    }
+    if (!(await steps([["git", ["add", "pnpm-lock.yaml"], inClone]], ctx))) return false;
+    const staged = await run("git", ["diff", "--cached", "--quiet"], { ...ctx, ...inClone });
+    if (staged.status !== 0 && staged.status !== 1) return false;
+    if (staged.status === 1) {
+      const committed = await steps(
+        [
+          [
+            "git",
+            ["-c", "user.email=ci@paperclip.local", "-c", "user.name=CI", "commit", "--quiet", "--no-verify", "-m", "ci(canary): stage regenerated lockfile"],
+            inClone,
+          ],
+        ],
+        ctx,
+      );
+      if (!committed) return false;
+    }
+
+    // Install from this checkout's pnpm store: when TMPDIR is on another
+    // filesystem, pnpm would otherwise create and fill a second store there.
+    const storeDir = ctx.dryRun ? "<pnpm store path>" : capture("pnpm", ["store", "path"]);
+    return await steps(
+      [
+        ["pnpm", ["install", "--frozen-lockfile", "--store-dir", storeDir], inClone],
+        // The clone's only remote is origin; a remote override from the
+        // caller's shell would not exist there.
+        ["./scripts/release.sh", ["canary", "--skip-verify", "--dry-run"], { ...inClone, unsetEnv: ["RELEASE_REMOTE", "PUBLISH_REMOTE"] }],
+      ],
+      ctx,
+    );
+  } finally {
+    removeClone();
+  }
 }
 
 const GATES = {
@@ -178,81 +396,12 @@ const GATES = {
   typecheck: (ctx) =>
     steps([["pnpm", ["run", "typecheck:build-gaps"]], ["pnpm", ["run", "test:release-registry"]]], ctx),
   audit: (ctx) => steps([["pnpm", ["run", "audit:prod"]]], ctx),
-  "typesafe-skill": (ctx) => {
-    const dir = "packages/plugins/plugin-typesafe-skill-suggestion";
-    if (!existsSync(path.join(repoRoot, dir, "package.json"))) {
-      console.log(`${dir} not present; skipping.`);
-      return true;
-    }
-    const ok = steps(
-      [
-        ["pnpm", ["--dir", dir, "install", "--ignore-workspace", "--frozen-lockfile"]],
-        ["node", ["scripts/link-plugin-dev-sdk.mjs"]],
-        ["pnpm", ["--filter", "@paperclipai/plugin-sdk", "build"]],
-        ["pnpm", ["--ignore-workspace", "--dir", dir, "audit", "--prod", "--audit-level=high"]],
-        ["pnpm", ["--dir", dir, "test"]],
-        ["pnpm", ["--dir", dir, "typecheck"]],
-        ["pnpm", ["--dir", dir, "build"]],
-      ],
-      ctx,
-    );
-    if (!ok || ctx.dryRun) return ok;
-    return ["manifest.js", "worker.js"].every((file) => existsSync(path.join(repoRoot, dir, "dist", file)));
-  },
-  "general-tests": (ctx) => steps([["pnpm", ["test:run:general"]]], ctx),
-  "serialized-tests": (ctx) => steps([["pnpm", ["test:run:serialized"]]], ctx),
+  "typesafe-skill": gateTypesafeSkill,
+  "general-tests": (ctx) => steps([["pnpm", ["test:run:general"], { isolated: true }]], ctx),
+  "serialized-tests": (ctx) => steps([["pnpm", ["test:run:serialized"], { isolated: true }]], ctx),
   build: (ctx) => steps([["pnpm", ["build"]]], ctx),
-  e2e: (ctx) => {
-    // Isolated Paperclip home so the run never touches the operator's own
-    // ~/.paperclip instance (CI writes the same config into a fresh runner).
-    const home = mkdtempSync(path.join(os.tmpdir(), "paperclip-local-ci-e2e-"));
-    const instanceDir = path.join(home, ".paperclip", "instances", "default");
-    mkdirSync(instanceDir, { recursive: true });
-    writeFileSync(
-      path.join(instanceDir, "config.json"),
-      JSON.stringify(
-        {
-          $meta: { version: 1, updatedAt: "2026-01-01T00:00:00.000Z", source: "onboard" },
-          database: { mode: "embedded-postgres" },
-          logging: { mode: "file" },
-          server: { deploymentMode: "local_trusted", host: "127.0.0.1", port: 3100 },
-          auth: { baseUrlMode: "auto" },
-          storage: { provider: "local_disk" },
-          secrets: { provider: "local_encrypted", strictMode: false },
-        },
-        null,
-        2,
-      ),
-    );
-    try {
-      return steps(
-        [["pnpm", ["run", "test:e2e"], { env: { HOME: home, PAPERCLIP_E2E_SKIP_LLM: "true", PAPERCLIP_PLAYWRIGHT_CHANNEL: process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL ?? "chrome" } }]],
-        ctx,
-      );
-    } finally {
-      if (!ctx.dryRun) rmSync(home, { recursive: true, force: true });
-    }
-  },
-  canary: (ctx) => {
-    // release.sh needs a clean tree on a branch named master; do that in a
-    // throwaway worktree so the caller's checkout and branches are untouched.
-    const worktree = mkdtempSync(path.join(os.tmpdir(), "paperclip-local-ci-canary-"));
-    rmSync(worktree, { recursive: true, force: true });
-    const ok = steps(
-      [
-        ["git", ["worktree", "add", "--detach", worktree, "HEAD"]],
-        ["git", ["checkout", "-B", "local-ci-canary-master"], { cwd: worktree }],
-        ["pnpm", ["install", "--frozen-lockfile"], { cwd: worktree }],
-        ["./scripts/release.sh", ["canary", "--skip-verify", "--dry-run"], { cwd: worktree }],
-      ],
-      ctx,
-    );
-    if (!ctx.dryRun) {
-      spawnSync("git", ["worktree", "remove", "--force", worktree], { cwd: repoRoot });
-      spawnSync("git", ["branch", "-D", "local-ci-canary-master"], { cwd: repoRoot });
-    }
-    return ok;
-  },
+  e2e: gateE2e,
+  canary: gateCanary,
 };
 
 function postStatus(ctx, gate, state, description) {
@@ -263,7 +412,7 @@ function postStatus(ctx, gate, state, description) {
     `repos/${ctx.repo}/statuses/${ctx.headSha}`,
     "-f", `state=${state}`,
     "-f", `context=${contextName}`,
-    "-f", `description=${description.slice(0, 139)}`,
+    "-f", `description=${`${STATUS_LABEL}${description}`.slice(0, 140)}`,
   ];
   if (ctx.dryRun) {
     console.log(`[report] gh ${args.join(" ")}`);
@@ -288,43 +437,74 @@ export async function main(argv = process.argv.slice(2)) {
   const changedPaths = capture("git", ["diff", "--name-only", `${baseSha}...HEAD`]).split("\n").filter(Boolean);
   const repo = options.report ? parseGitHubRemote(capture("git", ["remote", "get-url", "origin"])) : null;
   if (options.report && !repo) throw new Error("--report needs an origin remote on github.com");
+  if (options.report) {
+    // Statuses are attached to HEAD; results from uncommitted or untracked
+    // changes would be credited to a commit that does not contain them.
+    const dirty = capture("git", ["status", "--porcelain"]);
+    if (dirty) {
+      throw new Error(`--report needs a clean working tree (statuses are posted on HEAD). Commit or remove:\n${dirty}`);
+    }
+  }
+  const reportVerify = options.report && coversDefaultGates(gates);
 
-  const ctx = { ...options, baseSha, headSha, branch, changedPaths, repo };
+  const ctx = { ...options, baseSha, headSha, branch, changedPaths, repo, qualifiedLockfile: null };
   const lockfilePath = path.join(repoRoot, "pnpm-lock.yaml");
   const originalLockfile = existsSync(lockfilePath) ? readFileSync(lockfilePath) : null;
 
   console.log(`local CI for ${branch} @ ${headSha.slice(0, 12)} (base ${baseSha.slice(0, 12)}): ${gates.join(", ")}`);
-  for (const gate of gates) postStatus(ctx, gate, "pending", "Queued on self-hosted local CI");
+  if (options.report && !reportVerify) {
+    console.log(`[report] ${STATUS_CONTEXT_PREFIX}/verify is not posted: it needs every default gate (${DEFAULT_GATES.join(", ")}).`);
+  }
+  for (const gate of gates) postStatus(ctx, gate, "pending", "queued");
+  if (reportVerify) postStatus(ctx, "verify", "pending", "queued");
 
+  process.on("SIGINT", handleSignal);
+  process.on("SIGTERM", handleSignal);
+  const restoreLockfile = originalLockfile && !options.dryRun
+    ? onCleanup(() => writeFileSync(lockfilePath, originalLockfile))
+    : () => {};
   const results = [];
   try {
     for (const gate of gates) {
+      if (interruptedBy) break;
       const started = Date.now();
       console.log(`\n=== [local-ci] ${gate} ===`);
       let ok = false;
       try {
         ok = await GATES[gate](ctx);
       } catch (error) {
+        if (error instanceof Interrupted) break;
         console.error(error);
         ok = false;
       }
       const seconds = Math.round((Date.now() - started) / 1000);
       results.push({ gate, ok, seconds });
-      postStatus(ctx, gate, ok ? "success" : "failure", `${ok ? "Passed" : "Failed"} in ${seconds}s on self-hosted local CI`);
+      postStatus(ctx, gate, ok ? "success" : "failure", `${ok ? "passed" : "failed"} in ${seconds}s`);
       if (!ok && !options.keepGoing) break;
     }
   } finally {
-    if (originalLockfile && !options.dryRun) writeFileSync(lockfilePath, originalLockfile);
+    restoreLockfile();
+    process.off("SIGINT", handleSignal);
+    process.off("SIGTERM", handleSignal);
   }
 
   const skipped = gates.filter((gate) => !results.some((result) => result.gate === gate));
-  for (const gate of skipped) postStatus(ctx, gate, "error", "Not run: an earlier local CI gate failed");
-  const allPassed = skipped.length === 0 && results.every((result) => result.ok);
-  postStatus(ctx, "verify", allPassed ? "success" : "failure", allPassed ? "All local CI gates passed" : "One or more local CI gates failed");
+  const skipReason = interruptedBy ? `not finished: run interrupted by ${interruptedBy}` : "not run: an earlier gate failed";
+  for (const gate of skipped) postStatus(ctx, gate, "error", skipReason);
+  const allPassed = !interruptedBy && skipped.length === 0 && results.every((result) => result.ok);
+  if (reportVerify) {
+    postStatus(
+      ctx,
+      "verify",
+      interruptedBy ? "error" : allPassed ? "success" : "failure",
+      interruptedBy ? skipReason : allPassed ? "all default gates passed" : "one or more gates failed",
+    );
+  }
 
   console.log("\n=== [local-ci] summary ===");
   for (const result of results) console.log(`${result.ok ? "PASS" : "FAIL"}  ${result.gate}  (${result.seconds}s)`);
-  for (const gate of skipped) console.log(`SKIP  ${gate}`);
+  for (const gate of skipped) console.log(`${interruptedBy ? "STOP" : "SKIP"}  ${gate}`);
+  if (interruptedBy) return SIGNAL_EXIT_CODES[interruptedBy];
   return allPassed ? 0 : 1;
 }
 

@@ -33,7 +33,7 @@ env:
 
 jobs:
   build-and-push:
-    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - name: Validate dispatch inputs
         id: validate

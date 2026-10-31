@@ -10,6 +10,11 @@ concurrency:
   group: pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# These jobs may run on self-hosted runners (doc/SELF-HOSTED-CI.md), so the
+# token stays read-only regardless of the repository's default permissions.
+permissions:
+  contents: read
+
 jobs:
   policy:
     runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
@@ -498,21 +503,10 @@ jobs:
         # browser bundles inside the 30 minute job budget.
         run: google-chrome --version
 
-      - name: Generate Paperclip config
-        run: |
-          mkdir -p ~/.paperclip/instances/default
-          cat > ~/.paperclip/instances/default/config.json << 'CONF'
-          {
-            "$meta": { "version": 1, "updatedAt": "2026-01-01T00:00:00.000Z", "source": "onboard" },
-            "database": { "mode": "embedded-postgres" },
-            "logging": { "mode": "file" },
-            "server": { "deploymentMode": "local_trusted", "host": "127.0.0.1", "port": 3100 },
-            "auth": { "baseUrlMode": "auto" },
-            "storage": { "provider": "local_disk" },
-            "secrets": { "provider": "local_encrypted", "strictMode": false }
-          }
-          CONF
-
+      # No Paperclip config is written into the runner user's home:
+      # tests/e2e/playwright.config.ts boots the server in its own temporary
+      # PAPERCLIP_HOME/PAPERCLIP_CONFIG, and a config in the home directory
+      # would clobber a self-hosted runner's own Paperclip instance.
       - name: Run e2e tests
         env:
           PAPERCLIP_E2E_SKIP_LLM: "true"
