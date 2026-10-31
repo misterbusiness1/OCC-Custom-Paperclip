@@ -136,6 +136,19 @@ function createFreshLeaseSandboxRunner(options: {
   };
 }
 
+
+// The workspace restore tars the remote workspace and reads it back with a
+// size query (`wc -c < file`) followed by chunked `dd ... | base64` reads.
+// Answer like a real shell would for an empty workspace: a valid, empty tar
+// archive (two 512-byte zero blocks). An empty stdout is not what any shell
+// returns and makes the restore fail.
+const EMPTY_TARBALL = Buffer.alloc(1024);
+function fakeEmptyTarballRead(script: string): string {
+  if (script.includes("wc -c")) return `${EMPTY_TARBALL.byteLength}\n`;
+  if (script.includes("| base64")) return `${EMPTY_TARBALL.toString("base64")}\n`;
+  return "";
+}
+
 describe("cursor execute", () => {
   it("installs the default agent command on a fresh sandbox lease before execution", async () => {
     setPrepareCursorSandboxCommand.mockReset();
@@ -276,7 +289,7 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
             exitCode: 0,
           signal: null,
           timedOut: false,
-          stdout: "",
+          stdout: fakeEmptyTarballRead((input.args ?? []).join(" ")),
           stderr: "",
           pid: 555,
           startedAt: new Date().toISOString(),

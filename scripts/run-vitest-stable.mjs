@@ -14,13 +14,30 @@ const generalServerShardDurations = loadShardDurations(
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
 const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
+// Every vitest project in the root vitest.config.ts except the server, which
+// has its own general/serialized lanes. A package that is missing here never
+// runs in CI.
 const nonServerProjects = [
   "@paperclipai/shared",
   "@paperclipai/skills-catalog",
   "@paperclipai/db",
   "@paperclipai/adapter-utils",
+  "@paperclipai/adapter-claude-local",
   "@paperclipai/adapter-codex-local",
+  "@paperclipai/adapter-cursor-cloud",
+  "@paperclipai/adapter-cursor-local",
+  "@paperclipai/adapter-gemini-local",
+  "@paperclipai/adapter-grok-local",
   "@paperclipai/adapter-opencode-local",
+  "@paperclipai/adapter-pi-local",
+  "@paperclipai/hermes-paperclip-adapter",
+  "@paperclipai/adapter-openclaw-gateway",
+  "@paperclipai/mcp-server",
+  "@paperclipai/google-sheets-mcp-server",
+  "@paperclipai/kv-demo-mcp-server",
+  "@paperclipai/teams-catalog",
+  "@paperclipai/plugin-llm-wiki",
+  "@paperclipai/plugin-workspace-diff",
   "@paperclipai/plugin-sdk",
   "@paperclipai/create-paperclip-plugin",
   "@paperclipai/ui",
