@@ -209,6 +209,29 @@ describe("approvalTranslation", () => {
     expect(approvalTranslationFor(named("Serbian (Latin)"), RUSSIAN_DRAFT)?.mismatchedLanguage).toBe("Serbian (Latin)");
   });
 
+  it("keeps a language whose script is a real part of the text, however much English is around it", () => {
+    const named = (language: string) => ({ text: "Hello", language });
+    // Chinese writes Japanese brand names in katakana and borrows a stray の: still Chinese.
+    for (const chinese of [
+      "您好，我们想订购五十箱ポケモンカード，请问批发价是多少？最低起订量是多少？谢谢。",
+      "我の小店新品上市，欢迎来选购の好物，全场包邮。",
+    ]) {
+      expect(approvalTranslationFor(named("Chinese (Simplified)"), chinese)).toEqual({ text: "Hello", language: "Chinese (Simplified)" });
+    }
+    // A Chinese body with standard English terms, and a Chinese email above a long English footer.
+    const terms = "Payment is due within thirty days of the invoice date. Prices are quoted in US dollars and exclude shipping. ".repeat(6);
+    const bilingual = `王经理您好，\n\n感谢您的询价。我们的批发价格如下，请查收。如有任何问题，请随时与我们联系。我们期待与贵公司合作。\n\n${terms}\n\n此致敬礼`;
+    const footer = "CONFIDENTIALITY NOTICE: This email and any attachments are confidential and intended only for the named recipient. Please consider the environment before printing this email. ".repeat(3);
+    const complaint = `我的订单到现在还没有收到，已经过了一个月了。请立即退款五千美元，否则我会投诉。\n${footer}`;
+    for (const text of [bilingual, complaint]) {
+      expect(approvalTranslationFor(named("Chinese (Simplified)"), text)?.mismatchedLanguage).toBeUndefined();
+      expect(approvalTranslationFor(named("Chinese (Simplified)"), text)?.language).toBe("Chinese (Simplified)");
+    }
+    // An English text with a Chinese name in the signature is still not Chinese.
+    const english = `${"Hello, we agree to refund the full amount and to cover all return shipping. ".repeat(3)}\n李伟`;
+    expect(approvalTranslationFor(named("Chinese (Simplified)"), english)?.mismatchedLanguage).toBe("Chinese (Simplified)");
+  });
+
   it("reads the received email's translation and the draft's from their own fields only", () => {
     const payload = emailPayload();
     expect(approvalOriginalRequestTranslation(payload)?.text).toBe(CHINESE_EMAIL_EN);
@@ -805,6 +828,27 @@ describe("translations on email approval cards", () => {
     expect(originalTranslation()!.querySelector("[data-approval-translation-mismatch='original']")!.textContent).toBe(
       "The agent says the original email is in Japanese, but it is not. The translation may not match it. Request a revision.",
     );
+  });
+
+  it("holds Approve for a cut translation of a Chinese draft with a katakana brand name, and for a doubtful one of a draft in another script", () => {
+    const longTranslation = `${"Our wholesale price list is attached. ".repeat(60)}Last translated line.`;
+    const cases: Array<[string, string, boolean]> = [
+      ["您好，我们想订购五十箱ポケモンカード，请问批发价是多少？最低起订量是多少？谢谢。", "Chinese (Simplified)", false],
+      // Russian named Chinese: the note shows, and the board still has to read it before approving.
+      [RUSSIAN_DRAFT, "Chinese", true],
+    ];
+    for (const [body, language, mismatched] of cases) {
+      const payload = emailPayload({ body, bodyTranslation: { language, text: longTranslation } });
+      const gateRef: { current: ReturnType<typeof useApprovalDraftGate> | null } = { current: null };
+      function Harness() {
+        const gate = useApprovalDraftGate("request_board_approval", payload);
+        gateRef.current = gate;
+        return <ApprovalDecisionSummary type="request_board_approval" payload={payload} draftControl={gate.draftControl} />;
+      }
+      act(() => root.render(<Harness />));
+      expect(draftTranslation()!.querySelector("[data-approval-translation-mismatch='draft']") !== null).toBe(mismatched);
+      expect(gateRef.current!.approveLabel).toBe(APPROVAL_TRANSLATION_UNREAD_APPROVE_LABEL);
+    }
   });
 
   it("takes the reader to the start of the draft that is sent when Approve opens it, never into its translation", () => {

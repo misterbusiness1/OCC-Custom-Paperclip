@@ -385,8 +385,14 @@ const WORD_SCRIPT_WEIGHT = 3;
 const HAN_PATTERN = /\p{Script=Han}/gu;
 const KANA_PATTERN = /[\p{Script=Hiragana}\p{Script=Katakana}]/gu;
 const HANGUL_PATTERN = /\p{Script=Hangul}/gu;
-/** Japanese prose is at least this share kana; Chinese has none. */
-const JAPANESE_KANA_SHARE = 0.1;
+const HIRAGANA_PATTERN = /\p{Script=Hiragana}/gu;
+/**
+ * Japanese prose is at least this share hiragana (of Han and hiragana). Chinese
+ * writes Japanese brand names in katakana and borrows a stray の, so neither counts.
+ */
+const JAPANESE_HIRAGANA_SHARE = 0.2;
+/** A named script is in a text when it holds at least this share of the weighted letters (and SCRIPT_MIN_LETTERS). */
+const NAMED_SCRIPT_SHARE = 0.05;
 /** The other scripts a language may be named for, by their ISO 15924 code. */
 const TEXT_SCRIPTS: Array<[string, RegExp]> = [
   ["Cyrl", /\p{Script=Cyrillic}/gu],
@@ -414,15 +420,15 @@ const TEXT_SCRIPTS: Array<[string, RegExp]> = [
   ["Thaa", /\p{Script=Thaana}/gu],
   ["Mong", /\p{Script=Mongolian}/gu],
 ];
-/** The text scripts each Chinese, Japanese or Korean language script is written in (see mainScript). */
-const WORD_LANGUAGE_SCRIPTS: Record<string, string[]> = {
-  Hans: ["Hani"],
-  Hant: ["Hani"],
-  Hani: ["Hani"],
+/** The characters each Chinese, Japanese or Korean language script is written in (see namedScriptIsIn). */
+const WORD_LANGUAGE_SCRIPTS: Record<string, RegExp> = {
+  Hans: HAN_PATTERN,
+  Hant: HAN_PATTERN,
+  Hani: HAN_PATTERN,
   // Japanese may be written in kanji alone.
-  Jpan: ["Jpan", "Hani"],
-  Kore: ["Kore"],
-  Hang: ["Kore"],
+  Jpan: /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu,
+  Kore: HANGUL_PATTERN,
+  Hang: HANGUL_PATTERN,
 };
 /**
  * A link or an email address, in ASCII only: text in another script often runs on with no space after one.
@@ -447,12 +453,17 @@ type ScriptWeight = { letters: number; nonLatin: number };
  * Korean character counted as a short word. Links, addresses, digits and
  * punctuation are not counted. A very long text is weighed on its start and end.
  */
-function weigh(text: string): ScriptWeight {
+/** What weigh reads of a text: its start and end when very long, without links and addresses. */
+function weighSample(text: string): string {
   let sample = text;
   if (sample.length > SCRIPT_SAMPLE_PART * 2) {
     sample = `${sample.slice(0, SCRIPT_SAMPLE_PART)}\n${sample.slice(-SCRIPT_SAMPLE_PART)}`;
   }
-  sample = sample.replace(ADDRESS_PATTERN, " ");
+  return sample.replace(ADDRESS_PATTERN, " ");
+}
+
+function weigh(text: string): ScriptWeight {
+  const sample = weighSample(text);
   const extra = countOf(sample, WORD_SCRIPT_PATTERN) * (WORD_SCRIPT_WEIGHT - 1);
   return { letters: countOf(sample, LETTER_PATTERN) + extra, nonLatin: countOf(sample, NON_LATIN_LETTER_PATTERN) + extra };
 }
@@ -502,23 +513,21 @@ function newMessagePart(text: string): string {
 }
 
 /**
- * The script most of a text's other letters are in: an ISO 15924 code from
- * TEXT_SCRIPTS, or for Chinese, Japanese and Korean "Hani" (Han alone), "Jpan"
- * (Han with kana) or "Kore" (mostly Hangul). Null when it has none of these.
+ * Whether a text holds a real part in the script a language is named for: not
+ * the text as a whole, since a Chinese draft may carry English terms or an
+ * English footer that outweighs it. Han text that is mostly hiragana is
+ * Japanese, not Chinese.
  */
-function mainScript(text: string): string | null {
-  const sample = text.slice(0, SCRIPT_SAMPLE_PART * 2);
+function namedScriptIsIn(script: string, text: string): boolean {
+  const pattern = WORD_LANGUAGE_SCRIPTS[script] ?? TEXT_SCRIPTS.find(([code]) => code === script)?.[1];
+  if (!pattern) return true;
+  const sample = weighSample(text);
+  const count = countOf(sample, pattern) * (WORD_LANGUAGE_SCRIPTS[script] ? WORD_SCRIPT_WEIGHT : 1);
+  if (count < SCRIPT_MIN_LETTERS || count < weigh(text).letters * NAMED_SCRIPT_SHARE) return false;
+  if (pattern !== HAN_PATTERN) return true;
   const han = countOf(sample, HAN_PATTERN);
-  const kana = countOf(sample, KANA_PATTERN);
-  const hangul = countOf(sample, HANGUL_PATTERN);
-  let main: string | null = null;
-  let mainCount = han + kana + hangul;
-  if (mainCount > 0) main = hangul > han + kana ? "Kore" : kana >= (han + kana) * JAPANESE_KANA_SHARE ? "Jpan" : "Hani";
-  for (const [code, pattern] of TEXT_SCRIPTS) {
-    const count = countOf(sample, pattern);
-    if (count > mainCount) [main, mainCount] = [code, count];
-  }
-  return main;
+  const hiragana = countOf(sample, HIRAGANA_PATTERN);
+  return hiragana < (han + hiragana) * JAPANESE_HIRAGANA_SHARE;
 }
 
 type ScriptReading = {
@@ -559,20 +568,17 @@ function readScript(text: string): ScriptReading {
 
 /**
  * Whether `text` may be written in `language`. Only a plain contradiction
- * counts: a language in Latin letters for a text that has no part in them,
- * another for a text in Latin letters, or one in another script than the
- * text's ("Korean" for Japanese). A language or a text whose script is not
- * known may be anything.
+ * counts: a language in Latin letters for a text that has no part in them, or
+ * one in another script for a text with next to nothing in that script
+ * ("Chinese" for an English draft, "Korean" for a Japanese one). A text in two
+ * languages fits both. A language or a text whose script is not known may be
+ * anything.
  */
 function languageFitsText(language: LanguageEntry, text: string): boolean {
   const reading = readScript(text);
   if (!language.script || !reading.script) return true;
   if (language.script === "Latn") return reading.latinPart;
-  if (reading.script === "latin") return false;
-  const fits = WORD_LANGUAGE_SCRIPTS[language.script] ?? [language.script];
-  if (!WORD_LANGUAGE_SCRIPTS[language.script] && !TEXT_SCRIPTS.some(([code]) => code === language.script)) return true;
-  const main = mainScript(text.replace(ADDRESS_PATTERN, " "));
-  return main === null || fits.includes(main);
+  return namedScriptIsIn(language.script, text);
 }
 
 /**
