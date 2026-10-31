@@ -11,13 +11,8 @@ import {
   type ApprovalEmailDraft,
   type ApprovalTranslation,
   ApprovalDraftLanguageChip,
-  ApprovalMissingTranslationNote,
-  ApprovalTranslationLabel,
-  APPROVAL_DRAFT_TRANSLATION_BOX_CLASS,
-  APPROVAL_TRANSLATION_FRAME_CLASS,
-  ApprovalDraftTranslationMarker,
+  ApprovalDraftTranslation,
   approvalTranslationFor,
-  isMostlyNonLatinScript,
   approvalHireFacts,
   approvalOriginalRequest,
   approvalReadableText,
@@ -131,6 +126,9 @@ function summaryEmailDraft(type: string, payload?: Record<string, unknown> | nul
 export const APPROVAL_DRAFT_UNREAD_MESSAGE = "Read the full reply, then approve.";
 /** What the Approve button says while a draft is cut: its first press opens the draft and sends nothing. */
 export const APPROVAL_DRAFT_UNREAD_APPROVE_LABEL = "Read full reply to approve";
+/** The same two, when the reply is shown whole and only its translation is cut. */
+export const APPROVAL_TRANSLATION_UNREAD_MESSAGE = "Read the full translation, then approve.";
+export const APPROVAL_TRANSLATION_UNREAD_APPROVE_LABEL = "Read full translation to approve";
 
 /**
  * Keeps an outgoing email from being approved unread. A compact summary cuts a
@@ -146,9 +144,8 @@ export function useApprovalDraftGate(type: string, payload?: Record<string, unkn
   const draft = summaryEmailDraft(type, payload);
   // The board may read the reply through its translation, so a cut translation holds Approve back too.
   const translation = draft ? approvalDraftTranslation(payload) : null;
-  const isCut =
-    draft !== null &&
-    (approvalDraftPreview(draft.body) !== null || (translation !== null && approvalDraftPreview(translation.text) !== null));
+  const replyCut = draft !== null && approvalDraftPreview(draft.body) !== null;
+  const isCut = replyCut || (translation !== null && approvalDraftPreview(translation.text) !== null);
 
   // Runs once the whole draft is on the page, so the scroll sees its real height.
   useEffect(() => {
@@ -165,12 +162,13 @@ export function useApprovalDraftGate(type: string, payload?: Record<string, unkn
     if (!isCut || expanded) return null;
     revealRequested.current = true;
     setExpanded(true);
-    return APPROVAL_DRAFT_UNREAD_MESSAGE;
+    return replyCut ? APPROVAL_DRAFT_UNREAD_MESSAGE : APPROVAL_TRANSLATION_UNREAD_MESSAGE;
   };
 
   const draftControl: ApprovalDraftControl = { expanded, onExpandedChange: setExpanded, ref };
   // Undefined once the whole draft is on the page: the button then reads "Approve" again.
-  const approveLabel = isCut && !expanded ? APPROVAL_DRAFT_UNREAD_APPROVE_LABEL : undefined;
+  const approveLabel =
+    isCut && !expanded ? (replyCut ? APPROVAL_DRAFT_UNREAD_APPROVE_LABEL : APPROVAL_TRANSLATION_UNREAD_APPROVE_LABEL) : undefined;
   return { draftControl, approveGuard, approveLabel };
 }
 
@@ -252,36 +250,30 @@ function ApprovalEmailDraftBlock({
           The reply continues: {hiddenLength.toLocaleString()} more {hiddenLength === 1 ? "character" : "characters"}.
         </p>
       )}
-      {translation ? (
-        <div data-approval-translation="draft" className={APPROVAL_TRANSLATION_FRAME_CLASS}>
-          <ApprovalTranslationLabel
-            label="English translation of the draft"
-            translation={translation}
-            languageLead="written in"
-          />
-          <div className={APPROVAL_DRAFT_TRANSLATION_BOX_CLASS}>
-            <ApprovalDraftTranslationMarker />
-            <div className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground" data-approval-draft-translation-body>
-              {translationPreview !== null && !expanded ? translationPreview : translation.text}
-            </div>
-          </div>
-          {translationPreview !== null && !expanded && (
+      <ApprovalDraftTranslation
+        translation={translation}
+        draft={draft.body}
+        shown={translationPreview !== null && !expanded ? translationPreview : undefined}
+        continues={
+          translationPreview !== null &&
+          !expanded && (
             <p className="mt-2 text-xs leading-5 text-muted-foreground" data-approval-draft-translation-continues>
               The translation continues: {hiddenTranslationLength.toLocaleString()} more{" "}
               {hiddenTranslationLength === 1 ? "character" : "characters"}.
             </p>
-          )}
-          {isMostlyNonLatinScript(translation.text) && <ApprovalMissingTranslationNote of="draft" reason="not-english" />}
-        </div>
-      ) : (
-        isMostlyNonLatinScript(draft.body) && <ApprovalMissingTranslationNote of="draft" />
-      )}
+          )
+        }
+      />
       {canExpand && (
         <button
           type="button"
-          className={moreClass}
+          // A 44px touch target on phones, like the original email's own toggle.
+          className={cn(moreClass, "min-h-11 sm:min-h-6")}
           aria-expanded={expanded}
-          aria-label={expanded ? "Show less: Draft reply" : undefined}
+          // Names what it closes: the reply, or only its translation when the reply was never cut.
+          aria-label={
+            expanded ? (preview !== null ? "Show less: Draft reply" : "Show less: English translation of the draft") : undefined
+          }
           onClick={() => setExpanded(!expanded)}
         >
           {expanded ? "Show less" : expandText}

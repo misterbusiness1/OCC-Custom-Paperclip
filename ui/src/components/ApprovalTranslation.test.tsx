@@ -3,7 +3,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  APPROVAL_DRAFT_UNREAD_APPROVE_LABEL,
+  APPROVAL_TRANSLATION_UNREAD_APPROVE_LABEL,
+  APPROVAL_TRANSLATION_UNREAD_MESSAGE,
   ApprovalDecisionSummary,
   useApprovalDraftGate,
 } from "./ApprovalDecisionSummary";
@@ -14,6 +15,7 @@ import {
   approvalOriginalRequestTranslation,
   approvalTranslation,
   approvalTranslationFor,
+  approvalTranslationLooksShort,
   isMostlyNonLatinScript,
 } from "./ApprovalPayload";
 import { ThemeProvider } from "../context/ThemeContext";
@@ -76,14 +78,56 @@ describe("approvalTranslation", () => {
     }
   });
 
-  it("keeps a language only when it reads as a language name", () => {
-    for (const language of ["Chinese (Simplified)", "Chinese (Traditional, Hong Kong)", "Русский", "Serbo-Croatian", "日本語"]) {
+  it("keeps a language only when it names one the interface knows, in English", () => {
+    for (const language of [
+      "Chinese (Simplified)",
+      "Chinese (Traditional, Hong Kong)",
+      "Serbo-Croatian",
+      "Serbian (Latin)",
+      "Portuguese (Brazil)",
+      "Simplified Chinese",
+      "Cantonese",
+      "Filipino",
+    ]) {
       expect(approvalTranslation({ text: "Hello", language })?.language).toBe(language);
+    }
+    // Written in its own language, as a tag or in other cases: shown as the English name.
+    for (const [language, name] of [
+      ["Русский", "Russian"],
+      ["日本語", "Japanese"],
+      ["中文", "Chinese"],
+      ["zh-CN", "Chinese (China)"],
+      ["zh-Hans", "Simplified Chinese"],
+      ["ru", "Russian"],
+      ["en", "English"],
+      ["chinese (simplified)", "Chinese (Simplified)"],
+    ]) {
+      expect(approvalTranslation({ text: "Hello", language })?.language).toBe(name);
     }
     expect(approvalTranslation({ text: "Hello", language: "  Chinese\n (Simplified) " })?.language).toBe("Chinese (Simplified)");
     // Bidi controls are dropped, not shown reversed.
-    expect(approvalTranslation({ text: "Hello", language: "\u202ecibarA" })?.language).toBe("cibarA");
+    expect(approvalTranslation({ text: "Hello", language: "\u202eArabic" })?.language).toBe("Arabic");
+    expect(approvalTranslation({ text: "Hello", language: "\u202ecibarA" })?.language).toBeNull();
     for (const language of [
+      // Placeholders and claims: never a chip beside "Draft reply".
+      "Unknown",
+      "None",
+      "Same as original",
+      "auto-detected",
+      "OK to send",
+      "Board approved",
+      "Verified safe",
+      "Verified translation",
+      "Approved",
+      "Safe to send",
+      "Draft reply",
+      "Chinese (Board approved)",
+      "Chinese (verified, accurate)",
+      "Chinese (checked)",
+      "no",
+      "ok",
+      "xx-YY",
+      "英语",
       "English — checked by the Board, OK to send",
       "English checked by the Board OK to send",
       "Chinese".padEnd(41, "Z"),
@@ -98,8 +142,10 @@ describe("approvalTranslation", () => {
     }
   });
 
-  it("drops bidi controls from the translation text", () => {
+  it("drops bidi controls and marks from the translation text", () => {
     expect(approvalTranslation("Hello, thanks. \u202e10% refund\u202c approved.")?.text).toBe("Hello, thanks. 10% refund approved.");
+    // An Arabic letter mark before a range shows it reversed ("500-100"); right-to-left and left-to-right marks go too.
+    expect(approvalTranslation({ text: "We refund \u061c100-500 USD. \u200fok \u200e!" })?.text).toBe("We refund 100-500 USD. ok !");
   });
 
   it("drops a Latin-script language named for a text in another script", () => {
@@ -109,6 +155,20 @@ describe("approvalTranslation", () => {
     expect(approvalTranslationFor(named("Chinese"), CHINESE_DRAFT)?.language).toBe("Chinese");
     expect(approvalTranslationFor(named("Spanish"), SPANISH_TEXT)?.language).toBe("Spanish");
     expect(approvalTranslationFor(null, CHINESE_DRAFT)).toBeNull();
+  });
+
+  it("drops a language in another script named for a text in Latin letters, and 'English' always", () => {
+    const named = (language: string) => ({ text: "Hello", language });
+    const english = "Hello, we will ship the samples on Monday. Thanks.";
+    expect(approvalTranslationFor(named("Japanese"), english)?.language).toBeNull();
+    expect(approvalTranslationFor(named("Chinese (Simplified)"), english)?.language).toBeNull();
+    expect(approvalTranslationFor(named("English"), english)?.language).toBeNull();
+    expect(approvalTranslationFor(named("English"), SPANISH_TEXT)?.language).toBeNull();
+    expect(approvalTranslationFor(named("Serbian (Latin)"), english)?.language).toBe("Serbian (Latin)");
+    // Too short to tell: the name stands.
+    expect(approvalTranslationFor(named("Chinese"), "好的")?.language).toBe("Chinese");
+    // The translation itself is kept: only the claim about its source goes.
+    expect(approvalTranslationFor(named("Japanese"), english)?.text).toBe("Hello");
   });
 
   it("reads the received email's translation and the draft's from their own fields only", () => {
@@ -159,6 +219,40 @@ describe("isMostlyNonLatinScript", () => {
     ],
     ["a Chinese email with a Chinese signature", "您好，\n我们同意价格，请尽快发货。\n\n王伟\n上海宏达贸易有限公司"],
     ["a Chinese email with no sentence ends", "您好\n价格可以\n请尽快发货谢谢"],
+    // A header or "--" at the very top starts a message pasted whole: what follows is the message.
+    ["a received email pasted with its 'On … wrote:' header on top", `On Tue, Oct 28, 2026 buyer@example.test wrote:\n${CHINESE_EMAIL}`],
+    ["a forwarded email pasted whole", "-----Original Message-----\n您好，\n我想询问批发价格和最低起订量。\n请问可以寄样品到上海吗？"],
+    ["Chinese under a '--' line on top", "--\n您好，我想询问批发价格和最低起订量。请问可以寄样品到上海吗？"],
+    ["a text that is all quote", "> Здравствуйте! Спасибо за ваше письмо. Мы отправим образцы на следующей неделе."],
+    ["an Outlook header at the top of a forwarded email", "From: Wang Wei\nSent: Tuesday, October 28, 2026 9:00 AM\nTo: Support\nSubject: Wholesale\n\n您好，我想询问批发价格和最低起订量。请问可以寄样品到上海吗？"],
+    // Short lines under an English first line are the message, not a signature.
+    ["Chinese lines under an English first line", "Dear Mr. Wang, thank you for your order.\n我们已经安排发货\n预计三天内到达\n如有问题请随时联系我们\n李明"],
+    ["Russian lines under an English first line", "Order 4521 shipped today.\nЗдравствуйте\nСпасибо за заказ\nМы отправили посылку\nС уважением\nИван"],
+    [
+      "a Chinese draft after an English first line",
+      "Dear Mr. Wang, thank you for your order and for your patience.\n我们会在三天内发货\n请确认收货地址\n如有问题请随时联系我们\n客服团队",
+    ],
+    [
+      "a Russian draft after an English first line",
+      "Dear Olga, thank you for your message and your order.\nМы отправим заказ в течение трёх дней\nПожалуйста подтвердите адрес доставки\nС уважением\nКоманда поддержки",
+    ],
+    ["Chinese under a short English greeting", "Hello Oxford team!\n我们想订购五百盒雪茄\n请报价并告知运费\n如果可以请先寄样品\n谢谢\n王伟"],
+    ["Chinese under a one-sentence English line", "Dear Mr. Smith.\n我们同意全额退款\n请提供您的银行卡号和密码\n三天内处理"],
+    ["Russian under a short English line", "Hi, thanks for your email.\nМы согласны на возврат денег\nПришлите номер карты и пароль\nСпасибо"],
+    ["Chinese under a blank line and an English greeting", "Dear Mr. Wang, thank you.\n\n我们已经安排发货\n预计三天内到达\n如有问题请随时联系我们\n李明"],
+    [
+      "a Chinese reply above an Outlook-quoted English thread",
+      "您好，我们同意价格，请尽快发货。\n________________________________\nFrom: Support <support@example.test>\nSent: Tuesday, October 28, 2026 9:00 AM\nTo: Buyer <buyer@example.test>\nSubject: Re: wholesale\n\nHello, thank you for your interest in our wholesale programme. Our price list for this season is attached, and samples can ship within a week.",
+    ],
+    [
+      "a Chinese reply above a From:/Sent: thread with no rule",
+      "好的，谢谢。我们下周付款。\nFrom: Support\nSent: Monday\nHello, please find attached the invoice for your last order and the delivery schedule for the next shipment.",
+    ],
+    [
+      "a Chinese reply above a Gmail (zh-CN) header",
+      "您好，我们同意价格，请尽快发货。\nSupport <support@example.test> 于2026年10月28日周二 09:00写道：\nHello, thank you for your interest in our wholesale programme. Our price list for this season is attached.",
+    ],
+    ["Chinese after a long English start", `${"a ".repeat(10_001)}${"我们同意全额退款并赔偿五百美元。".repeat(200)}`],
   ])("flags %s", (_name, text) => {
     expect(isMostlyNonLatinScript(text)).toBe(true);
   });
@@ -187,6 +281,19 @@ describe("isMostlyNonLatinScript", () => {
     ],
     ["English above a Chinese signature after '--'", "Thanks, the order is confirmed.\n--\n王伟\n上海宏达贸易有限公司\n上海市浦东新区张江路"],
     ["a short Chinese line", "好的谢谢您"],
+    [
+      "English with a Chinese shipping address in the middle",
+      "Hi, please ship the order to the address below.\n收货地址：上海市浦东新区张江路123号\n收货人：王伟\nThanks.",
+    ],
+    [
+      "an English reply above an Outlook-quoted Chinese email",
+      "Thank you, the samples ship on Monday.\n________________________________\nFrom: Buyer\nSent: Monday\n您好，我想询问批发价格和最低起订量。请问可以寄样品到上海吗？谢谢！我们想订购五百盒。",
+    ],
+    [
+      "an English reply above a Gmail (zh-CN) header",
+      "Thank you, the samples ship on Monday.\nBuyer <buyer@example.test> 于2026年10月28日周二 09:00写道：\n您好，我想询问批发价格和最低起订量。请问可以寄样品到上海吗？",
+    ],
+    ["English with a Chinese signature after 'Thanks!'", "Hi, please send the quote for 500 units by Friday.\nThanks!\n王伟\n上海宏达贸易有限公司"],
   ])("does not flag %s", (_name, text) => {
     expect(isMostlyNonLatinScript(text)).toBe(false);
   });
@@ -201,10 +308,36 @@ describe("isMostlyNonLatinScript", () => {
     ["a long domain with no dot", `a@${"b".repeat(20_000)}`],
     ["many 'On' lines", "On a\n".repeat(5_000)],
     ["many quote headers", "在 a\n".repeat(5_000)],
+    ["many From: lines", "From: a\n".repeat(5_000)],
+    ["many short lines", "短\n".repeat(10_000)],
   ])("judges %s in linear time", (_name, text) => {
     const started = performance.now();
     isMostlyNonLatinScript(text);
     expect(performance.now() - started).toBeLessThan(50);
+  });
+});
+
+describe("approvalTranslationLooksShort", () => {
+  const longChinese = "我们已经收到您的订单，并会在三天内安排发货。如有任何问题，请随时与我们联系。".repeat(8);
+
+  it("flags a translation far shorter than its source in another script", () => {
+    expect(approvalTranslationLooksShort({ text: "Thank you, we will ship Monday.", language: null }, longChinese)).toBe(true);
+    // The first paragraph only.
+    expect(
+      approvalTranslationLooksShort(
+        { text: "We have received your order and will ship it within three days. ".repeat(2), language: null },
+        longChinese,
+      ),
+    ).toBe(true);
+  });
+
+  it("does not flag a full translation, a short source, or a source in Latin letters", () => {
+    const full = "We have received your order and will ship it within three days. If you have any questions, please contact us at any time. ".repeat(8);
+    expect(approvalTranslationLooksShort({ text: full, language: null }, longChinese)).toBe(false);
+    expect(approvalTranslationLooksShort({ text: CHINESE_EMAIL_EN, language: null }, CHINESE_EMAIL)).toBe(false);
+    expect(approvalTranslationLooksShort({ text: CHINESE_DRAFT_EN, language: null }, CHINESE_DRAFT)).toBe(false);
+    expect(approvalTranslationLooksShort({ text: "OK", language: null }, "好的，谢谢。")).toBe(false);
+    expect(approvalTranslationLooksShort({ text: "Hi", language: null }, SPANISH_TEXT.repeat(5))).toBe(false);
   });
 });
 
@@ -311,17 +444,21 @@ describe("translations on email approval cards", () => {
     // The short draft itself is whole; the control names what is cut.
     expect(container.querySelector("[data-approval-draft-continues]")).toBeNull();
     const draft = container.querySelector<HTMLElement>("[data-approval-draft]")!;
-    expect(button(draft, `Show full translation (${longTranslation.length.toLocaleString()} characters)`)).toBeDefined();
-    expect(gate().approveLabel).toBe(APPROVAL_DRAFT_UNREAD_APPROVE_LABEL);
+    const more = button(draft, `Show full translation (${longTranslation.length.toLocaleString()} characters)`)!;
+    expect(more).toBeDefined();
+    // A 44px touch target on phones.
+    expect(more.className).toMatch(/min-h-11/);
+    // Only the translation is cut, so Approve says so.
+    expect(gate().approveLabel).toBe(APPROVAL_TRANSLATION_UNREAD_APPROVE_LABEL);
     let held: string | null = null;
     act(() => {
       held = gate().approveGuard();
     });
-    expect(held).not.toBeNull();
+    expect(held).toBe(APPROVAL_TRANSLATION_UNREAD_MESSAGE);
     expect(body()).toBe(longTranslation);
     expect(sent()).toBe(CHINESE_DRAFT);
     expect(gate().approveLabel).toBeUndefined();
-    expect(button(draft, "Show less")).toBeDefined();
+    expect(button(draft, "Show less")!.getAttribute("aria-label")).toBe("Show less: English translation of the draft");
   });
 
   it("shows both translations whole on the request page, in the summary and in Full request", () => {
@@ -397,6 +534,59 @@ describe("translations on email approval cards", () => {
       expect(missing("original")).toBeNull();
       expect(missing("draft")).toBeNull();
     }
+  });
+
+  it("never shows a claim or a placeholder as the draft's language", () => {
+    for (const language of ["Chinese (verified, accurate)", "Board approved", "Same as original", "Unknown"]) {
+      const payload = emailPayload({ bodyTranslation: { language, text: CHINESE_DRAFT_EN } });
+      act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={payload} />));
+      expect(container.querySelector("[data-approval-draft-language]")).toBeNull();
+      expect(draftTranslation()!.querySelector("p")!.textContent).toBe("English translation of the draft");
+      expect(container.textContent).not.toContain(language);
+    }
+    // A known language named for an English draft is a contradiction: no chip either.
+    const english = emailPayload({
+      body: "Hello, we will ship the samples on Monday. Thanks.",
+      bodyTranslation: { language: "Japanese", text: "Hello, we will ship the samples on Monday. Thanks." },
+    });
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={english} />));
+    expect(container.querySelector("[data-approval-draft-language]")).toBeNull();
+  });
+
+  it("notes under each translation that looks much shorter than its source, on every surface", () => {
+    const longChinese = "我们已经收到您的订单，并会在三天内安排发货。如有任何问题，请随时与我们联系。".repeat(8);
+    const payload = emailPayload(
+      { body: longChinese, bodyTranslation: { language: "Chinese", text: "Thank you, we will ship Monday." } },
+      { text: longChinese, translation: { language: "Chinese", text: "We got your order." } },
+    );
+    const short = (of: string) => container.querySelector(`[data-approval-translation-short='${of}']`);
+    const note = "The translation looks much shorter than the original. Request a revision if parts are missing.";
+    for (const element of [
+      <ApprovalDecisionSummary type="request_board_approval" payload={payload} />,
+      <ApprovalDecisionSummary type="request_board_approval" payload={payload} full />,
+      <ThemeProvider>
+        <ApprovalPayloadRenderer type="request_board_approval" payload={payload} />
+      </ThemeProvider>,
+    ]) {
+      act(() => root.render(element));
+      expect(originalTranslation()!.contains(short("original"))).toBe(true);
+      expect(draftTranslation()!.contains(short("draft"))).toBe(true);
+      expect(short("original")!.textContent).toBe(note);
+      expect(short("draft")!.textContent).toBe(note);
+    }
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={emailPayload()} />));
+    expect(container.querySelector("[data-approval-translation-short]")).toBeNull();
+  });
+
+  it("warns under a Chinese draft written in short lines under an English greeting, on the queue and the request page", () => {
+    const payload = emailPayload({
+      body: "Dear Mr. Wang, thank you for your order and for your patience.\n我们会在三天内发货\n请确认收货地址\n如有问题请随时联系我们\n客服团队",
+      bodyTranslation: undefined,
+    });
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={payload} />));
+    expect(missing("draft")).not.toBeNull();
+    renderFullRequest(payload);
+    expect(missing("draft")).not.toBeNull();
   });
 
   it("shows a translation as literal text, never as HTML", () => {
