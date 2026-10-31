@@ -25,7 +25,20 @@ import {
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, unprocessable } from "../errors.js";
 import { redactEventPayload } from "../redaction.js";
+import {
+  assertNoAgentHostWorkspaceCommandMutation,
+  collectAgentAdapterWorkspaceCommandPaths,
+} from "./workspace-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+
+// Mirrors KNOWN_INSTRUCTIONS_BUNDLE_KEYS in routes/agents.ts.
+const HIRE_INSTRUCTIONS_CONFIG_KEYS = [
+  "instructionsBundleMode",
+  "instructionsRootPath",
+  "instructionsEntryFile",
+  "instructionsFilePath",
+  "agentsMdPath",
+] as const;
 
 function readPayloadAgentId(payload: Record<string, unknown> | null | undefined): string | null {
   const value = payload?.agentId;
@@ -183,6 +196,55 @@ export function approvalRoutes(
     );
   }
 
+  // A hire_agent approval created through the generic approvals endpoint turns
+  // into an agent when approved, so it gets the same guards as
+  // POST /companies/:companyId/agent-hires: the caller needs agents:create, the
+  // adapter type must be known (no silent "process" default), and agents
+  // cannot set instructions paths or host-executed workspace commands.
+  async function assertGenericHireApprovalAllowed(
+    req: Request,
+    companyId: string,
+    payload: Record<string, unknown>,
+  ) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agents:create",
+      resource: { type: "company", companyId },
+    });
+    if (!decision.allowed) {
+      throw forbidden(decision.explanation ?? "Not allowed to request new agents for this company");
+    }
+
+    const adapterType = typeof payload.adapterType === "string" ? payload.adapterType.trim() : "";
+    if (!adapterType && !readPayloadAgentId(payload)) {
+      throw unprocessable("payload.adapterType is required for hire_agent approvals");
+    }
+    // Loaded lazily: the adapter registry pulls in every adapter package, and
+    // only hire approvals need it.
+    const { findServerAdapter } = await import("../adapters/registry.js");
+    if (adapterType && !findServerAdapter(adapterType)) {
+      throw unprocessable(`Unknown adapter type: ${adapterType}`);
+    }
+
+    if (req.actor.type !== "agent") return;
+    const adapterConfig =
+      payload.adapterConfig && typeof payload.adapterConfig === "object" && !Array.isArray(payload.adapterConfig)
+        ? (payload.adapterConfig as Record<string, unknown>)
+        : {};
+    const instructionKeys = HIRE_INSTRUCTIONS_CONFIG_KEYS
+      .filter((key) => adapterConfig[key] !== undefined)
+      .map((key) => `payload.adapterConfig.${key}`);
+    if (instructionKeys.length > 0) {
+      throw forbidden(
+        `Agent-authenticated callers cannot set instructions path or bundle configuration (${instructionKeys.join(", ")})`,
+      );
+    }
+    assertNoAgentHostWorkspaceCommandMutation(
+      req,
+      collectAgentAdapterWorkspaceCommandPaths(adapterConfig, "payload.adapterConfig"),
+    );
+  }
+
   // The requester is woken when an approval resolves, so it must be the calling
   // agent itself, or (for board users) an agent in the same company.
   async function resolveRequestedByAgentId(
@@ -234,6 +296,7 @@ export function approvalRoutes(
     let normalizedPayload: Record<string, unknown> = approvalInput.payload;
     if (approvalInput.type === "hire_agent") {
       assertGenericHirePayloadHasNoAgentId(approvalInput.payload);
+      await assertGenericHireApprovalAllowed(req, companyId, approvalInput.payload);
       normalizedPayload = await secretsSvc.normalizeHireApprovalPayloadForPersistence(
         companyId,
         approvalInput.payload,
