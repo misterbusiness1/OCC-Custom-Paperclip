@@ -19,6 +19,8 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
   overrideAdapterExecutionTargetRemoteCwd: (target: unknown, _cwd: string) => target,
   adapterExecutionTargetSessionIdentity: () => ({ kind: "local" }),
   adapterExecutionTargetSessionMatches: () => true,
+  adapterExecutionTargetUsesPaperclipBridge: () => false,
+  startAdapterExecutionTargetPaperclipBridge: async () => null,
   describeAdapterExecutionTarget: () => "local",
   ensureAdapterExecutionTargetCommandResolvable: ensureCommandMock,
   ensureAdapterExecutionTargetRuntimeCommandInstalled: ensureRuntimeInstalledMock,
@@ -136,6 +138,54 @@ describe("grok_local execute", () => {
     expect(await pathExists(path.join(root, "Agents.md"))).toBe(false);
     expect(await pathExists(path.join(root, ".claude", "skills", "paperclip"))).toBe(false);
     expect(logs.map((entry) => entry.chunk)).not.toEqual([]);
+  });
+
+  it("falls back to --rules with the host instructions path for local runs when the workspace already has Agents.md", async () => {
+    const root = await makeTempRoot();
+    const instructionsPath = path.join(root, "managed", "AGENTS.md");
+    await fs.mkdir(path.dirname(instructionsPath), { recursive: true });
+    await fs.writeFile(instructionsPath, "You are Grok.\n", "utf8");
+    await fs.writeFile(path.join(root, "Agents.md"), "Workspace rules.\n", "utf8");
+
+    runProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-rules", requestId: "req-1" }),
+      stderr: "",
+    });
+
+    await execute({
+      runId: "run-rules",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        cwd: root,
+        instructionsFilePath: instructionsPath,
+      },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(runProcessMock).toHaveBeenCalledTimes(1);
+    const args = runProcessMock.mock.calls[0]?.[3] as string[];
+    const rulesIndex = args.indexOf("--rules");
+    expect(rulesIndex).toBeGreaterThan(-1);
+    expect(args[rulesIndex + 1]).toBe(`@${instructionsPath}`);
+    expect(args[args.length - 1]).not.toContain("You are Grok.");
+    expect(await fs.readFile(path.join(root, "Agents.md"), "utf8")).toBe("Workspace rules.\n");
   });
 
   it("cleans up staged assets when setup fails before the Grok process starts", async () => {

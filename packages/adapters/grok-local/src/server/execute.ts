@@ -7,6 +7,7 @@ import {
   adapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetSessionMatches,
+  adapterExecutionTargetUsesPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
@@ -16,6 +17,7 @@ import {
   resolveAdapterExecutionTargetCommandForLogs,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
+  startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   asBoolean,
@@ -104,6 +106,7 @@ async function stageGrokProjectAssets(input: {
   instructionsFilePath: string;
   skillEntries: Array<{ key: string; runtimeName: string; source: string }>;
   desiredSkillNames: string[];
+  executionTargetIsRemote: boolean;
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<StagedGrokAssets> {
   const cleanup: StageCleanup[] = [];
@@ -126,9 +129,14 @@ async function stageGrokProjectAssets(input: {
       stagedInstructionsPath = instructionsTarget;
     } else if (path.resolve(instructionsTarget) !== path.resolve(input.instructionsFilePath)) {
       rulesFilePath = input.instructionsFilePath;
+      // A remote Grok process cannot read host paths, so remote runs inline the
+      // instructions into the prompt instead of passing --rules @<host path>.
+      const fallback = input.executionTargetIsRemote
+        ? `inlining ${input.instructionsFilePath} into the prompt`
+        : `using --rules @${input.instructionsFilePath}`;
       await input.onLog(
         "stdout",
-        `[paperclip] Grok workspace already contains ${instructionsTarget}; using --rules @${input.instructionsFilePath} instead of overwriting it.\n`,
+        `[paperclip] Grok workspace already contains ${instructionsTarget}; ${fallback} instead of overwriting it.\n`,
       );
     }
   } else {
@@ -236,9 +244,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsFilePath,
     skillEntries: grokSkillEntries,
     desiredSkillNames: desiredGrokSkillNames,
+    executionTargetIsRemote,
     onLog,
   });
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
+  let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
   try {
     const envConfig = parseObject(config.env);
@@ -299,18 +309,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       asNumber(config.timeoutSec, 0),
     );
     const graceSec = asNumber(config.graceSec, 20);
-    await ensureAdapterExecutionTargetRuntimeCommandInstalled({
-      runId,
-      target: executionTarget,
-      installCommand: ctx.runtimeCommandSpec?.installCommand,
-      detectCommand: ctx.runtimeCommandSpec?.detectCommand,
-      cwd,
-      env,
-      timeoutSec,
-      graceSec,
-      onLog,
-    });
 
+    let remoteRuntimeRootDir: string | null = null;
     if (executionTargetIsRemote) {
       await onLog(
         "stdout",
@@ -343,9 +343,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         executionTargetIsRemote,
         executionCwd: effectiveExecutionCwd,
       });
+      remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
     }
 
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
+    // Remote Grok processes reach Paperclip only through the callback bridge:
+    // its env replaces the host API URL and the host run JWT. Start it before
+    // the first remote command that receives this env (the runtime install
+    // probe) so no remote command sees the host credentials.
+    if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
+      paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
+        runId,
+        target: runtimeExecutionTarget,
+        runtimeRootDir: remoteRuntimeRootDir,
+        adapterKey: "grok",
+        timeoutSec,
+        hostApiToken: env.PAPERCLIP_API_KEY,
+        onLog,
+      });
+      if (paperclipBridge) {
+        Object.assign(env, paperclipBridge.env);
+      }
+    }
+    await ensureAdapterExecutionTargetRuntimeCommandInstalled({
+      runId,
+      target: executionTarget,
+      installCommand: ctx.runtimeCommandSpec?.installCommand,
+      detectCommand: ctx.runtimeCommandSpec?.detectCommand,
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      onLog,
+    });
     const effectiveEnv = Object.fromEntries(
       Object.entries({ ...process.env, ...env }).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -385,14 +415,41 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
 
+    const localRulesFilePath = executionTargetIsRemote ? null : stagedAssets.rulesFilePath;
+    const remoteInlineInstructionsPath = executionTargetIsRemote ? stagedAssets.rulesFilePath : null;
+    const instructionsDir = remoteInlineInstructionsPath ? `${path.dirname(remoteInlineInstructionsPath)}/` : "";
+    let instructionsPrefix = "";
+    if (remoteInlineInstructionsPath) {
+      try {
+        const instructionsContents = await fs.readFile(remoteInlineInstructionsPath, "utf8");
+        instructionsPrefix =
+          `${instructionsContents}\n\n` +
+          `The above agent instructions were loaded from ${remoteInlineInstructionsPath}. ` +
+          `Resolve any relative file references from ${instructionsDir}.\n\n`;
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        await onLog(
+          "stdout",
+          `[paperclip] Warning: could not read agent instructions file "${remoteInlineInstructionsPath}": ${reason}\n`,
+        );
+      }
+    }
+
     const commandNotes = (() => {
       const notes: string[] = ["Prompt is passed to Grok via --single in headless mode."];
       if (alwaysApprove) notes.push("Added --always-approve for unattended execution.");
       if (stagedAssets.stagedInstructionsPath) {
         notes.push(`Staged project instructions at ${stagedAssets.stagedInstructionsPath} for native Grok discovery.`);
       }
-      if (stagedAssets.rulesFilePath) {
-        notes.push(`Applied fallback instructions via --rules @${stagedAssets.rulesFilePath}.`);
+      if (localRulesFilePath) {
+        notes.push(`Applied fallback instructions via --rules @${localRulesFilePath}.`);
+      }
+      if (remoteInlineInstructionsPath) {
+        notes.push(
+          instructionsPrefix.length > 0
+            ? `Prepended fallback instructions from ${remoteInlineInstructionsPath} to the prompt (host paths are not readable on the remote target).`
+            : `Configured instructionsFilePath ${remoteInlineInstructionsPath}, but file could not be read; continuing without injected instructions.`,
+        );
       }
       if (stagedAssets.stagedSkillsCount > 0) {
         notes.push(`Staged ${stagedAssets.stagedSkillsCount} Paperclip skill(s) into .claude/skills for native Grok discovery.`);
@@ -418,6 +475,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const paperclipEnvNote = renderPaperclipEnvNote(env);
     const apiAccessNote = renderApiAccessNote(env);
     const prompt = joinPromptSections([
+      instructionsPrefix,
       wakePrompt,
       sessionHandoffNote,
       paperclipEnvNote,
@@ -426,6 +484,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ]);
     const promptMetrics = {
       promptChars: prompt.length,
+      instructionsChars: instructionsPrefix.length,
       wakePromptChars: wakePrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
       runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
@@ -441,7 +500,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (permissionMode) args.push("--permission-mode", permissionMode);
       if (alwaysApprove) args.push("--always-approve");
       if (disableWebSearch) args.push("--disable-web-search");
-      if (stagedAssets.rulesFilePath) args.push("--rules", `@${stagedAssets.rulesFilePath}`);
+      if (localRulesFilePath) args.push("--rules", `@${localRulesFilePath}`);
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -478,6 +537,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onSpawn,
         onRuntimeProgress: ctx.onRuntimeProgress,
         onLog,
+        runLogTail: paperclipBridge?.runLogTail,
       });
       return {
         proc,
@@ -581,6 +641,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return toResult(initial);
   } finally {
     await Promise.all([
+      paperclipBridge?.stop(),
       restoreRemoteWorkspace?.(),
       stagedAssets.cleanup(),
     ]);

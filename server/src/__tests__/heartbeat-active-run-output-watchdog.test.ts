@@ -131,6 +131,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     sourceStatus?: "in_progress" | "done" | "cancelled";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
+    coderAdapterType?: string;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -169,7 +170,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         role: "engineer",
         status: "running",
         reportsTo: managerId,
-        adapterType: "codex_local",
+        adapterType: opts.coderAdapterType ?? "codex_local",
         adapterConfig: {},
         runtimeConfig: {},
         permissions: {},
@@ -503,6 +504,31 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       .from(heartbeatRunEvents)
       .where(eq(heartbeatRunEvents.runId, runId));
     expect(event?.message).toContain("Source-resolved watchdog fold");
+  });
+
+  it("runs local process cleanup when folding a source-resolved grok_local run", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+      sourceStatus: "done",
+      sameRunTerminalEvidence: "activity",
+      coderAdapterType: "grok_local",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ created: 0, folded: 1, skipped: 0 });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run?.status).toBe("succeeded");
+    // A sessioned local adapter reaches the process cleanup step; a
+    // non-local adapter would report skipped_non_local_adapter instead.
+    expect(run?.resultJson).toMatchObject({
+      sourceResolvedWatchdogFold: {
+        cleanup: { outcome: "no_process_metadata", adapterType: "grok_local" },
+      },
+    });
   });
 
   it("still escalates terminal source issues without same-run terminal evidence", async () => {

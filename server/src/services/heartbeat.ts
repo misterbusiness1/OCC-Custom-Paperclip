@@ -555,6 +555,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "codex_local",
   "cursor",
   "gemini_local",
+  "grok_local",
   "hermes_local",
   "opencode_local",
   "pi_local",
