@@ -156,6 +156,8 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
 
       const discovery = await fetchDiscovery(remoteUrl);
       const target = targetFromDiscovery(discovery);
+      const pendingTokenUrl = assertDiscoveryUrl(tokenUrlFromDiscovery(discovery), remoteUrl, "tokenUrl");
+      const consentUrl = assertDiscoveryUrl(consentUrlFromDiscovery(discovery), remoteUrl, "consentUrl");
       const connectionId = crypto.randomUUID();
       const state = crypto.randomBytes(24).toString("base64url");
       const codeVerifier = crypto.randomBytes(32).toString("base64url");
@@ -189,11 +191,11 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
         pendingState: state,
         pendingCodeVerifier: await sealCloudUpstreamCredential(codeVerifier),
         pendingRedirectUri: input.redirectUri,
-        pendingTokenUrl: tokenUrlFromDiscovery(discovery),
+        pendingTokenUrl,
       }).returning();
       if (!row) throw badRequest("Failed to create cloud upstream connection");
 
-      const authorizationUrl = new URL(consentUrlFromDiscovery(discovery));
+      const authorizationUrl = new URL(consentUrl);
       authorizationUrl.searchParams.set("stackId", target.stackId);
       authorizationUrl.searchParams.set("redirectUri", input.redirectUri);
       authorizationUrl.searchParams.set("state", state);
@@ -215,8 +217,11 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       pendingConnectionId: string;
       code: string;
       state: string;
+      /** Throws when the caller may not act on the pending connection's company. */
+      authorizeCompany?: (companyId: string) => void;
     }): Promise<CloudUpstreamConnection> => {
       const pending = await getConnectionRow(input.pendingConnectionId);
+      input.authorizeCompany?.(pending.companyId);
       if (!pending.pendingState || !pending.pendingCodeVerifier || !pending.pendingRedirectUri || !pending.pendingTokenUrl) {
         throw notFound("Pending cloud upstream connection was not found");
       }
@@ -645,9 +650,35 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
   }
 }
 
+function isLocalDevelopmentHost(url: URL): boolean {
+  return url.hostname === "localhost" || url.hostname === "127.0.0.1";
+}
+
+/**
+ * URLs taken from the remote discovery document are attacker-controlled when
+ * the remote is untrusted. Require http(s), and HTTPS unless both the remote and
+ * the URL are localhost development targets, so a discovery document cannot
+ * point the token exchange at plain-HTTP internal services or hand the browser
+ * a non-http consent URL.
+ */
+export function assertDiscoveryUrl(value: string, remoteUrl: string, label: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw badRequest(`Cloud upstream discovery ${label} is not a valid URL`);
+  }
+  const remote = new URL(remoteUrl);
+  if (parsed.protocol === "https:") return parsed.toString();
+  if (parsed.protocol === "http:" && isLocalDevelopmentHost(remote) && isLocalDevelopmentHost(parsed)) {
+    return parsed.toString();
+  }
+  throw badRequest(`Cloud upstream discovery ${label} must use HTTPS`);
+}
+
 async function fetchDiscovery(remoteUrl: string): Promise<Record<string, unknown>> {
   const parsed = new URL(remoteUrl);
-  if (parsed.protocol !== "https:" && parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
+  if (parsed.protocol !== "https:" && !isLocalDevelopmentHost(parsed)) {
     throw badRequest("Cloud upstream targets require HTTPS except localhost development");
   }
   const stackId = firstPathSegment(parsed.pathname);
@@ -1086,6 +1117,9 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    // The token exchange carries the PKCE verifier; never follow a redirect to
+    // a different host.
+    redirect: "error",
   }, DISCOVERY_FETCH_TIMEOUT_MS);
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
