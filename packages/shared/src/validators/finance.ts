@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { AGENT_ADAPTER_TYPES, FINANCE_DIRECTIONS, FINANCE_EVENT_KINDS, FINANCE_UNITS } from "../constants.js";
+import { optionalAgentAdapterTypeSchema } from "../adapter-type.js";
+import { FINANCE_DIRECTIONS, FINANCE_EVENT_KINDS, FINANCE_UNITS } from "../constants.js";
 
 export const createFinanceEventSchema = z.object({
   agentId: z.string().uuid().optional().nullable(),
@@ -14,7 +15,9 @@ export const createFinanceEventSchema = z.object({
   direction: z.enum(FINANCE_DIRECTIONS).optional().default("debit"),
   biller: z.string().min(1),
   provider: z.string().min(1).optional().nullable(),
-  executionAdapterType: z.enum(AGENT_ADAPTER_TYPES).optional().nullable(),
+  // Open string, like every other adapterType field: external adapters register
+  // their own types at runtime.
+  executionAdapterType: optionalAgentAdapterTypeSchema.nullable(),
   pricingTier: z.string().min(1).optional().nullable(),
   region: z.string().min(1).optional().nullable(),
   model: z.string().min(1).optional().nullable(),
