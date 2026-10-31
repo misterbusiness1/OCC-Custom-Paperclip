@@ -1393,6 +1393,85 @@ describe("environment routes", () => {
     expect(mockEnvironmentService.getLeaseById).toHaveBeenCalledWith("lease-1");
   });
 
+  it("only lists leases from the member's own companies", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    const leaseBase = {
+      environmentId: environment.id,
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: null,
+      status: "active",
+      providerLeaseId: null,
+      acquiredAt: new Date("2026-04-16T05:00:00.000Z"),
+      lastUsedAt: new Date("2026-04-16T05:05:00.000Z"),
+      expiresAt: null,
+      releasedAt: null,
+      metadata: {},
+      createdAt: new Date("2026-04-16T05:00:00.000Z"),
+      updatedAt: new Date("2026-04-16T05:05:00.000Z"),
+    };
+    mockEnvironmentService.listLeases.mockResolvedValue([
+      { ...leaseBase, id: "lease-own", companyId: "company-1" },
+      { ...leaseBase, id: "lease-foreign", companyId: "company-2" },
+    ]);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const res = await request(app).get(`/api/environments/${environment.id}/leases`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((lease: { id: string }) => lease.id)).toEqual(["lease-own"]);
+  });
+
+  it("returns 404 for a lease that belongs to another company", async () => {
+    mockEnvironmentService.getLeaseById.mockResolvedValue({
+      id: "lease-foreign",
+      companyId: "company-2",
+      environmentId: "env-1",
+      status: "active",
+      metadata: { remoteCwd: "/workspace" },
+    });
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const res = await request(app).get("/api/environment-leases/lease-foreign");
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Environment lease not found");
+  });
+
+  it("lets instance admins read leases from any company", async () => {
+    mockEnvironmentService.getLeaseById.mockResolvedValue({
+      id: "lease-foreign",
+      companyId: "company-2",
+      environmentId: "env-1",
+      status: "active",
+      metadata: {},
+    });
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [],
+    });
+
+    const res = await request(app).get("/api/environment-leases/lease-foreign");
+
+    expect(res.status).toBe(200);
+  });
+
   it("rejects agent access regardless of company when environment management is instance-scoped", async () => {
     mockEnvironmentService.list.mockResolvedValue([]);
     const app = createApp({

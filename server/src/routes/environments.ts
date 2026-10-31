@@ -95,6 +95,15 @@ export function environmentRoutes(
     }
   }
 
+  // Environments are instance-scoped, but each lease belongs to one company and
+  // carries its issue, run, and provider details. Non-admin members only see
+  // leases for companies they belong to.
+  function canReadLeaseForCompany(req: Request, companyId: string) {
+    if (canReadFullInstanceEnvironment(req)) return true;
+    if (req.actor.type !== "board") return false;
+    return (req.actor.companyIds ?? []).includes(companyId);
+  }
+
   function canReadFullInstanceEnvironment(req: Request) {
     return req.actor.type === "board"
       && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
@@ -705,13 +714,14 @@ export function environmentRoutes(
     const leases = await svc.listLeases(environment.id, {
       status: req.query.status as string | undefined,
     });
-    res.json(leases);
+    res.json(leases.filter((lease) => canReadLeaseForCompany(req, lease.companyId)));
   });
 
   router.get("/environment-leases/:leaseId", async (req, res) => {
     assertCanReadInstanceEnvironments(req);
     const lease = await svc.getLeaseById(req.params.leaseId as string);
-    if (!lease) {
+    // Same 404 for missing and foreign leases so ids cannot be probed.
+    if (!lease || !canReadLeaseForCompany(req, lease.companyId)) {
       res.status(404).json({ error: "Environment lease not found" });
       return;
     }
