@@ -16,7 +16,8 @@ const serverSrcDir = path.join(repoRoot, "server", "src");
 const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
 // Every vitest project in the root vitest.config.ts except the server, which
 // has its own general/serialized lanes. A package that is missing here never
-// runs in CI.
+// runs in CI; scripts/__tests__/run-vitest-stable-projects.test.mjs keeps this
+// list, vitest.config.ts and the workspace packages that have tests in sync.
 const nonServerProjects = [
   "@paperclipai/shared",
   "@paperclipai/skills-catalog",
@@ -38,6 +39,8 @@ const nonServerProjects = [
   "@paperclipai/teams-catalog",
   "@paperclipai/plugin-llm-wiki",
   "@paperclipai/plugin-workspace-diff",
+  "@paperclipai/plugin-fake-sandbox",
+  "@paperclipai/plugin-authoring-smoke-example",
   "@paperclipai/plugin-sdk",
   "@paperclipai/create-paperclip-plugin",
   "@paperclipai/ui",
@@ -267,7 +270,8 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return routeTests.filter((_, index) => index % shardCount === shardIndex);
 }
 
-function runVitest(args, label) {
+// Runs one Vitest invocation and returns its exit status.
+function spawnVitest(args, label) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
@@ -291,8 +295,14 @@ function runVitest(args, label) {
     console.error(`[test:run] Failed to start Vitest: ${result.error.message}`);
     process.exit(1);
   }
-  if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+  return result.status ?? 1;
+}
+
+// Runs one Vitest invocation and exits on the first failure.
+function runVitest(args, label) {
+  const status = spawnVitest(args, label);
+  if (status !== 0) {
+    process.exit(status);
   }
 }
 
@@ -302,10 +312,26 @@ function runGeneralSuites(routeTests) {
   }
 }
 
+// Runs every project of a workspace group even after one fails, so a single CI
+// run reports every broken project instead of one per push. Exits with the
+// first failing project's status once the whole group has run.
 function runProjectGroup(projects, groupName) {
+  const failures = [];
   for (const project of projects) {
-    runVitest(["--project", project], `${groupName} project ${project}`);
+    const status = spawnVitest(["--project", project], `${groupName} project ${project}`);
+    if (status !== 0) {
+      failures.push({ project, status });
+    }
   }
+  if (failures.length === 0) {
+    return;
+  }
+
+  console.error(`\n[test:run] ${groupName}: ${failures.length} of ${projects.length} projects failed:`);
+  for (const { project, status } of failures) {
+    console.error(`[test:run]   ${project} (exit ${status})`);
+  }
+  process.exit(failures[0].status);
 }
 
 function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = null) {
@@ -417,6 +443,8 @@ if (options.dryRun) {
         shardCount: options.shardCount,
         group: options.group,
         availableGeneralGroups: generalGroupNames,
+        generalWorkspacesAProjects,
+        generalWorkspacesBProjects,
         serializedSuiteCount: routeTests.length,
         selectedSerializedSuites: serializedSuites.map((routeTest) => routeTest.repoPath),
         generalServerSuiteCount: generalServerTestFiles.length,

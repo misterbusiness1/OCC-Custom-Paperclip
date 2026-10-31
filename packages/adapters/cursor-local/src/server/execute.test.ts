@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { fakeWorkspaceDownloadRead } from "@paperclipai/adapter-utils/test-support/fake-workspace-download";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { execute } from "./execute.js";
 
@@ -134,19 +135,6 @@ function createFreshLeaseSandboxRunner(options: {
       });
     },
   };
-}
-
-
-// The workspace restore tars the remote workspace and reads it back with a
-// size query (`wc -c < file`) followed by chunked `dd ... | base64` reads.
-// Answer like a real shell would for an empty workspace: a valid, empty tar
-// archive (two 512-byte zero blocks). An empty stdout is not what any shell
-// returns and makes the restore fail.
-const EMPTY_TARBALL = Buffer.alloc(1024);
-function fakeEmptyTarballRead(script: string): string {
-  if (script.includes("wc -c")) return `${EMPTY_TARBALL.byteLength}\n`;
-  if (script.includes("| base64")) return `${EMPTY_TARBALL.toString("base64")}\n`;
-  return "";
 }
 
 describe("cursor execute", () => {
@@ -285,15 +273,17 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       execute: async (input: { command: string; args?: string[]; env?: Record<string, string> }) => {
         runnerState.commands.push(input.command);
         if (input.command === "sh") {
+          // The workspace starts and stays empty: the restore reads back an
+          // empty archive.
           return {
             exitCode: 0,
-          signal: null,
-          timedOut: false,
-          stdout: fakeEmptyTarballRead((input.args ?? []).join(" ")),
-          stderr: "",
-          pid: 555,
-          startedAt: new Date().toISOString(),
-        };
+            signal: null,
+            timedOut: false,
+            stdout: fakeWorkspaceDownloadRead((input.args ?? []).join(" ")),
+            stderr: "",
+            pid: 555,
+            startedAt: new Date().toISOString(),
+          };
         }
 
         return runChildProcess(`cursor-fresh-lease-${runnerState.commands.length}`, input.command, input.args ?? [], {
@@ -356,6 +346,7 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       const resolvedCommand = runMeta.find(Boolean)?.command as string | undefined;
       expect(resolvedCommand).toMatch(/\.local\/bin\/agent$/);
       expect(resolvedCommand).toContain(path.join(systemHomeDir, ".local", "bin", command));
+      expect(await fs.readdir(workspaceDir)).toEqual([]);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

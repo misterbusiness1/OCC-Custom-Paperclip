@@ -71,6 +71,12 @@ jobs:
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 
+      - name: Test vitest project coverage and workspace group runner
+        run: node --test ./scripts/__tests__/run-vitest-stable-projects.test.mjs
+
+      - name: Test sandbox provider test plan
+        run: node --test ./scripts/__tests__/run-sandbox-provider-tests.test.mjs
+
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
@@ -219,6 +225,44 @@ jobs:
           test -f packages/plugins/plugin-typesafe-skill-suggestion/dist/manifest.js
           test -f packages/plugins/plugin-typesafe-skill-suggestion/dist/worker.js
 
+  sandbox_providers:
+    name: Sandbox providers standalone
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install root dependencies and build the plugin SDK
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @paperclipai/plugin-sdk build
+
+      # The providers are excluded from the workspace, so no root vitest project
+      # covers them: install each standalone, link the SDK, and run its tests.
+      - name: Install and test each sandbox provider
+        run: node scripts/run-sandbox-provider-tests.mjs
+
   general_tests:
     name: General tests (${{ matrix.group_label }})
     needs: [policy]
@@ -286,7 +330,7 @@ jobs:
     # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
     if: ${{ always() }}
-    needs: [typecheck_release_registry, dependency_audit, typesafe_skill_suggestion, general_tests, build]
+    needs: [typecheck_release_registry, dependency_audit, typesafe_skill_suggestion, sandbox_providers, general_tests, build]
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -296,12 +340,14 @@ jobs:
           TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
           DEPENDENCY_AUDIT_RESULT: ${{ needs.dependency_audit.result }}
           TYPESAFE_SKILL_SUGGESTION_RESULT: ${{ needs.typesafe_skill_suggestion.result }}
+          SANDBOX_PROVIDERS_RESULT: ${{ needs.sandbox_providers.result }}
           GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
           BUILD_RESULT: ${{ needs.build.result }}
         run: |
           test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
           test "$DEPENDENCY_AUDIT_RESULT" = "success"
           test "$TYPESAFE_SKILL_SUGGESTION_RESULT" = "success"
+          test "$SANDBOX_PROVIDERS_RESULT" = "success"
           test "$GENERAL_TESTS_RESULT" = "success"
           test "$BUILD_RESULT" = "success"
 

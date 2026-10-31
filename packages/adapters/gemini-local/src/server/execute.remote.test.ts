@@ -1,7 +1,11 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  fakeWorkspaceDownloadRead,
+  tarDirectory,
+} from "@paperclipai/adapter-utils/test-support/fake-workspace-download";
 
 const {
   runChildProcess,
@@ -87,19 +91,6 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 });
 
 import { execute } from "./execute.js";
-
-
-// The workspace restore tars the remote workspace and reads it back with a
-// size query (`wc -c < file`) followed by chunked `dd ... | base64` reads.
-// Answer like a real shell would for an empty workspace: a valid, empty tar
-// archive (two 512-byte zero blocks). An empty stdout is not what any shell
-// returns and makes the restore fail.
-const EMPTY_TARBALL = Buffer.alloc(1024);
-function fakeEmptyTarballRead(script: string): string {
-  if (script.includes("wc -c")) return `${EMPTY_TARBALL.byteLength}\n`;
-  if (script.includes("| base64")) return `${EMPTY_TARBALL.toString("base64")}\n`;
-  return "";
-}
 
 describe("gemini remote execution", () => {
   const cleanupDirs: string[] = [];
@@ -248,6 +239,14 @@ describe("gemini remote execution", () => {
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     await mkdir(workspaceDir, { recursive: true });
+    await writeFile(path.join(workspaceDir, "README.md"), "seeded\n");
+    // The remote workspace after the run: the uploaded file plus one the agent
+    // wrote. The restore must bring it back without losing the seeded file.
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await writeFile(path.join(remoteWorkspaceDir, "README.md"), "seeded\n");
+    await writeFile(path.join(remoteWorkspaceDir, "agent-notes.md"), "written in the sandbox\n");
+    const workspaceDownload = await tarDirectory(remoteWorkspaceDir);
 
     const geminiOutput = [
       JSON.stringify({ type: "system", subtype: "init", session_id: "gemini-session-2", model: "gemini-2.5-pro" }),
@@ -265,7 +264,7 @@ describe("gemini remote execution", () => {
       timedOut: false,
       stdout: input.command === "gemini"
         ? geminiOutput
-        : fakeEmptyTarballRead((input.args ?? []).join(" ")),
+        : fakeWorkspaceDownloadRead((input.args ?? []).join(" "), workspaceDownload),
       stderr: "",
       pid: 321,
       startedAt: new Date().toISOString(),
@@ -317,6 +316,9 @@ describe("gemini remote execution", () => {
     expect(settingsWrite).toContain("gemini-api-key");
     // The managed HOME lives under the per-run runtime root, never a real home.
     expect(settingsWrite).toContain(".paperclip-runtime");
+    expect((await readdir(workspaceDir)).sort()).toEqual(["README.md", "agent-notes.md"]);
+    expect(await readFile(path.join(workspaceDir, "README.md"), "utf8")).toBe("seeded\n");
+    expect(await readFile(path.join(workspaceDir, "agent-notes.md"), "utf8")).toBe("written in the sandbox\n");
   });
 
   it("resumes saved Gemini sessions for remote SSH execution only when the identity matches", async () => {

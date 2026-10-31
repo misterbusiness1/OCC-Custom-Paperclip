@@ -23,6 +23,8 @@ export default defineConfig({
       "packages/teams-catalog",
       "packages/plugins/plugin-llm-wiki",
       "packages/plugins/plugin-workspace-diff",
+      "packages/plugins/paperclip-plugin-fake-sandbox",
+      "packages/plugins/examples/plugin-authoring-smoke-example",
       "packages/plugins/sdk",
       "packages/plugins/create-paperclip-plugin",
       "server",
