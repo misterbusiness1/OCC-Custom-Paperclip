@@ -62,10 +62,10 @@ Common optional fields:
 |---|---|---|
 | `backend` | `"sandbox-cr"` | `sandbox-cr` (alpha, requires agent-sandbox controller) or `job` (stable, one-shot entrypoint). |
 | `adapterType` | `"claude_local"` | One of the supported adapter types (claude_local, codex_local, gemini_local, opencode_local, pi_local, cursor). Determines runtime image + env keys + egress allow-list. `cursor_local` is accepted as a legacy alias and normalised to `cursor`. `cursor` has no built-in defaults and requires an `adapters` entry (see below). |
-| `adapters` | (none) | Declarative adapter registry (`adapterType`, `runtimeImage`, `envKeys`, `allowFqdns`, `probeCommand`, `defaultEnv`). When set it is authoritative (replaces the built-in defaults) and every adapter run in the environment must have an entry. |
+| `adapters` | (none) | Declarative adapter registry (`adapterType`, `runtimeImage`, `envKeys`, `allowFqdns`, `probeCommand`, `defaultEnv`). When set it is authoritative (replaces the built-in defaults) and every adapter run in the environment must have exactly one entry (`cursor` and `cursor_local` count as the same adapter). |
 | `namespacePrefix` | `"paperclip-"` | Prefix for the per-company tenant namespace. |
 | `companySlug` | derived from companyId | Override the auto-derived company slug. |
-| `imageRegistry` | (none) | Override the default registry for agent runtime images. |
+| `imageRegistry` | (none) | Override the default registry for agent runtime images. Rewrites the host and org of every runtime image, including `adapters` entries' `runtimeImage`, and keeps the image name and tag. |
 | `imageAllowList` | `[]` | Glob patterns of allowed `target.imageOverride` values. Empty = no override permitted. |
 | `imagePullSecrets` | `[]` | Names of pre-created Docker image pull secrets in the tenant namespace. |
 | `egressAllowFqdns` | `[]` | Additional FQDNs (beyond adapter defaults like `api.anthropic.com`). |
@@ -80,7 +80,12 @@ Full JSON Schema in `src/manifest.ts`.
 
 ### Cursor
 
-No `agent-runtime-cursor` image is built or published, so Cursor has no built-in Kubernetes defaults. An environment (or run) using adapter type `cursor` fails validation / lease acquisition with an actionable error until an `adapters` entry for `"cursor"` (in the environment config, or the server's `PAPERCLIP_ADAPTERS` registry) supplies your own runtime image, the secret env keys it needs (`CURSOR_API_KEY`) and the Cursor backend hosts it must reach (`allowFqdns`; exact FQDN allow-listing needs `egressMode: "cilium"`):
+No `agent-runtime-cursor` image is built or published, so Cursor has no built-in Kubernetes defaults. An environment (or run) using adapter type `cursor` fails validation / lease acquisition with an actionable error until an `adapters` entry for `"cursor"` supplies your own runtime image, the secret env keys it needs (`CURSOR_API_KEY`) and the Cursor backend hosts it must reach (`allowFqdns`; exact FQDN allow-listing needs `egressMode: "cilium"`).
+
+Where to set it:
+
+- **Environment config.** The `adapters` field in the Kubernetes environment form (Company settings, Environments), or the `adapters` key of the environment config sent through the environments API.
+- **Managed environment.** For the environment the server creates itself when `PAPERCLIP_EXECUTION_MODE=kubernetes`, the server's `PAPERCLIP_ADAPTERS` (or `PAPERCLIP_ADAPTERS_FILE`) registry is copied into that environment's `adapters`. It does not apply to environments you create yourself.
 
 ```json
 {
@@ -88,7 +93,7 @@ No `agent-runtime-cursor` image is built or published, so Cursor has no built-in
   "adapters": [
     {
       "adapterType": "cursor",
-      "runtimeImage": "registry.example.com/agent-runtime-cursor:v1",
+      "runtimeImage": "registry.example.com/my-org/agent-runtime-cursor:v1",
       "envKeys": ["CURSOR_API_KEY"],
       "allowFqdns": ["<cursor backend hosts>"],
       "probeCommand": ["cursor-agent", "--version"]
@@ -97,7 +102,9 @@ No `agent-runtime-cursor` image is built or published, so Cursor has no built-in
 }
 ```
 
-Because the registry replaces the built-in defaults, also list any other adapter the environment runs.
+Because the registry replaces the built-in defaults, also list any other adapter the environment runs. Use one entry for Cursor: an entry keyed `cursor` and another keyed with the legacy `cursor_local` are rejected as duplicates.
+
+**`imageRegistry` also rewrites this image.** When `imageRegistry` (or the server's `PAPERCLIP_K8S_IMAGE_REGISTRY`) is set, the plugin replaces the host and org of every runtime image, the `runtimeImage` above included. The example above becomes `<imageRegistry>/agent-runtime-cursor:v1`. Push your Cursor image to the mirror under that same name and tag, or the pod ends in `ImagePullBackOff`.
 
 ## What gets created in your cluster
 

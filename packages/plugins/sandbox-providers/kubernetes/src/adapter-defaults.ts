@@ -78,15 +78,14 @@ export const KNOWN_ADAPTER_TYPES: ReadonlySet<string> = new Set([
   ...REGISTRY_ONLY_ADAPTER_TYPES.keys(),
 ]);
 
-function fromRegistryEntry(entry: AdapterRegistryEntry): AdapterDefaults {
+/** `type` is the canonical (normalised) adapter type the entry was matched for. */
+function fromRegistryEntry(entry: AdapterRegistryEntry, type: string): AdapterDefaults {
   // Only runtimeImage is strictly required. The array fields are optional and
   // default to []: the operator emits them with `omitempty`, so a genuinely
   // empty allowFqdns/envKeys/probeCommand arrives as undefined, which is valid
   // (no extra egress / no forwarded secrets / no probe), NOT an error.
   if (!entry.runtimeImage) {
-    throw new Error(
-      `Adapter "${entry.adapterType}" is missing required runtime field: runtimeImage`,
-    );
+    throw new Error(`Adapter "${type}" is missing required runtime field: runtimeImage`);
   }
   return {
     runtimeImage: entry.runtimeImage,
@@ -99,10 +98,11 @@ function fromRegistryEntry(entry: AdapterRegistryEntry): AdapterDefaults {
 
 /**
  * Resolve the runtime defaults for an adapter. When a `registry` is supplied it
- * is authoritative (replace semantics): the type MUST be present and complete,
- * else this throws. With no registry, falls back to the built-in REGISTRY;
- * registry-only types (e.g. "cursor") throw an actionable error there. Legacy
- * aliases are normalised on both sides of the registry lookup.
+ * is authoritative (replace semantics): the type MUST be present exactly once
+ * (counting aliases) and complete, else this throws. With no registry, falls
+ * back to the built-in REGISTRY; registry-only types (e.g. "cursor") throw an
+ * actionable error there. Legacy aliases are normalised on both sides of the
+ * registry lookup.
  */
 export function getAdapterDefaults(
   adapterType: string,
@@ -111,17 +111,27 @@ export function getAdapterDefaults(
   const type = normalizeAdapterType(adapterType);
   const registryOnlyHint = REGISTRY_ONLY_ADAPTER_TYPES.get(type);
   if (registry && registry.length > 0) {
-    const entry = registry.find((e) => normalizeAdapterType(e.adapterType) === type);
-    if (!entry) {
+    const entries = registry.filter((e) => normalizeAdapterType(e.adapterType) === type);
+    if (entries.length === 0) {
       const base = `Adapter "${type}" is not in the configured adapter registry`;
       throw new Error(registryOnlyHint ? `${base}. ${registryOnlyHint}` : base);
     }
-    return fromRegistryEntry(entry);
+    if (entries.length > 1) {
+      // e.g. both "cursor" and the legacy "cursor_local": refuse to pick one silently.
+      throw new Error(
+        `Adapter "${type}" has ${entries.length} entries in the configured adapter registry (${entries
+          .map((e) => `"${e.adapterType}"`)
+          .join(", ")}); keep exactly one`,
+      );
+    }
+    return fromRegistryEntry(entries[0], type);
   }
   if (registryOnlyHint) {
     throw new Error(registryOnlyHint);
   }
-  const defaults = REGISTRY[type];
+  // Own-property lookup: a run hint such as "constructor" or "toString" must not
+  // resolve to an Object.prototype member.
+  const defaults = Object.hasOwn(REGISTRY, type) ? REGISTRY[type] : undefined;
   if (!defaults) {
     throw new Error(`Unknown adapter type: ${type}`);
   }

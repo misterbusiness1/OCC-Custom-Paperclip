@@ -118,6 +118,20 @@ describe("plugin", () => {
     expect(result.warnings?.some((w) => w.includes("api2.cursor.sh"))).toBe(true);
   });
 
+  it("validateConfig rejects duplicate cursor / cursor_local registry entries", async () => {
+    const entry = { adapterType: "cursor", runtimeImage: "registry.example/cursor:v1" };
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: {
+        inCluster: true,
+        adapterType: "cursor",
+        adapters: [entry, { ...entry, adapterType: "cursor_local" }],
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors?.[0]).toMatch(/Adapter "cursor" has 2 entries .*keep exactly one/);
+  });
+
   it("validateConfig does NOT warn when egressMode is cilium", async () => {
     const result = await plugin.definition.onEnvironmentValidateConfig!({
       driverKey: "kubernetes",

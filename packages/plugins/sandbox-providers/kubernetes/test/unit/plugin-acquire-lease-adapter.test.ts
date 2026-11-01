@@ -89,4 +89,11 @@ describe("onEnvironmentAcquireLease adapter resolution (cursor)", () => {
     await expect(acquire({}, "cursor")).rejects.toThrow(/no built-in Kubernetes runtime image/);
     expect(h.claim).not.toHaveBeenCalled();
   });
+
+  it("rejects an Object.prototype member as a per-run adapter hint with \"Unknown adapter type\"", async () => {
+    for (const hint of ["constructor", "toString"]) {
+      await expect(acquire({}, hint)).rejects.toThrow(`Unknown adapter type: ${hint}`);
+    }
+    expect(h.claim).not.toHaveBeenCalled();
+  });
 });

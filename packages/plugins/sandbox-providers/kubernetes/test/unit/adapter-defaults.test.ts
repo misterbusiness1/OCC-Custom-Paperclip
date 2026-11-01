@@ -78,6 +78,12 @@ describe("getAdapterDefaults", () => {
     expect(() => getAdapterDefaults("nope")).toThrow(/Unknown adapter type/);
   });
 
+  it("does not resolve Object.prototype members as built-in adapters", () => {
+    for (const type of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
+      expect(() => getAdapterDefaults(type)).toThrow(`Unknown adapter type: ${type}`);
+    }
+  });
+
   it("resolves from the supplied registry (replace semantics, not merge)", () => {
     const registry: AdapterRegistryEntry[] = [
       {
@@ -156,6 +162,27 @@ describe("getAdapterDefaults (cursor via the adapters registry)", () => {
   it("matches a registry entry still keyed with the legacy alias", () => {
     const legacy: AdapterRegistryEntry = { ...cursorEntry, adapterType: "cursor_local" };
     expect(getAdapterDefaults("cursor", [legacy]).runtimeImage).toBe("registry.example/cursor:v1");
+  });
+
+  it("rejects a registry holding both a \"cursor\" and a legacy \"cursor_local\" entry instead of picking one", () => {
+    const registry: AdapterRegistryEntry[] = [
+      cursorEntry,
+      { ...cursorEntry, adapterType: "cursor_local", runtimeImage: "registry.example/other:v1" },
+    ];
+    for (const type of ["cursor", "cursor_local"]) {
+      expect(() => getAdapterDefaults(type, registry)).toThrow(
+        'Adapter "cursor" has 2 entries in the configured adapter registry ("cursor", "cursor_local"); keep exactly one',
+      );
+    }
+  });
+
+  it("names the canonical type when an alias-keyed entry is missing runtimeImage", () => {
+    const registry: AdapterRegistryEntry[] = [
+      { adapterType: "cursor_local", enabled: true, envKeys: ["CURSOR_API_KEY"] },
+    ];
+    expect(() => getAdapterDefaults("cursor", registry)).toThrow(
+      'Adapter "cursor" is missing required runtime field: runtimeImage',
+    );
   });
 
   it("explains how to add cursor when a registry is configured without it", () => {
