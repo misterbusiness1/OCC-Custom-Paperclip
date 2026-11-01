@@ -12,7 +12,11 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }
     await page.setViewportSize(viewport);
     const company = await checked(await request.post("/api/companies", { data: { name: `Mobile synthetic ${Date.now()}` } }));
     const prefix = `/${company.issuePrefix}`;
-    const incoming = "Please explain my synthetic order.\n<script>window.emailExecuted=true</script>";
+    const incoming = [
+      "Please explain my synthetic order.",
+      ...Array.from({ length: 10 }, (_, index) => `Synthetic detail line ${index + 1}.`),
+      "<script>window.emailExecuted=true</script>",
+    ].join("\n");
     const draft = "Here is the proposed outgoing response for review.";
     const approval = await checked(await request.post(`/api/companies/${company.id}/approvals`, { data: {
       type: "request_board_approval", payload: {
@@ -21,19 +25,36 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }
         originalRequest: { text: incoming, source: { kind: "external", channel: "email", sender: "synthetic@example.test", reference: "synthetic-message-only" } },
       },
     } }));
+    // Request page: the original email is shown whole, framed apart from the draft and above it (owner request 2026-10-28).
     await page.goto(`${prefix}/approvals/${approval.id}`);
-    const source = page.locator('details:has(> summary[aria-label="Original email request"])').first();
-    await expect(source).toHaveCount(1);
-    await expect(source).not.toHaveAttribute("open");
-    await expect(page.getByText(draft, { exact: true }).first()).toBeVisible();
-    expect((await source.locator("summary").boundingBox())!.height).toBeGreaterThanOrEqual(44);
-    await source.locator("summary").click();
-    await expect(source.locator("pre")).toBeVisible();
+    const source = page.locator('[data-approval-original-request="email"]').first();
+    await expect(source).toBeVisible();
+    await expect(source).toContainText("Original email");
     await expect(source.locator("pre")).toHaveText(incoming);
+    await expect(source.locator("button")).toHaveCount(0);
+    const draftText = page.getByText(draft, { exact: true }).first();
+    await expect(draftText).toBeVisible();
+    expect((await source.boundingBox())!.y).toBeLessThan((await draftText.boundingBox())!.y);
     expect(await page.evaluate(() => (window as unknown as { emailExecuted?: boolean }).emailExecuted)).toBeUndefined();
     await expect(page.getByRole("button", { name: /^Approve/ }).first()).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: test.info().outputPath("email-source.png"), fullPage: true });
+
+    // Queue card: a six-line preview with a Show more toggle that is a 44px touch target on phones.
+    await page.goto(`${prefix}/approvals`);
+    const preview = page.locator('[data-approval-original-request="email"]').first();
+    await expect(preview).toBeVisible();
+    const more = preview.getByRole("button", { name: /^Show more: Original email/ });
+    await expect(more).toBeVisible();
+    if (viewport.width < 640) expect((await more.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await expect(preview.locator("pre")).toHaveClass(/line-clamp-6/);
+    await more.click();
+    await expect(preview.locator("pre")).not.toHaveClass(/line-clamp/);
+    await expect(preview.locator("pre")).toHaveText(incoming);
+    await expect(preview.getByRole("button", { name: /^Show less: Original email/ })).toBeVisible();
+    expect(await page.evaluate(() => (window as unknown as { emailExecuted?: boolean }).emailExecuted)).toBeUndefined();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: test.info().outputPath("email-source-queue.png"), fullPage: true });
 
     for (const [title, status] of [["Synthetic blocked work", "blocked"], ["Synthetic review work", "in_review"], ["Synthetic ordinary work", "backlog"]]) {
       await checked(await request.post(`/api/companies/${company.id}/issues`, { data: { title, status } }));

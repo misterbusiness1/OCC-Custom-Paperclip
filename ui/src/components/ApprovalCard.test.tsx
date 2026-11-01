@@ -2221,6 +2221,38 @@ describe("ApprovalCard for requests without a source, hires and strategies", () 
     expect(button("Show full plan")).toBeUndefined();
   });
 
+  it("previews the original email after the pros and risks, above the draft, with Show more (owner request 2026-10-28)", () => {
+    const originalText = Array.from({ length: 12 }, (_, index) => `Customer line ${index + 1}.`).join("\n");
+    const payload = {
+      recommendedAction: "Send the reply.",
+      reasoning: "Answers the question.",
+      pros: ["Closes the loop"],
+      risks: ["Could need revision"],
+      channel: "email",
+      recipient: "buyer@example.test",
+      subject: "Re: Where is my order?",
+      body: "Hello, your order shipped.",
+      originalRequest: {
+        text: originalText,
+        source: { kind: "external", channel: "email", sender: "buyer@example.test", snapshotOrigin: "requester" },
+      },
+    };
+    act(() => root.render(<ApprovalDecisionSummary type="request_board_approval" payload={payload} />));
+    const text = container.textContent ?? "";
+    expect(text.indexOf("Risks")).toBeLessThan(text.indexOf("Original email"));
+    expect(text.indexOf("Original email")).toBeLessThan(text.indexOf("Hello, your order shipped."));
+    const block = container.querySelector<HTMLElement>("[data-approval-original-request='email']")!;
+    expect(block).not.toBeNull();
+    expect(block.querySelector("pre")!.className).toMatch(/line-clamp-6/);
+    const more = Array.from(block.querySelectorAll("button")).find((b) => b.textContent === "Show more")!;
+    expect(more).toBeDefined();
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    act(() => more.click());
+    expect(block.querySelector("pre")!.className).not.toMatch(/line-clamp/);
+    expect(block.querySelector("pre")!.textContent).toBe(originalText);
+    expect(Array.from(block.querySelectorAll("button")).some((b) => b.textContent === "Show less")).toBe(true);
+  });
+
   it("shows every part of a Board approval in full, with no control and no clamp, where the page asks for it", () => {
     const long = (label: string) => `${`${label} sentence that repeats. `.repeat(30)}${label} ends here.`;
     const payload = {

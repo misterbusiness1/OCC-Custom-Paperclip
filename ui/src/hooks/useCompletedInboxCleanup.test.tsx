@@ -4,9 +4,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { completedInboxCleanupKey, useCompletedInboxCleanup } from "./useCompletedInboxCleanup";
+import {
+  COMPLETED_INBOX_CLEANUP_RETRY_MS,
+  completedInboxCleanupKey,
+  completedInboxCleanupQueryKey,
+  useCompletedInboxCleanup,
+} from "./useCompletedInboxCleanup";
 
-const api = vi.hoisted(() => ({ archiveCompletedFromInbox: vi.fn() }));
+const api = vi.hoisted(() => ({ archiveCompletedFromInbox: vi.fn(), listCompact: vi.fn() }));
 vi.mock("../api/issues", () => ({ issuesApi: api }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -22,14 +27,22 @@ describe("completed inbox cleanup at its query/API seam", () => {
   let companyId: string | null;
   let userId: string | null;
   let issues: Issue[];
-  let updatedAt: number;
   let observed: ReturnType<typeof useCompletedInboxCleanup>;
   function Harness() {
-    observed = useCompletedInboxCleanup({ companyId, userId, issues, updatedAt });
+    observed = useCompletedInboxCleanup({ companyId, userId });
     return null;
   }
   async function render() {
     await act(async () => root.render(<QueryClientProvider client={client}><Harness /></QueryClientProvider>));
+    await settle();
+  }
+  async function settle() {
+    for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  }
+  /** A later refresh of the cleanup's own completed-task query. */
+  async function refresh() {
+    await act(async () => { await client.invalidateQueries({ queryKey: completedInboxCleanupQueryKey(companyId!) }); });
+    await settle();
   }
   beforeEach(() => {
     localStorage.clear();
@@ -37,19 +50,21 @@ describe("completed inbox cleanup at its query/API seam", () => {
     companyId = "company-a";
     userId = "user-a";
     issues = [issue("done")];
-    updatedAt = 1;
+    api.listCompact.mockReset().mockImplementation(async () => issues);
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
   });
-  afterEach(async () => { await act(async () => root.unmount()); container.remove(); client.clear(); });
+  afterEach(async () => { vi.restoreAllMocks(); await act(async () => root.unmount()); container.remove(); client.clear(); });
 
   it("does nothing by default and scopes persisted opt-in by user and company", async () => {
     await render();
     expect(observed.enabled).toBe(false);
     expect(api.archiveCompletedFromInbox).not.toHaveBeenCalled();
+    expect(api.listCompact).not.toHaveBeenCalled();
     await act(async () => observed.setEnabled(true));
+    await settle();
     expect(localStorage.getItem(completedInboxCleanupKey("company-a", "user-a"))).toBe("true");
     expect(api.archiveCompletedFromInbox).toHaveBeenCalledWith("done", completedAt);
     userId = "other-user";
@@ -61,15 +76,58 @@ describe("completed inbox cleanup at its query/API seam", () => {
     expect(observed.enabled).toBe(false);
   });
 
-  it("archives only done notifications from this user's current company, at most ten per refresh", async () => {
-    issues = [issue("active", "in_progress"), issue("blocked", "blocked"), issue("cancelled", "cancelled"),
-      issue("foreign", "done", "other-company"), ...Array.from({ length: 12 }, (_, i) => issue(`done-${i}`))];
+  it("reads its own newest-first list of this user's visible completed tasks", async () => {
     localStorage.setItem(completedInboxCleanupKey(companyId!, userId!), "true");
     await render();
-    expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(10);
-    updatedAt++;
+    expect(api.listCompact).toHaveBeenCalledWith("company-a", expect.objectContaining({
+      touchedByUserId: "me", inboxArchivedByUserId: "me", status: "done", sortField: "updated", sortDir: "desc",
+    }));
+  });
+
+  it("archives only done notifications from this user's current company, ten at a time until none are left", async () => {
+    issues = [issue("active", "in_progress"), issue("blocked", "blocked"), issue("cancelled", "cancelled"),
+      issue("foreign", "done", "other-company"), ...Array.from({ length: 12 }, (_, i) => issue(`done-${i}`))];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    api.archiveCompletedFromInbox.mockImplementation(async () => {
+      inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+      await Promise.resolve();
+      inFlight--;
+      return { archived: true };
+    });
+    localStorage.setItem(completedInboxCleanupKey(companyId!, userId!), "true");
     await render();
     expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(12);
+    expect(maxInFlight).toBe(1);
+    expect(api.archiveCompletedFromInbox.mock.calls.map(([id]) => id).sort())
+      .toEqual(Array.from({ length: 12 }, (_, i) => `done-${i}`).sort());
+    await refresh();
+    expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(12);
+  });
+
+  it("does not let one failing task block the others", async () => {
+    issues = [issue("broken"), issue("fine")];
+    api.archiveCompletedFromInbox.mockImplementation(async (id: string) => {
+      if (id === "broken") throw new Error("server said no");
+      return { archived: true };
+    });
+    localStorage.setItem(completedInboxCleanupKey(companyId!, userId!), "true");
+    await render();
+    // "fine" changed the inbox and triggered a refetch; "broken" waits for the next scheduled refresh.
+    expect(api.archiveCompletedFromInbox.mock.calls.map(([id]) => id)).toEqual(["broken", "fine"]);
+    expect(observed.error).toBe("server said no");
+  });
+
+  it("remembers handled completions across Inbox visits", async () => {
+    localStorage.setItem(completedInboxCleanupKey(companyId!, userId!), "true");
+    api.archiveCompletedFromInbox.mockResolvedValue({ archived: false, reason: "already_archived" });
+    await render();
+    expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    client.clear();
+    await render();
+    expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a resurfaced completed task visible instead of repeatedly archiving new activity", async () => {
@@ -77,12 +135,10 @@ describe("completed inbox cleanup at its query/API seam", () => {
     api.archiveCompletedFromInbox.mockResolvedValue({ archived: false, reason: "already_archived" });
     await render();
     issues = [issue("done")];
-    updatedAt++;
-    await render();
+    await refresh();
     expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(1);
     issues = [{ ...issue("done"), completedAt: new Date("2026-10-23T12:00:00Z") }];
-    updatedAt++;
-    await render();
+    await refresh();
     expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(2);
   });
 
@@ -93,14 +149,12 @@ describe("completed inbox cleanup at its query/API seam", () => {
     localStorage.setItem(completedInboxCleanupKey(companyId!, userId!), "true");
     await render();
     issues = [issue("first"), issue("second", "in_progress")];
-    updatedAt++;
-    await render();
+    await refresh();
     await act(async () => { finish({ archived: true }); });
     expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(1);
     await act(async () => observed.setEnabled(false));
     issues = [issue("third")];
-    updatedAt++;
-    await render();
+    await refresh();
     expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(1);
   });
 
@@ -136,8 +190,12 @@ describe("completed inbox cleanup at its query/API seam", () => {
     expect(observed.error).toBe("network unavailable");
     expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(1);
     expect(invalidate).not.toHaveBeenCalled();
-    updatedAt++;
-    await render();
+    await refresh();
+    // A refetch inside the retry window (e.g. a live update) does not retry yet.
+    expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(1);
+    const later = Date.now() + COMPLETED_INBOX_CLEANUP_RETRY_MS + 1;
+    vi.spyOn(Date, "now").mockReturnValue(later);
+    await refresh();
     expect(api.archiveCompletedFromInbox).toHaveBeenCalledTimes(2);
     expect(observed.error).toBeNull();
   });

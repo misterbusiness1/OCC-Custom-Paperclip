@@ -701,10 +701,11 @@ describe("ApprovalPayloadRenderer", () => {
     expect(text).toContain("Draft replyProposed outgoing reply");
     expect(text).not.toContain("Recommended action");
     expect(text).not.toContain("Proposed reply");
-    expect(text.indexOf("Recommendation")).toBeLessThan(text.indexOf("Original request"));
-    expect(text.indexOf("Original request")).toBeLessThan(text.indexOf("Why"));
+    // Owner request 2026-10-28: the email being answered sits after the pros and risks, right above the draft.
+    expect(text.indexOf("Recommendation")).toBeLessThan(text.indexOf("Why"));
     expect(text.indexOf("Why")).toBeLessThan(text.indexOf("Pros"));
-    expect(text.indexOf("Pros")).toBeLessThan(text.indexOf("Draft reply"));
+    expect(text.indexOf("Risks")).toBeLessThan(text.indexOf("Original email"));
+    expect(text.indexOf("Original email")).toBeLessThan(text.indexOf("Draft reply"));
 
     const proseBodies = Array.from(container.querySelectorAll("pre"));
     const originalRequest = proseBodies.find((element) => element.textContent === original);
@@ -823,7 +824,7 @@ describe("ApprovalPayloadRenderer", () => {
       );
     });
 
-    expect(container.textContent).toContain("No original request was attached to this approval.");
+    expect(container.textContent).toContain("The requesting agent did not attach the email this reply answers.");
     expect(container.textContent).toContain("Draft replyDraft reply only");
     expect(container.textContent).not.toContain("Proposed reply");
     act(() => root.unmount());
