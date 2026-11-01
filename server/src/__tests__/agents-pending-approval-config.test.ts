@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq, sql } from "drizzle-orm";
 import {
   agentApiKeys,
   agents,
@@ -8,6 +8,8 @@ import {
   activityLog,
   budgetPolicies,
   companies,
+  companySecrets,
+  companySecretBindings,
   createDb,
 } from "@paperclipai/db";
 import {
@@ -16,6 +18,9 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.ts";
 import { approvalService } from "../services/approvals.ts";
+
+const mockNotifyHireApproved = vi.hoisted(() => vi.fn(async (_db: ReturnType<typeof createDb>, _input: unknown) => {}));
+vi.mock("../services/hire-hook.js", () => ({ notifyHireApproved: mockNotifyHireApproved }));
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -40,6 +45,9 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
   }, 20_000);
 
   afterEach(async () => {
+    mockNotifyHireApproved.mockReset();
+    await db.delete(companySecretBindings);
+    await db.delete(companySecrets);
     await db.delete(activityLog);
     await db.delete(budgetPolicies);
     await db.delete(approvals);
@@ -213,26 +221,195 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     expect(found?.id).toBe(original.id);
   });
 
-  it("refuses to activate a pending hire whose approved payload reports to another company's agent", async () => {
+  it("rolls back an approval whose config references another company's secret", async () => {
+    const companyId = await seedCompany();
+    const foreignCompanyId = await seedCompany();
+    const pending = await seedAgent(companyId, { status: "pending_approval" });
+    const [secret] = await db.insert(companySecrets).values({
+      companyId: foreignCompanyId, key: "FOREIGN_FIXTURE", name: "Foreign fixture", provider: "local_encrypted",
+    }).returning();
+    const approval = await seedHireApproval(companyId, {
+      agentId: pending.id, name: pending.name, budgetMonthlyCents: 1234,
+      adapterConfig: { env: { API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" } } },
+    });
+    await expect(approvalService(db).approve(approval.id, "board-user")).rejects.toMatchObject({
+      status: 422, message: "Secret must belong to same company",
+    });
+    await expect(approvalService(db).getById(approval.id)).resolves.toMatchObject({ status: "pending" });
+    await expect(agentService(db).getById(pending.id)).resolves.toMatchObject({ status: "pending_approval", adapterConfig: {} });
+    expect(await db.select().from(budgetPolicies)).toHaveLength(0);
+    expect(await db.select().from(companySecretBindings)).toHaveLength(0);
+    expect(mockNotifyHireApproved).not.toHaveBeenCalled();
+  });
+
+  it("rolls back the approval and newly created hire when its budget write fails", async () => {
+    const companyId = await seedCompany();
+    const approval = await seedHireApproval(companyId, { name: "New hire", budgetMonthlyCents: 1234 });
+    await db.execute(sql`CREATE FUNCTION fail_created_hire_budget_fixture() RETURNS trigger
+      LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'created hire budget fixture failure'; END $$`);
+    await db.execute(sql`CREATE TRIGGER fail_created_hire_budget_fixture BEFORE INSERT ON budget_policies
+      FOR EACH ROW EXECUTE FUNCTION fail_created_hire_budget_fixture()`);
+    try {
+      await expect(approvalService(db).approve(approval.id, "board-user")).rejects.toMatchObject({
+        cause: { message: "created hire budget fixture failure" },
+      });
+    } finally {
+      await db.execute(sql`DROP TRIGGER fail_created_hire_budget_fixture ON budget_policies`);
+      await db.execute(sql`DROP FUNCTION fail_created_hire_budget_fixture()`);
+    }
+    await expect(approvalService(db).getById(approval.id)).resolves.toMatchObject({ status: "pending" });
+    expect(await db.select().from(agents)).toHaveLength(0);
+    expect(await db.select().from(budgetPolicies)).toHaveLength(0);
+    expect(await db.select().from(companySecretBindings)).toHaveLength(0);
+    expect(mockNotifyHireApproved).not.toHaveBeenCalled();
+  });
+
+  it.each(["pending", "revision_requested"] as const)("refuses a stale %s revision write queued behind a committing hire", async (initialStatus) => {
+    const companyId = await seedCompany();
+    const pending = await seedAgent(companyId, { status: "pending_approval" });
+    const payload = { agentId: pending.id, name: pending.name, budgetMonthlyCents: 1234 };
+    const approval = await seedHireApproval(companyId, payload);
+    if (initialStatus === "revision_requested") {
+      await db.update(approvals).set({ status: initialStatus }).where(eq(approvals.id, approval.id));
+    }
+    const svc = approvalService(db);
+    // A reserved connection owns the barrier; the budget trigger stops B only
+    // after its approval/agent writes, while C must read the old visible row.
+    const owner = await db.$client.reserve();
+    const lockKey = Number.parseInt(randomUUID().replace(/-/g, "").slice(0, 7), 16);
+    let approving: Promise<unknown> | undefined;
+    let revising: Promise<{ value?: unknown; error?: unknown }> | undefined;
+    async function waitForPid(query: ReturnType<typeof sql>) {
+      const deadline = performance.now() + 2000;
+      do {
+        const rows = await db.execute(query);
+        const pid = Number(rows[0]?.pid);
+        if (pid > 0) return pid;
+      } while (performance.now() < deadline);
+      throw new Error("Owned database lock barrier was not observed");
+    }
+    await owner`SELECT pg_advisory_lock(${lockKey})`;
+    try {
+      await db.execute(sql.raw(`CREATE FUNCTION hold_approval_budget_fixture() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(${lockKey}); RETURN NEW; END $$`));
+      await db.execute(sql`CREATE TRIGGER hold_approval_budget_fixture BEFORE INSERT ON budget_policies
+        FOR EACH ROW EXECUTE FUNCTION hold_approval_budget_fixture()`);
+      approving = svc.approve(approval.id, "board-user");
+      const approvingPid = await waitForPid(sql`SELECT pid FROM pg_locks WHERE locktype = 'advisory'
+        AND objid = ${lockKey} AND NOT granted
+        AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`);
+      revising = (initialStatus === "pending"
+        ? svc.requestRevision(approval.id, "board-user", "Stale revision")
+        : svc.resubmit(approval.id, { ...payload, name: "Stale replacement", budgetMonthlyCents: 9999 }))
+        .then((value) => ({ value }), (error: unknown) => ({ error }));
+      await waitForPid(sql`SELECT pid FROM pg_stat_activity WHERE datname = current_database()
+        AND ${approvingPid} = ANY(pg_blocking_pids(pid))`);
+    } finally {
+      await owner`SELECT pg_advisory_unlock(${lockKey})`;
+      owner.release();
+      await Promise.allSettled([approving, revising]);
+      await db.execute(sql`DROP TRIGGER IF EXISTS hold_approval_budget_fixture ON budget_policies`);
+      await db.execute(sql`DROP FUNCTION IF EXISTS hold_approval_budget_fixture()`);
+    }
+    await expect(approving).resolves.toMatchObject({ applied: true, approval: { status: "approved" } });
+    await expect(svc.getById(approval.id)).resolves.toMatchObject({ status: "approved", payload });
+    expect((await revising)?.error).toMatchObject({ status: 422,
+      message: initialStatus === "pending" ? "Only pending approvals can request revision" : "Only revision requested approvals can be resubmitted" });
+    await expect(agentService(db).getById(pending.id)).resolves.toMatchObject({ status: "idle", budgetMonthlyCents: 1234 });
+    expect(await db.select().from(budgetPolicies)).toMatchObject([{ amount: 1234, scopeId: pending.id }]);
+    expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["foreign", "cycle", "budget"] as const)("rolls back a %s failure and permits an atomic corrected hire retry", async (invalidManager) => {
     const companyId = await seedCompany();
     const otherCompanyId = await seedCompany();
-    const foreignManager = await seedAgent(otherCompanyId);
     const pending = await seedAgent(companyId, { status: "pending_approval" });
-    const approval = await seedHireApproval(companyId, {
+    const badManager = await seedAgent(invalidManager === "foreign" ? otherCompanyId : companyId,
+      invalidManager === "cycle" ? { reportsTo: pending.id } : {});
+    const manager = await seedAgent(companyId);
+    // Only metadata is needed to exercise persistence/binding; no credential is resolved.
+    const [secret] = await db.insert(companySecrets).values({
+      companyId, key: "APPROVED_FIXTURE", name: "Approved fixture", provider: "local_encrypted",
+    }).returning();
+    const payload = {
       name: pending.name,
       agentId: pending.id,
-      reportsTo: foreignManager.id,
-    });
+      reportsTo: badManager.id,
+      budgetMonthlyCents: 1234,
+      adapterConfig: { env: { API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" } } },
+    };
+    const approval = await seedHireApproval(companyId, payload);
+    const svc = approvalService(db);
 
-    await expect(approvalService(db).approve(approval.id, "board-user")).rejects.toMatchObject({
-      status: 422,
-      message: "Manager must belong to same company",
+    if (invalidManager === "budget") {
+      // Fail after activation and secret binding writes, in this owned database.
+      await db.execute(sql`CREATE FUNCTION fail_approval_budget_fixture() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'budget write fixture failure'; END $$`);
+      await db.execute(sql`CREATE TRIGGER fail_approval_budget_fixture BEFORE INSERT ON budget_policies
+        FOR EACH ROW EXECUTE FUNCTION fail_approval_budget_fixture()`);
+      try {
+        await expect(svc.approve(approval.id, "board-user")).rejects.toMatchObject({
+          cause: { message: "budget write fixture failure" },
+        });
+      } finally {
+        await db.execute(sql`DROP TRIGGER fail_approval_budget_fixture ON budget_policies`);
+        await db.execute(sql`DROP FUNCTION fail_approval_budget_fixture()`);
+      }
+    } else {
+      await expect(svc.approve(approval.id, "board-user")).rejects.toMatchObject({
+        status: 422,
+        message: invalidManager === "foreign" ? "Manager must belong to same company" : "Reporting relationship would create cycle",
+      });
+    }
+    await expect(svc.getById(approval.id)).resolves.toMatchObject({
+      status: "pending", decidedByUserId: null, decidedAt: null,
     });
-
     await expect(agentService(db).getById(pending.id)).resolves.toMatchObject({
-      status: "pending_approval",
-      reportsTo: null,
+      status: "pending_approval", reportsTo: null, budgetMonthlyCents: 0, adapterConfig: {},
     });
+    expect(await db.select().from(budgetPolicies)).toHaveLength(0);
+    expect(await db.select().from(companySecretBindings)).toHaveLength(0);
+    expect(mockNotifyHireApproved).not.toHaveBeenCalled();
+
+    await svc.requestRevision(approval.id, "board-user", "Correct manager");
+    await svc.resubmit(approval.id, { ...payload, reportsTo: manager.id });
+    const notificationCommitted = new Promise<void>((resolve, reject) => {
+      mockNotifyHireApproved.mockImplementationOnce(async (notificationDb) => {
+        try {
+          // Read through the original connection, not the approval transaction.
+          expect(notificationDb).toBe(db);
+          await expect(approvalService(notificationDb).getById(approval.id)).resolves.toMatchObject({ status: "approved" });
+          await expect(agentService(notificationDb).getById(pending.id)).resolves.toMatchObject({ status: "idle" });
+          expect(await notificationDb.select().from(budgetPolicies)).toHaveLength(1);
+          expect(await notificationDb.select().from(companySecretBindings)).toHaveLength(1);
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    const approved = await Promise.all([
+      svc.approve(approval.id, "board-user"),
+      svc.approve(approval.id, "board-user"),
+    ]);
+    expect(approved.filter((result) => result.applied)).toHaveLength(1);
+    expect(approved.every((result) => result.approval.status === "approved")).toBe(true);
+    expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+    await notificationCommitted;
+    await expect(agentService(db).getById(pending.id)).resolves.toMatchObject({
+      status: "idle", reportsTo: manager.id, budgetMonthlyCents: 1234,
+    });
+    expect(await db.select().from(budgetPolicies)).toHaveLength(1);
+    expect(await db.select().from(companySecretBindings)).toMatchObject([{
+      companyId, targetId: pending.id, secretId: secret.id, configPath: "env.API_KEY",
+    }]);
+    expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+    expect(mockNotifyHireApproved.mock.calls[0]?.[0]).toBe(db);
+    const replay = await svc.approve(approval.id, "board-user");
+    expect(replay.applied).toBe(false);
+    expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(budgetPolicies)).toHaveLength(1);
+    expect(await db.select().from(companySecretBindings)).toHaveLength(1);
   });
 
   it("refuses to activate a pending hire whose approved payload creates a reporting cycle", async () => {
@@ -289,6 +466,23 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
 
     const [key] = await db.select().from(agentApiKeys).where(eq(agentApiKeys.agentId, pending.id));
     expect(key?.revokedAt).toBeInstanceOf(Date);
+  });
+
+  it("resolves a foreign-target approval without changing or notifying the foreign pending agent", async () => {
+    const companyId = await seedCompany();
+    const foreignCompanyId = await seedCompany();
+    const foreign = await seedAgent(foreignCompanyId, { status: "pending_approval" });
+    const approval = await seedHireApproval(companyId, {
+      agentId: foreign.id, name: "Injected name", budgetMonthlyCents: 1234,
+    });
+    await expect(approvalService(db).approve(approval.id, "board-user")).resolves.toMatchObject({
+      applied: true, approval: { status: "approved" },
+    });
+    await expect(agentService(db).getById(foreign.id)).resolves.toMatchObject({
+      status: "pending_approval", name: foreign.name, budgetMonthlyCents: 0,
+    });
+    expect(await db.select().from(budgetPolicies)).toHaveLength(0);
+    expect(mockNotifyHireApproved).not.toHaveBeenCalled();
   });
 
   it("resolves hire approvals whose payload.agentId is not a uuid without a database error", async () => {
