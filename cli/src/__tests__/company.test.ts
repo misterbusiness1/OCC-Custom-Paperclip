@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyPortabilityPreviewResult } from "@paperclipai/shared";
@@ -65,6 +68,7 @@ function company(overrides: Record<string, unknown> = {}) {
 }
 
 describe("company CLI commands", () => {
+  let tmpDir: string;
   let fetchMock: ReturnType<typeof vi.fn>;
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
@@ -74,6 +78,11 @@ describe("company CLI commands", () => {
     delete process.env.PAPERCLIP_API_URL;
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_COMPANY_ID;
+    delete process.env.PAPERCLIP_AUTH_STORE;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-company-"));
+    process.env.PAPERCLIP_HOME = path.join(tmpDir, "home");
+    // Ancestor context discovery takes precedence over the isolated home.
+    process.env.PAPERCLIP_CONTEXT = path.join(tmpDir, "context.json");
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -84,6 +93,7 @@ describe("company CLI commands", () => {
     process.env = { ...ORIGINAL_ENV };
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("gets the current company from an explicit company context without board-wide listing", async () => {
