@@ -1,6 +1,6 @@
 # Agent Runtime Image Family
 
-Container images for running coding-agent harnesses in sandboxed environments (for example the kubernetes sandbox provider, stage 1 of the k8s contribution). Images are named `agent-runtime-{harness}:{version}` and published to `ghcr.io/paperclipai/` by the `agent-runtime-images` workflow. The registry is overridable: every reference flows through the `REGISTRY` bake variable.
+Container images for running coding-agent harnesses in sandboxed environments (for example the kubernetes sandbox provider, stage 1 of the k8s contribution). Images are named `agent-runtime-{harness}:{version}` and published by the `agent-runtime-images` workflow to the GHCR namespace of the repository owner that runs it, `ghcr.io/<owner>/` lowercased (upstream: `ghcr.io/paperclipai/`; see [Publishing](#publishing)). The registry is overridable: every reference flows through the `REGISTRY` bake variable, whose local default is `ghcr.io/paperclipai`.
 
 ## Image Lineup
 
@@ -83,3 +83,13 @@ The shim makes no assumptions about command structure; it is harness-agnostic. N
 ## Publishing
 
 `.github/workflows/agent-runtime-images.yml` builds and pushes the default scope (base, opencode, pi, codex, gemini, claude) on `workflow_dispatch` (with an explicit version tag) or on pushes to `master` touching these paths, then signs each digest with cosign keyless OIDC.
+
+- **Registry**: `ghcr.io/<owner>`, where `<owner>` is the lowercased owner of the repository running the workflow (`github.repository_owner`). Upstream this is `ghcr.io/paperclipai`; a fork publishes to its own namespace, because its `GITHUB_TOKEN` cannot push to `ghcr.io/paperclipai`.
+- **Tags**: pushes to `master` publish `git-<sha>`; `workflow_dispatch` publishes the `version` input (default `dev`). No `v1` tag is published unless you dispatch with `version: v1`.
+- **Visibility**: GitHub gives a newly published GHCR package private visibility by default, including packages under a personal account such as a fork owner's. After the first run, either switch each `agent-runtime-*` package to public in its package settings ("Change visibility") or give the cluster a pull secret through the kubernetes provider's `imagePullSecrets`.
+
+### Using a fork's images with the kubernetes sandbox provider
+
+The provider's built-in defaults pull `ghcr.io/paperclipai/agent-runtime-{harness}:v1` (`packages/plugins/sandbox-providers/kubernetes/src/adapter-defaults.ts`), so images this workflow publishes to a fork's namespace are not used until the environment config points at them. Set the `adapters` registry with an explicit `runtimeImage` for each adapter type the environment runs, for example `ghcr.io/<owner>/agent-runtime-claude:git-<sha>`. The registry has replace semantics: once `adapters` is set, any adapter type not listed in it is rejected.
+
+The `imageRegistry` setting rewrites only the registry and owner and keeps the default `:v1` tag, so it also needs a `v1` tag in your namespace. It is validated as a URL, so a bare `ghcr.io/<owner>` value is rejected; prefer `adapters`.

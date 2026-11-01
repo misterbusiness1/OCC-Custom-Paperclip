@@ -75,6 +75,8 @@ jobs:
 
       - name: Test overlay image workflow
         run: node --test ./scripts/__tests__/overlay-image-workflow.test.mjs
+      - name: Test agent runtime images registry
+        run: node --test ./scripts/__tests__/agent-runtime-images-workflow.test.mjs
 
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
