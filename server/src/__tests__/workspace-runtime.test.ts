@@ -58,6 +58,32 @@ import {
 } from "./helpers/embedded-postgres.js";
 
 const execFileAsync = promisify(execFile);
+const originalPath = process.env.PATH;
+const provisionFixtureBins: string[] = [];
+
+// Provisioning fixtures exercise dependency installation and the script's
+// config-writer fallback, not a Paperclip CLI installed on the developer host.
+// Keep real shell/git/pnpm tools while excluding ambient CLI discovery.
+async function isolateProvisionFixtureTools(includePnpm = false, existingBin?: string) {
+  const bin = existingBin ?? await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-provision-tools-"));
+  if (!existingBin) provisionFixtureBins.push(bin);
+  const tools = [
+    "bash", "sh", "git", "dirname", "basename", "mkdir", "find", "sed", "cat", "cp",
+    "mv", "rm", "ln", "readlink", "sort", "tee", "mktemp", "chmod", "stat", "awk",
+    "grep", "head", "tail", "tr", "cut", "touch", "wc", "env", "uname", "sleep",
+    ...(includePnpm ? ["pnpm"] : []),
+  ];
+  for (const tool of tools) {
+    const resolved = (await execFileAsync("bash", ["-c", 'command -v "$1"', "fixture-command", tool], {
+      env: { ...process.env, PATH: originalPath },
+    })).stdout.trim();
+    if (!path.isAbsolute(resolved)) throw new Error(`Fixture tool must resolve to a file: ${tool}`);
+    await fs.symlink(resolved, path.join(bin, tool));
+  }
+  await fs.symlink(process.execPath, path.join(bin, "node"));
+  process.env.PATH = bin;
+}
+
 
 function stableStringifyForTest(value: unknown): string {
   if (Array.isArray(value)) {
@@ -342,6 +368,9 @@ afterEach(async () => {
       leasedRunIds.delete(runId);
     }),
   );
+  if (originalPath === undefined) delete process.env.PATH;
+  else process.env.PATH = originalPath;
+  await Promise.all(provisionFixtureBins.splice(0).map((bin) => fs.rm(bin, { recursive: true, force: true })));
   delete process.env.PAPERCLIP_CONFIG;
   delete process.env.PAPERCLIP_HOME;
   delete process.env.PAPERCLIP_INSTANCE_ID;
@@ -1261,8 +1290,7 @@ describe("realizeExecutionWorkspace", () => {
     process.env.PAPERCLIP_WORKTREES_DIR = isolatedWorktreeHome;
     // Keep this server-side fixture on provision-worktree.sh's config writer path;
     // CLI/database seeding is covered by the CLI worktree tests.
-    await fs.symlink(process.execPath, path.join(isolatedBin, "node"));
-    process.env.PATH = `${isolatedBin}${path.delimiter}/usr/bin${path.delimiter}/bin`;
+    await isolateProvisionFixtureTools(false, isolatedBin);
 
     await fs.mkdir(sharedConfigDir, { recursive: true });
     await fs.writeFile(
@@ -1436,6 +1464,7 @@ describe("realizeExecutionWorkspace", () => {
   it(
     "provisions worktree-local pnpm node_modules instead of reusing base-repo links",
     async () => {
+    await isolateProvisionFixtureTools(true);
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.mkdir(path.join(repoRoot, "packages", "shared"), { recursive: true });
@@ -1538,6 +1567,7 @@ describe("realizeExecutionWorkspace", () => {
   );
 
   it("provisions successfully when install is needed but there are no symlinked node_modules to move", async () => {
+    await isolateProvisionFixtureTools(true);
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.writeFile(
@@ -1611,6 +1641,7 @@ describe("realizeExecutionWorkspace", () => {
   }, 30_000);
 
   it("reinstalls worktree-local pnpm dependencies when package metadata changes", async () => {
+    await isolateProvisionFixtureTools();
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-stale-deps-"));
     const baseRoot = path.join(tempRoot, "base");
     const worktreeRoot = path.join(tempRoot, "worktree");
@@ -1851,6 +1882,7 @@ describe("realizeExecutionWorkspace", () => {
   });
 
   it("retries worktree-local pnpm install without a frozen lockfile when the lockfile is outdated", async () => {
+    await isolateProvisionFixtureTools();
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-outdated-lockfile-"));
     const baseRoot = path.join(tempRoot, "base");
     const worktreeRoot = path.join(tempRoot, "worktree");
@@ -1928,6 +1960,7 @@ describe("realizeExecutionWorkspace", () => {
   it(
     "provisions worktree-local pnpm node_modules instead of reusing base-repo links",
     async () => {
+    await isolateProvisionFixtureTools(true);
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.mkdir(path.join(repoRoot, "packages", "shared"), { recursive: true });

@@ -86,6 +86,9 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-access-routes-permissions-upgrade-");
     db = createDb(tempDb.connectionString);
+    // Compile the route graph during setup rather than spending the first
+    // behavior test's request deadline on a cold dynamic import.
+    await import("../routes/access.js");
   }, 20_000);
 
   afterEach(async () => {
