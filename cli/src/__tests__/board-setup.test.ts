@@ -66,6 +66,9 @@ describe("board setup", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-board-setup-"));
     // Isolate context profiles and stored board logins from the real home.
     process.env.PAPERCLIP_HOME = path.join(tmpDir, "home");
+    // Context discovery searches ancestor .paperclip directories before HOME.
+    // Pin the context too so a developer's profile cannot select a real company.
+    process.env.PAPERCLIP_CONTEXT = path.join(tmpDir, "context.json");
     // Same as `eval "$(...)"`: stdout is captured, so no interactive login.
     Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
     Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
