@@ -24,6 +24,36 @@ Reference: `doc/plugins/PLUGIN_SPEC.md`
 | `@paperclipai/plugin-sdk/protocol` | JSON-RPC protocol types and helpers (advanced) |
 | `@paperclipai/plugin-sdk/types` | Worker context and API types (advanced) |
 
+## Zod 4
+
+`z`, re-exported from `@paperclipai/plugin-sdk` for config and tool parameter
+schemas, is **zod 4** (the `zod` package root, pinned to 4.6.7). Earlier SDK
+builds re-exported zod 3.
+
+Plugins that are already built keep working: manifests carry JSON Schema, and
+host and worker exchange JSON over RPC. Code that uses `z` follows the zod 4
+API once it is rebuilt against this SDK. The changes most likely to matter
+(see zod's own v4 migration guide for the full list):
+
+- `error.errors` is gone; use `error.issues`. Issue codes and default messages
+  changed (for example `invalid_format`/`invalid_value`, and
+  "Invalid input: expected string, received undefined" instead of "Required").
+- `required_error`, `invalid_type_error` and `errorMap` are replaced by the
+  `error` parameter.
+- `z.record()` takes a key schema: `z.record(z.string(), value)`.
+- A `.default()` under `.optional()` or `.partial()` is now applied when the
+  key is missing (zod 3 left the key out). Remove such defaults from update
+  schemas if an omitted field must stay omitted.
+- `.default(value)` returns `value` without parsing it, so nested defaults are
+  not filled; use `.prefault(value)` for the zod 3 behaviour.
+- A key whose schema is bare `z.unknown()` or `z.any()` is required; add
+  `.optional()` to allow it to be missing.
+- `z.uuid()` and `z.string().uuid()` accept only RFC 9562 UUIDs (version and
+  variant bits set); `z.guid()` accepts any 8-4-4-4-12 hex string.
+- `.datetime()` requires seconds when the value has `Z` or an offset.
+
+The plugin protocol version (`PLUGIN_API_VERSION`) is unchanged.
+
 ## Manifest entrypoints
 
 In your plugin manifest you declare:

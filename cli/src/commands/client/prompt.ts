@@ -5,6 +5,7 @@ import {
   addCommonClientOptions,
   apiPath,
   handleCommandError,
+  parseClientInput,
   printOutput,
   resolveCommandContext,
   type BaseClientOptions,
@@ -177,7 +178,7 @@ async function createOrCommentForAgent(input: {
   wake: boolean;
 }): Promise<PromptResult> {
   if (input.issueId?.trim()) {
-    const payload = addIssueCommentSchema.parse({
+    const payload = parseClientInput(addIssueCommentSchema, {
       body: input.prompt,
       resume: input.wake,
     });
@@ -197,7 +198,7 @@ async function createOrCommentForAgent(input: {
     };
   }
 
-  const payload = createIssueSchema.parse({
+  const payload = parseClientInput(createIssueSchema, {
     title: input.title?.trim() || defaultPromptTitle(input.prompt),
     description: input.prompt,
     status: "todo",

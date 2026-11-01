@@ -20,6 +20,7 @@ import {
   type KubernetesProviderConfig,
   type KubernetesLeaseMetadata,
 } from "./types.js";
+import { zod3ParseParams } from "./zod3-compat.js";
 import { createKubeConfig, makeKubeClients } from "./kube-client.js";
 import { getAdapterDefaults, buildAdapterEnv, resolveRunAdapterType } from "./adapter-defaults.js";
 import { resolveImage } from "./image-allowlist.js";
@@ -121,7 +122,7 @@ const plugin = definePlugin({
   async onEnvironmentValidateConfig(
     params: PluginEnvironmentValidateConfigParams,
   ): Promise<PluginEnvironmentValidationResult> {
-    const parsed = kubernetesProviderConfigSchema.safeParse(params.config);
+    const parsed = kubernetesProviderConfigSchema.safeParse(params.config, zod3ParseParams);
     if (!parsed.success) {
       return {
         ok: false,
@@ -149,7 +150,7 @@ const plugin = definePlugin({
   async onEnvironmentProbe(
     params: PluginEnvironmentProbeParams,
   ): Promise<PluginEnvironmentProbeResult> {
-    const parsed = kubernetesProviderConfigSchema.safeParse(params.config);
+    const parsed = kubernetesProviderConfigSchema.safeParse(params.config, zod3ParseParams);
     if (!parsed.success) {
       return {
         ok: false,

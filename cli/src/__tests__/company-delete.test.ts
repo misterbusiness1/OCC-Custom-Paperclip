@@ -4,7 +4,7 @@ import { assertDeleteConfirmation, resolveCompanyForDeletion } from "../commands
 
 function makeCompany(overrides: Partial<Company>): Company {
   return {
-    id: "11111111-1111-1111-1111-111111111111",
+    id: "11111111-1111-4111-8111-111111111111",
     name: "Alpha",
     description: null,
     status: "active",
@@ -33,25 +33,25 @@ function makeCompany(overrides: Partial<Company>): Company {
 describe("resolveCompanyForDeletion", () => {
   const companies: Company[] = [
     makeCompany({
-      id: "11111111-1111-1111-1111-111111111111",
+      id: "11111111-1111-4111-8111-111111111111",
       name: "Alpha",
       issuePrefix: "ALP",
     }),
     makeCompany({
-      id: "22222222-2222-2222-2222-222222222222",
+      id: "22222222-2222-4222-8222-222222222222",
       name: "Paperclip",
       issuePrefix: "PAP",
     }),
   ];
 
   it("resolves by ID in auto mode", () => {
-    const result = resolveCompanyForDeletion(companies, "22222222-2222-2222-2222-222222222222", "auto");
+    const result = resolveCompanyForDeletion(companies, "22222222-2222-4222-8222-222222222222", "auto");
     expect(result.issuePrefix).toBe("PAP");
   });
 
   it("resolves by prefix in auto mode", () => {
     const result = resolveCompanyForDeletion(companies, "pap", "auto");
-    expect(result.id).toBe("22222222-2222-2222-2222-222222222222");
+    expect(result.id).toBe("22222222-2222-4222-8222-222222222222");
   });
 
   it("throws when selector is not found", () => {
@@ -63,14 +63,14 @@ describe("resolveCompanyForDeletion", () => {
   });
 
   it("respects explicit prefix mode", () => {
-    expect(() => resolveCompanyForDeletion(companies, "22222222-2222-2222-2222-222222222222", "prefix"))
+    expect(() => resolveCompanyForDeletion(companies, "22222222-2222-4222-8222-222222222222", "prefix"))
       .toThrow(/No company found by shortname/);
   });
 });
 
 describe("assertDeleteConfirmation", () => {
   const company = makeCompany({
-    id: "22222222-2222-2222-2222-222222222222",
+    id: "22222222-2222-4222-8222-222222222222",
     issuePrefix: "PAP",
   });
 
@@ -86,7 +86,7 @@ describe("assertDeleteConfirmation", () => {
     expect(() =>
       assertDeleteConfirmation(company, {
         yes: true,
-        confirm: "22222222-2222-2222-2222-222222222222",
+        confirm: "22222222-2222-4222-8222-222222222222",
       })).not.toThrow();
   });
 

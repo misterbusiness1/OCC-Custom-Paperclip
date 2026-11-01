@@ -26,6 +26,7 @@ import {
   apiPath,
   formatInlineRecord,
   handleCommandError,
+  parseClientInput,
   printOutput,
   resolveCommandContext,
   type BaseClientOptions,
@@ -344,7 +345,7 @@ export function registerAgentCommands(program: Command): void {
       .action(async (opts: AgentJsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const payload = createAgentSchema.parse(parseJson(opts.payloadJson));
+          const payload = parseClientInput(createAgentSchema, parseJson(opts.payloadJson));
           const created = await ctx.api.post<Agent>(apiPath`/api/companies/${ctx.companyId}/agents`, payload);
           printOutput(created, { json: ctx.json });
         } catch (err) {
@@ -381,7 +382,7 @@ export function registerAgentCommands(program: Command): void {
       .action(async (agentId: string, opts: AgentJsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = updateAgentSchema.parse(parseJson(opts.payloadJson));
+          const payload = parseClientInput(updateAgentSchema, parseJson(opts.payloadJson));
           const updated = await ctx.api.patch<Agent>(apiPath`/api/agents/${agentId}`, payload);
           printOutput(updated, { json: ctx.json });
         } catch (err) {
@@ -442,7 +443,7 @@ export function registerAgentCommands(program: Command): void {
       .action(async (agentId: string, opts: AgentJsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = updateAgentPermissionsSchema.parse(parseJson(opts.payloadJson));
+          const payload = parseClientInput(updateAgentPermissionsSchema, parseJson(opts.payloadJson));
           const updated = await ctx.api.patch(apiPath`/api/agents/${agentId}/permissions`, payload);
           printOutput(updated, { json: ctx.json });
         } catch (err) {
@@ -542,7 +543,7 @@ export function registerAgentCommands(program: Command): void {
       .action(async (agentId: string, opts: AgentResetSessionOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = resetAgentSessionSchema.parse({ taskKey: opts.taskKey });
+          const payload = parseClientInput(resetAgentSessionSchema, { taskKey: opts.taskKey });
           const result = await ctx.api.post(apiPath`/api/agents/${agentId}/runtime-state/reset-session`, payload);
           printOutput(result, { json: ctx.json });
         } catch (err) {
@@ -592,7 +593,7 @@ export function registerAgentCommands(program: Command): void {
       .action(async (agentId: string, opts: AgentSkillsSyncOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = agentSkillSyncSchema.parse({ desiredSkills: parseCsv(opts.desiredSkills) });
+          const payload = parseClientInput(agentSkillSyncSchema, { desiredSkills: parseCsv(opts.desiredSkills) });
           const result = await ctx.api.post(apiPath`/api/agents/${agentId}/skills/sync`, payload);
           printOutput(result, { json: ctx.json });
         } catch (err) {
@@ -610,7 +611,7 @@ export function registerAgentCommands(program: Command): void {
       .action(async (agentId: string, opts: AgentJsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = updateAgentInstructionsPathSchema.parse(parseJson(opts.payloadJson));
+          const payload = parseClientInput(updateAgentInstructionsPathSchema, parseJson(opts.payloadJson));
           const result = await ctx.api.patch(apiPath`/api/agents/${agentId}/instructions-path`, payload);
           printOutput(result, { json: ctx.json });
         } catch (err) {
@@ -644,7 +645,7 @@ export function registerAgentCommands(program: Command): void {
       .action(async (agentId: string, opts: AgentJsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = updateAgentInstructionsBundleSchema.parse(parseJson(opts.payloadJson));
+          const payload = parseClientInput(updateAgentInstructionsBundleSchema, parseJson(opts.payloadJson));
           const result = await ctx.api.patch(apiPath`/api/agents/${agentId}/instructions-bundle`, payload);
           printOutput(result, { json: ctx.json });
         } catch (err) {
@@ -684,7 +685,7 @@ export function registerAgentCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const content = opts.contentFile ? await fs.readFile(opts.contentFile, "utf8") : opts.content;
-          const payload = upsertAgentInstructionsFileSchema.parse({
+          const payload = parseClientInput(upsertAgentInstructionsFileSchema, {
             path: opts.path,
             content,
             clearLegacyPromptTemplate: Boolean(opts.clearLegacyPromptTemplate),
@@ -735,7 +736,7 @@ export function registerAgentCommands(program: Command): void {
           if (!agentRow) {
             throw new Error(`Agent not found: ${agentRef}`);
           }
-          const payload = wakeAgentSchema.parse({
+          const payload = parseClientInput(wakeAgentSchema, {
             source: opts.source,
             triggerDetail: opts.trigger,
             reason: opts.reason,

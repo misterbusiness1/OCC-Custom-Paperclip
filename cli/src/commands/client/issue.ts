@@ -33,6 +33,7 @@ import {
   formatInlineRecord,
   handleCommandError,
   inferContentTypeFromPath,
+  parseClientInput,
   printOutput,
   resolveCommandContext,
   type BaseClientOptions,
@@ -290,7 +291,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (opts: IssueCreateOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const payload = createIssueSchema.parse({
+          const payload = parseClientInput(createIssueSchema, {
             title: opts.title,
             description: opts.description,
             status: opts.status,
@@ -332,7 +333,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: IssueUpdateOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = updateIssueSchema.parse({
+          const payload = parseClientInput(updateIssueSchema, {
             title: opts.title,
             description: opts.description,
             status: opts.status,
@@ -366,7 +367,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: IssueCommentOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = addIssueCommentSchema.parse({
+          const payload = parseClientInput(addIssueCommentSchema, {
             body: opts.body,
             reopen: opts.reopen,
             resume: opts.resume,
@@ -464,7 +465,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, approvalId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = linkIssueApprovalSchema.parse({ approvalId });
+          const payload = parseClientInput(linkIssueApprovalSchema, { approvalId });
           const approvals = await ctx.api.post(apiPath`/api/issues/${issueId}/approvals`, payload);
           printOutput(approvals, { json: ctx.json });
         } catch (err) {
@@ -523,7 +524,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: IssueRecoveryResolveOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = resolveIssueRecoveryActionSchema.parse({
+          const payload = parseClientInput(resolveIssueRecoveryActionSchema, {
             actionId: opts.actionId,
             outcome: opts.outcome,
             sourceIssueStatus: opts.sourceIssueStatus,
@@ -546,7 +547,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = createChildIssueSchema.parse(parseJson(opts.payloadJson));
+          const payload = parseClientInput(createChildIssueSchema, parseJson(opts.payloadJson));
           const child = await ctx.api.post<Issue>(apiPath`/api/issues/${issueId}/children`, payload);
           printOutput(child, { json: ctx.json });
         } catch (err) {
@@ -596,7 +597,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = createIssueWorkProductSchema.parse(parseJson(opts.payloadJson));
+          const payload = parseClientInput(createIssueWorkProductSchema, parseJson(opts.payloadJson));
           const product = await ctx.api.post(apiPath`/api/issues/${issueId}/work-products`, payload);
           printOutput(product, { json: ctx.json });
         } catch (err) {
@@ -614,7 +615,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (workProductId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = updateIssueWorkProductSchema.parse(parseJson(opts.payloadJson));
+          const payload = parseClientInput(updateIssueWorkProductSchema, parseJson(opts.payloadJson));
           const product = await ctx.api.patch(apiPath`/api/work-products/${workProductId}`, payload);
           printOutput(product, { json: ctx.json });
         } catch (err) {
@@ -690,7 +691,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const body = opts.bodyFile ? await readFile(opts.bodyFile, "utf8") : opts.body;
-          const payload = upsertIssueDocumentSchema.parse({
+          const payload = parseClientInput(upsertIssueDocumentSchema, {
             title: opts.title,
             format: opts.format,
             body,
@@ -730,7 +731,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = createIssueThreadInteractionSchema.parse(parseJson(opts.payloadJson));
+          const payload = parseClientInput(createIssueThreadInteractionSchema, parseJson(opts.payloadJson));
           const interaction = await ctx.api.post(apiPath`/api/issues/${issueId}/interactions`, payload);
           printOutput(interaction, { json: ctx.json });
         } catch (err) {
@@ -750,7 +751,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, interactionId: string, opts: InteractionAcceptOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = acceptIssueThreadInteractionSchema.parse({
+          const payload = parseClientInput(acceptIssueThreadInteractionSchema, {
             selectedClientKeys: opts.selectedClientKeys === undefined ? undefined : parseCsv(opts.selectedClientKeys),
             selectedOptionIds: opts.selectedOptionIds === undefined ? undefined : parseCsv(opts.selectedOptionIds),
           });
@@ -776,7 +777,7 @@ export function registerIssueCommands(program: Command): void {
         .action(async (issueId: string, interactionId: string, opts: InteractionReasonOptions) => {
           try {
             const ctx = resolveCommandContext(opts);
-            const payload = schema.parse({ reason: opts.reason });
+            const payload = parseClientInput(schema, { reason: opts.reason });
             const interaction = await ctx.api.post(`${apiPath`/api/issues/${issueId}/interactions/${interactionId}`}/${action}`, payload);
             printOutput(interaction, { json: ctx.json });
           } catch (err) {
@@ -797,7 +798,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, interactionId: string, opts: InteractionRespondOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = respondIssueThreadInteractionSchema.parse({
+          const payload = parseClientInput(respondIssueThreadInteractionSchema, {
             answers: parseJson(opts.answersJson),
             summaryMarkdown: opts.summaryMarkdown,
           });
@@ -834,7 +835,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = previewIssueTreeControlSchema.parse(parseJson(opts.payloadJson));
+          const payload = parseClientInput(previewIssueTreeControlSchema, parseJson(opts.payloadJson));
           const preview = await ctx.api.post(apiPath`/api/issues/${issueId}/tree-control/preview`, payload);
           printOutput(preview, { json: ctx.json });
         } catch (err) {
@@ -876,7 +877,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = createIssueTreeHoldSchema.parse(parseJson(opts.payloadJson));
+          const payload = parseClientInput(createIssueTreeHoldSchema, parseJson(opts.payloadJson));
           const hold = await ctx.api.post(apiPath`/api/issues/${issueId}/tree-holds`, payload);
           printOutput(hold, { json: ctx.json });
         } catch (err) {
@@ -912,7 +913,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, holdId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = releaseIssueTreeHoldSchema.parse(parseJson(opts.payloadJson));
+          const payload = parseClientInput(releaseIssueTreeHoldSchema, parseJson(opts.payloadJson));
           const hold = await ctx.api.post(apiPath`/api/issues/${issueId}/tree-holds/${holdId}/release`, payload);
           printOutput(hold, { json: ctx.json });
         } catch (err) {
@@ -1029,7 +1030,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (opts: IssueLabelCreateOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const payload = createIssueLabelSchema.parse({ name: opts.name, color: opts.color });
+          const payload = parseClientInput(createIssueLabelSchema, { name: opts.name, color: opts.color });
           const label = await ctx.api.post(apiPath`/api/companies/${ctx.companyId}/labels`, payload);
           printOutput(label, { json: ctx.json });
         } catch (err) {
@@ -1080,7 +1081,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = upsertIssueFeedbackVoteSchema.parse(parseJson(opts.payloadJson));
+          const payload = parseClientInput(upsertIssueFeedbackVoteSchema, parseJson(opts.payloadJson));
           const vote = await ctx.api.post(apiPath`/api/issues/${issueId}/feedback-votes`, payload);
           printOutput(vote, { json: ctx.json });
         } catch (err) {
@@ -1140,7 +1141,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, key: string, revisionId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = restoreIssueDocumentRevisionSchema.parse({});
+          const payload = parseClientInput(restoreIssueDocumentRevisionSchema, {});
           const doc = await ctx.api.post(
             apiPath`/api/issues/${issueId}/documents/${key}/revisions/${revisionId}/restore`,
             payload,
@@ -1293,7 +1294,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: IssueCheckoutOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = checkoutIssueSchema.parse({
+          const payload = parseClientInput(checkoutIssueSchema, {
             agentId: opts.agentId,
             expectedStatuses: parseCsv(opts.expectedStatuses),
           });

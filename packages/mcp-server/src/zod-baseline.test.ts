@@ -13,6 +13,7 @@ import {
   zodExports,
 } from "@paperclipai/shared/testing/zod-schema-baseline";
 import { loadOrUpdateGolden, readZodVersion, type BaselineGolden } from "@paperclipai/shared/testing/zod-baseline-golden";
+import { classifyToolsListDifferences, diffToolsList } from "@paperclipai/shared/testing/mcp-tools-list-baseline";
 import { createPaperclipMcpServer } from "./index.js";
 import * as toolsModule from "./tools.js";
 
@@ -20,8 +21,10 @@ import * as toolsModule from "./tools.js";
  * zod 3 -> zod 4 baselines for the Paperclip MCP server, captured on zod 3.25.76:
  * - the `tools/list` result agents see (names, descriptions, input JSON Schemas),
  * - the omitted-key behaviour of every tool input schema and exported schema.
- * Differences after the migration must be listed in TOOLS_LIST_DIFFERENCES with
- * a reason, never re-recorded.
+ * Differences after the migration must be explained by a documented rule in
+ * @paperclipai/shared/testing/mcp-tools-list-baseline (REPRESENTATION_RULES,
+ * CONTENT_RULES) or listed in TOOLS_LIST_DIFFERENCES with a reason, never
+ * re-recorded.
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -30,8 +33,21 @@ const zodVersion = readZodVersion(require.resolve("zod/package.json"));
 const TOOLS_LIST_GOLDEN = path.join(here, "__fixtures__", "zod3-tools-list.json");
 const SCHEMA_GOLDEN = path.join(here, "__fixtures__", "zod3-schema-baseline.json");
 
-/** `${toolName}` -> reason the tools/list entry intentionally differs from the zod 3 golden. */
-const TOOLS_LIST_DIFFERENCES: Record<string, string> = {};
+/**
+ * `${toolName}${jsonPointer}` -> reason this part of the tools/list entry
+ * intentionally differs from the zod 3 golden (beyond the shared rules).
+ */
+const TOOLS_LIST_DIFFERENCES: Record<string, string> = {
+  "paperclipUpdateIssue/inputSchema/properties/priority/default":
+    "zod 3 advertised updateIssueSchema's `priority` default (\"medium\") but never applied it, because the default sat under " +
+    ".partial(). The update schema now drops that default (withoutFieldDefaults) so an omitted priority stays omitted under " +
+    "zod 4 as well, and the misleading `default` is no longer advertised.",
+  "paperclipUpdateIssue/inputSchema/properties/workMode/default":
+    "Same as priority: zod 3 advertised the never-applied `workMode` default (\"standard\"); an omitted workMode stays omitted.",
+  "paperclipCreateIssue/inputSchema/properties/requestDepth/default":
+    "requestDepth still defaults to 0 when omitted (the schema baseline below asserts it), but its schema ends in a " +
+    ".transform() (clampIssueRequestDepth), and zod 4's input-mode JSON Schema omits `default` for transforming schemas.",
+};
 
 const config = {
   apiUrl: "http://localhost:3100/api",
@@ -63,12 +79,12 @@ describe("MCP tools/list baseline (paperclip)", () => {
       note: "tools/list result of the Paperclip MCP server captured before the zod 4 migration. Do not regenerate on zod 4.",
     }).data;
     expect(tools.map((tool) => tool.name)).toEqual(golden.map((tool) => tool.name));
-    const goldenByName = new Map(golden.map((tool) => [tool.name, tool]));
-    const changed = tools
-      .filter((tool) => JSON.stringify(tool) !== JSON.stringify(goldenByName.get(tool.name)))
-      .map((tool) => tool.name)
-      .filter((name) => !TOOLS_LIST_DIFFERENCES[name]);
-    expect(changed).toEqual([]);
+    const { unexplained, staleDocumented } = classifyToolsListDifferences(
+      diffToolsList(golden, tools),
+      TOOLS_LIST_DIFFERENCES,
+    );
+    expect(unexplained).toEqual([]);
+    expect(staleDocumented).toEqual([]);
   });
 });
 

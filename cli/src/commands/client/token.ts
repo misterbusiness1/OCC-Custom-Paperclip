@@ -5,6 +5,7 @@ import {
   apiPath,
   formatInlineRecord,
   handleCommandError,
+  parseClientInput,
   printOutput,
   resolveCommandContext,
   type BaseClientOptions,
@@ -73,7 +74,7 @@ export function registerTokenCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const agentRow = await resolveAgent(ctx.api, ctx.companyId ?? "", opts.agent ?? "");
-          const payload = createAgentKeySchema.parse({ name: opts.name });
+          const payload = parseClientInput(createAgentKeySchema, { name: opts.name });
           const key = await ctx.api.post<CreatedAgentKey>(apiPath`/api/agents/${agentRow.id}/keys`, payload);
           if (!key) throw new Error("Failed to create agent API key");
           printOutput(
@@ -153,7 +154,7 @@ export function registerTokenCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const expiresAt = resolveBoardKeyExpiresAt(opts);
-          const payload = createBoardApiKeySchema.parse({
+          const payload = parseClientInput(createBoardApiKeySchema, {
             name: opts.name,
             requestedCompanyId: opts.companyId ?? ctx.companyId ?? null,
             expiresAt,

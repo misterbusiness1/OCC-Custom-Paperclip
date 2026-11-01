@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { adapterRegistrySchema } from "./adapter-registry.js";
 import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
+import { urlString, zod3ParseParams } from "./zod3-compat.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
@@ -12,7 +13,7 @@ export const kubernetesProviderConfigSchema = z
     namespacePrefix: z.string().regex(/^[a-z0-9-]{1,32}$/).default("paperclip-"),
     companySlug: z.string().regex(/^[a-z0-9-]{1,32}$/).optional(),
 
-    imageRegistry: z.string().url().optional(),
+    imageRegistry: urlString().optional(),
     imageAllowList: z.array(z.string()).default([]),
     imagePullSecrets: z.array(z.string()).default([]),
 
@@ -28,7 +29,7 @@ export const kubernetesProviderConfigSchema = z
       .optional(),
 
     runtimeClassName: z.string().optional(),
-    serviceAccountAnnotations: z.record(z.string()).default({}),
+    serviceAccountAnnotations: z.record(z.string(), z.string()).default({}),
 
     jobTtlSecondsAfterFinished: z.number().int().nonnegative().default(900),
     podActivityDeadlineSec: z.number().int().positive().default(3600),
@@ -78,7 +79,7 @@ export const kubernetesProviderConfigSchema = z
 export type KubernetesProviderConfig = z.infer<typeof kubernetesProviderConfigSchema>;
 
 export function parseKubernetesProviderConfig(input: unknown): KubernetesProviderConfig {
-  return kubernetesProviderConfigSchema.parse(input);
+  return kubernetesProviderConfigSchema.parse(input, zod3ParseParams);
 }
 
 export interface KubernetesLeaseMetadata {

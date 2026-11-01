@@ -6,6 +6,7 @@ import {
   apiPath,
   formatInlineRecord,
   handleCommandError,
+  parseClientInput,
   printOutput,
   resolveCommandContext,
   type BaseClientOptions,
@@ -121,7 +122,7 @@ export function registerProjectCommands(program: Command): void {
       .action(async (opts: ProjectCreateOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const payload = createProjectSchema.parse({
+          const payload = parseClientInput(createProjectSchema, {
             name: opts.name,
             description: opts.description,
             status: opts.status,
@@ -162,7 +163,7 @@ export function registerProjectCommands(program: Command): void {
       .action(async (projectRef: string, opts: ProjectUpdateOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = updateProjectSchema.parse({
+          const payload = parseClientInput(updateProjectSchema, {
             name: opts.name,
             description: parseNullableString(opts.description),
             status: opts.status,

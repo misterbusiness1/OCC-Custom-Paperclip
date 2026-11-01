@@ -13,6 +13,7 @@ import {
   zodExports,
 } from "@paperclipai/shared/testing/zod-schema-baseline";
 import { loadOrUpdateGolden, readZodVersion, type BaselineGolden } from "@paperclipai/shared/testing/zod-baseline-golden";
+import { classifyToolsListDifferences, diffToolsList } from "@paperclipai/shared/testing/mcp-tools-list-baseline";
 import type { GoogleSheetsMcpConfig } from "./config.js";
 import type { GoogleSheetsClient } from "./google-client.js";
 import { createGoogleSheetsMcpServer } from "./index.js";
@@ -23,7 +24,8 @@ import * as toolsModule from "./tools.js";
  * zod 3 -> zod 4 baselines for the Google Sheets MCP server, captured on
  * zod 3.25.76: the `tools/list` result and the omitted-key behaviour of every
  * tool input schema and config schema. Differences after the migration must be
- * listed in TOOLS_LIST_DIFFERENCES with a reason, never re-recorded.
+ * explained by a documented rule in @paperclipai/shared/testing/mcp-tools-list-baseline
+ * or listed in TOOLS_LIST_DIFFERENCES with a reason, never re-recorded.
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -32,7 +34,12 @@ const zodVersion = readZodVersion(require.resolve("zod/package.json"));
 const TOOLS_LIST_GOLDEN = path.join(here, "__fixtures__", "zod3-tools-list.json");
 const SCHEMA_GOLDEN = path.join(here, "__fixtures__", "zod3-schema-baseline.json");
 
-/** `${toolName}` -> reason the tools/list entry intentionally differs from the zod 3 golden. */
+/**
+ * `${toolName}${jsonPointer}` -> reason this part of the tools/list entry
+ * intentionally differs from the zod 3 golden, beyond the documented rules in
+ * @paperclipai/shared/testing/mcp-tools-list-baseline (REPRESENTATION_RULES,
+ * CONTENT_RULES).
+ */
 const TOOLS_LIST_DIFFERENCES: Record<string, string> = {};
 
 const config: GoogleSheetsMcpConfig = {
@@ -65,12 +72,12 @@ describe("MCP tools/list baseline (google sheets)", () => {
       note: "tools/list result of the Google Sheets MCP server captured before the zod 4 migration. Do not regenerate on zod 4.",
     }).data;
     expect(tools.map((tool) => tool.name)).toEqual(golden.map((tool) => tool.name));
-    const goldenByName = new Map(golden.map((tool) => [tool.name, tool]));
-    const changed = tools
-      .filter((tool) => JSON.stringify(tool) !== JSON.stringify(goldenByName.get(tool.name)))
-      .map((tool) => tool.name)
-      .filter((name) => !TOOLS_LIST_DIFFERENCES[name]);
-    expect(changed).toEqual([]);
+    const { unexplained, staleDocumented } = classifyToolsListDifferences(
+      diffToolsList(golden, tools),
+      TOOLS_LIST_DIFFERENCES,
+    );
+    expect(unexplained).toEqual([]);
+    expect(staleDocumented).toEqual([]);
   });
 });
 

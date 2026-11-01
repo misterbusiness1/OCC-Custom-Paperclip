@@ -60,7 +60,7 @@ describe("plugin-kubernetes end-to-end", () => {
         driverKey: "kubernetes",
         config,
         runId: "r-test-e2e-job",
-        companyId: "11111111-1111-1111-1111-111111111111",
+        companyId: "11111111-1111-4111-8111-111111111111",
         environmentId: "env-test",
       });
 
@@ -98,7 +98,7 @@ describe("plugin-kubernetes end-to-end", () => {
         config,
         providerLeaseId: lease.providerLeaseId,
         leaseMetadata: lease.metadata,
-        companyId: "11111111-1111-1111-1111-111111111111",
+        companyId: "11111111-1111-4111-8111-111111111111",
         environmentId: "env-test",
       });
 
@@ -132,7 +132,7 @@ describe("plugin-kubernetes end-to-end", () => {
         driverKey: "kubernetes",
         config,
         runId: "r-test-e2e-sandbox-cr",
-        companyId: "22222222-2222-2222-2222-222222222222",
+        companyId: "22222222-2222-4222-8222-222222222222",
         environmentId: "env-test-cr",
       });
 
@@ -186,7 +186,7 @@ describe("plugin-kubernetes end-to-end", () => {
         config,
         providerLeaseId: lease.providerLeaseId,
         leaseMetadata: lease.metadata,
-        companyId: "22222222-2222-2222-2222-222222222222",
+        companyId: "22222222-2222-4222-8222-222222222222",
         environmentId: "env-test-cr",
       });
 

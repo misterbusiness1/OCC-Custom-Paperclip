@@ -12,6 +12,7 @@ import {
   apiPath,
   formatInlineRecord,
   handleCommandError,
+  parseClientInput,
   printOutput,
   resolveCommandContext,
   type BaseClientOptions,
@@ -120,7 +121,7 @@ export function registerApprovalCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const payloadJson = parseJsonObject(opts.payload, "payload");
-          const payload = createApprovalSchema.parse({
+          const payload = parseClientInput(createApprovalSchema, {
             type: opts.type,
             payload: payloadJson,
             requestedByAgentId: opts.requestedByAgentId,
@@ -145,7 +146,7 @@ export function registerApprovalCommands(program: Command): void {
       .action(async (approvalId: string, opts: ApprovalDecisionOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = resolveApprovalSchema.parse({
+          const payload = parseClientInput(resolveApprovalSchema, {
             decisionNote: opts.decisionNote,
             decidedByUserId: opts.decidedByUserId,
           });
@@ -167,7 +168,7 @@ export function registerApprovalCommands(program: Command): void {
       .action(async (approvalId: string, opts: ApprovalDecisionOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = resolveApprovalSchema.parse({
+          const payload = parseClientInput(resolveApprovalSchema, {
             decisionNote: opts.decisionNote,
             decidedByUserId: opts.decidedByUserId,
           });
@@ -189,7 +190,7 @@ export function registerApprovalCommands(program: Command): void {
       .action(async (approvalId: string, opts: ApprovalDecisionOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = requestApprovalRevisionSchema.parse({
+          const payload = parseClientInput(requestApprovalRevisionSchema, {
             decisionNote: opts.decisionNote,
             decidedByUserId: opts.decidedByUserId,
           });
@@ -210,7 +211,7 @@ export function registerApprovalCommands(program: Command): void {
       .action(async (approvalId: string, opts: ApprovalResubmitOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = resubmitApprovalSchema.parse({
+          const payload = parseClientInput(resubmitApprovalSchema, {
             payload: opts.payload ? parseJsonObject(opts.payload, "payload") : undefined,
           });
           const updated = await ctx.api.post<Approval>(apiPath`/api/approvals/${approvalId}/resubmit`, payload);
