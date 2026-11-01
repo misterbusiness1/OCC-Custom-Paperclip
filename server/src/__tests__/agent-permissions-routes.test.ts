@@ -1244,6 +1244,51 @@ describe.sequential("agent permission routes", () => {
     expect(mockAgentService.terminate).not.toHaveBeenCalled();
   });
 
+  it("still terminates the agent when a concurrent approval activated it before the rejection applied", async () => {
+    const pendingAgent = { ...baseAgent, status: "pending_approval" };
+    const activatedAgent = { ...baseAgent, status: "idle" };
+    const terminatedAgent = { ...baseAgent, status: "terminated" };
+    // reject() only terminates agents that are still pending, so the re-read
+    // after it can see an agent another approval has just activated.
+    mockAgentService.getById
+      .mockResolvedValueOnce(pendingAgent)
+      .mockResolvedValue(activatedAgent);
+    mockAgentService.terminate.mockResolvedValue(terminatedAgent);
+    mockApprovalService.findOpenHireApprovalForAgent.mockResolvedValue({
+      id: "approval-1",
+      companyId,
+      type: "hire_agent",
+      status: "pending",
+      payload: { agentId },
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: { id: "approval-1", status: "rejected" },
+      applied: true,
+    });
+    mockHeartbeatService.cancelInvocationsForAgents.mockResolvedValue({
+      agentIds: [agentId],
+      runsCancelled: 0,
+      wakeupsCancelled: 0,
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/terminate`)
+      .send({}));
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("terminated");
+    expect(mockApprovalService.reject).toHaveBeenCalledWith("approval-1", "board-user");
+    expect(mockAgentService.terminate).toHaveBeenCalledWith(agentId);
+  });
+
   it("terminates directly when no open hire approval is linked", async () => {
     const idleAgent = { ...baseAgent, status: "idle" };
     const terminatedAgent = { ...baseAgent, status: "terminated" };
