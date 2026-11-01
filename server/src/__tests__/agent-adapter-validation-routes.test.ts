@@ -129,11 +129,15 @@ const externalAdapter: ServerAdapterModule = {
 
 const missingAdapterType = "missing_adapter_validation_test";
 
-async function createApp() {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+async function loadAppModules() {
+  return Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
+}
+
+async function createApp() {
+  const [{ agentRoutes }, { errorHandler }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -274,6 +278,9 @@ describe("agent routes adapter validation", () => {
     }));
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
+    // resetModules above requires fresh imports for each fixture. Compile the
+    // route graph in setup so cold transforms do not consume request deadlines.
+    await loadAppModules();
   });
 
   afterEach(async () => {

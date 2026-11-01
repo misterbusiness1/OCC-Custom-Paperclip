@@ -1,0 +1,133 @@
+{
+ "capturedWith": "zod@3.25.76",
+ "note": "Omitted-key behaviour of every Google Sheets MCP tool input schema captured before the zod 4 migration (absent entry = required).",
+ "data": {
+  "fields": {
+   "tool:add_sheet_tab.columnCount": "omitted",
+   "tool:add_sheet_tab.rowCount": "omitted",
+   "tool:append_rows.valueInputOption": {
+    "filled": "RAW"
+   },
+   "tool:search_rows.caseSensitive": {
+    "filled": false
+   },
+   "tool:search_rows.maxResults": {
+    "filled": 50
+   },
+   "tool:update_values.valueInputOption": {
+    "filled": "RAW"
+   },
+   "tools.ts#searchRowsSchema.caseSensitive": {
+    "filled": false
+   },
+   "tools.ts#searchRowsSchema.maxResults": {
+    "filled": 50
+   }
+  },
+  "objects": {
+   "tool:add_sheet_tab": "strip",
+   "tool:append_rows": "strip",
+   "tool:clear_values": "strip",
+   "tool:delete_rows": "strip",
+   "tool:get_spreadsheet_info": "strip",
+   "tool:list_spreadsheets": "strip",
+   "tool:read_values": "strip",
+   "tool:search_rows": "strip",
+   "tool:update_values": "strip",
+   "tools.ts#searchRowsSchema": "strip"
+  },
+  "defaultsUnderOptional": [],
+  "roots": {
+   "tool:add_sheet_tab": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:append_rows": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:clear_values": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:delete_rows": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:get_spreadsheet_info": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:list_spreadsheets": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {}
+    }
+   },
+   "tool:read_values": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:search_rows": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:update_values": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tools.ts#searchRowsSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tools.ts#valueInputOptionSchema": {
+    "undefined": {
+     "ok": true,
+     "data": "RAW"
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   }
+  }
+ }
+}

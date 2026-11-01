@@ -1574,6 +1574,37 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows[0]?.status).toBe("pending");
   });
 
+  it("lists stored interactions whose payload holds IDs zod 3's lax .uuid() accepted", async () => {
+    // Rows written before the zod 4 migration may hold client-supplied IDs
+    // such as 11111111-1111-1111-1111-111111111111 (not RFC 9562). Reading
+    // them back must not fail the whole interaction list.
+    const { companyId, issueId } = await seedConfirmationIssue("Legacy suggested task IDs");
+    const legacyAgentId = "11111111-1111-1111-1111-111111111111";
+    const legacyProjectId = "22222222-2222-2222-2222-222222222222";
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "suggest_tasks",
+      status: "pending",
+      continuationPolicy: { kind: "none" },
+      payload: {
+        version: 1,
+        tasks: [{ clientKey: "a", title: "Legacy task", assigneeAgentId: legacyAgentId, projectId: legacyProjectId }],
+      },
+      createdByUserId: "local-board",
+    });
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      id: interactionId,
+      kind: "suggest_tasks",
+      payload: { tasks: [{ clientKey: "a", assigneeAgentId: legacyAgentId, projectId: legacyProjectId }] },
+    });
+  });
+
   it("does not supersede request confirmations for agent, system, or older user comments", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Comment supersede exclusions");
 

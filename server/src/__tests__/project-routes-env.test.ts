@@ -81,11 +81,15 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
-  const [{ projectRoutes }, { errorHandler }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
+}
+
+async function createApp() {
+  const [{ projectRoutes }, { errorHandler }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -142,7 +146,7 @@ function buildProject(overrides: Record<string, unknown> = {}) {
 }
 
 describe("project env routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/projects.js");
     vi.doUnmock("../routes/authz.js");
@@ -163,6 +167,8 @@ describe("project env routes", () => {
     mockProjectService.listWorkspaces.mockResolvedValue([]);
     mockEnvironmentService.getById.mockReset();
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
+    // Load after reset and fixture mocks; per-test env bindings remain inputs.
+    await loadAppModules();
   });
 
   it("normalizes env bindings on create and logs only env keys", async () => {

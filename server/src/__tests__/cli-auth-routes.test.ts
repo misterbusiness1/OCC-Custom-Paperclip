@@ -52,15 +52,18 @@ function registerModuleMocks() {
 
 let appImportCounter = 0;
 
-async function createApp(actor: any, db: any = {} as any) {
+function loadAppModules() {
   appImportCounter += 1;
   const routeModulePath = `../routes/access.js?cli-auth-routes-${appImportCounter}`;
   const middlewareModulePath = `../middleware/index.js?cli-auth-routes-${appImportCounter}`;
-  const [{ accessRoutes }, { errorHandler }] = await Promise.all([
+  return Promise.all([
     import(routeModulePath) as Promise<typeof import("../routes/access.js")>,
     import(middlewareModulePath) as Promise<typeof import("../middleware/index.js")>,
   ]);
+}
 
+async function createApp(actor: any, db: any = {} as any) {
+  const [{ accessRoutes }, { errorHandler }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -91,7 +94,7 @@ async function createApp(actor: any, db: any = {} as any) {
 }
 
 describe.sequential("cli auth routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/authz.js");
@@ -99,6 +102,8 @@ describe.sequential("cli auth routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.resetAllMocks();
+    // Keep cold graph loading inside setup while preserving fresh query imports.
+    await loadAppModules();
   });
 
   it.sequential("creates a CLI auth challenge with approval metadata", async () => {

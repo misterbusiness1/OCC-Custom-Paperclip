@@ -2236,3 +2236,26 @@ export {
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./validators/environment-custom-images.js";
 export * from "./validators/skill-policy.js";
+export {
+  datetimeString,
+  safeParseStoredUuids,
+  urlString,
+  withoutFieldDefaults,
+  withoutOptionalDefault,
+  ZOD3_DATETIME_OFFSET_REGEX,
+  ZOD3_DATETIME_REGEX,
+  ZOD3_UUID_REGEX,
+} from "./validators/zod-compat.js";
+export {
+  flattenZod3Issues,
+  isZodError,
+  toZod3Issues,
+  ZOD3_ISSUE_KEY,
+  zod3ErrorMap,
+  zod3IssueParams,
+  zod3RequiredError,
+  type Zod3FlattenedError,
+  type Zod3Issue,
+  type Zod3IssuePath,
+  type Zod3SerializedError,
+} from "./validators/zod3-issues.js";

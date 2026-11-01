@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { withoutFieldDefaults } from "./zod-compat.js";
 import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,
@@ -73,14 +74,14 @@ export const createAgentSchema = z.object({
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
-  reportsTo: z.string().uuid().optional().nullable(),
+  reportsTo: z.uuid().optional().nullable(),
   capabilities: z.string().optional().nullable(),
   desiredSkills: z.array(agentDesiredSkillSelectionSchema).optional(),
   adapterType: agentAdapterTypeSchema,
   adapterConfig: adapterConfigSchema.optional().default({}),
   instructionsBundle: createAgentInstructionsBundleSchema.optional(),
   runtimeConfig: agentRuntimeConfigSchema.optional().default({}),
-  defaultEnvironmentId: z.string().uuid().optional().nullable(),
+  defaultEnvironmentId: z.uuid().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
@@ -88,11 +89,13 @@ export const createAgentSchema = z.object({
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
 
-export const builtInAgentProvisionSchema = z.object({
+// agentAdapterTypeSchema carries .default("process"); zod 4 would apply it to
+// an omitted adapterType and skip the built-in agent's own default adapter.
+export const builtInAgentProvisionSchema = withoutFieldDefaults(z.object({
   adapterType: agentAdapterTypeSchema.optional(),
   adapterConfig: adapterConfigSchema.optional(),
   budgetMonthlyCents: z.number().int().nonnegative().optional(),
-}).strict();
+}).strict());
 
 export type BuiltInAgentProvision = z.infer<typeof builtInAgentProvisionSchema>;
 
@@ -107,13 +110,13 @@ export const builtInAgentResetSchema = z.object({
 export type BuiltInAgentReset = z.infer<typeof builtInAgentResetSchema>;
 
 export const createAgentHireSchema = createAgentSchema.extend({
-  sourceIssueId: z.string().uuid().optional().nullable(),
-  sourceIssueIds: z.array(z.string().uuid()).optional(),
+  sourceIssueId: z.uuid().optional().nullable(),
+  sourceIssueIds: z.array(z.uuid()).optional(),
 });
 
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
 
-export const updateAgentSchema = createAgentSchema
+export const updateAgentSchema = withoutFieldDefaults(createAgentSchema
   .omit({ permissions: true })
   .partial()
   .extend({
@@ -121,7 +124,7 @@ export const updateAgentSchema = createAgentSchema
     replaceAdapterConfig: z.boolean().optional(),
     status: z.enum(AGENT_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
-  });
+  }));
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
 
@@ -134,11 +137,11 @@ export type UpdateAgentInstructionsPath = z.infer<typeof updateAgentInstructions
 
 export const taskBridgeAgentKeyScopeSchema = z.object({
   kind: z.literal("task_bridge"),
-  projectId: z.string().uuid().optional().nullable(),
-  projectIds: z.array(z.string().uuid()).max(50).optional(),
-  parentIssueId: z.string().uuid().optional().nullable(),
-  parentIssueIds: z.array(z.string().uuid()).max(50).optional(),
-  allowedAssigneeAgentIds: z.array(z.string().uuid()).max(50).optional(),
+  projectId: z.uuid().optional().nullable(),
+  projectIds: z.array(z.uuid()).max(50).optional(),
+  parentIssueId: z.uuid().optional().nullable(),
+  parentIssueIds: z.array(z.uuid()).max(50).optional(),
+  allowedAssigneeAgentIds: z.array(z.uuid()).max(50).optional(),
 }).strict().superRefine((value, ctx) => {
   const hasProjectBoundary = Boolean(value.projectId) || Boolean(value.projectIds?.length);
   const hasParentBoundary = Boolean(value.parentIssueId) || Boolean(value.parentIssueIds?.length);
@@ -157,7 +160,7 @@ export const standardAgentKeyScopeSchema = z.object({
 
 export const skillTestAgentKeyScopeSchema = z.object({
   kind: z.literal("skill_test"),
-  issueId: z.string().uuid(),
+  issueId: z.uuid(),
 }).strict();
 
 export const agentApiKeyScopeSchema = z.union([
@@ -217,7 +220,7 @@ export const testAdapterEnvironmentSchema = z.object({
    * environment is non-local (SSH/sandbox), the test probes are executed
    * inside that environment so the result reflects real agent execution.
    */
-  environmentId: z.string().uuid().optional().nullable(),
+  environmentId: z.uuid().optional().nullable(),
 });
 
 export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema>;

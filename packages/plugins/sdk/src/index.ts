@@ -387,7 +387,13 @@ export type {
  *
  * Plugin authors do not need to add a separate `zod` dependency.
  *
- * @see PLUGIN_SPEC.md §14.1 — Example SDK Shape
+ * This is zod 4 (the `zod` package root, pinned to 4.6.7), not the zod 3 API.
+ * Plugins built against an older SDK keep working at runtime (manifests carry
+ * JSON Schema and host and worker exchange JSON); code that uses `z` follows
+ * zod 4 when rebuilt against this SDK. See the "Zod 4" section of the SDK
+ * README for the changes that matter most.
+ *
+ * @see PLUGIN_SPEC.md §14.2 — Example SDK Shape
  *
  * @example
  * ```ts

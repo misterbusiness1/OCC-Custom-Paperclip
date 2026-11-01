@@ -11,6 +11,7 @@ import {
   apiPath,
   handleCommandError,
   normalizeApiBase,
+  parseClientInput,
   printOutput,
   resolveApiBase,
   type BaseClientOptions,
@@ -91,7 +92,7 @@ async function connectWizard(opts: ConnectOptions) {
       optional: true,
     });
     const tokenName = opts.tokenName?.trim() || `cli-board-${new Date().toISOString()}`;
-    const key = await boardApi.post<CreatedBoardKey>("/api/board-api-keys", createBoardApiKeySchema.parse({
+    const key = await boardApi.post<CreatedBoardKey>("/api/board-api-keys", parseClientInput(createBoardApiKeySchema, {
       name: tokenName,
       requestedCompanyId: company?.id ?? null,
     }));
@@ -128,7 +129,7 @@ async function connectWizard(opts: ConnectOptions) {
   if (agents.length === 0) throw new Error(`Company '${company.name}' has no agents to connect.`);
   const agent = await chooseAgent(agents, resolvedProfile.profile.agentId);
   const tokenName = opts.tokenName?.trim() || `cli-agent-${new Date().toISOString()}`;
-  const key = await boardApi.post<CreatedAgentKey>(apiPath`/api/agents/${agent.id}/keys`, createAgentKeySchema.parse({ name: tokenName }));
+  const key = await boardApi.post<CreatedAgentKey>(apiPath`/api/agents/${agent.id}/keys`, parseClientInput(createAgentKeySchema, { name: tokenName }));
   if (!key) throw new Error("Failed to create agent token");
   upsertProfile(profileName, {
     apiBase,

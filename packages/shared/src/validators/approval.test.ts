@@ -78,7 +78,7 @@ describe("approval validators", () => {
   it("accepts representative Gate A board approval payloads", () => {
     const parsed = createApprovalSchema.parse({
       type: "request_board_approval",
-      requestedByAgentId: "00000000-0000-0000-0000-000000000001",
+      requestedByAgentId: "00000000-0000-4000-8000-000000000001",
       payload: validGateAPayload,
     });
 

@@ -1,5 +1,6 @@
 import { lookup as dnsLookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
+import { Agent } from "undici";
 
 const DEFAULT_DNS_TIMEOUT_MS = 5_000;
 
@@ -69,6 +70,80 @@ export async function assertPublicRemoteHttpEndpoint(
   }
   if (results.some((result) => isPrivateOrReservedIp(result.address))) {
     throw error("Remote MCP connection URL cannot resolve to private or reserved network addresses", "remote_http_private_endpoint");
+  }
+}
+
+/**
+ * Fetch with the public-address policy enforced at socket DNS resolution, not
+ * only in a preflight lookup. The checked addresses are passed directly to the
+ * connector, so a second DNS answer cannot redirect credentials to a private
+ * host. Every request uses its own dispatcher; redirects must be handled and
+ * checked by the caller rather than followed inside fetch.
+ */
+export async function fetchRemoteHttpEndpoint(
+  endpoint: URL,
+  init: RequestInit,
+  options: RemoteHttpEndpointGuardOptions,
+  error: RemoteHttpEndpointErrorFactory,
+): Promise<Response> {
+  await assertPublicRemoteHttpEndpoint(endpoint, options, error);
+  const requestInit = {
+    ...init,
+    redirect: init.redirect === "error" ? "error" as const : "manual" as const,
+    // Existing MCP/cloud callers supply their own execution deadlines. OAuth
+    // metadata/token requests without one still need bounded socket lifetime,
+    // including when an upstream sends headers but never finishes its body.
+    signal: init.signal ?? AbortSignal.timeout(30_000),
+  };
+  if (options.allowPrivateNetwork) return fetch(endpoint.toString(), requestInit);
+
+  let connectionPolicyError: Error | undefined;
+  const socketError: RemoteHttpEndpointErrorFactory = (message, code) => {
+    connectionPolicyError = error(message, code);
+    return connectionPolicyError;
+  };
+  const lookup: LookupFunction = (hostname, lookupOptions, callback) => {
+    // Reuse the same address classifier at connection time, but retain the
+    // actual checked results instead of asking the OS to resolve them again.
+    let resolved: LookupResult[] = [];
+    const resolve = options.lookup ?? defaultLookup;
+    void assertPublicRemoteHttpEndpoint(endpoint, {
+      ...options,
+      lookup: async (requestedHostname) => {
+        if (requestedHostname !== hostname.toLowerCase()) {
+          throw new Error("Unexpected remote endpoint hostname");
+        }
+        resolved = await resolve(requestedHostname);
+        return resolved;
+      },
+    }, socketError).then(() => {
+      const family = lookupOptions.family;
+      const addresses = family === 4 || family === 6
+        ? resolved.filter((entry) => entry.family === family)
+        : resolved;
+      if (addresses.length === 0) {
+        callback(socketError("Remote MCP connection hostname did not resolve", "remote_http_dns_failed"), "");
+      } else if (lookupOptions.all) {
+        callback(null, addresses);
+      } else {
+        callback(null, addresses[0]!.address, addresses[0]!.family);
+      }
+    }, (cause: Error) => callback(cause, ""));
+  };
+  const dispatcher = new Agent({ connect: { lookup } });
+  try {
+    // Node's built-in fetch supports undici dispatchers, though DOM's
+    // RequestInit intentionally does not declare this Node-specific field.
+    return await fetch(endpoint.toString(), { ...requestInit, dispatcher } as RequestInit);
+  } catch (cause) {
+    // fetch wraps connector failures in TypeError. Preserve the same HTTP
+    // status/code as a preflight policy denial rather than turning it into 500.
+    if (connectionPolicyError) throw connectionPolicyError;
+    throw cause;
+  } finally {
+    // close waits for the response stream without preventing the caller from
+    // consuming it; there is no reusable connection to another request.
+    void dispatcher.close().catch(() => dispatcher.destroy());
   }
 }
 

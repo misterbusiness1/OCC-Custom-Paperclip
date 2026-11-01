@@ -61,10 +61,11 @@ Common optional fields:
 | Field | Default | Purpose |
 |---|---|---|
 | `backend` | `"sandbox-cr"` | `sandbox-cr` (alpha, requires agent-sandbox controller) or `job` (stable, one-shot entrypoint). |
-| `adapterType` | `"claude_local"` | One of the supported adapter types (claude_local, codex_local, gemini_local, cursor_local, opencode_local, pi_local). Determines runtime image + env keys + egress allow-list. |
+| `adapterType` | `"claude_local"` | One of the supported adapter types (claude_local, codex_local, gemini_local, opencode_local, pi_local, cursor). Determines runtime image + env keys + egress allow-list. `cursor_local` is accepted as a legacy alias and normalised to `cursor`. `cursor` has no built-in defaults and requires an `adapters` entry (see below). |
+| `adapters` | (none) | Declarative adapter registry (`adapterType`, `enabled`, `runtimeImage`, `envKeys`, `allowFqdns`, `probeCommand`, `defaultEnv`). When set it is authoritative (replaces the built-in defaults) and every adapter run in the environment must resolve to exactly one entry (`cursor` and `cursor_local` count as the same adapter). `enabled: false` has the server's meaning: it hides the adapter from the picker, but existing agents of that adapter keep running, so enabled entries win and a disabled-only entry still resolves. Saving rejects an adapter whose entries are ambiguous (more than one enabled entry, or more than one disabled entry and no enabled one) and warns about a resolving entry without `runtimeImage`. `envKeys` can only forward the keys the server passes to sandbox-provider plugins: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and `CURSOR_API_KEY` (`ADAPTER_ENV_PASSTHROUGH` in `server/src/services/plugin-loader.ts`). Any other key is dropped. |
 | `namespacePrefix` | `"paperclip-"` | Prefix for the per-company tenant namespace. |
 | `companySlug` | derived from companyId | Override the auto-derived company slug. |
-| `imageRegistry` | (none) | Override the default registry for agent runtime images. |
+| `imageRegistry` | (none) | Override the default registry for agent runtime images. Rewrites the host and org of every runtime image, including `adapters` entries' `runtimeImage`, and keeps the image name and tag. |
 | `imageAllowList` | `[]` | Glob patterns of allowed `target.imageOverride` values. Empty = no override permitted. |
 | `imagePullSecrets` | `[]` | Names of pre-created Docker image pull secrets in the tenant namespace. |
 | `egressAllowFqdns` | `[]` | Additional FQDNs (beyond adapter defaults like `api.anthropic.com`). |
@@ -76,6 +77,38 @@ Common optional fields:
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |
 
 Full JSON Schema in `src/manifest.ts`.
+
+### Cursor
+
+No `agent-runtime-cursor` image is built or published, so Cursor has no built-in Kubernetes defaults. An environment (or run) using adapter type `cursor` fails validation / lease acquisition with an actionable error until an `adapters` entry for `"cursor"` supplies your own runtime image, the secret env keys it needs (`CURSOR_API_KEY`) and the Cursor backend hosts it must reach (`allowFqdns`; exact FQDN allow-listing needs `egressMode: "cilium"`).
+
+`envKeys: ["CURSOR_API_KEY"]` copies `CURSOR_API_KEY` from paperclip-server's environment into the per-run Secret, so set it on paperclip-server. The server passes it to the plugin worker together with the other provider keys listed under `adapters` above. A key outside that list never reaches the plugin, so `envKeys` cannot forward it.
+
+Where to set it:
+
+- **Environment config.** The `adapters` field in the Kubernetes environment form (Company settings, Environments), or the `adapters` key of the environment config sent through the environments API. The form edits every entry field except `defaultEnv`: it cannot edit key/value maps yet (the same applies to `serviceAccountAnnotations`), so set `defaultEnv` through the environments API.
+- **Managed environment.** For the environment the server creates itself when `PAPERCLIP_EXECUTION_MODE=kubernetes`, the server's `PAPERCLIP_ADAPTERS` (or `PAPERCLIP_ADAPTERS_FILE`) registry is copied into that environment's `adapters`. It does not apply to environments you create yourself.
+
+```json
+{
+  "adapterType": "cursor",
+  "adapters": [
+    {
+      "adapterType": "cursor",
+      "runtimeImage": "registry.example.com/my-org/agent-runtime-cursor:v1",
+      "envKeys": ["CURSOR_API_KEY"],
+      "allowFqdns": ["api2.cursor.sh", "api5.cursor.sh"],
+      "probeCommand": ["agent", "--version"]
+    }
+  ]
+}
+```
+
+`api2.cursor.sh` (most API traffic) and `api5.cursor.sh` (agent requests) are taken from Cursor's network configuration docs; check that page for the current host list your setup needs. Each `allowFqdns` entry becomes an exact Cilium `matchName`, so wildcards such as `*.cursor.sh` do not work. `probeCommand` uses `agent`, the Cursor adapter's default command. The plugin records `probeCommand` but does not run it.
+
+Because the registry replaces the built-in defaults, also list any other adapter the environment runs. Use one entry for Cursor: an entry keyed `cursor` and another keyed with the legacy `cursor_local` are rejected as duplicates.
+
+**`imageRegistry` also rewrites this image.** When `imageRegistry` (or the server's `PAPERCLIP_K8S_IMAGE_REGISTRY`) is set, the plugin replaces the host and org of every runtime image, the `runtimeImage` above included. The example above becomes `<imageRegistry>/agent-runtime-cursor:v1`. Push your Cursor image to the mirror under that same name and tag, or the pod ends in `ImagePullBackOff`.
 
 ## What gets created in your cluster
 

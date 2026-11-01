@@ -5,10 +5,17 @@ import {
   addCommonClientOptions,
   apiPath,
   handleCommandError,
+  parseClientInput,
   printOutput,
   resolveCommandContext,
   type BaseClientOptions,
 } from "./common.js";
+import {
+  formatBoardSetupExports,
+  formatBoardSetupNotice,
+  runBoardSetup,
+  type BoardSetupOptions,
+} from "./board-setup.js";
 
 interface PromptOptions extends BaseClientOptions {
   agent?: string;
@@ -87,6 +94,30 @@ export function registerPromptCommands(program: Command): void {
   );
 
   const board = program.command("board").description("Board operator operations");
+  addCommonClientOptions(
+    board
+      .command("setup")
+      .description(
+        "Print PAPERCLIP_API_URL / PAPERCLIP_COMPANY_ID exports for board tooling (use with: eval \"$(paperclipai board setup)\")",
+      )
+      .option("-C, --company-id <id>", "Company ID")
+      .action(async (opts: BoardSetupOptions) => {
+        try {
+          // stdout is meant for eval: only exports go there; notes go to stderr.
+          const result = await runBoardSetup(opts, { warn: (message) => console.error(message) });
+          if (opts.json) {
+            printOutput(result, { json: true });
+          } else {
+            console.log(formatBoardSetupExports(result));
+            const notice = formatBoardSetupNotice(result);
+            if (notice) console.error(notice);
+          }
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
   addCommonClientOptions(
     board
       .command("prompt")
@@ -177,7 +208,7 @@ async function createOrCommentForAgent(input: {
   wake: boolean;
 }): Promise<PromptResult> {
   if (input.issueId?.trim()) {
-    const payload = addIssueCommentSchema.parse({
+    const payload = parseClientInput(addIssueCommentSchema, {
       body: input.prompt,
       resume: input.wake,
     });
@@ -197,7 +228,7 @@ async function createOrCommentForAgent(input: {
     };
   }
 
-  const payload = createIssueSchema.parse({
+  const payload = parseClientInput(createIssueSchema, {
     title: input.title?.trim() || defaultPromptTitle(input.prompt),
     description: input.prompt,
     status: "todo",

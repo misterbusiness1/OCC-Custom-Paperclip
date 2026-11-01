@@ -1,0 +1,506 @@
+{
+ "capturedWith": "zod@3.25.76",
+ "note": "kubernetesProviderConfigSchema.safeParse results (data, or issue paths and messages) for fixed probe configs, captured before the zod 4 migration. Do not regenerate on zod 4.",
+ "data": {
+  "undefined": {
+   "success": false,
+   "issues": [
+    {
+     "path": [],
+     "message": "Required"
+    }
+   ]
+  },
+  "null": {
+   "success": false,
+   "issues": [
+    {
+     "path": [],
+     "message": "Expected object, received null"
+    }
+   ]
+  },
+  "array": {
+   "success": false,
+   "issues": [
+    {
+     "path": [],
+     "message": "Expected object, received array"
+    }
+   ]
+  },
+  "empty object": {
+   "success": false,
+   "issues": [
+    {
+     "path": [],
+     "message": "kubernetes provider requires one of `inCluster` or `kubeconfig`"
+    }
+   ]
+  },
+  "inCluster string": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "inCluster"
+     ],
+     "message": "Expected boolean, received string"
+    }
+   ]
+  },
+  "kubeconfig number": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "kubeconfig"
+     ],
+     "message": "Expected string, received number"
+    }
+   ]
+  },
+  "namespacePrefix regex": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "namespacePrefix"
+     ],
+     "message": "Invalid"
+    }
+   ]
+  },
+  "companySlug regex": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "companySlug"
+     ],
+     "message": "Invalid"
+    }
+   ]
+  },
+  "imageRegistry invalid": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "imageRegistry"
+     ],
+     "message": "Invalid url"
+    }
+   ]
+  },
+  "imageRegistry padded": {
+   "success": true,
+   "data": {
+    "inCluster": true,
+    "namespacePrefix": "paperclip-",
+    "imageRegistry": "  https://registry.example.com/team  ",
+    "imageAllowList": [],
+    "imagePullSecrets": [],
+    "egressAllowFqdns": [],
+    "egressAllowCidrs": [],
+    "egressMode": "standard",
+    "serviceAccountAnnotations": {},
+    "jobTtlSecondsAfterFinished": 900,
+    "podActivityDeadlineSec": 3600,
+    "adapterType": "claude_local",
+    "backend": "sandbox-cr"
+   }
+  },
+  "imageRegistry tab": {
+   "success": true,
+   "data": {
+    "inCluster": true,
+    "namespacePrefix": "paperclip-",
+    "imageRegistry": "https://registry.example.com/te\tam",
+    "imageAllowList": [],
+    "imagePullSecrets": [],
+    "egressAllowFqdns": [],
+    "egressAllowCidrs": [],
+    "egressMode": "standard",
+    "serviceAccountAnnotations": {},
+    "jobTtlSecondsAfterFinished": 900,
+    "podActivityDeadlineSec": 3600,
+    "adapterType": "claude_local",
+    "backend": "sandbox-cr"
+   }
+  },
+  "imageRegistry no host": {
+   "success": true,
+   "data": {
+    "inCluster": true,
+    "namespacePrefix": "paperclip-",
+    "imageRegistry": "mailto:ops@example.com",
+    "imageAllowList": [],
+    "imagePullSecrets": [],
+    "egressAllowFqdns": [],
+    "egressAllowCidrs": [],
+    "egressMode": "standard",
+    "serviceAccountAnnotations": {},
+    "jobTtlSecondsAfterFinished": 900,
+    "podActivityDeadlineSec": 3600,
+    "adapterType": "claude_local",
+    "backend": "sandbox-cr"
+   }
+  },
+  "imageAllowList string": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "imageAllowList"
+     ],
+     "message": "Expected array, received string"
+    }
+   ]
+  },
+  "imageAllowList number entry": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "imageAllowList",
+      0
+     ],
+     "message": "Expected string, received number"
+    }
+   ]
+  },
+  "egressMode invalid": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "egressMode"
+     ],
+     "message": "Invalid enum value. Expected 'cilium' | 'standard', received 'x'"
+    }
+   ]
+  },
+  "egressMode number": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "egressMode"
+     ],
+     "message": "Expected 'cilium' | 'standard', received number"
+    }
+   ]
+  },
+  "egressAllowCidrs invalid": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "egressAllowCidrs",
+      0
+     ],
+     "message": "Invalid CIDR"
+    }
+   ]
+  },
+  "defaultResources wrong types": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "defaultResources",
+      "requests",
+      "cpu"
+     ],
+     "message": "Expected string, received number"
+    },
+    {
+     "path": [
+      "defaultResources",
+      "limits"
+     ],
+     "message": "Expected object, received array"
+    }
+   ]
+  },
+  "serviceAccountAnnotations number value": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "serviceAccountAnnotations",
+      "a"
+     ],
+     "message": "Expected string, received number"
+    }
+   ]
+  },
+  "serviceAccountAnnotations array": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "serviceAccountAnnotations"
+     ],
+     "message": "Expected object, received array"
+    }
+   ]
+  },
+  "jobTtl negative": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "jobTtlSecondsAfterFinished"
+     ],
+     "message": "Number must be greater than or equal to 0"
+    }
+   ]
+  },
+  "podDeadline zero": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "podActivityDeadlineSec"
+     ],
+     "message": "Number must be greater than 0"
+    }
+   ]
+  },
+  "podDeadline float": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "podActivityDeadlineSec"
+     ],
+     "message": "Expected integer, received float"
+    }
+   ]
+  },
+  "podDeadline string": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "podActivityDeadlineSec"
+     ],
+     "message": "Expected number, received string"
+    }
+   ]
+  },
+  "podDeadline NaN": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "podActivityDeadlineSec"
+     ],
+     "message": "Expected number, received nan"
+    }
+   ]
+  },
+  "jobTtl unsafe integer": {
+   "success": true,
+   "data": {
+    "inCluster": true,
+    "namespacePrefix": "paperclip-",
+    "imageAllowList": [],
+    "imagePullSecrets": [],
+    "egressAllowFqdns": [],
+    "egressAllowCidrs": [],
+    "egressMode": "standard",
+    "serviceAccountAnnotations": {},
+    "jobTtlSecondsAfterFinished": 1152921504606847000,
+    "podActivityDeadlineSec": 3600,
+    "adapterType": "claude_local",
+    "backend": "sandbox-cr"
+   }
+  },
+  "adapterType unknown": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "adapterType"
+     ],
+     "message": "adapterType must be one of the known adapter types"
+    }
+   ]
+  },
+  "adapterType number": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "adapterType"
+     ],
+     "message": "Expected string, received number"
+    }
+   ]
+  },
+  "adapters object": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "adapters"
+     ],
+     "message": "Expected array, received object"
+    }
+   ]
+  },
+  "adapters entry issues": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "adapters",
+      0,
+      "adapterType"
+     ],
+     "message": "String must contain at least 1 character(s)"
+    },
+    {
+     "path": [
+      "adapters",
+      0
+     ],
+     "message": "Unrecognized key(s) in object: 'extra', 'other'"
+    },
+    {
+     "path": [
+      "adapters",
+      1,
+      "enabled"
+     ],
+     "message": "Expected boolean, received string"
+    },
+    {
+     "path": [
+      "adapters",
+      1,
+      "defaultEnv",
+      "A"
+     ],
+     "message": "Expected string, received number"
+    }
+   ]
+  },
+  "adapters entry missing type": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "adapters",
+      0,
+      "adapterType"
+     ],
+     "message": "Required"
+    }
+   ]
+  },
+  "backend invalid": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "backend"
+     ],
+     "message": "Invalid enum value. Expected 'sandbox-cr' | 'job', received 'pod'"
+    }
+   ]
+  },
+  "several issues": {
+   "success": false,
+   "issues": [
+    {
+     "path": [
+      "inCluster"
+     ],
+     "message": "Expected boolean, received string"
+    },
+    {
+     "path": [
+      "egressMode"
+     ],
+     "message": "Invalid enum value. Expected 'cilium' | 'standard', received 'y'"
+    },
+    {
+     "path": [
+      "podActivityDeadlineSec"
+     ],
+     "message": "Number must be greater than 0"
+    }
+   ]
+  },
+  "minimal in-cluster": {
+   "success": true,
+   "data": {
+    "inCluster": true,
+    "namespacePrefix": "paperclip-",
+    "imageAllowList": [],
+    "imagePullSecrets": [],
+    "egressAllowFqdns": [],
+    "egressAllowCidrs": [],
+    "egressMode": "standard",
+    "serviceAccountAnnotations": {},
+    "jobTtlSecondsAfterFinished": 900,
+    "podActivityDeadlineSec": 3600,
+    "adapterType": "claude_local",
+    "backend": "sandbox-cr"
+   }
+  },
+  "full config": {
+   "success": true,
+   "data": {
+    "inCluster": false,
+    "kubeconfig": "apiVersion: v1",
+    "namespacePrefix": "team-",
+    "companySlug": "acme",
+    "imageRegistry": "https://registry.example.com",
+    "imageAllowList": [
+     "ghcr.io/acme/*"
+    ],
+    "imagePullSecrets": [
+     "regcred"
+    ],
+    "egressAllowFqdns": [
+     "api.example.com"
+    ],
+    "egressAllowCidrs": [
+     "10.0.0.0/8"
+    ],
+    "egressMode": "cilium",
+    "defaultResources": {
+     "requests": {
+      "cpu": "500m"
+     },
+     "limits": {
+      "memory": "1Gi"
+     }
+    },
+    "runtimeClassName": "gvisor",
+    "serviceAccountAnnotations": {
+     "eks.amazonaws.com/role-arn": "arn:aws:iam::1:role/x"
+    },
+    "jobTtlSecondsAfterFinished": 60,
+    "podActivityDeadlineSec": 600,
+    "adapterType": "codex_local",
+    "adapters": [
+     {
+      "adapterType": "codex_local",
+      "enabled": true,
+      "runtimeImage": "ghcr.io/acme/codex:1",
+      "defaultEnv": {
+       "A": "1"
+      }
+     }
+    ],
+    "backend": "job"
+   }
+  }
+ }
+}

@@ -164,7 +164,7 @@ describe("reconcileCodexLocalManagedHomesOnStartup", () => {
           env: {
             CODEX_HOME: agentHome,
             // Canonical secret binding shape; unresolvable at startup.
-            OPENAI_API_KEY: { type: "secret_ref", secretId: "11111111-1111-1111-1111-111111111111" },
+            OPENAI_API_KEY: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
           },
         },
       },

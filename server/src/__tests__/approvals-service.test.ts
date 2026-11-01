@@ -1,11 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { logger } from "../middleware/logger.js";
 import { approvalService } from "../services/approvals.ts";
 
 const mockAgentService = vi.hoisted(() => ({
   activatePendingApproval: vi.fn(),
   create: vi.fn(),
+  getById: vi.fn(),
   terminate: vi.fn(),
+  terminatePendingApproval: vi.fn(),
 }));
+
+const AGENT_ID = "aaaaaaaa-1111-4111-8111-111111111111";
 
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
 
@@ -32,7 +37,7 @@ function createApproval(status: string): ApprovalRecord {
     companyId: "company-1",
     type: "hire_agent",
     status,
-    payload: { agentId: "agent-1" },
+    payload: { agentId: AGENT_ID },
     requestedByAgentId: "requester-1",
   };
 }
@@ -57,7 +62,15 @@ function createApprovalCreateDbStub(selectResults: ApprovalRecord[][], insertRes
 
 function createDbStub(selectResults: ApprovalRecord[][], updateResults: ApprovalRecord[]) {
   const pendingSelectResults = [...selectResults];
-  const selectWhere = vi.fn(async () => pendingSelectResults.shift() ?? []);
+  const limit = vi.fn();
+  const orderBy = vi.fn(() => ({ limit }));
+  // where() is awaited directly by most lookups and chained into
+  // orderBy().limit() by findOpenHireApprovalForAgent.
+  const selectWhere = vi.fn(() => {
+    const rows = Promise.resolve(pendingSelectResults.shift() ?? []);
+    limit.mockReturnValue(rows);
+    return Object.assign(rows, { orderBy });
+  });
   const from = vi.fn(() => ({ where: selectWhere }));
   const select = vi.fn(() => ({ from }));
 
@@ -67,8 +80,10 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
   const update = vi.fn(() => ({ set }));
 
   return {
-    db: { select, update },
+    db: { select, update, transaction: vi.fn(async (callback) => callback({ select, update })) },
     selectWhere,
+    orderBy,
+    limit,
     returning,
   };
 }
@@ -76,9 +91,14 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
 describe("approvalService resolution idempotency", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockAgentService.activatePendingApproval.mockResolvedValue({ agent: { id: "agent-1" }, activated: true });
-    mockAgentService.create.mockResolvedValue({ id: "agent-1" });
+    mockAgentService.activatePendingApproval.mockResolvedValue({ agent: { id: AGENT_ID }, activated: true });
+    mockAgentService.create.mockResolvedValue({ id: AGENT_ID });
     mockAgentService.terminate.mockResolvedValue(undefined);
+    mockAgentService.getById.mockResolvedValue({
+      id: AGENT_ID,
+      companyId: "company-1",
+      status: "pending_approval",
+    });
     mockNotifyHireApproved.mockResolvedValue(undefined);
   });
 
@@ -119,7 +139,7 @@ describe("approvalService resolution idempotency", () => {
     const result = await svc.approve("approval-1", "board", "ship it");
 
     expect(result.applied).toBe(true);
-    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1", approved.payload);
+    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith(AGENT_ID, approved.payload);
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
   });
 
@@ -154,6 +174,164 @@ describe("approvalService resolution idempotency", () => {
   });
 });
 
+describe("approvalService hire target scoping", () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    mockAgentService.activatePendingApproval.mockResolvedValue({ agent: { id: AGENT_ID }, activated: true });
+    mockAgentService.terminate.mockResolvedValue(undefined);
+    mockAgentService.terminatePendingApproval.mockResolvedValue({ id: AGENT_ID, status: "terminated" });
+    mockNotifyHireApproved.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  function expectSkipWarning(decision: "approved" | "rejected", reason: string, agentId = AGENT_ID) {
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: "approval-1", companyId: "company-1", agentId, decision, reason }),
+      "hire approval resolved without acting on payload.agentId",
+    );
+  }
+
+  it("does not activate an agent that belongs to another company", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: AGENT_ID,
+      companyId: "company-2",
+      status: "pending_approval",
+    });
+    const approved = createApproval("approved");
+    const dbStub = createDbStub([[createApproval("pending")]], [approved]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "ship it");
+
+    expect(result.applied).toBe(true);
+    expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockNotifyHireApproved).not.toHaveBeenCalled();
+    expectSkipWarning("approved", "agent_not_in_company");
+  });
+
+  it("skips hire side effects when the agent was activated by another resolution first", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: AGENT_ID,
+      companyId: "company-1",
+      status: "pending_approval",
+    });
+    mockAgentService.activatePendingApproval.mockResolvedValue({ agent: { id: AGENT_ID }, activated: false });
+    const approved = createApproval("approved");
+    const dbStub = createDbStub([[createApproval("pending")]], [approved]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "ship it");
+
+    expect(result.applied).toBe(true);
+    expect(mockNotifyHireApproved).not.toHaveBeenCalled();
+    expectSkipWarning("approved", "agent_not_pending");
+  });
+
+  it("does not terminate an agent that belongs to another company on reject", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: AGENT_ID,
+      companyId: "company-2",
+      status: "pending_approval",
+    });
+    const rejected = createApproval("rejected");
+    const dbStub = createDbStub([[createApproval("pending")]], [rejected]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.reject("approval-1", "board", "no");
+
+    expect(result.applied).toBe(true);
+    expect(mockAgentService.terminate).not.toHaveBeenCalled();
+    expect(mockAgentService.terminatePendingApproval).not.toHaveBeenCalled();
+    expectSkipWarning("rejected", "agent_not_in_company");
+  });
+
+  it("does not terminate an already-active agent on reject", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: AGENT_ID,
+      companyId: "company-1",
+      status: "idle",
+    });
+    const rejected = createApproval("rejected");
+    const dbStub = createDbStub([[createApproval("pending")]], [rejected]);
+
+    const svc = approvalService(dbStub.db as any);
+    await svc.reject("approval-1", "board", "no");
+
+    expect(mockAgentService.terminate).not.toHaveBeenCalled();
+    expect(mockAgentService.terminatePendingApproval).not.toHaveBeenCalled();
+    expectSkipWarning("rejected", "agent_not_pending");
+  });
+
+  it("terminates the pending agent in the same company on reject, conditionally on its status", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: AGENT_ID,
+      companyId: "company-1",
+      status: "pending_approval",
+    });
+    const rejected = createApproval("rejected");
+    const dbStub = createDbStub([[createApproval("pending")]], [rejected]);
+
+    const svc = approvalService(dbStub.db as any);
+    await svc.reject("approval-1", "board", "no");
+
+    expect(mockAgentService.terminatePendingApproval).toHaveBeenCalledWith(AGENT_ID);
+    expect(mockAgentService.terminate).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not terminate an agent that a concurrent approval activated after the status read", async () => {
+    // The read still sees pending_approval, but by the time the conditional
+    // terminate runs another approval has activated the agent.
+    mockAgentService.getById.mockResolvedValue({
+      id: AGENT_ID,
+      companyId: "company-1",
+      status: "pending_approval",
+    });
+    mockAgentService.terminatePendingApproval.mockResolvedValue(null);
+    const rejected = createApproval("rejected");
+    const dbStub = createDbStub([[createApproval("pending")]], [rejected]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.reject("approval-1", "board", "no");
+
+    expect(result.applied).toBe(true);
+    expect(mockAgentService.terminate).not.toHaveBeenCalled();
+    expectSkipWarning("rejected", "agent_not_pending");
+  });
+
+  it.each(["approve", "reject"] as const)(
+    "treats a non-uuid payload.agentId as an invalid target on %s without querying agents",
+    async (action) => {
+      // Postgres rejects a non-uuid literal for a uuid column (22P02).
+      mockAgentService.getById.mockRejectedValue(
+        Object.assign(new Error('invalid input syntax for type uuid: "not-a-uuid"'), { code: "22P02" }),
+      );
+      const resolved = {
+        ...createApproval(action === "approve" ? "approved" : "rejected"),
+        payload: { agentId: "not-a-uuid" },
+      };
+      const dbStub = createDbStub([[{ ...createApproval("pending"), payload: resolved.payload }]], [resolved]);
+
+      const svc = approvalService(dbStub.db as any);
+      const result = await svc[action]("approval-1", "board", "note");
+
+      expect(result.applied).toBe(true);
+      expect(mockAgentService.getById).not.toHaveBeenCalled();
+      expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
+      expect(mockAgentService.terminatePendingApproval).not.toHaveBeenCalled();
+      expect(mockAgentService.terminate).not.toHaveBeenCalled();
+      expectSkipWarning(action === "approve" ? "approved" : "rejected", "invalid_agent_id", "not-a-uuid");
+    },
+  );
+});
+
 describe("approvalService.findOpenHireApprovalForAgent", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -163,24 +341,27 @@ describe("approvalService.findOpenHireApprovalForAgent", () => {
     const match = {
       ...createApproval("pending"),
       id: "approval-match",
-      payload: { agentId: "agent-1" },
+      payload: { agentId: AGENT_ID },
     };
     // The company, type, open-status and payload->>'agentId' predicates run in
     // SQL, so the DB hands back only the matching row.
     const dbStub = createDbStub([[match]], []);
 
     const svc = approvalService(dbStub.db as any);
-    const result = await svc.findOpenHireApprovalForAgent("company-1", "agent-1");
+    const result = await svc.findOpenHireApprovalForAgent("company-1", AGENT_ID);
 
     expect(result?.id).toBe("approval-match");
     expect(dbStub.selectWhere).toHaveBeenCalledTimes(1);
+    // Deterministic pick when several open approvals name the same agent.
+    expect(dbStub.orderBy).toHaveBeenCalledTimes(1);
+    expect(dbStub.limit).toHaveBeenCalledWith(1);
   });
 
   it("returns null when no open approval matches the agent", async () => {
     const dbStub = createDbStub([[]], []);
 
     const svc = approvalService(dbStub.db as any);
-    const result = await svc.findOpenHireApprovalForAgent("company-1", "agent-1");
+    const result = await svc.findOpenHireApprovalForAgent("company-1", AGENT_ID);
 
     expect(result).toBeNull();
   });

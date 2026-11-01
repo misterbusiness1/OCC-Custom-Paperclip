@@ -76,11 +76,15 @@ function createDbStub() {
   };
 }
 
-async function createApp() {
-  const [{ accessRoutes }, { errorHandler }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     import("../routes/access.js"),
     import("../middleware/index.js"),
   ]);
+}
+
+async function createApp() {
+  const [{ accessRoutes }, { errorHandler }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -106,7 +110,7 @@ async function createApp() {
 }
 
 describe("POST /companies/:companyId/invites", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/access.js");
@@ -115,6 +119,8 @@ describe("POST /companies/:companyId/invites", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     logActivityMock.mockReset();
+    // Complete cold route loading before the behavior test starts.
+    await loadAppModules();
   });
 
   it("returns an absolute invite URL using the request base URL", async () => {

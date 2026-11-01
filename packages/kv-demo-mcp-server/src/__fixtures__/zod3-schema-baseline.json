@@ -1,0 +1,51 @@
+{
+ "capturedWith": "zod@3.25.76",
+ "note": "Omitted-key behaviour of every KV demo MCP tool input schema captured before the zod 4 migration (absent entry = required).",
+ "data": {
+  "fields": {
+   "tool:kv_list.prefix": "omitted"
+  },
+  "objects": {
+   "tool:kv_delete": "strip",
+   "tool:kv_get": "strip",
+   "tool:kv_list": "strip",
+   "tool:kv_set": "strip"
+  },
+  "defaultsUnderOptional": [],
+  "roots": {
+   "tool:kv_delete": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:kv_get": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:kv_list": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {}
+    }
+   },
+   "tool:kv_set": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   }
+  }
+ }
+}

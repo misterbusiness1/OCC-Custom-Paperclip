@@ -3,7 +3,7 @@ import multer from "multer";
 import createDOMPurify from "dompurify";
 import { JSDOM } from "jsdom";
 import type { Db } from "@paperclipai/db";
-import { createAssetImageMetadataSchema } from "@paperclipai/shared";
+import { createAssetImageMetadataSchema, toZod3Issues, zod3IssueParams } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
@@ -131,9 +131,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
       return;
     }
 
-    const parsedMeta = createAssetImageMetadataSchema.safeParse(req.body ?? {});
+    const parsedMeta = createAssetImageMetadataSchema.safeParse(req.body ?? {}, zod3IssueParams);
     if (!parsedMeta.success) {
-      res.status(400).json({ error: "Invalid image metadata", details: parsedMeta.error.issues });
+      res.status(400).json({ error: "Invalid image metadata", details: toZod3Issues(parsedMeta.error.issues) });
       return;
     }
 

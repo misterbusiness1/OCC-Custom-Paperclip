@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import type { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -44,8 +45,10 @@ import {
   requestItemVerdictsPayloadSchema,
   requestItemVerdictsResultSchema,
   suggestTasksPayloadSchema,
+  safeParseStoredUuids,
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -148,6 +151,16 @@ function isEquivalentCreateRequest(
   );
 }
 
+// Stored payloads/results may hold IDs that zod 3's lax `.uuid()` accepted
+// when they were written; re-validating them with strict z.uuid() would make
+// the whole interaction list (and accept/reject) fail. zod3IssueParams keeps
+// the 400 body of a genuinely invalid row in zod 3's wording, as before.
+function parseStoredPayload<T extends z.ZodType>(schema: T, value: unknown): z.output<T> {
+  const result = safeParseStoredUuids(schema, value, zod3IssueParams);
+  if (!result.success) throw result.error;
+  return result.data;
+}
+
 function hydrateInteraction(
   row: IssueThreadInteractionRow,
 ): IssueThreadInteraction {
@@ -163,36 +176,36 @@ function hydrateInteraction(
       return {
         ...base,
         kind: "suggest_tasks",
-        payload: suggestTasksPayloadSchema.parse(row.payload),
-        result: row.result ? suggestTasksResultSchema.parse(row.result) : null,
+        payload: parseStoredPayload(suggestTasksPayloadSchema, row.payload),
+        result: row.result ? parseStoredPayload(suggestTasksResultSchema, row.result) : null,
       } satisfies SuggestTasksInteraction;
     case "ask_user_questions":
       return {
         ...base,
         kind: "ask_user_questions",
-        payload: askUserQuestionsPayloadSchema.parse(row.payload),
-        result: row.result ? askUserQuestionsResultSchema.parse(row.result) : null,
+        payload: parseStoredPayload(askUserQuestionsPayloadSchema, row.payload),
+        result: row.result ? parseStoredPayload(askUserQuestionsResultSchema, row.result) : null,
       } satisfies AskUserQuestionsInteraction;
     case "request_confirmation":
       return {
         ...base,
         kind: "request_confirmation",
-        payload: requestConfirmationPayloadSchema.parse(row.payload),
-        result: row.result ? requestConfirmationResultSchema.parse(row.result) : null,
+        payload: parseStoredPayload(requestConfirmationPayloadSchema, row.payload),
+        result: row.result ? parseStoredPayload(requestConfirmationResultSchema, row.result) : null,
       } satisfies RequestConfirmationInteraction;
     case "request_checkbox_confirmation":
       return {
         ...base,
         kind: "request_checkbox_confirmation",
-        payload: requestCheckboxConfirmationPayloadSchema.parse(row.payload),
-        result: row.result ? requestCheckboxConfirmationResultSchema.parse(row.result) : null,
+        payload: parseStoredPayload(requestCheckboxConfirmationPayloadSchema, row.payload),
+        result: row.result ? parseStoredPayload(requestCheckboxConfirmationResultSchema, row.result) : null,
       } satisfies RequestCheckboxConfirmationInteraction;
     case "request_item_verdicts":
       return {
         ...base,
         kind: "request_item_verdicts",
-        payload: requestItemVerdictsPayloadSchema.parse(row.payload),
-        result: row.result ? requestItemVerdictsResultSchema.parse(row.result) : null,
+        payload: parseStoredPayload(requestItemVerdictsPayloadSchema, row.payload),
+        result: row.result ? parseStoredPayload(requestItemVerdictsResultSchema, row.result) : null,
       } satisfies RequestItemVerdictsInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);
@@ -1103,7 +1116,7 @@ export function issueThreadInteractionService(db: Db) {
       input: CreateIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
-      const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
+      const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input, zod3IssueParams));
 
       if (data.idempotencyKey) {
         const existing = await getIdempotentInteraction({
@@ -1208,7 +1221,7 @@ export function issueThreadInteractionService(db: Db) {
       input: AcceptIssueThreadInteraction,
       actor: InteractionActor,
     ): Promise<ResolvedInteractionResult> => {
-      const data = acceptIssueThreadInteractionSchema.parse(input);
+      const data = acceptIssueThreadInteractionSchema.parse(input, zod3IssueParams);
       const current = await getPendingInteractionForResolution({ issue, interactionId });
       switch (current.kind) {
         case "suggest_tasks":
@@ -1406,7 +1419,7 @@ export function issueThreadInteractionService(db: Db) {
       input: RejectIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
-      const data = rejectIssueThreadInteractionSchema.parse(input);
+      const data = rejectIssueThreadInteractionSchema.parse(input, zod3IssueParams);
       const current = await getPendingInteractionForResolution({ issue, interactionId });
       switch (current.kind) {
         case "suggest_tasks":
@@ -1430,7 +1443,7 @@ export function issueThreadInteractionService(db: Db) {
       input: SubmitIssueThreadInteractionVerdicts,
       actor: InteractionActor,
     ): Promise<{ interaction: IssueThreadInteraction; newlyResolvedItemIds: string[] }> => {
-      const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
+      const data = submitIssueThreadInteractionVerdictsSchema.parse(input, zod3IssueParams);
       const submission = await db.transaction(async (tx) => {
         const current = await tx
           .select()
@@ -1911,7 +1924,7 @@ export function issueThreadInteractionService(db: Db) {
       input: CancelIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
-      const data = cancelIssueThreadInteractionSchema.parse(input);
+      const data = cancelIssueThreadInteractionSchema.parse(input, zod3IssueParams);
       const current = await db
         .select()
         .from(issueThreadInteractions)

@@ -1864,7 +1864,7 @@ describe("company portability", () => {
           },
           GITHUB_TOKEN: {
             type: "secret_ref",
-            secretId: "11111111-1111-1111-1111-111111111111",
+            secretId: "11111111-1111-4111-8111-111111111111",
             version: "latest",
           },
         },
@@ -1889,7 +1889,7 @@ describe("company portability", () => {
     expect(extension).toContain("GITHUB_TOKEN:");
     expect(extension).not.toContain("sk-project-secret");
     expect(extension).not.toContain('type: "secret_ref"');
-    expect(extension).not.toContain("11111111-1111-1111-1111-111111111111");
+    expect(extension).not.toContain("11111111-1111-4111-8111-111111111111");
     expect(extension).toContain('default: "strict"');
     expect(extension).toContain('kind: "secret"');
     expect(extension).toContain('kind: "plain"');

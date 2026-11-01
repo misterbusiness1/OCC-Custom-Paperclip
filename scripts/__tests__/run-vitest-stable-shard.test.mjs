@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import os from "node:os";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -145,3 +147,44 @@ test("the real shard partition is duration-balanced", () => {
     `shard weight spread ${maxTotal - minTotal}ms exceeds heaviest suite ${heaviest}ms: ${totals.join(", ")}`,
   );
 });
+
+for (const [group, expectedWorkers] of [["general-server", "1"], ["general-workspaces-a", "2"]]) {
+  test(`${group} preserves its worker profile when the parent sets VITEST_MAX_WORKERS`, { skip: process.platform === "win32" && "fixture uses a POSIX executable shim" }, () => {
+    const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-worker-profile-"));
+    const capturePath = path.join(fixtureRoot, "invocations.jsonl");
+    writeFileSync(path.join(fixtureRoot, "pnpm"), `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+fs.appendFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
+  workers: process.env.VITEST_MAX_WORKERS,
+  args: process.argv.slice(2),
+  tempRoot: path.dirname(process.env.PAPERCLIP_HOME),
+}) + "\\n");
+`, { mode: 0o700 });
+    try {
+      const result = spawnSync(process.execPath, [script, "--mode", "general", "--group", group], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${fixtureRoot}${path.delimiter}${process.env.PATH ?? ""}`, VITEST_MAX_WORKERS: "2" },
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const invocations = readFileSync(capturePath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      assert.equal(invocations.length, group === "general-server" ? 1 : 2);
+      for (const invocation of invocations) {
+        assert.equal(invocation.workers, expectedWorkers);
+        assert.deepEqual(invocation.args.slice(0, 3), ["exec", "vitest", "run"]);
+        assert.equal(invocation.args.includes("--no-file-parallelism"), group === "general-server");
+      }
+    } finally {
+      if (existsSync(capturePath)) {
+        for (const line of readFileSync(capturePath, "utf8").trim().split("\n").filter(Boolean)) {
+          const { tempRoot } = JSON.parse(line);
+          assert.equal(path.dirname(tempRoot), process.platform === "win32" ? os.tmpdir() : "/tmp");
+          assert.match(path.basename(tempRoot), /^pcvt-\d+-\d+-/);
+          rmSync(tempRoot, { recursive: true, force: true });
+        }
+      }
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+}

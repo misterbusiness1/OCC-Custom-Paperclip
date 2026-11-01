@@ -36,6 +36,10 @@ POST /api/companies/{companyId}/approvals
 }
 ```
 
+An agent caller can only name itself as `requestedByAgentId`; board callers can name any agent in the same company. A `hire_agent` request on this endpoint cannot set `payload.agentId` (the server answers `422`). To hire an agent that waits for approval, use `agent-hires` below, which creates the pending agent and its approval together.
+
+A `hire_agent` request gets the same checks as `agent-hires`: the caller needs `agents:create`, `payload.adapterType` must name a known adapter (it is stored trimmed), adapters with managed instructions reject `adapterConfig.promptTemplate` and `bootstrapPromptTemplate`, and agent callers cannot set instructions path or bundle keys or workspace `provisionCommand`/`teardownCommand` in `payload.adapterConfig` or any `payload.runtimeConfig.modelProfiles.*.adapterConfig`.
+
 ## Create Hire Request
 
 ```
@@ -78,6 +82,8 @@ POST /api/approvals/{approvalId}/request-revision
 POST /api/approvals/{approvalId}/resubmit
 { "payload": { "updated": "config..." } }
 ```
+
+A revised `hire_agent` payload is checked the same way as a new `hire_agent` request and cannot change `payload.agentId`.
 
 ## Linked Issues
 

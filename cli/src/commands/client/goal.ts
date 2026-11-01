@@ -6,6 +6,7 @@ import {
   apiPath,
   formatInlineRecord,
   handleCommandError,
+  parseClientInput,
   printOutput,
   resolveCommandContext,
   type BaseClientOptions,
@@ -105,7 +106,7 @@ export function registerGoalCommands(program: Command): void {
       .action(async (opts: GoalCreateOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const payload = createGoalSchema.parse({
+          const payload = parseClientInput(createGoalSchema, {
             title: opts.title,
             description: opts.description,
             level: opts.level,
@@ -136,7 +137,7 @@ export function registerGoalCommands(program: Command): void {
       .action(async (goalId: string, opts: GoalUpdateOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = updateGoalSchema.parse({
+          const payload = parseClientInput(updateGoalSchema, {
             title: opts.title,
             description: parseNullableString(opts.description),
             level: opts.level,

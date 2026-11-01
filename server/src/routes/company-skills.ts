@@ -22,6 +22,7 @@ import {
   companySkillTestRunListQuerySchema,
   companySkillUpdateSchema,
   companySkillVersionCreateSchema,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { trackSkillImported } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
@@ -286,7 +287,7 @@ export function companySkillRoutes(db: Db) {
       kind: firstQueryString(req.query.kind),
       category: firstQueryString(req.query.category),
       q: firstQueryString(req.query.q),
-    });
+    }, zod3IssueParams);
     res.json(listCatalogSkillsOrEmpty(query));
   });
 
@@ -324,7 +325,7 @@ export function companySkillRoutes(db: Db) {
       ],
       folderId: firstQueryString(req.query.folderId),
       includeSubtree: optionalQueryBoolean(req.query.includeSubtree),
-    }));
+    }, zod3IssueParams));
     res.json(result);
   });
 
@@ -556,7 +557,7 @@ export function companySkillRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const query = companySkillTestRunListQuerySchema.parse({
       inputId: firstQueryString(req.query.inputId),
-    });
+    }, zod3IssueParams);
     res.json(await svc.listTestRuns(companyId, skillId, query));
   });
 

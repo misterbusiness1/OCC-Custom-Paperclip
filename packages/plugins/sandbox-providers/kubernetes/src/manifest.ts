@@ -100,7 +100,56 @@ const manifest: PaperclipPluginManifestV1 = {
           adapterType: {
             type: "string",
             description:
-              "The adapter type that Jobs in this environment will run (e.g. `claude_local`, `codex_local`). Defaults to `claude_local`. Each environment is bound to one adapter; create multiple environments for different adapters.",
+              "The adapter type that Jobs in this environment will run (e.g. `claude_local`, `codex_local`). Defaults to `claude_local`. `cursor` (legacy alias `cursor_local`) has no built-in runtime image and requires an `adapters` registry entry. Each environment is bound to one adapter; create multiple environments for different adapters.",
+          },
+          adapters: {
+            type: "array",
+            description:
+              "Optional adapter registry: per-adapter runtime image, forwarded secret env keys and egress FQDNs. When set it REPLACES the built-in defaults, so list every adapter this environment runs. Required for `cursor`, which has no built-in runtime image.",
+            items: {
+              type: "object",
+              properties: {
+                adapterType: {
+                  type: "string",
+                  description: "Paperclip adapter type, e.g. `cursor` or `claude_local`.",
+                },
+                enabled: {
+                  type: "boolean",
+                  default: true,
+                  description: "Set false to hide this adapter from the agent picker (same meaning as the server registry). Existing agents of it keep running.",
+                },
+                runtimeImage: {
+                  type: "string",
+                  description:
+                    "Agent runtime image (required to run). Note: `imageRegistry`, when set, rewrites its registry host and org.",
+                },
+                envKeys: {
+                  type: "array",
+                  items: { type: "string" },
+                  description:
+                    "Server env vars forwarded into the pod as secrets. Only the keys the server passes to sandbox-provider plugins can be forwarded: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, CURSOR_API_KEY.",
+                },
+                allowFqdns: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "Hosts the adapter must reach (exact FQDN filtering needs egressMode `cilium`).",
+                },
+                probeCommand: {
+                  type: "array",
+                  items: { type: "string" },
+                  description:
+                    "Command used to probe the runtime (e.g. `agent`, `--version` for Cursor). Recorded only; the plugin does not run it.",
+                },
+                defaultEnv: {
+                  type: "object",
+                  additionalProperties: { type: "string" },
+                  description:
+                    "Non-secret env vars set in the pod. This form cannot edit key/value maps yet; set it through the environments API.",
+                },
+              },
+              required: ["adapterType"],
+              additionalProperties: false,
+            },
           },
           backend: {
             type: "string",

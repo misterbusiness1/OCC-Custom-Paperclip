@@ -13,7 +13,7 @@
  * execution-policy-bootstrap.
  */
 import fs from "node:fs";
-import { adapterRegistrySchema, type AdapterRegistryEntryParsed } from "@paperclipai/shared";
+import { adapterRegistrySchema, type AdapterRegistryEntryParsed, toZod3Issues, zod3IssueParams } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { listServerAdapters } from "../adapters/registry.js";
 import { setAdapterDisabled } from "./adapter-plugin-store.js";
@@ -51,10 +51,10 @@ export function parseAdapterRegistryEnv(
     throw new Error(`PAPERCLIP_ADAPTERS must be valid JSON: ${(err as Error).message}`);
   }
 
-  const result = adapterRegistrySchema.safeParse(parsed);
+  const result = adapterRegistrySchema.safeParse(parsed, zod3IssueParams);
   if (!result.success) {
     throw new Error(
-      `PAPERCLIP_ADAPTERS failed validation: ${result.error.issues
+      `PAPERCLIP_ADAPTERS failed validation: ${toZod3Issues(result.error.issues)
         .map((i) => `${i.path.join(".")}: ${i.message}`)
         .join("; ")}`,
     );

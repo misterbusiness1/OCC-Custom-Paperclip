@@ -1,0 +1,360 @@
+{
+ "capturedWith": "zod@3.25.76",
+ "note": "tools/list result of the Google Sheets MCP server captured before the zod 4 migration. Do not regenerate on zod 4.",
+ "data": [
+  {
+   "name": "list_spreadsheets",
+   "description": "List the Google Sheets spreadsheets configured in this connection allowlist.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "annotations": {
+    "title": "List the Google Sheets spreadsheets configured in this connection allowlist.",
+    "readOnlyHint": true,
+    "openWorldHint": false
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "get_spreadsheet_info",
+   "description": "Get spreadsheet metadata and sheet tab information for an allowlisted spreadsheet.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "spreadsheetId": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "spreadsheetId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "annotations": {
+    "title": "Get spreadsheet metadata and sheet tab information for an allowlisted spreadsheet.",
+    "readOnlyHint": true,
+    "openWorldHint": false
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "read_values",
+   "description": "Read cell values from an allowlisted spreadsheet range.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "spreadsheetId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "range": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+     }
+    },
+    "required": [
+     "spreadsheetId",
+     "range"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "annotations": {
+    "title": "Read cell values from an allowlisted spreadsheet range.",
+    "readOnlyHint": true,
+    "openWorldHint": false
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "search_rows",
+   "description": "Search rows in an allowlisted spreadsheet range.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "spreadsheetId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "range": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+     },
+     "query": {
+      "type": "string",
+      "minLength": 1
+     },
+     "caseSensitive": {
+      "type": "boolean",
+      "default": false
+     },
+     "maxResults": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 500,
+      "default": 50
+     }
+    },
+    "required": [
+     "spreadsheetId",
+     "range",
+     "query"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "annotations": {
+    "title": "Search rows in an allowlisted spreadsheet range.",
+    "readOnlyHint": true,
+    "openWorldHint": false
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "append_rows",
+   "description": "Append rows to an allowlisted spreadsheet range.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "spreadsheetId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "range": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+     },
+     "values": {
+      "type": "array",
+      "items": {
+       "type": "array",
+       "items": {
+        "type": [
+         "string",
+         "number",
+         "boolean",
+         "null"
+        ]
+       }
+      },
+      "minItems": 1
+     },
+     "valueInputOption": {
+      "type": "string",
+      "enum": [
+       "RAW",
+       "USER_ENTERED"
+      ],
+      "default": "RAW"
+     }
+    },
+    "required": [
+     "spreadsheetId",
+     "range",
+     "values"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "annotations": {
+    "title": "Append rows to an allowlisted spreadsheet range.",
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "openWorldHint": false
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "update_values",
+   "description": "Update values in an allowlisted spreadsheet range.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "spreadsheetId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "range": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+     },
+     "values": {
+      "type": "array",
+      "items": {
+       "type": "array",
+       "items": {
+        "type": [
+         "string",
+         "number",
+         "boolean",
+         "null"
+        ]
+       }
+      },
+      "minItems": 1
+     },
+     "valueInputOption": {
+      "type": "string",
+      "enum": [
+       "RAW",
+       "USER_ENTERED"
+      ],
+      "default": "RAW"
+     }
+    },
+    "required": [
+     "spreadsheetId",
+     "range",
+     "values"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "annotations": {
+    "title": "Update values in an allowlisted spreadsheet range.",
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "openWorldHint": false
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "add_sheet_tab",
+   "description": "Add a sheet tab to an allowlisted spreadsheet.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "spreadsheetId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+     },
+     "rowCount": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 1000000
+     },
+     "columnCount": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 18278
+     }
+    },
+    "required": [
+     "spreadsheetId",
+     "title"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "annotations": {
+    "title": "Add a sheet tab to an allowlisted spreadsheet.",
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "openWorldHint": false
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "clear_values",
+   "description": "Clear values in an allowlisted spreadsheet range.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "spreadsheetId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "range": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+     }
+    },
+    "required": [
+     "spreadsheetId",
+     "range"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "annotations": {
+    "title": "Clear values in an allowlisted spreadsheet range.",
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "openWorldHint": false
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "delete_rows",
+   "description": "Delete rows from an allowlisted spreadsheet tab.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "spreadsheetId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "sheetId": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "startIndex": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "endIndex": {
+      "type": "integer",
+      "exclusiveMinimum": 0
+     }
+    },
+    "required": [
+     "spreadsheetId",
+     "sheetId",
+     "startIndex",
+     "endIndex"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "annotations": {
+    "title": "Delete rows from an allowlisted spreadsheet tab.",
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "openWorldHint": false
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  }
+ ]
+}

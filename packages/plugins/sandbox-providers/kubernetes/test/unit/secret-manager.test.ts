@@ -9,7 +9,7 @@ describe("createPerRunSecret", () => {
     ownerKind: "Job",
     ownerApiVersion: "batch/v1",
     ownerName: "r-abcd",
-    ownerUid: "11111111-1111-1111-1111-111111111111",
+    ownerUid: "11111111-1111-4111-8111-111111111111",
     bootstrapToken: "tok-xyz",
     adapterEnv: { ANTHROPIC_API_KEY: "sk-test" },
   };
@@ -45,7 +45,7 @@ describe("createPerRunSecret", () => {
     await createPerRunSecret(clients as never, baseInput);
     const body = created[0].body as { metadata: { ownerReferences: { uid: string; controller: boolean }[] } };
     expect(body.metadata.ownerReferences).toHaveLength(1);
-    expect(body.metadata.ownerReferences[0].uid).toBe("11111111-1111-1111-1111-111111111111");
+    expect(body.metadata.ownerReferences[0].uid).toBe("11111111-1111-4111-8111-111111111111");
     expect(body.metadata.ownerReferences[0].controller).toBe(true);
   });
 

@@ -257,7 +257,7 @@ describe("environment routes", () => {
     mockSecretService.syncSecretRefsForTarget.mockReset();
     mockSecretService.remove.mockReset();
     mockSecretService.create.mockResolvedValue({
-      id: "11111111-1111-1111-1111-111111111111",
+      id: "11111111-1111-4111-9111-111111111111",
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockIssueService.clearExecutionWorkspaceEnvironmentSelection.mockResolvedValue(0);
@@ -795,7 +795,7 @@ describe("environment routes", () => {
         privateKey: null,
         privateKeySecretRef: {
           type: "secret_ref",
-          secretId: "11111111-1111-1111-1111-111111111111",
+          secretId: "11111111-1111-4111-9111-111111111111",
           version: "latest",
         },
         knownHosts: null,
@@ -835,7 +835,7 @@ describe("environment routes", () => {
         { replaceAll: true },
       );
     }
-    expect(mockSecretService.remove).toHaveBeenCalledWith("11111111-1111-1111-1111-111111111111");
+    expect(mockSecretService.remove).toHaveBeenCalledWith("11111111-1111-4111-9111-111111111111");
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -884,7 +884,7 @@ describe("environment routes", () => {
         privateKey: null,
         privateKeySecretRef: {
           type: "secret_ref",
-          secretId: "11111111-1111-1111-1111-111111111111",
+          secretId: "11111111-1111-4111-9111-111111111111",
           version: "latest",
         },
         knownHosts: null,
@@ -918,7 +918,7 @@ describe("environment routes", () => {
         privateKey: null,
         privateKeySecretRef: {
           type: "secret_ref",
-          secretId: "11111111-1111-1111-1111-111111111111",
+          secretId: "11111111-1111-4111-9111-111111111111",
           version: "latest",
         },
       }),
@@ -950,7 +950,7 @@ describe("environment routes", () => {
         privateKey: null,
         privateKeySecretRef: {
           type: "secret_ref",
-          secretId: "11111111-1111-1111-1111-111111111111",
+          secretId: "11111111-1111-4111-9111-111111111111",
           version: "latest",
         },
         knownHosts: null,
@@ -1080,7 +1080,7 @@ describe("environment routes", () => {
       config: {
         provider: "secure-plugin",
         template: "base",
-        apiKey: "11111111-1111-1111-1111-111111111111",
+        apiKey: "11111111-1111-4111-9111-111111111111",
         timeoutMs: 450000,
         reuseLease: true,
       },
@@ -1150,7 +1150,7 @@ describe("environment routes", () => {
       config: {
         provider: "secure-plugin",
         template: "base",
-        apiKey: "11111111-1111-1111-1111-111111111111",
+        apiKey: "11111111-1111-4111-9111-111111111111",
         timeoutMs: 450000,
         reuseLease: true,
       },
@@ -1177,7 +1177,7 @@ describe("environment routes", () => {
       config: {
         provider: "secure-plugin",
         template: "base",
-        apiKey: "11111111-1111-1111-1111-111111111111",
+        apiKey: "11111111-1111-4111-9111-111111111111",
         timeoutMs: 450000,
         reuseLease: true,
       },
@@ -1390,7 +1390,165 @@ describe("environment routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.provider).toBe("ssh");
+    expect(res.body.providerLeaseId).toBe("ssh://ssh-user@example.test:22/workspace");
+    expect(res.body.metadata).toEqual({ remoteCwd: "/workspace" });
     expect(mockEnvironmentService.getLeaseById).toHaveBeenCalledWith("lease-1");
+  });
+
+  it("only lists leases from the member's own companies", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    const leaseBase = {
+      environmentId: environment.id,
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: null,
+      status: "active",
+      providerLeaseId: null,
+      acquiredAt: new Date("2026-04-16T05:00:00.000Z"),
+      lastUsedAt: new Date("2026-04-16T05:05:00.000Z"),
+      expiresAt: null,
+      releasedAt: null,
+      metadata: {},
+      createdAt: new Date("2026-04-16T05:00:00.000Z"),
+      updatedAt: new Date("2026-04-16T05:05:00.000Z"),
+    };
+    mockEnvironmentService.listLeases.mockResolvedValue([
+      { ...leaseBase, id: "lease-own", companyId: "company-1" },
+      { ...leaseBase, id: "lease-foreign", companyId: "company-2" },
+    ]);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const res = await request(app).get(`/api/environments/${environment.id}/leases`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((lease: { id: string }) => lease.id)).toEqual(["lease-own"]);
+    expect(mockEnvironmentService.listLeases).toHaveBeenCalledWith(environment.id, {
+      companyIds: ["company-1"],
+    });
+  });
+
+  it("redacts provider lease details from own-company leases for non-admin members", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    const sshLease = {
+      id: "lease-own",
+      companyId: "company-1",
+      environmentId: environment.id,
+      executionWorkspaceId: "workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      status: "active",
+      leasePolicy: "ephemeral",
+      provider: "ssh",
+      providerLeaseId: "ssh://ssh-user@example.test:22/srv/paperclip/workspace",
+      acquiredAt: new Date("2026-04-16T05:00:00.000Z"),
+      lastUsedAt: new Date("2026-04-16T05:05:00.000Z"),
+      expiresAt: null,
+      releasedAt: null,
+      failureReason: null,
+      cleanupStatus: null,
+      metadata: {
+        driver: "ssh",
+        host: "example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteWorkspacePath: "/srv/paperclip",
+        remoteCwd: "/srv/paperclip/workspace",
+      },
+      createdAt: new Date("2026-04-16T05:00:00.000Z"),
+      updatedAt: new Date("2026-04-16T05:05:00.000Z"),
+    };
+    mockEnvironmentService.listLeases.mockResolvedValue([sshLease]);
+    mockEnvironmentService.getLeaseById.mockResolvedValue(sshLease);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const listRes = await request(app).get(`/api/environments/${environment.id}/leases`);
+    const getRes = await request(app).get("/api/environment-leases/lease-own");
+
+    expect(listRes.status).toBe(200);
+    expect(getRes.status).toBe(200);
+    for (const lease of [listRes.body[0], getRes.body]) {
+      expect(lease).toMatchObject({
+        id: "lease-own",
+        companyId: "company-1",
+        issueId: "issue-1",
+        heartbeatRunId: "run-1",
+        status: "active",
+        provider: "ssh",
+        providerLeaseId: null,
+        metadata: null,
+      });
+    }
+    expect(JSON.stringify([listRes.body, getRes.body])).not.toContain("example.test");
+    expect(JSON.stringify([listRes.body, getRes.body])).not.toContain("ssh-user");
+  });
+
+  it("returns 404 for a lease that belongs to another company", async () => {
+    mockEnvironmentService.getLeaseById.mockResolvedValue({
+      id: "lease-foreign",
+      companyId: "company-2",
+      environmentId: "env-1",
+      status: "active",
+      metadata: { remoteCwd: "/workspace" },
+    });
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const res = await request(app).get("/api/environment-leases/lease-foreign");
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Environment lease not found");
+  });
+
+  it("lets instance admins read leases from any company", async () => {
+    const environment = createEnvironment();
+    const foreignLease = {
+      id: "lease-foreign",
+      companyId: "company-2",
+      environmentId: environment.id,
+      status: "active",
+      provider: "ssh",
+      providerLeaseId: "ssh://ssh-user@example.test:22/workspace",
+      metadata: { host: "example.test", remoteCwd: "/workspace" },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.listLeases.mockResolvedValue([foreignLease]);
+    mockEnvironmentService.getLeaseById.mockResolvedValue(foreignLease);
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [],
+    });
+
+    const res = await request(app).get("/api/environment-leases/lease-foreign");
+    const listRes = await request(app).get(`/api/environments/${environment.id}/leases`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.providerLeaseId).toBe("ssh://ssh-user@example.test:22/workspace");
+    expect(res.body.metadata).toEqual({ host: "example.test", remoteCwd: "/workspace" });
+    expect(listRes.status).toBe(200);
+    expect(listRes.body).toEqual([foreignLease]);
+    expect(mockEnvironmentService.listLeases.mock.calls[0]?.[1]).not.toHaveProperty("companyIds");
   });
 
   it("rejects agent access regardless of company when environment management is instance-scoped", async () => {
@@ -1812,7 +1970,7 @@ describe("environment routes", () => {
     mockValidatePluginSandboxProviderConfig.mockResolvedValue({
       normalizedConfig: {
         template: "base",
-        apiKey: "11111111-1111-1111-1111-111111111111",
+        apiKey: "11111111-1111-4111-9111-111111111111",
         timeoutMs: 300000,
         reuseLease: true,
       },
@@ -1855,7 +2013,7 @@ describe("environment routes", () => {
         config: {
           provider: "secure-plugin",
           template: "base",
-          apiKey: "11111111-1111-1111-1111-111111111111",
+          apiKey: "11111111-1111-4111-9111-111111111111",
           timeoutMs: 300000,
           reuseLease: true,
         },
@@ -1866,7 +2024,7 @@ describe("environment routes", () => {
     expect(mockSecretService.create).not.toHaveBeenCalled();
     expect(mockSecretService.resolveSecretValueForEphemeralAccess).toHaveBeenCalledWith(
       "company-1",
-      "11111111-1111-1111-1111-111111111111",
+      "11111111-1111-4111-9111-111111111111",
       "latest",
       {
         consumerType: "system",
@@ -1904,7 +2062,7 @@ describe("environment routes", () => {
     mockValidatePluginSandboxProviderConfig.mockResolvedValue({
       normalizedConfig: {
         template: "base",
-        apiKey: "11111111-1111-1111-1111-111111111111",
+        apiKey: "11111111-1111-4111-9111-111111111111",
       },
       pluginId: "plugin-secure",
       pluginKey: "acme.secure-sandbox-provider",
@@ -1943,7 +2101,7 @@ describe("environment routes", () => {
         config: {
           provider: "secure-plugin",
           template: "base",
-          apiKey: "11111111-1111-1111-1111-111111111111",
+          apiKey: "11111111-1111-4111-9111-111111111111",
         },
       });
 

@@ -28,6 +28,7 @@ import {
 import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   parseClaudeStreamJson,
 } from "./parse.js";
@@ -433,8 +434,26 @@ export async function testEnvironment(
           stdout: probe.stdout,
           stderr: probe.stderr,
         });
+        // Usage caps ("usage limit reached", "weekly limit reached", ...) are
+        // classified as provider quota, not transient, since they don't clear
+        // on a quick retry. The environment itself is configured correctly, so
+        // report a warning rather than a hard failure (same as gemini_local's
+        // gemini_hello_probe_quota_exhausted).
+        const providerQuota = !transient && isClaudeProviderQuotaError({
+          parsed,
+          stdout: probe.stdout,
+          stderr: probe.stderr,
+        });
         checks.push(
-          transient
+          providerQuota
+            ? {
+                code: "claude_hello_probe_quota_exhausted",
+                level: "warn",
+                message: "Claude CLI is configured, but the account has reached its usage limit.",
+                ...(failureDetail ? { detail: failureDetail } : {}),
+                hint: "Wait for the usage window to reset or use an account or API key with remaining quota, then re-run Test.",
+              }
+            : transient
             ? {
                 code: "claude_hello_probe_transient_upstream",
                 level: "warn",

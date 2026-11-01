@@ -28,12 +28,6 @@ const REGISTRY: Record<string, AdapterDefaults> = {
     allowFqdns: ["generativelanguage.googleapis.com"],
     probeCommand: ["gemini", "--version"],
   },
-  cursor_local: {
-    runtimeImage: "ghcr.io/paperclipai/agent-runtime-cursor:v1",
-    envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
-    allowFqdns: ["api.anthropic.com", "api.openai.com"],
-    probeCommand: ["cursor-agent", "--version"],
-  },
   opencode_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-opencode:v1",
     envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
@@ -48,17 +42,50 @@ const REGISTRY: Record<string, AdapterDefaults> = {
   },
 };
 
-export const KNOWN_ADAPTER_TYPES: ReadonlySet<string> = new Set(Object.keys(REGISTRY));
+/**
+ * Adapter types the config schema accepts that ship NO built-in runtime
+ * defaults: they only run when a declarative `adapters` registry entry supplies
+ * runtimeImage / envKeys / allowFqdns. The value is the actionable error raised
+ * when no such entry is configured.
+ *
+ * Cursor (Paperclip adapter type "cursor") is registry-only because no
+ * agent-runtime-cursor image is built or published (docker/agent-runtime has no
+ * Cursor target); built-in defaults would only ever end in ImagePullBackOff.
+ */
+const REGISTRY_ONLY_ADAPTER_TYPES: ReadonlyMap<string, string> = new Map([
+  [
+    "cursor",
+    'Cursor has no built-in Kubernetes runtime image; add an adapters registry entry for "cursor" with runtimeImage, envKeys (CURSOR_API_KEY) and allowFqdns (the Cursor backend hosts)',
+  ],
+]);
 
-function fromRegistryEntry(entry: AdapterRegistryEntry): AdapterDefaults {
+/** Legacy adapter-type keys mapped to Paperclip's canonical adapter type. */
+const ADAPTER_TYPE_ALIASES: ReadonlyMap<string, string> = new Map([["cursor_local", "cursor"]]);
+
+/**
+ * Map a legacy alias (e.g. "cursor_local") to Paperclip's canonical adapter
+ * type ("cursor"); any other value is returned unchanged. Applied by the config
+ * schema and before every registry lookup / label so an alias behaves exactly
+ * like its canonical type.
+ */
+export function normalizeAdapterType(adapterType: string): string {
+  return ADAPTER_TYPE_ALIASES.get(adapterType) ?? adapterType;
+}
+
+/** Canonical adapter types accepted by the config schema (aliases normalise onto these). */
+export const KNOWN_ADAPTER_TYPES: ReadonlySet<string> = new Set([
+  ...Object.keys(REGISTRY),
+  ...REGISTRY_ONLY_ADAPTER_TYPES.keys(),
+]);
+
+/** `type` is the canonical (normalised) adapter type the entry was matched for. */
+function fromRegistryEntry(entry: AdapterRegistryEntry, type: string): AdapterDefaults {
   // Only runtimeImage is strictly required. The array fields are optional and
   // default to []: the operator emits them with `omitempty`, so a genuinely
   // empty allowFqdns/envKeys/probeCommand arrives as undefined, which is valid
   // (no extra egress / no forwarded secrets / no probe), NOT an error.
   if (!entry.runtimeImage) {
-    throw new Error(
-      `Adapter "${entry.adapterType}" is missing required runtime field: runtimeImage`,
-    );
+    throw new Error(`Adapter "${type}" is missing required runtime field: runtimeImage`);
   }
   return {
     runtimeImage: entry.runtimeImage,
@@ -69,40 +96,117 @@ function fromRegistryEntry(entry: AdapterRegistryEntry): AdapterDefaults {
   };
 }
 
+/** Error for a canonical type whose registry entries are ambiguous. */
+function duplicateEntriesError(type: string, entries: readonly AdapterRegistryEntry[]): string {
+  // e.g. both "cursor" and the legacy "cursor_local": refuse to pick one silently.
+  return `Adapter "${type}" has ${entries.length} entries in the configured adapter registry (${entries
+    .map((e) => `"${e.adapterType}"`)
+    .join(", ")}); keep exactly one`;
+}
+
+/**
+ * The entries that a lease for one canonical adapter type resolves against:
+ * the enabled ones if any exist, otherwise the disabled ones (a disabled
+ * adapter is hidden from the picker but must keep working for existing agents).
+ */
+function selectRegistryEntries(matching: readonly AdapterRegistryEntry[]): readonly AdapterRegistryEntry[] {
+  const enabled = matching.filter((e) => e.enabled !== false);
+  return enabled.length > 0 ? enabled : matching;
+}
+
 /**
  * Resolve the runtime defaults for an adapter. When a `registry` is supplied it
- * is authoritative (replace semantics): the type MUST be present and complete,
- * else this throws. With no registry, falls back to the built-in REGISTRY.
+ * is authoritative (replace semantics): the type MUST resolve to exactly one
+ * entry (counting aliases) and that entry must be complete, else this throws.
+ * `enabled` follows the server's meaning (reconcileAdapterAvailability): it only
+ * hides an adapter from the picker, and disabled adapters stay functional for
+ * existing agents. So enabled entries win, and when a type has only disabled
+ * entries the disabled entry still resolves. With no registry, falls back to
+ * the built-in REGISTRY;
+ * registry-only types (e.g. "cursor") throw an actionable error there. Legacy
+ * aliases are normalised on both sides of the registry lookup.
  */
 export function getAdapterDefaults(
   adapterType: string,
   registry?: readonly AdapterRegistryEntry[],
 ): AdapterDefaults {
+  const type = normalizeAdapterType(adapterType);
+  const registryOnlyHint = REGISTRY_ONLY_ADAPTER_TYPES.get(type);
   if (registry && registry.length > 0) {
-    const entry = registry.find((e) => e.adapterType === adapterType);
-    if (!entry) {
-      throw new Error(`Adapter "${adapterType}" is not in the configured adapter registry`);
+    const matching = registry.filter((e) => normalizeAdapterType(e.adapterType) === type);
+    const entries = selectRegistryEntries(matching);
+    if (entries.length === 0) {
+      const base = `Adapter "${type}" is not in the configured adapter registry`;
+      throw new Error(registryOnlyHint ? `${base}. ${registryOnlyHint}` : base);
     }
-    return fromRegistryEntry(entry);
+    if (entries.length > 1) {
+      throw new Error(duplicateEntriesError(type, entries));
+    }
+    return fromRegistryEntry(entries[0], type);
   }
-  const defaults = REGISTRY[adapterType];
+  if (registryOnlyHint) {
+    throw new Error(registryOnlyHint);
+  }
+  // Own-property lookup: a run hint such as "constructor" or "toString" must not
+  // resolve to an Object.prototype member.
+  const defaults = Object.hasOwn(REGISTRY, type) ? REGISTRY[type] : undefined;
   if (!defaults) {
-    throw new Error(`Unknown adapter type: ${adapterType}`);
+    throw new Error(`Unknown adapter type: ${type}`);
   }
   return defaults;
+}
+
+/**
+ * Save-time check of a whole `adapters` registry. Lease time only resolves the
+ * run's adapter, so without this a broken entry for any adapter other than the
+ * environment default would only surface when a run of it is dispatched.
+ * - errors: an adapter type (aliases included) whose entries are ambiguous
+ *   under the lease-time rule (more than one enabled entry, or no enabled entry
+ *   and more than one disabled entry); every run of that adapter would be
+ *   refused.
+ * - warnings: the resolving entry has no `runtimeImage`; runs of that adapter in
+ *   this environment will be refused. Not an error because the registry is
+ *   shared with picker availability and may list adapters that never run on
+ *   Kubernetes. (The environment default is checked strictly by
+ *   getAdapterDefaults.)
+ */
+export function checkAdapterRegistry(registry: readonly AdapterRegistryEntry[] | undefined): {
+  errors: string[];
+  warnings: string[];
+} {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const byType = new Map<string, AdapterRegistryEntry[]>();
+  for (const entry of registry ?? []) {
+    const type = normalizeAdapterType(entry.adapterType);
+    byType.set(type, [...(byType.get(type) ?? []), entry]);
+  }
+  for (const [type, matching] of byType) {
+    const entries = selectRegistryEntries(matching);
+    if (entries.length > 1) {
+      errors.push(duplicateEntriesError(type, entries));
+    } else if (!entries[0].runtimeImage) {
+      warnings.push(
+        `Adapter "${type}" has no runtimeImage in the configured adapter registry; runs of it in this environment will be refused`,
+      );
+    }
+  }
+  return { errors, warnings };
 }
 
 /**
  * Resolve the adapter type for a single run: prefer the run's adapter (the agent's,
  * from the lease params) so one environment can serve mixed harnesses; fall back to
  * the environment's configured default adapter when the run does not specify one.
+ * The result is normalised (legacy aliases -> canonical type), so labels and
+ * registry lookups downstream never see an alias.
  */
 export function resolveRunAdapterType(
   runAdapterType: string | null | undefined,
   configAdapterType: string,
 ): string {
   const trimmed = typeof runAdapterType === "string" ? runAdapterType.trim() : "";
-  return trimmed.length > 0 ? trimmed : configAdapterType;
+  return normalizeAdapterType(trimmed.length > 0 ? trimmed : configAdapterType);
 }
 
 /**

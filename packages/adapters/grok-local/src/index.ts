@@ -23,7 +23,7 @@ Don't use when:
 
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
-- instructionsFilePath (string, optional): absolute path to a markdown instructions file. Paperclip stages it into the execution workspace as \`Agents.md\` when safe, otherwise falls back to \`--rules @file\`
+- instructionsFilePath (string, optional): absolute path to a markdown instructions file. Paperclip stages it into the execution workspace as \`Agents.md\` when safe, otherwise falls back to \`--rules @file\` (on remote ssh/sandbox environments the file is inlined into the prompt instead, because host paths are not readable there)
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Grok model id. Defaults to grok-build.
 - permissionMode (string, optional): Grok permission mode. Defaults to \`dontAsk\`

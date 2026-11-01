@@ -1,12 +1,13 @@
 import { z } from "zod";
+import { datetimeString } from "./zod-compat.js";
 import { BILLING_TYPES, COST_STATUSES } from "../constants.js";
 
 export const createCostEventSchema = z.object({
-  agentId: z.string().uuid(),
-  issueId: z.string().uuid().optional().nullable(),
-  projectId: z.string().uuid().optional().nullable(),
-  goalId: z.string().uuid().optional().nullable(),
-  heartbeatRunId: z.string().uuid().optional().nullable(),
+  agentId: z.uuid(),
+  issueId: z.uuid().optional().nullable(),
+  projectId: z.uuid().optional().nullable(),
+  goalId: z.uuid().optional().nullable(),
+  heartbeatRunId: z.uuid().optional().nullable(),
   billingCode: z.string().optional().nullable(),
   provider: z.string().min(1),
   biller: z.string().min(1).optional(),
@@ -17,7 +18,7 @@ export const createCostEventSchema = z.object({
   cachedInputTokens: z.number().int().nonnegative().optional().default(0),
   outputTokens: z.number().int().nonnegative().optional().default(0),
   costCents: z.number().int().nonnegative(),
-  occurredAt: z.string().datetime(),
+  occurredAt: datetimeString(),
 }).transform((value) => ({
   ...value,
   biller: value.biller ?? value.provider,

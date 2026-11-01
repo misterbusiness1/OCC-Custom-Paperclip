@@ -51,6 +51,23 @@ describe("normalizeIssueExecutionPolicy", () => {
     ).toThrow("Invalid execution policy");
   });
 
+  it("keeps stored stage and participant IDs that zod 3's lax .uuid() accepted", () => {
+    // Policies stored before the zod 4 migration may hold client-supplied
+    // non-RFC IDs; normalizing a stored policy must not start throwing 422.
+    const legacyStageId = "11111111-1111-1111-1111-111111111111";
+    const legacyParticipantId = "22222222-2222-2222-2222-222222222222";
+    const result = normalizeIssueExecutionPolicy({
+      stages: [
+        { id: legacyStageId, type: "review", participants: [{ id: legacyParticipantId, type: "agent", agentId: qaAgentId }] },
+      ],
+    });
+    expect(result!.stages[0]!.id).toBe(legacyStageId);
+    expect(result!.stages[0]!.participants[0]!.id).toBe(legacyParticipantId);
+    expect(() =>
+      normalizeIssueExecutionPolicy({ stages: [{ id: "not-a-uuid", type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }] }),
+    ).toThrow("Invalid execution policy");
+  });
+
   it("deduplicates participants within a stage", () => {
     const result = normalizeIssueExecutionPolicy({
       stages: [
@@ -142,6 +159,24 @@ describe("parseIssueExecutionState", () => {
 
   it("returns null for invalid shape", () => {
     expect(parseIssueExecutionState({ status: "bogus" })).toBeNull();
+  });
+
+  it("keeps stored stage IDs that zod 3's lax .uuid() accepted instead of dropping the state", () => {
+    const legacyStageId = "11111111-1111-1111-1111-111111111111";
+    const state = parseIssueExecutionState({
+      status: "pending",
+      currentStageId: legacyStageId,
+      currentStageIndex: 0,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: qaAgentId },
+      returnAssignee: { type: "agent", agentId: coderAgentId },
+      completedStageIds: [legacyStageId],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    });
+    expect(state).not.toBeNull();
+    expect(state!.currentStageId).toBe(legacyStageId);
+    expect(state!.completedStageIds).toEqual([legacyStageId]);
   });
 
   it("parses a valid state", () => {

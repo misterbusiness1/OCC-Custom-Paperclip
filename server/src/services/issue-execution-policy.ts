@@ -10,7 +10,13 @@ import type {
   IssueExecutionState,
   IssueMonitorScheduledBy,
 } from "@paperclipai/shared";
-import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@paperclipai/shared";
+import {
+  issueExecutionPolicySchema,
+  issueExecutionStateSchema,
+  flattenZod3Issues,
+  safeParseStoredUuids,
+  zod3IssueParams,
+} from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 
 type AssigneeLike = {
@@ -338,9 +344,12 @@ export function setIssueExecutionPolicyMonitorScheduledBy(
 
 export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
   if (input == null) return null;
-  const parsed = issueExecutionPolicySchema.safeParse(input);
+  // Also called on stored policies, whose stage/participant IDs may be
+  // client-supplied values zod 3's lax .uuid() accepted. Request bodies are
+  // validated strictly by the route schemas (executionPolicy) before this runs.
+  const parsed = safeParseStoredUuids(issueExecutionPolicySchema, input, zod3IssueParams);
   if (!parsed.success) {
-    throw unprocessable("Invalid execution policy", parsed.error.flatten());
+    throw unprocessable("Invalid execution policy", flattenZod3Issues(parsed.error.issues));
   }
 
   const stages = parsed.data.stages
@@ -404,7 +413,8 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
 export function parseIssueExecutionState(input: unknown): IssueExecutionState | null {
   if (input == null) return null;
-  const parsed = issueExecutionStateSchema.safeParse(input);
+  // Stored state; see normalizeIssueExecutionPolicy.
+  const parsed = safeParseStoredUuids(issueExecutionStateSchema, input);
   if (!parsed.success) return null;
   return parsed.data;
 }

@@ -252,7 +252,8 @@ async function createBrokerConnection(
     defaultScopes?: string[];
     rateLimitPerHour?: number;
     healthStatus?: "unknown" | "healthy" | "degraded" | "failed" | "unchecked" | "ok" | "error" | "missing_secret";
-    tokenUrl?: string;
+    // null omits tokenUrl so the operator PAPERCLIP_PAGES_API_URL fallback applies.
+    tokenUrl?: string | null;
   } = {},
 ) {
   const secret = await secretService(db).create(companyId, {
@@ -283,7 +284,7 @@ async function createBrokerConnection(
       tokenBroker: {
         enabled: true,
         path: input.path ?? "exchange",
-        tokenUrl: input.tokenUrl ?? "https://pages.example.test/v1/tokens/exchange",
+        ...(input.tokenUrl === null ? {} : { tokenUrl: input.tokenUrl ?? "https://pages.example.test/v1/tokens/exchange" }),
         parentCredentialConfigPath: "credentials.deploy_token",
         parentScopes: input.parentScopes ?? ["pages:publish:ns/dotta"],
         defaultScopes: input.defaultScopes ?? [],
@@ -463,6 +464,101 @@ describeEmbeddedPostgres("tool access service", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("refuses to send the parent credential to a private token exchange URL in public deployments", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id, {
+      tokenUrl: "http://169.254.169.254/latest/meta-data/iam",
+    });
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(
+      db,
+      agentJwtActor(company.id, agent.id, run.id),
+      undefined,
+      { deploymentMode: "authenticated", deploymentExposure: "public" },
+    );
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .set("X-Paperclip-Run-Id", run.id)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.details).toMatchObject({ code: "remote_http_private_endpoint" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not follow redirects from the token exchange endpoint", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id);
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 307,
+      headers: new Headers({ location: "http://169.254.169.254/latest/meta-data" }),
+      json: async () => ({}),
+    } as Response);
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .set("X-Paperclip-Run-Id", run.id)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(502);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
+  });
+
+  it("does not follow redirects with the parent credential from the operator Pages exchange URL", async () => {
+    vi.stubEnv("PAPERCLIP_PAGES_API_URL", "https://pages-operator.example.test");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id, { tokenUrl: null });
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://pages-operator.example.test/v1/tokens/exchange") {
+        // Emulate fetch()'s default redirect: "follow" so the test sees where
+        // the parent credential would be re-sent.
+        if (init?.redirect !== "manual") return globalThis.fetch("http://169.254.169.254/latest/meta-data", init);
+        return {
+          ok: false,
+          status: 307,
+          headers: new Headers({ location: "http://169.254.169.254/latest/meta-data" }),
+          json: async () => ({}),
+        } as Response;
+      }
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({ token: "leaked-child-token", expires_in: 600, scope: "pages:publish:ns/dotta" }),
+      } as Response;
+    });
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .set("X-Paperclip-Run-Id", run.id)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(502);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://pages-operator.example.test/v1/tokens/exchange",
+      expect.objectContaining({
+        redirect: "manual",
+        headers: expect.objectContaining({ authorization: "Bearer parent-deploy-token" }),
+      }),
+    );
+    expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith("http://169.254.169.254"))).toBe(false);
   });
 
   it("mints generic exchange connection tokens through the agent route and stores only hashes", async () => {
@@ -1015,6 +1111,51 @@ describeEmbeddedPostgres("tool access service", () => {
     // The same probe backs the periodic health sweep, so it must also pass.
     const health = await service.checkHealth(connection.id);
     expect(health.connection.healthStatus).toBe("ok");
+  });
+
+  it("does not follow catalog refresh redirects to private hosts with credential headers", async () => {
+    const cancelBody = vi.fn();
+    const company = await createCompany(db);
+    const service = toolAccessService(db, { deploymentMode: "authenticated", deploymentExposure: "public" });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://8.8.8.8/mcp") {
+        // Emulate fetch()'s default redirect: "follow" so the test sees where
+        // the tools/list request and its credential headers would be re-sent.
+        if (init?.redirect !== "manual") return globalThis.fetch("http://169.254.169.254/mcp", init);
+        return {
+          ok: false,
+          status: 307,
+          body: new ReadableStream({ cancel: cancelBody }),
+          headers: new Headers({ location: "http://169.254.169.254/mcp" }),
+          text: async () => "",
+          json: async () => ({}),
+        } as Response;
+      }
+      return mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: { tools: [{ name: "kv_get", description: "Read a value.", annotations: { readOnlyHint: true } }] },
+      });
+    });
+
+    await expect(service.connectGalleryApp(company.id, {
+      link: "https://8.8.8.8/mcp",
+      name: "Redirecting app",
+      credentialValues: { "headers.X-API-Key": "raw-api-key" },
+    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({ status: 502 });
+
+    expect(cancelBody).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://8.8.8.8/mcp",
+      expect.objectContaining({
+        method: "POST",
+        redirect: "manual",
+        headers: expect.objectContaining({ "X-API-Key": "raw-api-key" }),
+      }),
+    );
+    expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith("http://169.254.169.254"))).toBe(false);
   });
 
   it("registers an approved local stdio template and exposes its runtime slot", async () => {
@@ -4165,6 +4306,8 @@ describeEmbeddedPostgres("tool access service", () => {
   });
 
   it("rejects OAuth metadata redirects to private endpoints", async () => {
+    const cancelCatalog = vi.fn();
+    const cancelRedirect = vi.fn();
     const company = await createCompany(db);
     const app = createRouteApp(db, undefined, undefined, {
       deploymentMode: "authenticated",
@@ -4176,6 +4319,7 @@ describeEmbeddedPostgres("tool access service", () => {
         return {
           ok: false,
           status: 401,
+          body: new ReadableStream({ cancel: cancelCatalog }),
           headers: { get: (name: string) => name.toLowerCase() === "www-authenticate"
             ? 'Bearer resource_metadata="https://8.8.8.8/.well-known/oauth-protected-resource"'
             : null },
@@ -4188,6 +4332,7 @@ describeEmbeddedPostgres("tool access service", () => {
         return {
           ok: false,
           status: 302,
+          body: new ReadableStream({ cancel: cancelRedirect }),
           headers: { get: (name: string) => name.toLowerCase() === "location" ? "http://169.254.169.254/oauth" : null },
           json: async () => ({}),
         } as Response;
@@ -4200,6 +4345,11 @@ describeEmbeddedPostgres("tool access service", () => {
       .send({ link: "https://8.8.8.8/mcp", name: "Redirect OAuth MCP" });
 
     expect(res.status).toBe(502);
+    expect(cancelCatalog).toHaveBeenCalledTimes(1);
+    const redirectResponses = fetchMock.mock.calls.filter(([url]) =>
+      String(url) === "https://8.8.8.8/.well-known/oauth-protected-resource").length;
+    expect(redirectResponses).toBeGreaterThan(0);
+    expect(cancelRedirect).toHaveBeenCalledTimes(redirectResponses);
     expect(fetchMock).toHaveBeenCalledWith(
       "https://8.8.8.8/.well-known/oauth-protected-resource",
       expect.objectContaining({ redirect: "manual" }),

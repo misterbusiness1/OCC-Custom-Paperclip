@@ -111,7 +111,7 @@ import { CLASS3_STATIC_LEASE_ALLOWLIST, credentialConfigPath, getAvailableConnec
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
-import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
+import { assertPublicRemoteHttpEndpoint, fetchRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
@@ -1308,11 +1308,19 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const method = (init.method ?? "GET").toUpperCase();
     for (let redirectCount = 0; redirectCount <= MAX_REMOTE_HTTP_REDIRECTS; redirectCount += 1) {
       const safeUrl = await assertRemoteHttpUrlAllowed(currentUrl);
-      const response = await fetch(safeUrl, { ...init, redirect: "manual" });
+      const response = await fetchRemoteHttpEndpoint(
+        new URL(safeUrl),
+        { ...init, redirect: "manual" },
+        { allowPrivateNetwork: allowPrivateRemoteEndpoints() },
+        (message, code) => badRequest(message, { code }),
+      );
       const location = REMOTE_HTTP_REDIRECT_STATUSES.has(response.status)
         ? response.headers?.get?.("location") ?? null
         : null;
       if (!location) return response;
+      // This response will never be consumed. Release its dispatcher/socket
+      // before rejecting or fetching the next hop, even for streaming 3xxs.
+      await response.body?.cancel().catch(() => undefined);
       if (method !== "GET" && method !== "HEAD") {
         throw new HttpError(502, "Remote OAuth endpoint redirected unexpectedly", { code: "oauth_redirect_rejected" });
       }
@@ -1763,17 +1771,38 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     });
   }
 
-  function exchangeTokenUrl(connection: typeof toolConnections.$inferSelect, isPages: boolean): string {
+  function exchangeTokenUrl(
+    connection: typeof toolConnections.$inferSelect,
+    isPages: boolean,
+  ): { url: string; source: "connection_config" | "operator_env" } {
     const broker = tokenBrokerConfig(connection);
     const config = asRecord(connection.config);
     const url = readConfigString(broker, "tokenUrl")
       ?? readConfigString(broker, "exchangeTokenUrl")
       ?? readConfigString(config, "tokenExchangeUrl")
       ?? readConfigString(config, "pagesTokenExchangeUrl");
-    if (url) return url;
+    if (url) return { url, source: "connection_config" };
     const pagesApiBase = process.env.PAPERCLIP_PAGES_API_URL?.trim();
-    if (isPages && pagesApiBase) return new URL("/v1/tokens/exchange", pagesApiBase.endsWith("/") ? pagesApiBase : `${pagesApiBase}/`).toString();
+    if (isPages && pagesApiBase) {
+      return {
+        url: new URL("/v1/tokens/exchange", pagesApiBase.endsWith("/") ? pagesApiBase : `${pagesApiBase}/`).toString(),
+        source: "operator_env",
+      };
+    }
     throw unprocessable("Connection token exchange URL is not configured", { code: "exchange_url_missing" });
+  }
+
+  // The exchange request carries the parent credential. A URL taken from the
+  // connection config is tenant-controlled, so it goes through the same
+  // private-network and redirect guard as other remote HTTP calls. The
+  // operator-set PAPERCLIP_PAGES_API_URL is trusted for its address, but a
+  // redirect from it is still not followed with the parent credential; a 3xx
+  // fails as a non-OK exchange response.
+  function postTokenExchange(target: { url: string; source: string }, init: RequestInit): Promise<Response> {
+    if (target.source === "connection_config") {
+      return fetchRemoteHttpUrl(target.url, init);
+    }
+    return fetch(target.url, { ...init, redirect: "manual" });
   }
 
   function pagesNamespaceFromScope(scope: string[]): string | null {
@@ -1797,7 +1826,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const parentToken = await resolveBrokerParentCredential(input);
     const broker = tokenBrokerConfig(input.connection);
     const protocol = readConfigString(broker, "protocol") ?? readConfigString(broker, "exchangeProtocol") ?? (isPages ? "pages" : "generic");
-    const url = exchangeTokenUrl(input.connection, isPages);
+    const exchangeTarget = exchangeTokenUrl(input.connection, isPages);
     const actor = {
       type: "agent",
       id: input.agentId,
@@ -1816,7 +1845,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       body.set("requested_token_type", readConfigString(broker, "requestedTokenType") ?? "urn:ietf:params:oauth:token-type:access_token");
       body.set("actor_token", Buffer.from(JSON.stringify(actor)).toString("base64url"));
       body.set("actor_token_type", readConfigString(broker, "actorTokenType") ?? "urn:ietf:params:oauth:token-type:jwt");
-      response = await fetch(url, {
+      response = await postTokenExchange(exchangeTarget, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body,
@@ -1826,7 +1855,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const body = isPages && namespace
         ? { namespace, ttlSeconds: input.ttlSeconds, actions: ["publish"], actor }
         : { scope: input.scope, ttlSeconds: input.ttlSeconds, actor, audience: readConfigString(broker, "audience") };
-      response = await fetch(url, {
+      response = await postTokenExchange(exchangeTarget, {
         method: "POST",
         headers: { authorization: `Bearer ${parentToken}`, "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -2774,8 +2803,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function remoteTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
     const headers = await resolveCredentialHeaders(connection);
     const endpoint = await assertRemoteEndpointAllowed(connection.config);
-    const response = await fetch(endpoint, {
+    const response = await fetchRemoteHttpEndpoint(new URL(endpoint), {
       method: "POST",
+      // Only the configured endpoint is validated, and the request carries the
+      // connection's credential headers, so a redirect (e.g. to an internal
+      // host) is not followed; it surfaces as a non-OK response below, as for
+      // tools/call in tool-gateway.
+      redirect: "manual",
       // MCP Streamable HTTP requires advertising that we accept both a JSON body
       // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
       headers: mcpHttpRequestHeaders(headers),
@@ -2785,8 +2819,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         method: "tools/list",
         params: {},
       }),
-    });
+    }, { allowPrivateNetwork: allowPrivateRemoteEndpoints() }, (message, code) => badRequest(message, { code }));
     if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
       const authenticate = response.headers.get("www-authenticate") ?? "";
       if (response.status === 401 && /bearer|oauth|authorization/i.test(authenticate)) {
         const endpoints = await discoverOAuthEndpoints(connection, authenticate);
@@ -3782,7 +3817,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function fetchJsonRecord(url: string): Promise<Record<string, unknown> | null> {
     try {
       const response = await fetchRemoteHttpUrl(url);
-      if (!response.ok) return null;
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        return null;
+      }
       return asRecord(await response.json() as unknown) ?? null;
     } catch {
       return null;
@@ -3893,7 +3931,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const metadataUrl = method.defaults?.metadataUrl ?? null;
     if ((!authorizationUrl || !tokenUrl) && metadataUrl) {
       const response = await fetchRemoteHttpUrl(metadataUrl);
-      if (!response.ok) throw new HttpError(502, "OAuth provider metadata could not be loaded", { code: "oauth_metadata_failed" });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new HttpError(502, "OAuth provider metadata could not be loaded", { code: "oauth_metadata_failed" });
+      }
       const metadata = asRecord(await response.json() as unknown);
       authorizationUrl = authorizationUrl ?? (typeof metadata.authorization_endpoint === "string" ? metadata.authorization_endpoint : null);
       tokenUrl = tokenUrl ?? (typeof metadata.token_endpoint === "string" ? metadata.token_endpoint : null);

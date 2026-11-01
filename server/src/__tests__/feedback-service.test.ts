@@ -135,7 +135,7 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     // mistaken for a phone number by the PII redactor's phone regex.
     // Random UUIDs occasionally produce digit pairs like "4880-8614" that
     // cross segment boundaries and match the phone pattern.
-    const runId = "abcde123-face-beef-cafe-abcdef654321";
+    const runId = "abcde123-face-4eef-aafe-abcdef654321";
     const instructionsDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-feedback-instructions-"));
     tempDirs.push(instructionsDir);
     const instructionsPath = path.join(instructionsDir, "AGENTS.md");

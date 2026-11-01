@@ -106,7 +106,7 @@ describe("claude sandbox hello probe diagnostics", () => {
       exitCode: 1,
       stdout: [
         initLine,
-        '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude usage limit reached. Please try again later.","session_id":"abc"}',
+        '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: 429 rate_limit_error: Too many requests","session_id":"abc"}',
       ].join("\n"),
       stderr: "",
     };
@@ -121,6 +121,31 @@ describe("claude sandbox hello probe diagnostics", () => {
 
     expect(result.checks.some((check) => check.code === "claude_hello_probe_transient_upstream")).toBe(true);
     expect(result.checks.some((check) => check.code === "claude_hello_probe_failed")).toBe(false);
+  });
+
+  it("classifies usage-limit failures as a quota warning, not a hard fail", async () => {
+    probeResult.value = {
+      exitCode: 1,
+      stdout: [
+        initLine,
+        '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude usage limit reached. Please try again later.","session_id":"abc"}',
+      ].join("\n"),
+      stderr: "",
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    const quota = result.checks.find((check) => check.code === "claude_hello_probe_quota_exhausted");
+    expect(quota?.level).toBe("warn");
+    expect(quota?.detail).toContain("usage limit reached");
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_failed")).toBe(false);
+    expect(result.status).not.toBe("fail");
   });
 
   it("falls back to the last stdout line when no result event is emitted", async () => {

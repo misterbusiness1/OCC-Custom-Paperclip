@@ -21,6 +21,8 @@ import {
   type SummarySlotScopeSelector,
   summarySlotScopeSelectorSchema,
   type WriteSummarySlotResponse,
+  toZod3Issues,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
@@ -141,9 +143,9 @@ export function summarySlotService(db: Db) {
       scopeKind: input.scopeKind,
       slotKey: input.slotKey,
       scopeId: input.scopeId ?? undefined,
-    });
+    }, zod3IssueParams);
     if (!parsed.success) {
-      throw unprocessable("Invalid summary slot selector", parsed.error.issues);
+      throw unprocessable("Invalid summary slot selector", toZod3Issues(parsed.error.issues));
     }
     return {
       ...parsed.data,

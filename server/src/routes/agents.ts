@@ -28,6 +28,7 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import {
   resolvePaperclipInstanceRootForAdapter,
@@ -56,9 +57,14 @@ import {
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
-  assertNoAgentHostWorkspaceCommandMutation,
-  collectAgentAdapterWorkspaceCommandPaths,
-} from "./workspace-command-authz.js";
+  assertNoAgentAdapterConfigMutation,
+  assertNoAgentRuntimeConfigAdapterConfigMutation,
+  assertNoLegacyPromptTemplateForNewAgent,
+  DEFAULT_INSTRUCTIONS_PATH_KEYS,
+  KNOWN_INSTRUCTIONS_BUNDLE_KEYS,
+  listRuntimeModelProfileAdapterConfigs,
+  supportsManagedInstructionsBundle,
+} from "./agent-config-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
@@ -140,24 +146,9 @@ export function agentRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
 ) {
-  // Legacy hardcoded maps — used as fallback when adapter module does not
-  // declare capability flags explicitly.
-  const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
-    claude_local: "instructionsFilePath",
-    codex_local: "instructionsFilePath",
-    droid_local: "instructionsFilePath",
-    gemini_local: "instructionsFilePath",
-    opencode_local: "instructionsFilePath",
-    cursor: "instructionsFilePath",
-    pi_local: "instructionsFilePath",
-  };
-  const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set(Object.keys(DEFAULT_INSTRUCTIONS_PATH_KEYS));
-
   /** Check if an adapter supports the managed instructions bundle. */
   function adapterSupportsInstructionsBundle(adapterType: string): boolean {
-    const adapter = findActiveServerAdapter(adapterType);
-    if (adapter?.supportsInstructionsBundle !== undefined) return adapter.supportsInstructionsBundle;
-    return DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES.has(adapterType);
+    return supportsManagedInstructionsBundle(adapterType, findActiveServerAdapter(adapterType));
   }
 
   /** Resolve the adapter config key for the instructions file path. */
@@ -169,13 +160,6 @@ export function agentRoutes(
     return DEFAULT_INSTRUCTIONS_PATH_KEYS[adapterType] ?? null;
   }
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
-  const KNOWN_INSTRUCTIONS_BUNDLE_KEYS = [
-    "instructionsBundleMode",
-    "instructionsRootPath",
-    "instructionsEntryFile",
-    "instructionsFilePath",
-    "agentsMdPath",
-  ] as const;
   const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
 
   const router = Router();
@@ -1124,42 +1108,6 @@ export function agentRoutes(
     return normalizedRuntimeConfig;
   }
 
-  function listRuntimeModelProfileAdapterConfigs(runtimeConfig: unknown): Array<{
-    profileKey: string;
-    profile: Record<string, unknown>;
-    adapterConfig: Record<string, unknown>;
-    path: string;
-  }> {
-    const runtimeRecord = asRecord(runtimeConfig);
-    const modelProfiles = asRecord(runtimeRecord?.modelProfiles);
-    if (!modelProfiles) return [];
-
-    const entries: Array<{
-      profileKey: string;
-      profile: Record<string, unknown>;
-      adapterConfig: Record<string, unknown>;
-      path: string;
-    }> = [];
-    for (const [profileKey, rawProfile] of Object.entries(modelProfiles)) {
-      const profile = asRecord(rawProfile);
-      const adapterConfig = asRecord(profile?.adapterConfig);
-      if (!profile || !adapterConfig) continue;
-      entries.push({
-        profileKey,
-        profile,
-        adapterConfig,
-        path: `runtimeConfig.modelProfiles.${profileKey}.adapterConfig`,
-      });
-    }
-    return entries;
-  }
-
-  function assertNoAgentRuntimeConfigAdapterConfigMutation(req: Request, runtimeConfig: unknown) {
-    for (const entry of listRuntimeModelProfileAdapterConfigs(runtimeConfig)) {
-      assertNoAgentAdapterConfigMutation(req, entry.adapterConfig, entry.path);
-    }
-  }
-
   async function normalizeMediatedAdapterConfigForPersistence(input: {
     companyId: string;
     adapterType: string | null | undefined;
@@ -1385,15 +1333,7 @@ export function agentRoutes(
   }
 
   function assertNoNewAgentLegacyPromptTemplate(adapterType: string, adapterConfig: Record<string, unknown>) {
-    if (!adapterSupportsInstructionsBundle(adapterType)) return;
-    if (
-      Object.prototype.hasOwnProperty.call(adapterConfig, "promptTemplate")
-      || Object.prototype.hasOwnProperty.call(adapterConfig, "bootstrapPromptTemplate")
-    ) {
-      throw unprocessable(
-        "New agents must use instructionsBundle/AGENTS.md instead of adapterConfig.promptTemplate or bootstrapPromptTemplate",
-      );
-    }
+    assertNoLegacyPromptTemplateForNewAgent(adapterSupportsInstructionsBundle(adapterType), adapterConfig);
   }
 
   async function assertCanApplyProtectedAgentChange(
@@ -1465,35 +1405,8 @@ export function agentRoutes(
     );
   }
 
-  function assertNoAgentInstructionsConfigMutation(
-    req: Request,
-    adapterConfig: Record<string, unknown> | null | undefined,
-    path = "adapterConfig",
-  ) {
-    if (req.actor.type !== "agent" || !adapterConfig) return;
-    const changedSensitiveKeys = KNOWN_INSTRUCTIONS_BUNDLE_KEYS
-      .filter((key) => adapterConfig[key] !== undefined)
-      .map((key) => `${path}.${key}`);
-    if (changedSensitiveKeys.length === 0) return;
-    throw forbidden(
-      `Agent-authenticated callers cannot modify instructions path or bundle configuration (${changedSensitiveKeys.join(", ")})`,
-    );
-  }
-
   function adapterConfigTouchesInstructionsConfig(adapterConfig: Record<string, unknown>) {
     return KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) => adapterConfig[key] !== undefined);
-  }
-
-  function assertNoAgentAdapterConfigMutation(
-    req: Request,
-    adapterConfig: Record<string, unknown>,
-    path = "adapterConfig",
-  ) {
-    assertNoAgentInstructionsConfigMutation(req, adapterConfig, path);
-    assertNoAgentHostWorkspaceCommandMutation(
-      req,
-      collectAgentAdapterWorkspaceCommandPaths(adapterConfig, path),
-    );
   }
 
   function summarizeAgentUpdateDetails(patch: Record<string, unknown>) {
@@ -2174,7 +2087,7 @@ export function agentRoutes(
       return;
     }
 
-    const query = agentMineInboxQuerySchema.parse(req.query);
+    const query = agentMineInboxQuerySchema.parse(req.query, zod3IssueParams);
     const issuesSvc = issueService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
       touchedByUserId: query.userId,
@@ -3239,7 +3152,9 @@ export function agentRoutes(
     // open, delegate to approvalsSvc.reject(), which both resolves the approval
     // (clearing the inbox "Approve/Reject" card) and terminates the agent.
     // Mirror the approve path's branch-or-fallback so we never terminate twice:
-    // reject() already calls agentsSvc.terminate() internally.
+    // reject() already terminates the agent while it is still pending. If it
+    // left pending_approval first (a concurrent approval), terminate it here,
+    // since that is what this request asked for.
     let agent: Awaited<ReturnType<typeof svc.terminate>> = null;
     if (existing.status === "pending_approval") {
       const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
@@ -3248,7 +3163,7 @@ export function agentRoutes(
         agent = await svc.getById(id);
       }
     }
-    if (!agent) {
+    if (!agent || agent.status !== "terminated") {
       agent = await svc.terminate(id);
     }
     if (!agent) {

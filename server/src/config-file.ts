@@ -1,10 +1,10 @@
 import fs from "node:fs";
-import { paperclipConfigSchema, type PaperclipConfig } from "@paperclipai/shared";
-import { ZodError } from "zod";
+import { isZodError, paperclipConfigSchema, toZod3Issues, zod3IssueParams, type PaperclipConfig } from "@paperclipai/shared";
+import type { z } from "zod";
 import { resolvePaperclipConfigPath } from "./paths.js";
 
-function formatConfigValidationError(error: ZodError): string {
-  return error.issues
+function formatConfigValidationError(error: z.ZodError): string {
+  return toZod3Issues(error.issues)
     .map((issue) => {
       const issuePath = issue.path.length > 0 ? issue.path.join(".") : "<root>";
       return `${issuePath}: ${issue.message}`;
@@ -26,9 +26,9 @@ export function readConfigFile(): PaperclipConfig | null {
   }
 
   try {
-    return paperclipConfigSchema.parse(raw);
+    return paperclipConfigSchema.parse(raw, zod3IssueParams);
   } catch (error) {
-    if (error instanceof ZodError) {
+    if (isZodError(error)) {
       throw new Error(`Invalid Paperclip config at ${configPath}: ${formatConfigValidationError(error)}`);
     }
 

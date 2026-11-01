@@ -99,11 +99,15 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function createApp(actor: Express.Request["actor"]) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
+}
+
+async function createApp(actor: Express.Request["actor"]) {
+  const [{ errorHandler }, { issueRoutes }] = await loadAppModules();
   const routeDb = {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
@@ -158,7 +162,7 @@ function peerActor(): Express.Request["actor"] {
 }
 
 describe("external object routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../services/index.js");
@@ -187,6 +191,8 @@ describe("external object routes", () => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableExternalObjects: true,
     });
+    // Complete cold route loading before the behavior test starts.
+    await loadAppModules();
   });
 
   it("enforces company access on read routes", async () => {

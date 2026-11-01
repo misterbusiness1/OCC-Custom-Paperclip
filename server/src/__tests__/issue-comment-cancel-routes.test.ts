@@ -158,12 +158,15 @@ function createApp() {
   return app;
 }
 
-async function installActor(app: express.Express, actor?: Record<string, unknown>) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
   ]);
+}
 
+async function installActor(app: express.Express, actor?: Record<string, unknown>) {
+  const [{ issueRoutes }, { errorHandler }] = await loadAppModules();
   app.use((req, _res, next) => {
     (req as any).actor = actor ?? {
       type: "board",
@@ -207,7 +210,7 @@ function makeComment(overrides: Record<string, unknown> = {}) {
 }
 
 describe.sequential("issue comment cancel routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
@@ -275,6 +278,8 @@ describe.sequential("issue comment cancel routes", () => {
     mockIssueReferenceService.deleteCommentSource.mockResolvedValue(undefined);
     mockIssueReferenceService.syncComment.mockResolvedValue(undefined);
     mockExternalObjectService.syncCommentSafely.mockResolvedValue(undefined);
+    // Complete cold route loading before the behavior test starts.
+    await loadAppModules();
   });
 
   it("cancels a queued comment from its author and restores the deleted body", async () => {

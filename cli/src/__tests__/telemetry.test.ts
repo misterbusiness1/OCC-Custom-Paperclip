@@ -74,6 +74,8 @@ describe("cli telemetry", () => {
     for (const key of CI_ENV_VARS) {
       delete process.env[key];
     }
+    delete process.env.DO_NOT_TRACK;
+    delete process.env.PAPERCLIP_TELEMETRY_DISABLED;
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true })));
   });
 

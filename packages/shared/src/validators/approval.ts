@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { datetimeString } from "./zod-compat.js";
 import { multilineTextSchema } from "./text.js";
 
 export const gateABoardApprovalActionTypes = [
@@ -34,7 +35,7 @@ export const gateBBoardApprovalChannels = [
 export const gateBBoardApprovalPriorities = ["normal", "high", "urgent"] as const;
 
 const requestedByAgentPayloadField = z.object({
-  requestedByAgentId: z.string().uuid().optional(),
+  requestedByAgentId: z.uuid().optional(),
 });
 
 export const gateABoardApprovalPayloadSchema = requestedByAgentPayloadField.extend({
@@ -65,9 +66,9 @@ export const gateBBoardApprovalPayloadSchema = requestedByAgentPayloadField.exte
     orderRef: z.string().trim().min(1),
   }).strict().optional(),
   priority: z.enum(gateBBoardApprovalPriorities).optional(),
-  slaDeadline: z.string().datetime({ offset: true }).optional(),
+  slaDeadline: datetimeString({ offset: true }).optional(),
   contextPulled: z.object({
-    at: z.string().datetime({ offset: true }),
+    at: datetimeString({ offset: true }),
     sources: z.array(z.string().trim().min(1)).min(1),
   }).strict().optional(),
   risks: z.array(z.object({
@@ -126,16 +127,16 @@ export const requestBoardApprovalPayloadSchema = z.preprocess(
 
 const requestBoardApprovalSchema = z.object({
   type: z.literal("request_board_approval"),
-  requestedByAgentId: z.string().uuid().optional().nullable(),
+  requestedByAgentId: z.uuid().optional().nullable(),
   payload: requestBoardApprovalPayloadSchema,
-  issueIds: z.array(z.string().uuid()).optional(),
+  issueIds: z.array(z.uuid()).optional(),
   idempotencyKey: z.string().trim().min(1).max(255).optional(),
 });
 
 const passthroughApprovalSchema = z.object({
-  requestedByAgentId: z.string().uuid().optional().nullable(),
+  requestedByAgentId: z.uuid().optional().nullable(),
   payload: z.record(z.string(), z.unknown()),
-  issueIds: z.array(z.string().uuid()).optional(),
+  issueIds: z.array(z.uuid()).optional(),
 });
 
 export const createApprovalSchema = z.discriminatedUnion("type", [

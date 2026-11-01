@@ -8,14 +8,14 @@ on:
         required: true
         type: string
       upstream_image:
-        description: 'Upstream image tag or digest'
+        description: 'Base image tag or digest; empty uses this repository''s docker.yml image for source_sha (ghcr.io/<repository>:sha-<7-char sha>). Its org.opencontainers.image.revision label must equal source_sha.'
         required: false
-        default: 'ghcr.io/misterbusiness1/paperclip:latest'
+        default: ''
         type: string
       playwright_version:
-        description: 'Playwright version (must match upstream)'
+        description: 'Playwright version (must match pnpm-lock.yaml at source_sha)'
         required: false
-        default: '1.58.2'
+        default: '1.61.1'
         type: string
       use_cache:
         description: 'Use the GitHub Actions build cache'
@@ -53,8 +53,28 @@ jobs:
           }
           echo "source_sha=${SOURCE_SHA,,}" >> "$GITHUB_OUTPUT"
 
+      # docker.yml publishes ghcr.io/<github.repository> through
+      # docker/metadata-action, which lowercases the name and tags every build
+      # with type=sha (sha-<7-char short sha>). OCI references must be
+      # lowercase, and the repository name is not.
+      - name: Resolve base image
+        id: base
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.validate.outputs.source_sha }}
+          UPSTREAM_IMAGE: ${{ inputs.upstream_image }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$UPSTREAM_IMAGE" ]]; then
+            BASE_IMAGE="$UPSTREAM_IMAGE"
+          else
+            BASE_IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:sha-${SOURCE_SHA:0:7}"
+          fi
+          echo "Base image: $BASE_IMAGE"
+          echo "image=${BASE_IMAGE}" >> "$GITHUB_OUTPUT"
+
       - name: Check out exact source commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.validate.outputs.source_sha }}
 
@@ -80,26 +100,69 @@ jobs:
           echo "image=ghcr.io/${{ github.repository_owner }}/paperclip-prod:${SHORT_SHA}-pwfix" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The overlay copies nothing from the checkout, so the published
+      # paperclip-prod:<source_sha>-pwfix tag is only honest if the base image
+      # was built from source_sha. Build from the verified digest so the tag
+      # cannot move between this check and the build.
+      - name: Verify base image revision
+        id: base-verified
+        shell: bash
+        env:
+          BASE_IMAGE: ${{ steps.base.outputs.image }}
+          SOURCE_SHA: ${{ steps.validate.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if ! docker pull "$BASE_IMAGE"; then
+            echo "::error title=Base image not found::Could not pull $BASE_IMAGE. docker.yml publishes sha-<7-char sha> tags only for commits pushed to master or v* tags; pass upstream_image to use another image built from $SOURCE_SHA." >&2
+            exit 1
+          fi
+          REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$BASE_IMAGE")"
+          if [[ "$REVISION" != "$SOURCE_SHA" ]]; then
+            echo "::error title=Base image revision mismatch::$BASE_IMAGE has org.opencontainers.image.revision='$REVISION', expected $SOURCE_SHA" >&2
+            exit 1
+          fi
+          if [[ "$BASE_IMAGE" == *@sha256:* ]]; then
+            PINNED="$BASE_IMAGE"
+          else
+            NAME="$BASE_IMAGE"
+            if [[ "${NAME##*/}" == *:* ]]; then
+              NAME="${NAME%:*}"
+            fi
+            PINNED=""
+            while IFS= read -r REPO_DIGEST; do
+              if [[ "$REPO_DIGEST" == "${NAME}@"* ]]; then
+                PINNED="$REPO_DIGEST"
+                break
+              fi
+            done < <(docker image inspect --format '{{ range .RepoDigests }}{{ println . }}{{ end }}' "$BASE_IMAGE")
+            if [[ -z "$PINNED" ]]; then
+              echo "::error title=Base image digest unknown::No repository digest for $NAME after pulling $BASE_IMAGE" >&2
+              exit 1
+            fi
+          fi
+          echo "::notice title=Overlay base image::$PINNED (revision $REVISION)"
+          echo "image=${PINNED}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push overlay image with cache
         if: ${{ inputs.use_cache }}
         id: build-cached
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile.overlay
           push: true
           tags: ${{ steps.tag.outputs.image }}
           build-args: |
-            UPSTREAM_IMAGE=${{ inputs.upstream_image }}
+            UPSTREAM_IMAGE=${{ steps.base-verified.outputs.image }}
             PLAYWRIGHT_VERSION=${{ inputs.playwright_version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -107,14 +170,14 @@ jobs:
       - name: Build and push overlay image without cache
         if: ${{ !inputs.use_cache }}
         id: build-uncached
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile.overlay
           push: true
           tags: ${{ steps.tag.outputs.image }}
           build-args: |
-            UPSTREAM_IMAGE=${{ inputs.upstream_image }}
+            UPSTREAM_IMAGE=${{ steps.base-verified.outputs.image }}
             PLAYWRIGHT_VERSION=${{ inputs.playwright_version }}
           no-cache: true
 
@@ -137,12 +200,24 @@ jobs:
           IMMUTABLE_IMAGE: ${{ steps.image.outputs.immutable_image }}
           PLAYWRIGHT_VERSION: ${{ inputs.playwright_version }}
         run: |
+          set -euo pipefail
+          # docker-compose.yml mounts a volume at /paperclip (HOME) and the
+          # quickstart a bind mount, which hide anything the image put there.
+          # Mount an empty volume the same way; nocopy stops Docker from seeding
+          # it from the image, as with a bind mount or a volume created by an
+          # earlier image. chown it like the image's own /paperclip.
+          docker volume rm -f paperclip-smoke >/dev/null 2>&1 || true
+          docker volume create paperclip-smoke >/dev/null
+          docker run --rm --user root --entrypoint chown \
+            -v paperclip-smoke:/paperclip:nocopy \
+            "$IMMUTABLE_IMAGE" \
+            node:node /paperclip
           docker run --rm \
-            --user root \
+            -v paperclip-smoke:/paperclip:nocopy \
             "$IMMUTABLE_IMAGE" \
             node -e "
               const { chromium } = require('/app/node_modules/.pnpm/playwright@${PLAYWRIGHT_VERSION}/node_modules/playwright');
-              chromium.launch({args:['--no-sandbox','--disable-setuid-sandbox']}).then(b=>b.close()).then(()=>{ console.log('OK'); process.exit(0); }).catch(e=>{ console.error(e); process.exit(1); });
+              chromium.launch({args:['--no-sandbox','--disable-setuid-sandbox']}).then(b=>b.close()).then(()=>{ console.log('OK', process.env.PLAYWRIGHT_BROWSERS_PATH); process.exit(0); }).catch(e=>{ console.error(e); process.exit(1); });
             "
 
       - name: Output image reference

@@ -1,14 +1,14 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
-import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
+import { isSystemIssueDocumentKey, issueDocumentKeySchema, toZod3Issues, zod3IssueParams } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
-  const parsed = issueDocumentKeySchema.safeParse(normalized);
+  const parsed = issueDocumentKeySchema.safeParse(normalized, zod3IssueParams);
   if (!parsed.success) {
-    throw unprocessable("Invalid document key", parsed.error.issues);
+    throw unprocessable("Invalid document key", toZod3Issues(parsed.error.issues));
   }
   return parsed.data;
 }

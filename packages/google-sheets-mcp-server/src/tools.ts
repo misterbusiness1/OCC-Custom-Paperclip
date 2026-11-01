@@ -7,7 +7,7 @@ export type ToolResult = CallToolResult;
 export interface GoogleSheetsToolDefinition {
   name: string;
   description: string;
-  schema: z.AnyZodObject;
+  schema: z.ZodObject;
   annotations: ToolAnnotations;
   execute: (input: Record<string, unknown>) => Promise<ToolResult>;
 }
@@ -26,7 +26,7 @@ const rangeSchema = z.string().trim().min(1).max(500).refine(
   "Range must be a single-line A1 notation range.",
 );
 const valuesSchema = z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])));
-const valueInputOptionSchema = z.enum(["RAW", "USER_ENTERED"]).default("RAW");
+export const valueInputOptionSchema = z.enum(["RAW", "USER_ENTERED"]).default("RAW");
 
 const spreadsheetToolSchema = z.object({
   spreadsheetId: spreadsheetIdSchema,
@@ -36,7 +36,7 @@ const readValuesSchema = spreadsheetToolSchema.extend({
   range: rangeSchema,
 });
 
-const searchRowsSchema = readValuesSchema.extend({
+export const searchRowsSchema = readValuesSchema.extend({
   query: z.string().min(1),
   caseSensitive: z.boolean().optional().default(false),
   maxResults: z.number().int().positive().max(500).optional().default(50),
@@ -84,7 +84,7 @@ function formatTextResponse(value: unknown): ToolResult {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof z.ZodError) return error.errors.map((entry) => entry.message).join("; ");
+  if (error instanceof z.ZodError) return error.issues.map((entry) => entry.message).join("; ");
   if (error instanceof Error) return error.message;
   return String(error);
 }

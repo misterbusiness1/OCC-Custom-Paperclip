@@ -1210,6 +1210,27 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("keeps a grok_local run active when the recorded pid is still alive", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId } = await seedRunFixture({
+      adapterType: "grok_local",
+      processPid: child.pid ?? null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_detached");
+    expect(run?.error).toContain(String(child.pid));
+  });
+
   it("skips generic timer wakes without invoking an adapter when no assigned work is actionable", async () => {
     const { companyId, agentId } = await seedIdleTimerAgentFixture();
     const heartbeat = heartbeatService(db);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { datetimeString, urlString, withoutFieldDefaults } from "./zod-compat.js";
 import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
@@ -19,8 +20,8 @@ export const projectExecutionWorkspacePolicySchema = z
     enabled: z.boolean(),
     defaultMode: z.enum(["shared_workspace", "isolated_workspace", "operator_branch", "adapter_default"]).optional(),
     allowIssueOverride: z.boolean().optional(),
-    defaultProjectWorkspaceId: z.string().uuid().optional().nullable(),
-    environmentId: z.string().uuid().optional().nullable(),
+    defaultProjectWorkspaceId: z.uuid().optional().nullable(),
+    environmentId: z.uuid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
     branchPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
@@ -34,7 +35,7 @@ export const projectExecutionWorkspacePolicySchema = z
 export const projectWorkspaceRuntimeConfigSchema = z.object({
   workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
   desiredState: z.enum(["running", "stopped", "manual"]).optional().nullable(),
-  serviceStates: z.record(z.enum(["running", "stopped", "manual"])).optional().nullable(),
+  serviceStates: z.record(z.string(), z.enum(["running", "stopped", "manual"])).optional().nullable(),
 }).strict();
 
 const projectWorkspaceSourceTypeSchema = z.enum(["local_path", "git_repo", "remote_managed", "non_git_path"]);
@@ -44,7 +45,7 @@ const projectWorkspaceFields = {
   name: z.string().min(1).optional(),
   sourceType: projectWorkspaceSourceTypeSchema.optional(),
   cwd: z.string().min(1).optional().nullable(),
-  repoUrl: z.string().url().optional().nullable(),
+  repoUrl: urlString().optional().nullable(),
   repoRef: z.string().optional().nullable(),
   defaultRef: z.string().optional().nullable(),
   visibility: projectWorkspaceVisibilitySchema.optional(),
@@ -90,27 +91,27 @@ export const createProjectWorkspaceSchema = z.object({
 
 export type CreateProjectWorkspace = z.infer<typeof createProjectWorkspaceSchema>;
 
-export const updateProjectWorkspaceSchema = z.object({
+export const updateProjectWorkspaceSchema = withoutFieldDefaults(z.object({
   ...projectWorkspaceFields,
   isPrimary: z.boolean().optional(),
-}).partial();
+}).partial());
 
 export type UpdateProjectWorkspace = z.infer<typeof updateProjectWorkspaceSchema>;
 
-const projectFields = {
+export const projectFields = {
   /** @deprecated Use goalIds instead */
-  goalId: z.string().uuid().optional().nullable(),
-  goalIds: z.array(z.string().uuid()).optional(),
+  goalId: z.uuid().optional().nullable(),
+  goalIds: z.array(z.uuid()).optional(),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   status: z.enum(PROJECT_STATUSES).optional().default("backlog"),
-  leadAgentId: z.string().uuid().optional().nullable(),
+  leadAgentId: z.uuid().optional().nullable(),
   targetDate: z.string().optional().nullable(),
   color: z.string().optional().nullable(),
   icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
   env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
-  archivedAt: z.string().datetime().optional().nullable(),
+  archivedAt: datetimeString().optional().nullable(),
 };
 
 export const createProjectSchema = z.object({
@@ -120,7 +121,7 @@ export const createProjectSchema = z.object({
 
 export type CreateProject = z.infer<typeof createProjectSchema>;
 
-export const updateProjectSchema = z.object(projectFields).partial();
+export const updateProjectSchema = withoutFieldDefaults(z.object(projectFields).partial());
 
 export type UpdateProject = z.infer<typeof updateProjectSchema>;
 

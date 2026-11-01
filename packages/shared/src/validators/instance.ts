@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { datetimeString, withoutFieldDefaults } from "./zod-compat.js";
 import { DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE } from "../types/feedback.js";
 import {
   DAILY_RETENTION_PRESETS,
@@ -36,7 +37,7 @@ export const instanceGeneralSettingsSchema = z.object({
   executionMode: z.enum(["kubernetes", "any"]).optional(),
 }).strict();
 
-export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();
+export const patchInstanceGeneralSettingsSchema = withoutFieldDefaults(instanceGeneralSettingsSchema.partial());
 
 export const instanceExperimentalSettingsSchema = z.object({
   enableEnvironments: z.boolean().default(false),
@@ -63,7 +64,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
   enableWorktreeRunExecution: z.boolean().default(false),
-  worktreeRunExecutionActivatedAt: z.string().datetime().nullable().default(null),
+  worktreeRunExecutionActivatedAt: datetimeString().nullable().default(null),
   worktreeRunExecutionActivationInstanceId: z.string().min(1).nullable().default(null),
   issueGraphLivenessAutoRecoveryLookbackHours: z
     .number()
@@ -73,16 +74,16 @@ export const instanceExperimentalSettingsSchema = z.object({
     .default(DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS),
 }).strict();
 
-export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema
+export const patchInstanceExperimentalSettingsSchema = withoutFieldDefaults(instanceExperimentalSettingsSchema
   .omit({
     worktreeRunExecutionActivatedAt: true,
     worktreeRunExecutionActivationInstanceId: true,
   })
   .partial()
-  .strip();
+  .strip());
 
 export const patchInstanceSettingsSchema = z.object({
-  defaultEnvironmentId: z.string().uuid().nullable().optional(),
+  defaultEnvironmentId: z.uuid().nullable().optional(),
 }).strict();
 
 export const issueGraphLivenessAutoRecoveryRequestSchema = z.object({
@@ -104,10 +105,10 @@ export type IssueGraphLivenessAutoRecoveryRequest = z.infer<
 >;
 
 export const instanceSettingsSchema = z.object({
-  id: z.string().uuid(),
-  defaultEnvironmentId: z.string().uuid().nullable(),
+  id: z.uuid(),
+  defaultEnvironmentId: z.uuid().nullable(),
   general: instanceGeneralSettingsSchema,
   experimental: instanceExperimentalSettingsSchema,
-  createdAt: z.union([z.date(), z.string().datetime()]),
-  updatedAt: z.union([z.date(), z.string().datetime()]),
+  createdAt: z.union([z.date(), datetimeString()]),
+  updatedAt: z.union([z.date(), datetimeString()]),
 }).strict();

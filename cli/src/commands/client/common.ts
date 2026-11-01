@@ -1,5 +1,6 @@
 import pc from "picocolors";
 import type { Command } from "commander";
+import { isZodError, toZod3Issues, zod3IssueParams } from "@paperclipai/shared";
 import { getStoredBoardCredential, loginBoardCli } from "../../client/board-auth.js";
 import { buildCliCommandLabel } from "../../client/command-label.js";
 import { readConfig } from "../../config/store.js";
@@ -285,10 +286,28 @@ function readKeyFromProfileEnv(profile: ClientContextProfile): string | undefine
   return process.env[profile.apiKeyEnvVarName]?.trim() || undefined;
 }
 
+/**
+ * Validates command input with a shared schema before it is sent, wording any
+ * issues the way zod 3 did (see `zod3IssueParams` in @paperclipai/shared), so
+ * `handleCommandError` prints the same text as before the zod 4 migration.
+ */
+export function parseClientInput<T>(
+  schema: { parse(input: unknown, params?: typeof zod3IssueParams): T },
+  input: unknown,
+): T {
+  return schema.parse(input, zod3IssueParams);
+}
+
 export function handleCommandError(error: unknown): never {
   if (error instanceof ApiRequestError) {
     const detailSuffix = error.details !== undefined ? ` details=${JSON.stringify(error.details)}` : "";
     console.error(pc.red(`API error ${error.status}: ${error.message}${detailSuffix}`));
+    process.exit(1);
+  }
+
+  if (isZodError(error)) {
+    // zod 3's ZodError.message: the issues as indented JSON.
+    console.error(pc.red(JSON.stringify(toZod3Issues(error.issues), null, 2)));
     process.exit(1);
   }
 

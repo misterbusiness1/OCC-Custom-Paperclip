@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { adapterRegistrySchema } from "./adapter-registry.js";
-import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
+import { KNOWN_ADAPTER_TYPES, normalizeAdapterType } from "./adapter-defaults.js";
+import { urlString, zod3ParseParams } from "./zod3-compat.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
@@ -12,7 +13,7 @@ export const kubernetesProviderConfigSchema = z
     namespacePrefix: z.string().regex(/^[a-z0-9-]{1,32}$/).default("paperclip-"),
     companySlug: z.string().regex(/^[a-z0-9-]{1,32}$/).optional(),
 
-    imageRegistry: z.string().url().optional(),
+    imageRegistry: urlString().optional(),
     imageAllowList: z.array(z.string()).default([]),
     imagePullSecrets: z.array(z.string()).default([]),
 
@@ -28,7 +29,7 @@ export const kubernetesProviderConfigSchema = z
       .optional(),
 
     runtimeClassName: z.string().optional(),
-    serviceAccountAnnotations: z.record(z.string()).default({}),
+    serviceAccountAnnotations: z.record(z.string(), z.string()).default({}),
 
     jobTtlSecondsAfterFinished: z.number().int().nonnegative().default(900),
     podActivityDeadlineSec: z.number().int().positive().default(3600),
@@ -37,11 +38,14 @@ export const kubernetesProviderConfigSchema = z
      * The adapter type that Jobs in this environment will run.
      * Each Kubernetes environment is bound to one adapter; create multiple
      * environments for different adapters.
-     * Defaults to `"claude_local"`.
+     * Defaults to `"claude_local"`. Legacy aliases (`"cursor_local"`) are
+     * normalised to the canonical type (`"cursor"`). `"cursor"` is accepted but
+     * has no built-in runtime defaults: it needs an `adapters` registry entry.
      */
     adapterType: z
       .string()
       .default("claude_local")
+      .transform(normalizeAdapterType)
       .refine((v) => KNOWN_ADAPTER_TYPES.has(v), {
         message: "adapterType must be one of the known adapter types",
       }),
@@ -78,7 +82,7 @@ export const kubernetesProviderConfigSchema = z
 export type KubernetesProviderConfig = z.infer<typeof kubernetesProviderConfigSchema>;
 
 export function parseKubernetesProviderConfig(input: unknown): KubernetesProviderConfig {
-  return kubernetesProviderConfigSchema.parse(input);
+  return kubernetesProviderConfigSchema.parse(input, zod3ParseParams);
 }
 
 export interface KubernetesLeaseMetadata {

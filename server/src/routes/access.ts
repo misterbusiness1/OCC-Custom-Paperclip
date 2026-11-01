@@ -46,6 +46,7 @@ import {
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS,
   isUuidLike,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@paperclipai/shared";
 import {
@@ -4131,7 +4132,7 @@ export function accessRoutes(
   router.get("/companies/:companyId/invites", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyPermission(req, companyId, "users:invite");
-    const query = listCompanyInvitesQuerySchema.parse(req.query);
+    const query = listCompanyInvitesQuerySchema.parse(req.query, zod3IssueParams);
     const invitesForCompany = await loadCompanyInviteRecords(db, companyId, query);
     res.json(invitesForCompany);
   });
@@ -4139,7 +4140,7 @@ export function accessRoutes(
   router.get("/companies/:companyId/join-requests", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyPermission(req, companyId, "joins:approve");
-    const query = listJoinRequestsQuerySchema.parse(req.query);
+    const query = listJoinRequestsQuerySchema.parse(req.query, zod3IssueParams);
     const all = await loadJoinRequestRecords(db, companyId);
     const filtered = all.filter((row) => {
       if (query.status && row.status !== query.status) return false;
@@ -4764,7 +4765,7 @@ export function accessRoutes(
 
   router.get("/admin/users", async (req, res) => {
     await assertInstanceAdmin(req);
-    const query = searchAdminUsersQuerySchema.parse(req.query);
+    const query = searchAdminUsersQuerySchema.parse(req.query, zod3IssueParams);
     const needle = query.query.trim().toLowerCase();
     const users = await db
       .select({

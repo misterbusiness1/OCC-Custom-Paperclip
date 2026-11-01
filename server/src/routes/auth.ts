@@ -6,6 +6,7 @@ import {
   authSessionSchema,
   currentUserProfileSchema,
   updateCurrentUserProfileSchema,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -31,7 +32,7 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
     email: user.email ?? null,
     name: user.name ?? null,
     image: user.image ?? null,
-  });
+  }, zod3IssueParams);
 }
 
 export function authRoutes(db: Db) {
@@ -49,7 +50,7 @@ export function authRoutes(db: Db) {
         userId: req.actor.userId,
       },
       user,
-    }));
+    }, zod3IssueParams));
   });
 
   router.get("/profile", async (req, res) => {
@@ -65,7 +66,7 @@ export function authRoutes(db: Db) {
       throw unauthorized("Board authentication required");
     }
 
-    const patch = updateCurrentUserProfileSchema.parse(req.body);
+    const patch = updateCurrentUserProfileSchema.parse(req.body, zod3IssueParams);
     const now = new Date();
 
     const updated = await db
@@ -93,7 +94,7 @@ export function authRoutes(db: Db) {
       email: updated.email ?? null,
       name: updated.name ?? null,
       image: updated.image ?? null,
-    }));
+    }, zod3IssueParams));
   });
 
   return router;

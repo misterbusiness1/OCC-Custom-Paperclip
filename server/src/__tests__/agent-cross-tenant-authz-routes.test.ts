@@ -341,7 +341,11 @@ function resetMockDefaults() {
   mockLogActivity.mockImplementation(async () => undefined);
 }
 
-describe.sequential("agent cross-tenant route authorization", () => {
+// The first test cold-imports the route modules, which takes several seconds on
+// slower or loaded runners (4-CPU self-hosted, parallel lanes). Past vitest's 5s
+// default the timed-out test keeps running and mutates the shared mocks, so the
+// following tests fail too. Give the suite realistic headroom.
+describe.sequential("agent cross-tenant route authorization", { timeout: 30_000 }, () => {
   beforeEach(() => {
     resetMockDefaults();
   });
