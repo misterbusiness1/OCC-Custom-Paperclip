@@ -53,16 +53,20 @@ function manifest(apiRoutes: NonNullable<PaperclipPluginManifestV1["apiRoutes"]>
   };
 }
 
+function loadAppModules() {
+  return Promise.all([
+    import("../routes/plugins.js"),
+    import("../middleware/index.js"),
+  ]);
+}
+
 async function createApp(input: {
   actor: Record<string, unknown>;
   plugin?: Record<string, unknown> | null;
   workerRunning?: boolean;
   workerResult?: unknown;
 }) {
-  const [{ pluginRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/plugins.js"),
-    import("../middleware/index.js"),
-  ]);
+  const [{ pluginRoutes }, { errorHandler }] = await loadAppModules();
 
   const workerManager = {
     isRunning: vi.fn().mockReturnValue(input.workerRunning ?? true),
@@ -102,7 +106,7 @@ describe.sequential("plugin scoped API routes", () => {
   const runId = "44444444-4444-4444-8444-444444444444";
   const issueId = "55555555-5555-4555-8555-555555555555";
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({
@@ -112,6 +116,8 @@ describe.sequential("plugin scoped API routes", () => {
       checkoutRunId: runId,
       adoptedFromRunId: null,
     });
+    // Compile modules in setup; worker and router construction stays per input.
+    await loadAppModules();
   });
 
   it("dispatches a board GET route with params, query, actor, and company context", async () => {

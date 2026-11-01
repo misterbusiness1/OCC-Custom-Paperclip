@@ -114,11 +114,15 @@ vi.mock("../services/index.js", () => ({
   }),
 }));
 
-async function createApp() {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
+}
+
+async function createApp() {
+  const [{ issueRoutes }, { errorHandler }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -168,7 +172,7 @@ function expectClearAssignedStatusValidation(res: request.Response) {
 }
 
 describe("assigned backlog creation contract", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue({
       id: "parent-1",
@@ -196,6 +200,8 @@ describe("assigned backlog creation contract", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    // Compile the route graph during setup, before request behavior deadlines.
+    await loadAppModules();
   });
 
   it("does not silently create a top-level assigned issue as backlog when status is omitted", async () => {

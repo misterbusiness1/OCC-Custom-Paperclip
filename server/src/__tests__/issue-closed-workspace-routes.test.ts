@@ -139,11 +139,15 @@ function registerServiceMocks() {
   }));
 }
 
-async function createApp() {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
   ]);
+}
+
+async function createApp() {
+  const [{ issueRoutes }, { errorHandler }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -190,7 +194,7 @@ function makeClosedWorkspace() {
 }
 
 describe.sequential("closed isolated workspace issue routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
@@ -208,6 +212,8 @@ describe.sequential("closed isolated workspace issue routes", () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
+    // Complete cold route loading before the behavior test starts.
+    await loadAppModules();
   });
 
   it("rejects new issue comments when the linked isolated workspace is closed", async () => {

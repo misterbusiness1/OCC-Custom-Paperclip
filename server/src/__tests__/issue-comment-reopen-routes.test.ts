@@ -175,11 +175,15 @@ function createApp() {
   return app;
 }
 
-async function installActor(app: express.Express, actor?: Record<string, unknown>) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
   ]);
+}
+
+async function installActor(app: express.Express, actor?: Record<string, unknown>) {
+  const [{ issueRoutes }, { errorHandler }] = await loadAppModules();
   app.use((req, _res, next) => {
     (req as any).actor = actor ?? {
       type: "board",
@@ -234,7 +238,7 @@ async function waitForWakeup(assertion: () => void) {
 }
 
 describe.sequential("issue comment reopen routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
@@ -374,6 +378,8 @@ describe.sequential("issue comment reopen routes", () => {
         agent: { id: reference },
       };
     });
+    // Compile the route graph after fixture defaults, outside request deadlines.
+    await loadAppModules();
   });
 
   it("treats reopen=true as a no-op when the issue is already open", async () => {

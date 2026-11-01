@@ -144,11 +144,15 @@ type TestActor =
       runId: string | null;
     };
 
-async function createApp(actor?: TestActor) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     import("../middleware/index.js"),
     import("../routes/issues.js"),
   ]);
+}
+
+async function createApp(actor?: TestActor) {
+  const [{ errorHandler }, { issueRoutes }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -167,7 +171,7 @@ async function createApp(actor?: TestActor) {
 }
 
 describe("issue execution policy routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/issues.js");
@@ -222,6 +226,8 @@ describe("issue execution policy routes", () => {
       };
     });
     mockAccessService.hasPermission.mockResolvedValue(false);
+    // Load after reset and mock defaults, outside request behavior deadlines.
+    await loadAppModules();
   });
 
   it("rejects an agent-authored in_review transition without a review path", async () => {

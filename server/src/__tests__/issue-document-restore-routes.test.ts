@@ -170,6 +170,13 @@ function createRunContextDb(contextSnapshot: Record<string, unknown>) {
   };
 }
 
+function loadAppModules() {
+  return Promise.all([
+    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
+}
+
 async function createApp(
   actor: Express.Request["actor"] = {
     type: "board",
@@ -180,10 +187,7 @@ async function createApp(
   },
   db: unknown = {},
 ) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+  const [{ issueRoutes }, { errorHandler }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -196,7 +200,7 @@ async function createApp(
 }
 
 describe("issue document revision routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
@@ -281,6 +285,8 @@ describe("issue document revision routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue([companyId]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
+    // Load after reset and mock defaults, outside request behavior deadlines.
+    await loadAppModules();
   });
 
   it("returns revision snapshots including title and format", async () => {

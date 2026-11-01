@@ -152,6 +152,13 @@ function createIssue(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function loadAppModules() {
+  return Promise.all([
+    import("../routes/issues.js"),
+    import("../middleware/index.js"),
+  ]);
+}
+
 async function createApp(actor: Record<string, unknown> = {
   type: "board",
   userId: "local-board",
@@ -159,10 +166,7 @@ async function createApp(actor: Record<string, unknown> = {
   source: "local_implicit",
   isInstanceAdmin: false,
 }, routeOptions: Record<string, unknown> = {}) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
+  const [{ issueRoutes }, { errorHandler }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -175,7 +179,7 @@ async function createApp(actor: Record<string, unknown> = {
 }
 
 describe.sequential("issue thread interaction routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
@@ -366,6 +370,8 @@ describe.sequential("issue thread interaction routes", () => {
           onRejected,
         ),
     }));
+    // Load after reset and fixture mocks, outside request behavior deadlines.
+    await loadAppModules();
   });
 
   it("lists and creates board-authored interactions", async () => {

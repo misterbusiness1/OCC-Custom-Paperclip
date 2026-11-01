@@ -104,7 +104,7 @@ async function createApp(routeType: "project" | "goal") {
 }
 
 describe("project and goal telemetry routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/index.js");
@@ -141,6 +141,12 @@ describe("project and goal telemetry routes", () => {
       status: "planned",
     });
     mockLogActivity.mockResolvedValue(undefined);
+    // Preload both route branches after mocks; router construction stays per test.
+    await Promise.all([
+      vi.importActual("../middleware/index.js"),
+      vi.importActual("../routes/projects.js"),
+      vi.importActual("../routes/goals.js"),
+    ]);
   });
 
   it("emits telemetry when a project is created", async () => {
