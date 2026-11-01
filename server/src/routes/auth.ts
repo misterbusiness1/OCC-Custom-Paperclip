@@ -6,6 +6,7 @@ import {
   authSessionSchema,
   currentUserProfileSchema,
   updateCurrentUserProfileSchema,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -65,7 +66,7 @@ export function authRoutes(db: Db) {
       throw unauthorized("Board authentication required");
     }
 
-    const patch = updateCurrentUserProfileSchema.parse(req.body);
+    const patch = updateCurrentUserProfileSchema.parse(req.body, zod3IssueParams);
     const now = new Date();
 
     const updated = await db

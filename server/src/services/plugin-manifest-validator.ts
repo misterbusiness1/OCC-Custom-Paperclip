@@ -9,7 +9,7 @@
  * @see PLUGIN_SPEC.md §10 — Plugin Manifest
  * @see packages/shared/src/validators/plugin.ts — Zod schema definition
  */
-import { pluginManifestV1Schema } from "@paperclipai/shared";
+import { pluginManifestV1Schema, toZod3Issues, zod3IssueParams } from "@paperclipai/shared";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { PLUGIN_API_VERSION } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
@@ -119,7 +119,7 @@ export interface PluginManifestValidator {
 export function pluginManifestValidator(): PluginManifestValidator {
   return {
     parse(input: unknown): ManifestParseResult {
-      const result = pluginManifestV1Schema.safeParse(input);
+      const result = pluginManifestV1Schema.safeParse(input, zod3IssueParams);
 
       if (result.success) {
         return {
@@ -128,7 +128,7 @@ export function pluginManifestValidator(): PluginManifestValidator {
         };
       }
 
-      const details = result.error.errors.map((issue) => ({
+      const details = toZod3Issues(result.error.issues).map((issue) => ({
         path: issue.path,
         message: issue.message,
       }));

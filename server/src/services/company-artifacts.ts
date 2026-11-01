@@ -25,6 +25,7 @@ import {
   type CompanyArtifactMediaKind,
   type CompanyArtifactsQuery,
   type CompanyArtifactsResponse,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { badRequest, notFound } from "../errors.js";
 import type { StorageService } from "../storage/types.js";
@@ -320,7 +321,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
       rawQuery: Partial<CompanyArtifactsQuery> = {},
       options: { issueConditions?: SQL[] } = {},
     ): Promise<CompanyArtifactsResponse> => {
-      const query = companyArtifactsQuerySchema.parse(rawQuery);
+      const query = companyArtifactsQuerySchema.parse(rawQuery, zod3IssueParams);
       const cursor = decodeCursor(query.cursor);
       const groupBy = query.groupBy === "none" ? null : query.groupBy;
       const company = await db

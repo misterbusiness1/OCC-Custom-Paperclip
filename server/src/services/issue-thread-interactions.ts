@@ -46,6 +46,7 @@ import {
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -1103,7 +1104,7 @@ export function issueThreadInteractionService(db: Db) {
       input: CreateIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
-      const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
+      const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input, zod3IssueParams));
 
       if (data.idempotencyKey) {
         const existing = await getIdempotentInteraction({
@@ -1208,7 +1209,7 @@ export function issueThreadInteractionService(db: Db) {
       input: AcceptIssueThreadInteraction,
       actor: InteractionActor,
     ): Promise<ResolvedInteractionResult> => {
-      const data = acceptIssueThreadInteractionSchema.parse(input);
+      const data = acceptIssueThreadInteractionSchema.parse(input, zod3IssueParams);
       const current = await getPendingInteractionForResolution({ issue, interactionId });
       switch (current.kind) {
         case "suggest_tasks":
@@ -1406,7 +1407,7 @@ export function issueThreadInteractionService(db: Db) {
       input: RejectIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
-      const data = rejectIssueThreadInteractionSchema.parse(input);
+      const data = rejectIssueThreadInteractionSchema.parse(input, zod3IssueParams);
       const current = await getPendingInteractionForResolution({ issue, interactionId });
       switch (current.kind) {
         case "suggest_tasks":
@@ -1430,7 +1431,7 @@ export function issueThreadInteractionService(db: Db) {
       input: SubmitIssueThreadInteractionVerdicts,
       actor: InteractionActor,
     ): Promise<{ interaction: IssueThreadInteraction; newlyResolvedItemIds: string[] }> => {
-      const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
+      const data = submitIssueThreadInteractionVerdictsSchema.parse(input, zod3IssueParams);
       const submission = await db.transaction(async (tx) => {
         const current = await tx
           .select()
@@ -1911,7 +1912,7 @@ export function issueThreadInteractionService(db: Db) {
       input: CancelIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
-      const data = cancelIssueThreadInteractionSchema.parse(input);
+      const data = cancelIssueThreadInteractionSchema.parse(input, zod3IssueParams);
       const current = await db
         .select()
         .from(issueThreadInteractions)

@@ -22,7 +22,38 @@ const require = createRequire(import.meta.url);
 const zodVersion = readZodVersion(require.resolve("zod/package.json"));
 const GOLDEN_FILE = path.join(here, "fixtures", "openapi-zod3-baseline.json");
 
-const INTENTIONAL_DIFFERENCES: Record<string, string> = {};
+const HEARTBEAT_RUNS_SUMMARY_ENUM =
+  "/paths/~1api~1companies~1{companyId}~1heartbeat-runs/get/parameters/4/schema/enum";
+
+const INTENTIONAL_DIFFERENCES: Record<string, string> = {
+  // z.enum(["true", "false", "1", "0"]): zod 4 stores enum values as the keys
+  // of an object, and JavaScript orders integer-like keys first, so the values
+  // come out as ["0", "1", "true", "false"]. Same members (checked below);
+  // JSON Schema `enum` order carries no meaning.
+  [HEARTBEAT_RUNS_SUMMARY_ENUM]: "enum member order (zod 4 orders integer-like enum values first)",
+};
+
+function pointerSegments(pointer: string) {
+  return pointer
+    .split("/")
+    .slice(1)
+    .map((segment) => segment.replace(/~1/g, "/").replace(/~0/g, "~"));
+}
+
+function readPointer(document: unknown, pointer: string): unknown {
+  return pointerSegments(pointer).reduce<unknown>(
+    (value, segment) => (value as Record<string, unknown> | undefined)?.[segment],
+    document,
+  );
+}
+
+function writePointer(document: unknown, pointer: string, value: unknown) {
+  const segments = pointerSegments(pointer);
+  const parent = segments
+    .slice(0, -1)
+    .reduce<unknown>((current, segment) => (current as Record<string, unknown>)[segment], document) as Record<string, unknown>;
+  parent[segments[segments.length - 1]] = value;
+}
 
 function serialize(document: unknown) {
   return `${JSON.stringify(document, null, 2)}\n`;
@@ -74,8 +105,22 @@ describe("OpenAPI document zod 3 baseline", () => {
       (pointer) => !isCoveredByIntentionalDifference(pointer),
     );
     expect(differences).toEqual([]);
-    // Every remaining difference is intentional: still require the same bytes
-    // outside the listed pointers, i.e. nothing beyond them changed.
-    expect(Object.keys(INTENTIONAL_DIFFERENCES).length).toBeGreaterThan(0);
+    // Every remaining difference is intentional: with the golden's values put
+    // back at the listed pointers, the document must be byte-identical (this
+    // also catches key-order changes the pointer diff stops reporting once it
+    // has found a difference).
+    const goldenDocument = JSON.parse(expected) as unknown;
+    const patched = JSON.parse(actual) as unknown;
+    for (const pointer of Object.keys(INTENTIONAL_DIFFERENCES)) {
+      writePointer(patched, pointer, readPointer(goldenDocument, pointer));
+    }
+    expect(serialize(patched)).toBe(expected);
+  });
+
+  it("keeps the members of enums whose order zod 4 changes", () => {
+    const expected = readPointer(JSON.parse(fs.readFileSync(GOLDEN_FILE, "utf8")), HEARTBEAT_RUNS_SUMMARY_ENUM) as string[];
+    const actual = readPointer(buildOpenApiDocument(), HEARTBEAT_RUNS_SUMMARY_ENUM) as string[];
+    expect(expected).toEqual(["true", "false", "1", "0"]);
+    expect([...actual].sort()).toEqual([...expected].sort());
   });
 });

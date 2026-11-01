@@ -10,7 +10,7 @@ import type {
   IssueExecutionState,
   IssueMonitorScheduledBy,
 } from "@paperclipai/shared";
-import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@paperclipai/shared";
+import { issueExecutionPolicySchema, issueExecutionStateSchema, flattenZod3Issues, zod3IssueParams } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 
 type AssigneeLike = {
@@ -338,9 +338,9 @@ export function setIssueExecutionPolicyMonitorScheduledBy(
 
 export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
   if (input == null) return null;
-  const parsed = issueExecutionPolicySchema.safeParse(input);
+  const parsed = issueExecutionPolicySchema.safeParse(input, zod3IssueParams);
   if (!parsed.success) {
-    throw unprocessable("Invalid execution policy", parsed.error.flatten());
+    throw unprocessable("Invalid execution policy", flattenZod3Issues(parsed.error.issues));
   }
 
   const stages = parsed.data.stages

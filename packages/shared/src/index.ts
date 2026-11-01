@@ -2244,3 +2244,16 @@ export {
   ZOD3_DATETIME_OFFSET_REGEX,
   ZOD3_DATETIME_REGEX,
 } from "./validators/zod-compat.js";
+export {
+  flattenZod3Issues,
+  isZodError,
+  toZod3Issues,
+  ZOD3_ISSUE_KEY,
+  zod3ErrorMap,
+  zod3IssueParams,
+  zod3RequiredError,
+  type Zod3FlattenedError,
+  type Zod3Issue,
+  type Zod3IssuePath,
+  type Zod3SerializedError,
+} from "./validators/zod3-issues.js";

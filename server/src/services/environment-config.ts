@@ -29,19 +29,20 @@ import {
   writeConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
 import { resolveActiveEnvironmentCustomImageTemplateForRuntime } from "./environment-custom-image-runtime.js";
+import { toZod3Issues, zod3IssueParams, zod3RequiredError } from "@paperclipai/shared";
 
 export const secretRefSchema = z.object({
   type: z.literal("secret_ref"),
-  secretId: z.string().uuid(),
+  secretId: z.uuid(),
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
 }).strict();
 
 export const sshEnvironmentConfigSchema = z.object({
-  host: z.string({ required_error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
+  host: z.string({ error: zod3RequiredError("SSH environments require a host.") }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
-  username: z.string({ required_error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
+  username: z.string({ error: zod3RequiredError("SSH environments require a username.") }).trim().min(1, "SSH environments require a username."),
   remoteWorkspacePath: z
-    .string({ required_error: "SSH environments require a remote workspace path." })
+    .string({ error: zod3RequiredError("SSH environments require a remote workspace path.") })
     .trim()
     .min(1, "SSH environments require a remote workspace path.")
     .refine((value) => value.startsWith("/"), "SSH remote workspace path must be absolute."),
@@ -101,7 +102,7 @@ export const pluginEnvironmentConfigSchema = z.object({
     /^[a-z0-9][a-z0-9._-]*$/,
     "Environment driver key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
   ),
-  driverConfig: z.record(z.unknown()).optional().default({}),
+  driverConfig: z.record(z.string(), z.unknown()).optional().default({}),
 }).strict();
 
 export type ParsedEnvironmentConfig =
@@ -111,7 +112,7 @@ export type ParsedEnvironmentConfig =
   | { driver: "plugin"; config: PluginEnvironmentConfig };
 
 function toErrorMessage(error: z.ZodError) {
-  const first = error.issues[0];
+  const first = toZod3Issues(error.issues)[0];
   if (!first) return "Invalid environment config.";
   return first.message;
 }
@@ -127,13 +128,13 @@ function parseSandboxEnvironmentConfig(
   const provider = getSandboxProvider(raw);
 
   if (provider === "fake") {
-    const parsed = fakeSandboxEnvironmentConfigSchema.safeParse(raw);
+    const parsed = fakeSandboxEnvironmentConfigSchema.safeParse(raw, zod3IssueParams);
     return parsed.success
       ? ({ success: true as const, data: parsed.data satisfies FakeSandboxEnvironmentConfig })
       : ({ success: false as const, error: parsed.error });
   }
 
-  const parsed = pluginSandboxEnvironmentConfigSchema.safeParse(raw);
+  const parsed = pluginSandboxEnvironmentConfigSchema.safeParse(raw, zod3IssueParams);
   return parsed.success
     ? ({ success: true as const, data: parsed.data satisfies PluginSandboxEnvironmentConfig })
     : ({ success: false as const, error: parsed.error });
@@ -355,10 +356,10 @@ export function normalizeEnvironmentConfig(input: {
   }
 
   if (input.driver === "ssh") {
-    const parsed = sshEnvironmentConfigSchema.safeParse(parseObject(input.config));
+    const parsed = sshEnvironmentConfigSchema.safeParse(parseObject(input.config), zod3IssueParams);
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
-        issues: parsed.error.issues,
+        issues: toZod3Issues(parsed.error.issues),
       });
     }
     return parsed.data satisfies SshEnvironmentConfig;
@@ -368,17 +369,17 @@ export function normalizeEnvironmentConfig(input: {
     const parsed = parseSandboxEnvironmentConfig(input.config);
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
-        issues: parsed.error.issues,
+        issues: toZod3Issues(parsed.error.issues),
       });
     }
     return parsed.data;
   }
 
   if (input.driver === "plugin") {
-    const parsed = pluginEnvironmentConfigSchema.safeParse(parseObject(input.config));
+    const parsed = pluginEnvironmentConfigSchema.safeParse(parseObject(input.config), zod3IssueParams);
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
-        issues: parsed.error.issues,
+        issues: toZod3Issues(parsed.error.issues),
       });
     }
     return parsed.data satisfies PluginEnvironmentConfig;
@@ -401,10 +402,10 @@ export function normalizeEnvironmentConfigForProbe(input: {
   pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> | Record<string, unknown> {
   if (input.driver === "ssh") {
-    const parsed = sshEnvironmentConfigProbeSchema.safeParse(parseObject(input.config));
+    const parsed = sshEnvironmentConfigProbeSchema.safeParse(parseObject(input.config), zod3IssueParams);
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
-        issues: parsed.error.issues,
+        issues: toZod3Issues(parsed.error.issues),
       });
     }
     return parsed.data satisfies SshEnvironmentConfig;
@@ -414,7 +415,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
     const parsed = parseSandboxEnvironmentConfig(input.config);
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
-        issues: parsed.error.issues,
+        issues: toZod3Issues(parsed.error.issues),
       });
     }
     if (parsed.data.provider === "fake") {
@@ -462,10 +463,10 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
   pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> {
   if (input.driver === "ssh") {
-    const parsed = sshEnvironmentConfigPersistenceSchema.safeParse(parseObject(input.config));
+    const parsed = sshEnvironmentConfigPersistenceSchema.safeParse(parseObject(input.config), zod3IssueParams);
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
-        issues: parsed.error.issues,
+        issues: toZod3Issues(parsed.error.issues),
       });
     }
     const secrets = secretService(input.db);
@@ -500,7 +501,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
     const parsed = parseSandboxEnvironmentConfig(input.config);
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
-        issues: parsed.error.issues,
+        issues: toZod3Issues(parsed.error.issues),
       });
     }
     if (parsed.data.provider === "fake") {
@@ -536,10 +537,10 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
   }
 
   if (input.driver === "plugin") {
-    const parsed = pluginEnvironmentConfigSchema.safeParse(parseObject(input.config));
+    const parsed = pluginEnvironmentConfigSchema.safeParse(parseObject(input.config), zod3IssueParams);
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
-        issues: parsed.error.issues,
+        issues: toZod3Issues(parsed.error.issues),
       });
     }
     if (!input.pluginWorkerManager) {
@@ -667,7 +668,7 @@ export function parseEnvironmentDriverConfig(
   }
 
   if (environment.driver === "ssh") {
-    const parsed = sshEnvironmentConfigSchema.parse(parseObject(environment.config));
+    const parsed = sshEnvironmentConfigSchema.parse(parseObject(environment.config), zod3IssueParams);
     return {
       driver: "ssh",
       config: parsed,
@@ -686,7 +687,7 @@ export function parseEnvironmentDriverConfig(
   }
 
   if (environment.driver === "plugin") {
-    const parsed = pluginEnvironmentConfigSchema.parse(parseObject(environment.config));
+    const parsed = pluginEnvironmentConfigSchema.parse(parseObject(environment.config), zod3IssueParams);
     return {
       driver: "plugin",
       config: parsed,

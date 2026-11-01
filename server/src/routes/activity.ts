@@ -14,8 +14,8 @@ export const createActivitySchema = z.object({
   action: z.string().min(1),
   entityType: z.string().min(1),
   entityId: z.string().min(1),
-  agentId: z.string().uuid().optional().nullable(),
-  details: z.record(z.unknown()).optional().nullable(),
+  agentId: z.uuid().optional().nullable(),
+  details: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
 export function activityRoutes(db: Db) {

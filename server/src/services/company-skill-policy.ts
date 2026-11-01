@@ -11,6 +11,7 @@ import {
   type SkillPolicyEvaluationResource,
   type SkillPolicyRule,
   type SkillPolicySourceType,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { conflict, forbidden, notFound } from "../errors.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
@@ -34,7 +35,7 @@ function effectivePolicyFromRow(row: typeof companySkillPolicies.$inferSelect): 
     schemaVersion: row.schemaVersion,
     defaultEffect: row.defaultEffect,
     rules: row.rules,
-  });
+  }, zod3IssueParams);
   return { ...document, revision: row.revision, materialized: true };
 }
 
@@ -194,7 +195,7 @@ export function companySkillPolicyService(db: Db) {
   }) {
     return db.transaction(async (tx) => {
       const transactionDb = tx as unknown as Db;
-      const policy = skillPolicyDocumentSchema.parse(input.policy);
+      const policy = skillPolicyDocumentSchema.parse(input.policy, zod3IssueParams);
       const existing = await tx
         .select()
         .from(companySkillPolicies)

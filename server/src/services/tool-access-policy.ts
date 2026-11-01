@@ -40,7 +40,7 @@ import type {
   ToolTrustRuleArgumentFilters,
   ToolRiskLevel,
 } from "@paperclipai/shared";
-import { toolPolicyConditionsSchema } from "@paperclipai/shared";
+import { toolPolicyConditionsSchema, toZod3Issues, zod3IssueParams } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
@@ -583,10 +583,10 @@ function isSafePolicyRegex(pattern: string): boolean {
 
 function assertSupportedPolicyConditions(conditions: Record<string, unknown> | null | undefined) {
   if (!conditions || Object.keys(conditions).length === 0) return;
-  const parsed = toolPolicyConditionsSchema.safeParse(conditions);
+  const parsed = toolPolicyConditionsSchema.safeParse(conditions, zod3IssueParams);
   if (!parsed.success) {
     throw unprocessable("Tool policy conditions include unsupported runtime semantics", {
-      issues: parsed.error.issues.map((issue) => ({
+      issues: toZod3Issues(parsed.error.issues).map((issue) => ({
         path: issue.path.join("."),
         message: issue.message,
       })),
@@ -1163,7 +1163,7 @@ export function toolAccessPolicyService(db: Db) {
     for (const policy of policies) {
       const conditions = policyConditions(policy);
       if (conditions && selectorMatches(policy.selectors, ctx)) {
-        const parsed = toolPolicyConditionsSchema.safeParse(conditions);
+        const parsed = toolPolicyConditionsSchema.safeParse(conditions, zod3IssueParams);
         if (!parsed.success) {
           return decision(
             "deny",
@@ -1177,7 +1177,7 @@ export function toolAccessPolicyService(db: Db) {
                 policyId: policy.id,
                 policyType: policy.policyType,
                 selectorMatched: true,
-                conditionsError: parsed.error.issues.map((issue) => ({
+                conditionsError: toZod3Issues(parsed.error.issues).map((issue) => ({
                   path: issue.path.join("."),
                   message: issue.message,
                 })),

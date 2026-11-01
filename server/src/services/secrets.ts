@@ -44,6 +44,8 @@ import {
   secretProviderConfigPayloadSchema,
   secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
+  flattenZod3Issues,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -984,9 +986,9 @@ export function secretService(db: Db) {
     provider: SecretProvider,
     config: Record<string, unknown>,
   ): Record<string, unknown> {
-    const parsed = secretProviderConfigPayloadSchema.safeParse({ provider, config });
+    const parsed = secretProviderConfigPayloadSchema.safeParse({ provider, config }, zod3IssueParams);
     if (!parsed.success) {
-      throw unprocessable("Invalid provider vault config", parsed.error.flatten());
+      throw unprocessable("Invalid provider vault config", flattenZod3Issues(parsed.error.issues));
     }
     return parsed.data.config;
   }
@@ -2333,9 +2335,9 @@ export function secretService(db: Db) {
         query: input.query,
         nextToken: input.nextToken,
         pageSize: input.pageSize,
-      });
+      }, zod3IssueParams);
       if (!parsed.success) {
-        throw unprocessable("Invalid provider vault discovery config", parsed.error.flatten());
+        throw unprocessable("Invalid provider vault discovery config", flattenZod3Issues(parsed.error.issues));
       }
       const providerId = parsed.data.provider as SecretProvider;
       const provider = getSecretProvider(providerId);
@@ -2386,8 +2388,8 @@ export function secretService(db: Db) {
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
-      const parsed = createSecretProviderConfigSchema.safeParse(input);
-      if (!parsed.success) throw unprocessable("Invalid provider vault config", parsed.error.flatten());
+      const parsed = createSecretProviderConfigSchema.safeParse(input, zod3IssueParams);
+      if (!parsed.success) throw unprocessable("Invalid provider vault config", flattenZod3Issues(parsed.error.issues));
       const status = input.status ?? defaultProviderConfigStatus(input.provider);
       if ((status === "coming_soon" || status === "disabled") && input.isDefault) {
         throw unprocessable("Only ready or warning provider vaults can be default");
@@ -2432,8 +2434,8 @@ export function secretService(db: Db) {
     ) => {
       const existing = await getProviderConfigById(id);
       if (!existing) return null;
-      const parsed = updateSecretProviderConfigSchema.safeParse(patch);
-      if (!parsed.success) throw unprocessable("Invalid provider vault config", parsed.error.flatten());
+      const parsed = updateSecretProviderConfigSchema.safeParse(patch, zod3IssueParams);
+      if (!parsed.success) throw unprocessable("Invalid provider vault config", flattenZod3Issues(parsed.error.issues));
       const provider = existing.provider as SecretProvider;
       const status = patch.status ?? (existing.status as SecretProviderConfigStatus);
       if (COMING_SOON_SECRET_PROVIDERS.has(provider) && status !== "coming_soon" && status !== "disabled") {

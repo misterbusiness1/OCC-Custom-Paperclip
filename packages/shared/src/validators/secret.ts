@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { urlString } from "./zod-compat.js";
+import { zod3IssueParams } from "./zod3-issues.js";
 import {
   SECRET_BINDING_TARGET_TYPES,
   SECRET_MANAGED_MODES,
@@ -292,7 +293,7 @@ const vaultAddressSchema = z.preprocess(
 
 function rejectUnsafeVaultAddress(value: unknown, ctx: z.RefinementCtx) {
   if (value === undefined || value === null) return;
-  const parsed = vaultAddressSchema.safeParse(value);
+  const parsed = vaultAddressSchema.safeParse(value, zod3IssueParams);
   if (parsed.success) return;
   for (const issue of parsed.error.issues) {
     ctx.addIssue({
@@ -327,7 +328,7 @@ export const createSecretProviderConfigSchema = z.object({
   const parsed = secretProviderConfigPayloadSchema.safeParse({
     provider: value.provider,
     config: value.config,
-  });
+  }, zod3IssueParams);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
       ctx.addIssue({
@@ -396,7 +397,7 @@ export const secretProviderConfigDiscoveryPreviewSchema = z.object({
   const parsed = secretProviderConfigPayloadSchema.safeParse({
     provider: value.provider,
     config: value.config,
-  });
+  }, zod3IssueParams);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
       ctx.addIssue({

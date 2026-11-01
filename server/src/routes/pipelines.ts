@@ -68,6 +68,8 @@ import {
   type PipelineCaseLiveness,
   type PipelineHealthFailedAutomationInput,
   type PipelineHealthStageInput,
+  toZod3Issues,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { documentAnnotationService } from "../services/document-annotations.js";
 import { logActivity } from "../services/activity-log.js";
@@ -94,9 +96,9 @@ const casePatchSchema = z.object({
   summary: z.string().max(8_000).nullable().optional(),
   fields: jsonObjectSchema.optional(),
   workspaceRef: jsonObjectSchema.nullable().optional(),
-  parentCaseId: z.string().uuid().nullable().optional(),
+  parentCaseId: z.uuid().nullable().optional(),
   expectedVersion: z.number().int().positive().optional(),
-  leaseToken: z.string().uuid().nullable().optional(),
+  leaseToken: z.uuid().nullable().optional(),
 });
 const ingestCaseSchema = z.object({
   caseKey: z.string().max(1_024).nullable().optional(),
@@ -104,17 +106,17 @@ const ingestCaseSchema = z.object({
   summary: z.string().max(8_000).nullable().optional(),
   fields: jsonObjectSchema.optional(),
   stageKey: z.string().trim().min(1).max(120).optional(),
-  parentCaseId: z.string().uuid().nullable().optional(),
+  parentCaseId: z.uuid().nullable().optional(),
   requestKey: z.string().trim().min(1).max(512).optional(),
   workspaceRef: jsonObjectSchema.nullable().optional(),
-  blockedByCaseIds: z.array(z.string().uuid()).max(100).optional(),
+  blockedByCaseIds: z.array(z.uuid()).max(100).optional(),
   blockedByCaseKeys: z.array(z.string().max(1_024)).max(100).optional(),
 });
 const createPipelineSchema = z.object({
   key: z.string().trim().min(1).max(120),
   name: z.string().trim().min(1).max(200),
   description: z.string().max(8_000).nullable().optional(),
-  projectId: z.string().uuid().nullable().optional(),
+  projectId: z.uuid().nullable().optional(),
   enforceTransitions: z.boolean().optional(),
   stages: z.array(z.object({
     key: z.string().trim().min(1).max(120),
@@ -146,7 +148,7 @@ const updateStageSchema = z.object({
 });
 const updateStageAutomationEnvSchema = z.object({
   env: envConfigSchema.nullable(),
-  baseRoutineRevisionId: z.string().uuid().nullable().optional(),
+  baseRoutineRevisionId: z.uuid().nullable().optional(),
 });
 const replaceTransitionsSchema = z.object({
   transitions: z.array(z.object({
@@ -167,16 +169,16 @@ const breakdownCaseSchema = z.object({
 });
 const claimCaseSchema = z.object({ leaseSeconds: z.number().int().positive().max(86_400).optional() });
 const releaseCaseSchema = z.object({
-  leaseToken: z.string().uuid().nullable().optional(),
+  leaseToken: z.uuid().nullable().optional(),
   force: z.boolean().optional(),
 });
 const transitionCaseSchema = z.object({
   toStageKey: z.string().trim().min(1).max(120),
   expectedVersion: z.number().int().positive(),
-  leaseToken: z.string().uuid().nullable().optional(),
+  leaseToken: z.uuid().nullable().optional(),
   reason: z.string().max(4_000).nullable().optional(),
   force: z.boolean().optional(),
-  acceptSuggestionId: z.string().uuid().optional(),
+  acceptSuggestionId: z.uuid().optional(),
 });
 const suggestTransitionSchema = z.object({
   toStageKey: z.string().trim().min(1).max(120),
@@ -184,52 +186,52 @@ const suggestTransitionSchema = z.object({
   confidence: z.number().min(0).max(1).optional(),
 });
 const resolveSuggestionSchema = z.object({
-  suggestionId: z.string().uuid(),
+  suggestionId: z.uuid(),
   resolution: z.enum(["accept", "dismiss"]),
   expectedVersion: z.number().int().positive().optional(),
   reason: z.string().max(4_000).nullable().optional(),
-  leaseToken: z.string().uuid().nullable().optional(),
+  leaseToken: z.uuid().nullable().optional(),
 });
 const acknowledgeDriftSchema = z.object({
   expectedVersion: z.number().int().positive().optional(),
 });
 export const retryAutomationQuerySchema = z.object({
   scope: pipelineAutomationRetryScopeSchema.default("previous_stage"),
-  targetStageId: z.string().uuid().optional(),
+  targetStageId: z.uuid().optional(),
 });
 const reviewEditsSchema = z.object({
   title: z.string().trim().min(1).max(500).optional(),
   summary: z.string().max(8_000).nullable().optional(),
   fields: jsonObjectSchema.optional(),
-  parentCaseId: z.string().uuid().nullable().optional(),
+  parentCaseId: z.uuid().nullable().optional(),
 });
 const reviewCaseSchema = z.object({
   decision: z.enum(["approve", "reject", "request_changes"]),
   reason: z.string().max(4_000).nullable().optional(),
   edits: reviewEditsSchema.optional(),
   expectedVersion: z.number().int().positive(),
-  leaseToken: z.string().uuid().nullable().optional(),
+  leaseToken: z.uuid().nullable().optional(),
 });
-const blockersSchema = z.object({ blockedByCaseIds: z.array(z.string().uuid()).max(100) });
+const blockersSchema = z.object({ blockedByCaseIds: z.array(z.uuid()).max(100) });
 const issueLinkRoleSchema = z.enum(["origin", "conversation", "work", "automation"]);
 const createIssueLinkSchema = z.object({
-  issueId: z.string().uuid(),
+  issueId: z.uuid(),
   role: issueLinkRoleSchema,
 });
 const bulkReviewSchema = z.object({
-  items: z.array(reviewCaseSchema.extend({ caseId: z.string().uuid() })).max(100),
+  items: z.array(reviewCaseSchema.extend({ caseId: z.uuid() })).max(100),
 });
 const upsertPipelineDocumentSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   body: z.string().max(200_000),
-  baseRevisionId: z.string().uuid().nullable().optional(),
+  baseRevisionId: z.uuid().nullable().optional(),
 });
 export const upsertPipelineCaseDocumentSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   format: z.string().trim().min(1).max(80).optional().default("markdown"),
   body: z.string().max(200_000),
   changeSummary: z.string().trim().max(1_000).nullable().optional(),
-  baseRevisionId: z.string().uuid().nullable().optional(),
+  baseRevisionId: z.uuid().nullable().optional(),
 });
 const intakeFieldTypes = new Set(["select", "text", "multiline"]);
 
@@ -552,9 +554,9 @@ async function listPipelineDocumentRevisions(db: Db, input: { companyId: string;
 }
 
 function parseDocumentKey(rawKey: unknown) {
-  const parsed = issueDocumentKeySchema.safeParse(String(rawKey ?? "").trim().toLowerCase());
+  const parsed = issueDocumentKeySchema.safeParse(String(rawKey ?? "").trim().toLowerCase(), zod3IssueParams);
   if (!parsed.success) {
-    throw badRequest("Invalid document key", parsed.error.issues);
+    throw badRequest("Invalid document key", toZod3Issues(parsed.error.issues));
   }
   return parsed.data;
 }
@@ -2216,7 +2218,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
 
   router.get("/cases/:caseId/automation/retry-plan", async (req, res) => {
     const caseId = req.params.caseId as string;
-    const query = retryAutomationQuerySchema.parse(req.query);
+    const query = retryAutomationQuerySchema.parse(req.query, zod3IssueParams);
     const companyId = await assertCaseAccess(db, req, caseId);
     const plan = await svc.getAutomationRetryPlan({
       companyId,

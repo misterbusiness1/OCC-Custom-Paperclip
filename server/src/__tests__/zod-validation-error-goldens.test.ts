@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import request from "supertest";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import type { ZodTypeAny } from "zod";
+import type { z } from "zod";
 import { ZOD_BASELINE_UPDATE_ENV, readZodVersion } from "@paperclipai/shared/testing/zod-baseline-golden";
 
 /**
@@ -29,6 +29,12 @@ import { ZOD_BASELINE_UPDATE_ENV, readZodVersion } from "@paperclipai/shared/tes
  * badRequest/unprocessable/flatten sites in assets, cases, tool-gateway,
  * approvals, secrets, execution workspaces, environment config, tool policy
  * conditions, summary slots, documents, pipelines, search and file resources.
+ *
+ * The harness entries for those sites repeat the site's own parse and
+ * serialization (`zod3IssueParams` + `toZod3Issues` / `flattenZod3Issues`
+ * since the zod 4 migration); keep them in step with the site when it
+ * changes. On zod 4 the full bodies still equal the zod 3 goldens; the
+ * contract view is what the test requires.
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -117,7 +123,7 @@ function recordValue(name: string, value: unknown) {
 }
 
 /** The global validate() + errorHandler path for one schema. */
-async function recordValidate(name: string, schema: ZodTypeAny, body: unknown) {
+async function recordValidate(name: string, schema: z.ZodType, body: unknown) {
   const validate = await loadValidate();
   const app = await probeApp((req, res, next) => {
     validate(schema)(req, res, (error?: unknown) => {
@@ -349,23 +355,23 @@ beforeAll(async () => {
 
   // routes/assets.ts:136 res.status(400).json({ error: "Invalid image metadata", details: issues })
   await recordThrown("site assets.ts invalid image metadata", (req, res) => {
-    const parsedMeta = shared.createAssetImageMetadataSchema.safeParse(req.body ?? {});
-    if (!parsedMeta.success) res.status(400).json({ error: "Invalid image metadata", details: parsedMeta.error.issues });
+    const parsedMeta = shared.createAssetImageMetadataSchema.safeParse(req.body ?? {}, shared.zod3IssueParams);
+    if (!parsedMeta.success) res.status(400).json({ error: "Invalid image metadata", details: shared.toZod3Issues(parsedMeta.error.issues) });
   }, { namespace: "bad space!" });
 
   // routes/cases.ts:141/725/1347 badRequest(message, issues)
   const cases = await vi.importActual<typeof import("../routes/cases.js")>("../routes/cases.js");
   await recordThrown("site cases.ts invalid document key", () => {
-    const parsed = cases.documentKeySchema.safeParse("bad key!");
-    if (!parsed.success) throw errors.badRequest("Invalid document key", parsed.error.issues);
+    const parsed = cases.documentKeySchema.safeParse("bad key!", shared.zod3IssueParams);
+    if (!parsed.success) throw errors.badRequest("Invalid document key", shared.toZod3Issues(parsed.error.issues));
   });
   await recordThrown("site cases.ts invalid case list query", () => {
-    const parsed = cases.listCasesQuerySchema.safeParse({ limit: "0" });
-    if (!parsed.success) throw errors.badRequest("Invalid case list query", parsed.error.issues);
+    const parsed = cases.listCasesQuerySchema.safeParse({ limit: "0" }, shared.zod3IssueParams);
+    if (!parsed.success) throw errors.badRequest("Invalid case list query", shared.toZod3Issues(parsed.error.issues));
   });
   await recordThrown("site cases.ts invalid case events query", () => {
-    const parsed = cases.listEventsQuerySchema.safeParse({ limit: "abc" });
-    if (!parsed.success) throw errors.badRequest("Invalid case events query", parsed.error.issues);
+    const parsed = cases.listEventsQuerySchema.safeParse({ limit: "abc" }, shared.zod3IssueParams);
+    if (!parsed.success) throw errors.badRequest("Invalid case events query", shared.toZod3Issues(parsed.error.issues));
   });
 
   // routes/tool-gateway.ts:298/324/345 res.status(422).json({ error, issues })
@@ -375,29 +381,32 @@ beforeAll(async () => {
     ["createToolMcpGatewayTokenSchema", shared.createToolMcpGatewayTokenSchema, {}],
   ] as const) {
     await recordThrown(`site tool-gateway.ts ${label} {}`, (req, res) => {
-      const parsed = (schema as ZodTypeAny).safeParse(req.body ?? {});
+      const parsed = (schema as z.ZodType).safeParse(req.body ?? {}, shared.zod3IssueParams);
       if (!parsed.success) {
         const error = label === "createToolMcpGatewayTokenSchema" ? "Invalid gateway token payload" : "Invalid gateway payload";
-        res.status(422).json({ error, issues: parsed.error.issues });
+        res.status(422).json({ error, issues: shared.toZod3Issues(parsed.error.issues) });
       }
     }, body);
   }
 
   // routes/approvals.ts:63-73 badRequest("Validation error", issues with payload path prefix)
   await recordThrown("site approvals.ts request_board_approval payload", () => {
-    const result = shared.requestBoardApprovalPayloadSchema.safeParse({});
+    const result = shared.requestBoardApprovalPayloadSchema.safeParse({}, shared.zod3IssueParams);
     if (!result.success) {
       throw errors.badRequest(
         "Validation error",
-        result.error.issues.map((issue) => ({ ...issue, path: ["payload", ...issue.path] })),
+        shared.toZod3Issues(result.error.issues).map((issue) => ({ ...issue, path: ["payload", ...issue.path] })),
       );
     }
   });
 
   // services/secrets.ts:989/2338 unprocessable(message, error.flatten())
   await recordThrown("site secrets.ts invalid provider vault config (flatten)", () => {
-    const parsed = shared.secretProviderConfigPayloadSchema.safeParse({ provider: "aws_secrets_manager", config: { region: 5 } });
-    if (!parsed.success) throw errors.unprocessable("Invalid provider vault config", parsed.error.flatten());
+    const parsed = shared.secretProviderConfigPayloadSchema.safeParse(
+      { provider: "aws_secrets_manager", config: { region: 5 } },
+      shared.zod3IssueParams,
+    );
+    if (!parsed.success) throw errors.unprocessable("Invalid provider vault config", shared.flattenZod3Issues(parsed.error.issues));
   });
   await recordThrown("site secrets.ts invalid provider discovery config (flatten)", () => {
     const parsed = shared.secretProviderConfigDiscoveryPreviewSchema.safeParse({
@@ -405,8 +414,10 @@ beforeAll(async () => {
       config: {},
       query: 5,
       pageSize: 0,
-    });
-    if (!parsed.success) throw errors.unprocessable("Invalid provider vault discovery config", parsed.error.flatten());
+    }, shared.zod3IssueParams);
+    if (!parsed.success) {
+      throw errors.unprocessable("Invalid provider vault discovery config", shared.flattenZod3Issues(parsed.error.issues));
+    }
   });
 
   // services/issue-execution-policy.ts:343 (real function) unprocessable("Invalid execution policy", flatten())
@@ -419,9 +430,9 @@ beforeAll(async () => {
 
   // routes/execution-workspaces.ts:99 res.status(422).json({ error, details: flatten() })
   await recordThrown("site execution-workspaces.ts invalid overview query (flatten)", (_req, res) => {
-    const parsed = shared.workspaceOverviewQuerySchema.safeParse({ limit: "abc", status: 5 });
+    const parsed = shared.workspaceOverviewQuerySchema.safeParse({ limit: "abc", status: 5 }, shared.zod3IssueParams);
     if (!parsed.success) {
-      res.status(422).json({ error: "Invalid workspace overview query", details: parsed.error.flatten() });
+      res.status(422).json({ error: "Invalid workspace overview query", details: shared.flattenZod3Issues(parsed.error.issues) });
     }
   });
 
@@ -441,53 +452,56 @@ beforeAll(async () => {
 
   // services/tool-access-policy.ts:589/1180 mapped { path: joined, message }
   await recordThrown("site tool-access-policy.ts unsupported policy conditions", () => {
-    const parsed = shared.toolPolicyConditionsSchema.safeParse({ arguments: { fieldMatches: 5 }, bogus: true });
+    const parsed = shared.toolPolicyConditionsSchema.safeParse({ arguments: { fieldMatches: 5 }, bogus: true }, shared.zod3IssueParams);
     if (!parsed.success) {
       throw errors.unprocessable("Tool policy conditions include unsupported runtime semantics", {
-        issues: parsed.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })),
+        issues: shared.toZod3Issues(parsed.error.issues).map((issue) => ({ path: issue.path.join("."), message: issue.message })),
       });
     }
   });
 
   // services/summary-slots.ts:146 unprocessable("Invalid summary slot selector", issues)
   await recordThrown("site summary-slots.ts invalid selector", () => {
-    const parsed = shared.summarySlotScopeSelectorSchema.safeParse({ scopeKind: "nope", slotKey: "", scopeId: undefined });
-    if (!parsed.success) throw errors.unprocessable("Invalid summary slot selector", parsed.error.issues);
+    const parsed = shared.summarySlotScopeSelectorSchema.safeParse(
+      { scopeKind: "nope", slotKey: "", scopeId: undefined },
+      shared.zod3IssueParams,
+    );
+    if (!parsed.success) throw errors.unprocessable("Invalid summary slot selector", shared.toZod3Issues(parsed.error.issues));
   });
 
   // services/documents.ts:11 unprocessable / routes/pipelines.ts:557 badRequest ("Invalid document key", issues)
   await recordThrown("site documents.ts invalid document key", () => {
-    const parsed = shared.issueDocumentKeySchema.safeParse("bad key!");
-    if (!parsed.success) throw errors.unprocessable("Invalid document key", parsed.error.issues);
+    const parsed = shared.issueDocumentKeySchema.safeParse("bad key!", shared.zod3IssueParams);
+    if (!parsed.success) throw errors.unprocessable("Invalid document key", shared.toZod3Issues(parsed.error.issues));
   });
   await recordThrown("site pipelines.ts invalid document key", () => {
-    const parsed = shared.issueDocumentKeySchema.safeParse(String(" Bad Key! ").trim().toLowerCase());
-    if (!parsed.success) throw errors.badRequest("Invalid document key", parsed.error.issues);
+    const parsed = shared.issueDocumentKeySchema.safeParse(String(" Bad Key! ").trim().toLowerCase(), shared.zod3IssueParams);
+    if (!parsed.success) throw errors.badRequest("Invalid document key", shared.toZod3Issues(parsed.error.issues));
   });
 
   // routes/issues.ts:3187 unprocessable(message, { code, details: issues })
   const issuesModule = await vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js");
   await recordThrown("site issues.ts invalid attachment artifact metadata", () => {
-    const parsed = issuesModule.attachmentArtifactMetadataInputSchema.safeParse({ attachmentId: "nope" });
+    const parsed = issuesModule.attachmentArtifactMetadataInputSchema.safeParse({ attachmentId: "nope" }, shared.zod3IssueParams);
     if (!parsed.success) {
       throw errors.unprocessable("Invalid attachment artifact metadata", {
         code: "invalid_attachment_artifact_metadata",
-        details: parsed.error.issues,
+        details: shared.toZod3Issues(parsed.error.issues),
       });
     }
   });
 
   // routes/issues.ts:4629/4663 res.status(400).json({ error: issues[0].message })
   await recordThrown("site issues.ts invalid search query (first issue message)", (_req, res) => {
-    const parsedQuery = shared.companySearchQuerySchema.safeParse({ q: "x", limit: "abc" });
+    const parsedQuery = shared.companySearchQuerySchema.safeParse({ q: "x", limit: "abc" }, shared.zod3IssueParams);
     if (!parsedQuery.success) {
-      res.status(400).json({ error: parsedQuery.error.issues[0]?.message ?? "Invalid search query" });
+      res.status(400).json({ error: shared.toZod3Issues(parsedQuery.error.issues)[0]?.message ?? "Invalid search query" });
     }
   });
   await recordThrown("site issues.ts invalid extract search query (first issue message)", (_req, res) => {
-    const parsedQuery = shared.companySearchExtractQuerySchema.safeParse({ q: "", limit: "-1" });
+    const parsedQuery = shared.companySearchExtractQuerySchema.safeParse({ q: "", limit: "-1" }, shared.zod3IssueParams);
     if (!parsedQuery.success) {
-      res.status(400).json({ error: parsedQuery.error.issues[0]?.message ?? "Invalid extract search query" });
+      res.status(400).json({ error: shared.toZod3Issues(parsedQuery.error.issues)[0]?.message ?? "Invalid extract search query" });
     }
   });
 
@@ -498,7 +512,7 @@ beforeAll(async () => {
     ["missing path", {}],
   ] as const) {
     await recordThrown(`site file-resources.ts readQuery ${label}`, () => {
-      const parsed = shared.workspaceFileResourceQuerySchema.safeParse(query);
+      const parsed = shared.workspaceFileResourceQuerySchema.safeParse(query, shared.zod3IssueParams);
       if (parsed.success) return parsed.data;
       const refinement = parsed.error.issues.find((issue) => {
         const code = (issue as { params?: { code?: string } }).params?.code;

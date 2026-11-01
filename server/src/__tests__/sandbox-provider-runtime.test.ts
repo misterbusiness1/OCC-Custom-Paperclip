@@ -116,7 +116,7 @@ describe("sandbox provider runtime", () => {
         config: {
           provider: "secure-plugin",
           template: "template-b",
-          apiKey: "22222222-2222-2222-2222-222222222222",
+          apiKey: "22222222-2222-4222-8222-222222222222",
           timeoutMs: 300000,
           reuseLease: true,
         },
@@ -126,7 +126,7 @@ describe("sandbox provider runtime", () => {
             metadata: {
               provider: "secure-plugin",
               template: "template-a",
-              apiKey: "11111111-1111-1111-1111-111111111111",
+              apiKey: "11111111-1111-4111-8111-111111111111",
               reuseLease: true,
             },
           },
@@ -135,7 +135,7 @@ describe("sandbox provider runtime", () => {
             metadata: {
               provider: "secure-plugin",
               template: "template-b",
-              apiKey: "22222222-2222-2222-2222-222222222222",
+              apiKey: "22222222-2222-4222-8222-222222222222",
               timeoutMs: 300000,
               reuseLease: true,
             },
@@ -196,12 +196,12 @@ describe("sandbox provider runtime", () => {
         template: "paperclip-template",
         timeoutMs: 120000,
         reuseLease: true,
-        apiKey: "11111111-1111-1111-1111-111111111111",
+        apiKey: "11111111-1111-4111-8111-111111111111",
       },
     })).toEqual({
       provider: "secure-plugin",
       template: "paperclip-template",
-      apiKey: "11111111-1111-1111-1111-111111111111",
+      apiKey: "11111111-1111-4111-8111-111111111111",
       timeoutMs: 120000,
       reuseLease: true,
     });

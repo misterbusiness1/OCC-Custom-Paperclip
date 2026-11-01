@@ -88,6 +88,8 @@ import {
   type SourceTrustMetadata,
   type SuccessfulRunHandoffState,
   type WorkspaceRuntimeService,
+  toZod3Issues,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -211,18 +213,18 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
 const refreshExternalObjectsSchema = z.object({
-  objectIds: z.array(z.string().uuid()).max(50).optional(),
+  objectIds: z.array(z.uuid()).max(50).optional(),
 }).strict();
 export const inboxArchiveBodySchema = z.object({
   userId: z.string().trim().min(1).optional(),
 }).strict().default({});
 const externalObjectSummariesSchema = z.object({
-  issueIds: z.array(z.string().uuid()).max(1000),
+  issueIds: z.array(z.uuid()).max(1000),
 }).strict();
 
 const promoteLowTrustOutputSchema = z.object({
   sourceArtifactKind: z.enum(["comment", "document", "work_product", "issue"]),
-  sourceArtifactId: z.string().uuid(),
+  sourceArtifactId: z.uuid(),
   title: z.string().trim().min(1).max(200),
   summary: z.string().trim().min(1).max(8_000),
 });
@@ -399,7 +401,7 @@ function requiresPaperclipAttachmentMetadata(input: {
 }
 
 export const attachmentArtifactMetadataInputSchema = z.object({
-  attachmentId: z.string().uuid(),
+  attachmentId: z.uuid(),
 }).passthrough();
 
 function buildCreateIssueActivityStatusDetails(
@@ -3180,11 +3182,11 @@ export function issueRoutes(
     issue: { id: string; companyId: string };
     metadata: Record<string, unknown> | null | undefined;
   }) {
-    const parsed = attachmentArtifactMetadataInputSchema.safeParse(input.metadata);
+    const parsed = attachmentArtifactMetadataInputSchema.safeParse(input.metadata, zod3IssueParams);
     if (!parsed.success) {
       throw unprocessable("Invalid attachment artifact metadata", {
         code: "invalid_attachment_artifact_metadata",
-        details: parsed.error.issues,
+        details: toZod3Issues(parsed.error.issues),
       });
     }
 
@@ -4623,10 +4625,10 @@ export function issueRoutes(
       res.status(403).json({ error: "Company search is outside this actor's authorization boundary" });
       return;
     }
-    const parsedQuery = companySearchExtractQuerySchema.safeParse(req.query);
+    const parsedQuery = companySearchExtractQuerySchema.safeParse(req.query, zod3IssueParams);
     if (!parsedQuery.success) {
       res.status(400).json({
-        error: parsedQuery.error.issues[0]?.message ?? "Invalid extract search query",
+        error: toZod3Issues(parsedQuery.error.issues)[0]?.message ?? "Invalid extract search query",
       });
       return;
     }
@@ -4657,10 +4659,10 @@ export function issueRoutes(
       res.status(403).json({ error: "Company search is outside this actor's authorization boundary" });
       return;
     }
-    const parsedQuery = companySearchQuerySchema.safeParse(req.query);
+    const parsedQuery = companySearchQuerySchema.safeParse(req.query, zod3IssueParams);
     if (!parsedQuery.success) {
       res.status(400).json({
-        error: parsedQuery.error.issues[0]?.message ?? "Invalid search query",
+        error: toZod3Issues(parsedQuery.error.issues)[0]?.message ?? "Invalid search query",
       });
       return;
     }
@@ -5858,9 +5860,9 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase(), zod3IssueParams);
     if (!keyParsed.success) {
-      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      res.status(400).json({ error: "Invalid document key", details: toZod3Issues(keyParsed.error.issues) });
       return;
     }
     const doc = await documentsSvc.getIssueDocumentByKey(issue.id, keyParsed.data);
@@ -5884,9 +5886,9 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase(), zod3IssueParams);
     if (!keyParsed.success) {
-      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      res.status(400).json({ error: "Invalid document key", details: toZod3Issues(keyParsed.error.issues) });
       return;
     }
     const status = req.query.status === "resolved" || req.query.status === "all" ? req.query.status : "open";
@@ -5905,9 +5907,9 @@ export function issueRoutes(
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
-      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase(), zod3IssueParams);
       if (!keyParsed.success) {
-        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        res.status(400).json({ error: "Invalid document key", details: toZod3Issues(keyParsed.error.issues) });
         return;
       }
 
@@ -5954,9 +5956,9 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase(), zod3IssueParams);
     if (!keyParsed.success) {
-      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      res.status(400).json({ error: "Invalid document key", details: toZod3Issues(keyParsed.error.issues) });
       return;
     }
     const thread = await documentAnnotationsSvc.getThreadForIssueDocument(
@@ -5979,9 +5981,9 @@ export function issueRoutes(
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
-      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase(), zod3IssueParams);
       if (!keyParsed.success) {
-        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        res.status(400).json({ error: "Invalid document key", details: toZod3Issues(keyParsed.error.issues) });
         return;
       }
 
@@ -6034,9 +6036,9 @@ export function issueRoutes(
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
-      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase(), zod3IssueParams);
       if (!keyParsed.success) {
-        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        res.status(400).json({ error: "Invalid document key", details: toZod3Issues(keyParsed.error.issues) });
         return;
       }
       const { actor, annotationActor } = annotationActorInput(req);
@@ -6077,9 +6079,9 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
-    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase(), zod3IssueParams);
     if (!keyParsed.success) {
-      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      res.status(400).json({ error: "Invalid document key", details: toZod3Issues(keyParsed.error.issues) });
       return;
     }
 
@@ -6206,9 +6208,9 @@ export function issueRoutes(
       res.status(403).json({ error: "Board authentication required" });
       return;
     }
-    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase(), zod3IssueParams);
     if (!keyParsed.success) {
-      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      res.status(400).json({ error: "Invalid document key", details: toZod3Issues(keyParsed.error.issues) });
       return;
     }
 
@@ -6251,9 +6253,9 @@ export function issueRoutes(
       res.status(403).json({ error: "Board authentication required" });
       return;
     }
-    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase(), zod3IssueParams);
     if (!keyParsed.success) {
-      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      res.status(400).json({ error: "Invalid document key", details: toZod3Issues(keyParsed.error.issues) });
       return;
     }
 
@@ -6287,9 +6289,9 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase(), zod3IssueParams);
     if (!keyParsed.success) {
-      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      res.status(400).json({ error: "Invalid document key", details: toZod3Issues(keyParsed.error.issues) });
       return;
     }
     const revisions = await documentsSvc.listIssueDocumentRevisions(issue.id, keyParsed.data);
@@ -6306,9 +6308,9 @@ export function issueRoutes(
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
-      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase(), zod3IssueParams);
       if (!keyParsed.success) {
-        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        res.status(400).json({ error: "Invalid document key", details: toZod3Issues(keyParsed.error.issues) });
         return;
       }
 
@@ -6422,9 +6424,9 @@ export function issueRoutes(
       res.status(403).json({ error: "Board authentication required" });
       return;
     }
-    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase(), zod3IssueParams);
     if (!keyParsed.success) {
-      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      res.status(400).json({ error: "Invalid document key", details: toZod3Issues(keyParsed.error.issues) });
       return;
     }
     const referenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -9914,9 +9916,9 @@ export function issueRoutes(
     const targetTypeRaw = typeof req.query.targetType === "string" ? req.query.targetType : undefined;
     const voteRaw = typeof req.query.vote === "string" ? req.query.vote : undefined;
     const statusRaw = typeof req.query.status === "string" ? req.query.status : undefined;
-    const targetType = targetTypeRaw ? feedbackTargetTypeSchema.parse(targetTypeRaw) : undefined;
-    const vote = voteRaw ? feedbackVoteValueSchema.parse(voteRaw) : undefined;
-    const status = statusRaw ? feedbackTraceStatusSchema.parse(statusRaw) : undefined;
+    const targetType = targetTypeRaw ? feedbackTargetTypeSchema.parse(targetTypeRaw, zod3IssueParams) : undefined;
+    const vote = voteRaw ? feedbackVoteValueSchema.parse(voteRaw, zod3IssueParams) : undefined;
+    const status = statusRaw ? feedbackTraceStatusSchema.parse(statusRaw, zod3IssueParams) : undefined;
 
     const traces = await feedback.listFeedbackTraces({
       companyId: issue.companyId,
@@ -10745,9 +10747,9 @@ export function issueRoutes(
       return;
     }
 
-    const parsedMeta = createIssueAttachmentMetadataSchema.safeParse(req.body ?? {});
+    const parsedMeta = createIssueAttachmentMetadataSchema.safeParse(req.body ?? {}, zod3IssueParams);
     if (!parsedMeta.success) {
-      res.status(400).json({ error: "Invalid attachment metadata", details: parsedMeta.error.issues });
+      res.status(400).json({ error: "Invalid attachment metadata", details: toZod3Issues(parsedMeta.error.issues) });
       return;
     }
 

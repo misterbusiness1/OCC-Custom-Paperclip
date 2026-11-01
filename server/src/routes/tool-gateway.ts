@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { and, desc, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, toolApplications, toolConnections, toolInvocations } from "@paperclipai/db";
-import { humanizeConnectionDisplayName, type PermissionKey } from "@paperclipai/shared";
+import { humanizeConnectionDisplayName, type PermissionKey, toZod3Issues, zod3IssueParams } from "@paperclipai/shared";
 import {
   createToolMcpGatewaySchema,
   createToolMcpGatewayTokenSchema,
@@ -293,9 +293,9 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   router.post("/companies/:companyId/tools/gateways", async (req, res) => {
     try {
       await assertBoardPermission(req, req.params.companyId, "tools:admin");
-      const parsed = createToolMcpGatewaySchema.safeParse(req.body ?? {});
+      const parsed = createToolMcpGatewaySchema.safeParse(req.body ?? {}, zod3IssueParams);
       if (!parsed.success) {
-        res.status(422).json({ error: "Invalid gateway payload", issues: parsed.error.issues });
+        res.status(422).json({ error: "Invalid gateway payload", issues: toZod3Issues(parsed.error.issues) });
         return;
       }
       const actor = getActorInfo(req);
@@ -319,9 +319,9 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       await assertBoardPermission(req, companyId, "tools:admin");
-      const parsed = updateToolMcpGatewaySchema.safeParse(req.body ?? {});
+      const parsed = updateToolMcpGatewaySchema.safeParse(req.body ?? {}, zod3IssueParams);
       if (!parsed.success) {
-        res.status(422).json({ error: "Invalid gateway payload", issues: parsed.error.issues });
+        res.status(422).json({ error: "Invalid gateway payload", issues: toZod3Issues(parsed.error.issues) });
         return;
       }
       const { companyId: _companyId, ...body } = parsed.data as typeof parsed.data & { companyId?: string };
@@ -340,9 +340,9 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       await assertBoardPermission(req, companyId, "tools:admin");
-      const parsed = createToolMcpGatewayTokenSchema.safeParse(req.body ?? {});
+      const parsed = createToolMcpGatewayTokenSchema.safeParse(req.body ?? {}, zod3IssueParams);
       if (!parsed.success) {
-        res.status(422).json({ error: "Invalid gateway token payload", issues: parsed.error.issues });
+        res.status(422).json({ error: "Invalid gateway token payload", issues: toZod3Issues(parsed.error.issues) });
         return;
       }
       const actor = getActorInfo(req);

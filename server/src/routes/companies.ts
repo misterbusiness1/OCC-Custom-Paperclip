@@ -16,6 +16,7 @@ import {
   feedbackVoteValueSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -72,9 +73,9 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     from: z.string().optional(),
     to: z.string().optional(),
     userId: z.string().min(1).optional(),
-    goalId: z.string().uuid().optional(),
-    projectId: z.string().uuid().optional(),
-    issueId: z.string().uuid().optional(),
+    goalId: z.uuid().optional(),
+    projectId: z.uuid().optional(),
+    issueId: z.uuid().optional(),
     limit: z.string().optional(),
     offset: z.string().optional(),
   }).passthrough();
@@ -141,7 +142,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   router.get("/:companyId/artifacts", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const query = companyArtifactsQuerySchema.parse(req.query);
+    const query = companyArtifactsQuerySchema.parse(req.query, zod3IssueParams);
     res.json(await artifacts.list(companyId, query));
   });
 
@@ -159,7 +160,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
 
-    const query = timelineQuerySchema.parse(req.query);
+    const query = timelineQuerySchema.parse(req.query, zod3IssueParams);
     const timeline = workTimelineService(db);
     const result = await timeline.getTimeline({
       companyId,
@@ -231,9 +232,9 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       companyId,
       issueId,
       projectId,
-      targetType: targetTypeRaw ? feedbackTargetTypeSchema.parse(targetTypeRaw) : undefined,
-      vote: voteRaw ? feedbackVoteValueSchema.parse(voteRaw) : undefined,
-      status: statusRaw ? feedbackTraceStatusSchema.parse(statusRaw) : undefined,
+      targetType: targetTypeRaw ? feedbackTargetTypeSchema.parse(targetTypeRaw, zod3IssueParams) : undefined,
+      vote: voteRaw ? feedbackVoteValueSchema.parse(voteRaw, zod3IssueParams) : undefined,
+      status: statusRaw ? feedbackTraceStatusSchema.parse(statusRaw, zod3IssueParams) : undefined,
       from: parseDateQuery(req.query.from, "from"),
       to: parseDateQuery(req.query.to, "to"),
       sharedOnly: parseBooleanQuery(req.query.sharedOnly),
@@ -245,14 +246,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   router.post("/:companyId/export", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
-    const body = companyPortabilityExportSchema.parse(req.body);
+    const body = companyPortabilityExportSchema.parse(req.body, zod3IssueParams);
     const result = await portability.exportBundle(companyId, body);
     res.json(result);
   });
 
   router.post("/import/preview", async (req, res) => {
     assertBoard(req);
-    const body = companyPortabilityPreviewSchema.parse(req.body);
+    const body = companyPortabilityPreviewSchema.parse(req.body, zod3IssueParams);
     assertImportTargetAccess(req, body.target);
     const preview = await portability.previewImport(body);
     res.json(preview);
@@ -280,7 +281,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       const job = createImportJob(cloudTenantRequestKey(req));
       importJobs.set(job.id, job);
       const operation = async () => {
-        const importBody = companyPortabilityImportSchema.parse(rawImportBody);
+        const importBody = companyPortabilityImportSchema.parse(rawImportBody, zod3IssueParams);
         assertImportTargetAccess(req, importBody.target);
         const activity = importedCompanyActivityContext(actor, importBody.include ?? null);
         const result = await portability.importBundle(importBody, boardUserId);
@@ -294,7 +295,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
 
-    const importBody = companyPortabilityImportSchema.parse(rawImportBody);
+    const importBody = companyPortabilityImportSchema.parse(rawImportBody, zod3IssueParams);
     assertImportTargetAccess(req, importBody.target);
     const activity = importedCompanyActivityContext(actor, importBody.include ?? null);
     const result = await portability.importBundle(importBody, boardUserId);
@@ -305,7 +306,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   router.post("/:companyId/exports/preview", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
-    const body = companyPortabilityExportSchema.parse(req.body);
+    const body = companyPortabilityExportSchema.parse(req.body, zod3IssueParams);
     const preview = await portability.previewExport(companyId, body);
     res.json(preview);
   });
@@ -313,7 +314,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   router.post("/:companyId/exports", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
-    const body = companyPortabilityExportSchema.parse(req.body);
+    const body = companyPortabilityExportSchema.parse(req.body, zod3IssueParams);
     const result = await portability.exportBundle(companyId, body);
     res.json(result);
   });
@@ -321,7 +322,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   router.post("/:companyId/imports/preview", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company imports");
-    const body = companyPortabilityPreviewSchema.parse(req.body);
+    const body = companyPortabilityPreviewSchema.parse(req.body, zod3IssueParams);
     if (body.target.mode === "existing_company" && body.target.companyId !== companyId) {
       throw forbidden("Safe import route can only target the route company");
     }
@@ -338,7 +339,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   router.post("/:companyId/imports/apply", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company imports");
-    const body = companyPortabilityImportSchema.parse(req.body);
+    const body = companyPortabilityImportSchema.parse(req.body, zod3IssueParams);
     if (body.target.mode === "existing_company" && body.target.companyId !== companyId) {
       throw forbidden("Safe import route can only target the route company");
     }
@@ -420,9 +421,9 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     let body: Record<string, unknown>;
 
     if (req.actor.type === "agent") {
-      body = updateCompanyBrandingSchema.parse(req.body);
+      body = updateCompanyBrandingSchema.parse(req.body, zod3IssueParams);
     } else {
-      body = updateCompanySchema.parse(req.body);
+      body = updateCompanySchema.parse(req.body, zod3IssueParams);
     }
 
     const existingCompany = await svc.getById(companyId);
@@ -492,7 +493,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   router.patch("/:companyId/branding", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company branding");
-    const body = updateCompanyBrandingSchema.parse(req.body);
+    const body = updateCompanyBrandingSchema.parse(req.body, zod3IssueParams);
     const company = await svc.update(companyId, body);
     if (!company) {
       res.status(404).json({ error: "Company not found" });

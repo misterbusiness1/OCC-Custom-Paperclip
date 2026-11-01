@@ -1,7 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { evaluateSkillPolicySchema, replaceSkillPolicySchema } from "@paperclipai/shared";
-import { ZodError, type ZodSchema } from "zod";
+import { evaluateSkillPolicySchema, replaceSkillPolicySchema, toZod3Issues, zod3IssueParams, isZodError } from "@paperclipai/shared";
+import type { z } from "zod";
 import { forbidden, HttpError, unprocessable } from "../errors.js";
 import { accessService } from "../services/access.js";
 import { companySkillPolicyService, type SkillPolicyPrincipal } from "../services/company-skill-policy.js";
@@ -12,16 +12,16 @@ export function companySkillPolicyRoutes(db: Db) {
   const access = accessService(db);
   const policies = companySkillPolicyService(db);
 
-  function validatePolicyBody(schema: ZodSchema) {
+  function validatePolicyBody(schema: z.ZodType) {
     return (req: Request, _res: Response, next: NextFunction) => {
       try {
-        req.body = schema.parse(req.body);
+        req.body = schema.parse(req.body, zod3IssueParams);
         next();
       } catch (error) {
-        if (error instanceof ZodError) {
+        if (isZodError(error)) {
           next(unprocessable("Invalid skill policy document", {
             code: "skill_policy_validation_failed",
-            issues: error.issues,
+            issues: toZod3Issues(error.issues),
           }));
           return;
         }

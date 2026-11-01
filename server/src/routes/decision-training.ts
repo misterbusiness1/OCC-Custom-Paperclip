@@ -4,20 +4,21 @@ import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { decisionTrainingService, logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { flattenZod3Issues, zod3IssueParams } from "@paperclipai/shared";
 
 const sourceKindSchema = z.enum(["interaction", "approval", "execution_decision"]);
-const exampleIdSchema = z.string().uuid();
+const exampleIdSchema = z.uuid();
 export const createSchema = z.object({
   sourceKind: sourceKindSchema,
-  sourceId: z.string().uuid(),
-  issueId: z.string().uuid(),
+  sourceId: z.uuid(),
+  issueId: z.uuid(),
   notes: z.string().max(100_000).default(""),
 }).strict();
 const updateSchema = z.object({ notes: z.string().max(100_000) }).strict();
 const previewSchema = z.object({
   sourceKind: sourceKindSchema,
-  sourceId: z.string().uuid(),
-  issueId: z.string().uuid(),
+  sourceId: z.uuid(),
+  issueId: z.uuid(),
 }).strict();
 
 function requireHumanUser(req: Request, res: Response) {
@@ -33,7 +34,7 @@ function requireHumanUser(req: Request, res: Response) {
 }
 
 function parseExampleId(req: Request, res: Response) {
-  const parsed = exampleIdSchema.safeParse(req.params.id);
+  const parsed = exampleIdSchema.safeParse(req.params.id, zod3IssueParams);
   if (!parsed.success) {
     res.status(404).json({ error: "Decision training example not found" });
     return null;
@@ -116,13 +117,13 @@ export function decisionTrainingRoutes(db: Db) {
     assertBoard(req);
     assertCompanyAccess(req, companyId);
     const parsed = z.object({
-      project: z.string().uuid().optional(),
+      project: z.uuid().optional(),
       kind: sourceKindSchema.optional(),
       author: z.string().optional(),
       q: z.string().trim().max(500).optional(),
-    }).safeParse(req.query);
+    }).safeParse(req.query, zod3IssueParams);
     if (!parsed.success) {
-      res.status(400).json({ error: "Invalid decision training query", details: parsed.error.flatten() });
+      res.status(400).json({ error: "Invalid decision training query", details: flattenZod3Issues(parsed.error.issues) });
       return;
     }
     res.json(await svc.list(companyId, {

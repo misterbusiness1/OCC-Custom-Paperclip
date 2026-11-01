@@ -1,7 +1,6 @@
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { Router } from "express";
-import { ZodError } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   workspaceFileListQuerySchema,
@@ -9,6 +8,8 @@ import {
   type ResolvedWorkspaceResource,
   type WorkspaceFileContent,
   type WorkspaceFileListResponse,
+  zod3IssueParams,
+  isZodError,
 } from "@paperclipai/shared";
 import { HttpError, notFound, unprocessable } from "../errors.js";
 import { workspaceFileResourceService } from "../services/index.js";
@@ -122,10 +123,10 @@ function safeAttachmentFilename(value: string) {
 function readQuery(query: unknown) {
   let parsed;
   try {
-    parsed = workspaceFileResourceQuerySchema.parse(query);
+    parsed = workspaceFileResourceQuerySchema.parse(query, zod3IssueParams);
   } catch (error) {
-    if (error instanceof ZodError) {
-      const refinement = error.errors.find((issue) => {
+    if (isZodError(error)) {
+      const refinement = error.issues.find((issue) => {
         const code = (issue as { params?: { code?: string } }).params?.code;
         return code === "invalid_path" || code === "invalid_target";
       });
@@ -145,10 +146,10 @@ function readQuery(query: unknown) {
 function readListQuery(query: unknown) {
   let parsed;
   try {
-    parsed = workspaceFileListQuerySchema.parse(query);
+    parsed = workspaceFileListQuerySchema.parse(query, zod3IssueParams);
   } catch (error) {
-    if (error instanceof ZodError) {
-      const refinement = error.errors.find((issue) => {
+    if (isZodError(error)) {
+      const refinement = error.issues.find((issue) => {
         const code = (issue as { params?: { code?: string } }).params?.code;
         return code === "invalid_query" || code === "invalid_target" || code === "invalid_path";
       });
