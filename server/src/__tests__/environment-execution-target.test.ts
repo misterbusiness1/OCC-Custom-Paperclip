@@ -221,4 +221,78 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
     expect(target).not.toHaveProperty("paperclipApiUrl");
   });
+
+  // Every adapter the shared capability list advertises for ssh/sandbox must get
+  // a remote target. A null target makes the run fall back to the host.
+  it.each([
+    "claude_local",
+    "codex_local",
+    "cursor",
+    "gemini_local",
+    "grok_local",
+    "opencode_local",
+    "pi_local",
+  ])("returns a remote sandbox target for remote-managed adapter %s", async (adapterType) => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: { provider: "fake-plugin", reuseLease: false, timeoutMs: 30_000 },
+    });
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType,
+      environment: { id: "env-1", driver: "sandbox", config: { provider: "fake-plugin" } },
+      leaseId: "lease-1",
+      leaseMetadata: {},
+      lease: null,
+      environmentRuntime: null,
+    });
+
+    expect(target).toMatchObject({ kind: "remote", transport: "sandbox" });
+  });
+
+  it("returns a remote ssh target for grok_local", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "ssh",
+      config: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "paperclip",
+        remoteWorkspacePath: "/srv/paperclip",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "[ssh.example.test]:22 ssh-ed25519 AAAA",
+        strictHostKeyChecking: true,
+      },
+    });
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "grok_local",
+      environment: { id: "env-ssh-1", driver: "ssh", config: {} },
+      leaseId: "lease-ssh-1",
+      leaseMetadata: {},
+      lease: null,
+      environmentRuntime: null,
+    });
+
+    expect(target).toMatchObject({ kind: "remote", transport: "ssh", remoteCwd: "/srv/paperclip" });
+  });
+
+  it("returns no remote target for adapters that are not remote-managed", async () => {
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "process",
+      environment: { id: "env-1", driver: "sandbox", config: { provider: "fake-plugin" } },
+      leaseId: "lease-1",
+      leaseMetadata: {},
+      lease: null,
+      environmentRuntime: null,
+    });
+
+    expect(target).toBeNull();
+    expect(mockResolveEnvironmentDriverConfigForRuntime).not.toHaveBeenCalled();
+  });
 });
