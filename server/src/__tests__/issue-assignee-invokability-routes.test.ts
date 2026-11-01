@@ -380,7 +380,8 @@ describe("agent delegation cycle guard", () => {
         assigneeAgentId: AGENT_ACTOR_ID,
       });
 
-    expect(res.body?.details?.code).not.toBe("delegation_cycle");
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalled();
     expect(mockIssueService.findOpenAncestorCreatedByAgent).not.toHaveBeenCalled();
   });
 
