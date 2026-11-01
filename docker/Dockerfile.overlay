@@ -28,11 +28,11 @@ browsers="${PLAYWRIGHT_BROWSERS_PATH:-}"
 case "${browsers%/}/" in
   /paperclip/*) fail "PLAYWRIGHT_BROWSERS_PATH=$browsers is under the /paperclip volume mount" ;;
 esac
-home="${HOME:-}"
-home="${home%/}"
-if [ -n "$home" ]; then
+overlay_home="${HOME:-}"
+overlay_home="${overlay_home%/}"
+if [ -n "$overlay_home" ]; then
   case "${browsers%/}/" in
-    "$home"/*) fail "PLAYWRIGHT_BROWSERS_PATH=$browsers is under HOME=$HOME" ;;
+    "$overlay_home"/*) fail "PLAYWRIGHT_BROWSERS_PATH=$browsers is under HOME=$HOME" ;;
   esac
 fi
 [ -d "$browsers" ] || fail "PLAYWRIGHT_BROWSERS_PATH=$browsers does not exist in the base image"
