@@ -116,7 +116,7 @@ const manifest: PaperclipPluginManifestV1 = {
                 enabled: {
                   type: "boolean",
                   default: true,
-                  description: "Set false to refuse runs of this adapter in this environment.",
+                  description: "Set false to hide this adapter from the agent picker (same meaning as the server registry). Existing agents of it keep running.",
                 },
                 runtimeImage: {
                   type: "string",

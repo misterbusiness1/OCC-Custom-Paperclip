@@ -96,7 +96,7 @@ function fromRegistryEntry(entry: AdapterRegistryEntry, type: string): AdapterDe
   };
 }
 
-/** Error for a canonical type with more than one enabled registry entry. */
+/** Error for a canonical type whose registry entries are ambiguous. */
 function duplicateEntriesError(type: string, entries: readonly AdapterRegistryEntry[]): string {
   // e.g. both "cursor" and the legacy "cursor_local": refuse to pick one silently.
   return `Adapter "${type}" has ${entries.length} entries in the configured adapter registry (${entries
@@ -105,11 +105,24 @@ function duplicateEntriesError(type: string, entries: readonly AdapterRegistryEn
 }
 
 /**
+ * The entries that a lease for one canonical adapter type resolves against:
+ * the enabled ones if any exist, otherwise the disabled ones (a disabled
+ * adapter is hidden from the picker but must keep working for existing agents).
+ */
+function selectRegistryEntries(matching: readonly AdapterRegistryEntry[]): readonly AdapterRegistryEntry[] {
+  const enabled = matching.filter((e) => e.enabled !== false);
+  return enabled.length > 0 ? enabled : matching;
+}
+
+/**
  * Resolve the runtime defaults for an adapter. When a `registry` is supplied it
- * is authoritative (replace semantics): the type MUST have exactly one enabled
+ * is authoritative (replace semantics): the type MUST resolve to exactly one
  * entry (counting aliases) and that entry must be complete, else this throws.
- * Entries with `enabled: false` are ignored, so a disabled-only adapter is
- * refused. With no registry, falls back to the built-in REGISTRY;
+ * `enabled` follows the server's meaning (reconcileAdapterAvailability): it only
+ * hides an adapter from the picker, and disabled adapters stay functional for
+ * existing agents. So enabled entries win, and when a type has only disabled
+ * entries the disabled entry still resolves. With no registry, falls back to
+ * the built-in REGISTRY;
  * registry-only types (e.g. "cursor") throw an actionable error there. Legacy
  * aliases are normalised on both sides of the registry lookup.
  */
@@ -121,11 +134,8 @@ export function getAdapterDefaults(
   const registryOnlyHint = REGISTRY_ONLY_ADAPTER_TYPES.get(type);
   if (registry && registry.length > 0) {
     const matching = registry.filter((e) => normalizeAdapterType(e.adapterType) === type);
-    const entries = matching.filter((e) => e.enabled !== false);
+    const entries = selectRegistryEntries(matching);
     if (entries.length === 0) {
-      if (matching.length > 0) {
-        throw new Error(`Adapter "${type}" is disabled in the configured adapter registry`);
-      }
       const base = `Adapter "${type}" is not in the configured adapter registry`;
       throw new Error(registryOnlyHint ? `${base}. ${registryOnlyHint}` : base);
     }
@@ -150,9 +160,11 @@ export function getAdapterDefaults(
  * Save-time check of a whole `adapters` registry. Lease time only resolves the
  * run's adapter, so without this a broken entry for any adapter other than the
  * environment default would only surface when a run of it is dispatched.
- * - errors: an adapter type (aliases included) with more than one enabled
- *   entry; every run of that adapter would be refused.
- * - warnings: an enabled entry without `runtimeImage`; runs of that adapter in
+ * - errors: an adapter type (aliases included) whose entries are ambiguous
+ *   under the lease-time rule (more than one enabled entry, or no enabled entry
+ *   and more than one disabled entry); every run of that adapter would be
+ *   refused.
+ * - warnings: the resolving entry has no `runtimeImage`; runs of that adapter in
  *   this environment will be refused. Not an error because the registry is
  *   shared with picker availability and may list adapters that never run on
  *   Kubernetes. (The environment default is checked strictly by
@@ -166,11 +178,11 @@ export function checkAdapterRegistry(registry: readonly AdapterRegistryEntry[] |
   const warnings: string[] = [];
   const byType = new Map<string, AdapterRegistryEntry[]>();
   for (const entry of registry ?? []) {
-    if (entry.enabled === false) continue;
     const type = normalizeAdapterType(entry.adapterType);
     byType.set(type, [...(byType.get(type) ?? []), entry]);
   }
-  for (const [type, entries] of byType) {
+  for (const [type, matching] of byType) {
+    const entries = selectRegistryEntries(matching);
     if (entries.length > 1) {
       errors.push(duplicateEntriesError(type, entries));
     } else if (!entries[0].runtimeImage) {

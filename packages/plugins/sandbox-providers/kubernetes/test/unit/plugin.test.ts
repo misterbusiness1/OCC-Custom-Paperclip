@@ -186,7 +186,7 @@ describe("plugin", () => {
     ]);
   });
 
-  it("validateConfig rejects an environment whose default adapter entry is disabled", async () => {
+  it("validateConfig accepts an environment whose default adapter entry is disabled (picker-only flag)", async () => {
     const result = await plugin.definition.onEnvironmentValidateConfig!({
       driverKey: "kubernetes",
       config: {
@@ -197,8 +197,7 @@ describe("plugin", () => {
         ],
       },
     });
-    expect(result.ok).toBe(false);
-    expect(result.errors).toEqual(['Adapter "cursor" is disabled in the configured adapter registry']);
+    expect(result.ok).toBe(true);
   });
 
   it("validateConfig does NOT warn when egressMode is cilium", async () => {

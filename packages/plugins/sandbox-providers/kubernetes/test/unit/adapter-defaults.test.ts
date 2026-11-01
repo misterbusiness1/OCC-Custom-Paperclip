@@ -186,16 +186,28 @@ describe("getAdapterDefaults (cursor via the adapters registry)", () => {
     );
   });
 
-  it("refuses an adapter whose only registry entry has enabled: false", () => {
+  it("still resolves an adapter whose only registry entry has enabled: false", () => {
+    // enabled:false hides an adapter from the picker (server
+    // reconcileAdapterAvailability); existing agents of that adapter keep running.
     const registry: AdapterRegistryEntry[] = [
       { adapterType: "claude_local", enabled: true, runtimeImage: "img" },
       { ...cursorEntry, enabled: false },
+      { adapterType: "codex_local", enabled: false, runtimeImage: "img/codex:v1" },
     ];
     for (const type of ["cursor", "cursor_local"]) {
-      expect(() => getAdapterDefaults(type, registry)).toThrow(
-        'Adapter "cursor" is disabled in the configured adapter registry',
-      );
+      expect(getAdapterDefaults(type, registry).runtimeImage).toBe("registry.example/cursor:v1");
     }
+    expect(getAdapterDefaults("codex_local", registry).runtimeImage).toBe("img/codex:v1");
+  });
+
+  it("refuses an adapter with more than one disabled entry and no enabled one", () => {
+    const registry: AdapterRegistryEntry[] = [
+      { adapterType: "codex_local", enabled: false, runtimeImage: "a" },
+      { adapterType: "codex_local", enabled: false, runtimeImage: "b" },
+    ];
+    expect(() => getAdapterDefaults("codex_local", registry)).toThrow(
+      'Adapter "codex_local" has 2 entries in the configured adapter registry ("codex_local", "codex_local"); keep exactly one',
+    );
   });
 
   it("ignores a disabled entry when counting duplicates", () => {
@@ -238,15 +250,21 @@ describe("checkAdapterRegistry", () => {
     });
   });
 
-  it("warns about an enabled entry without runtimeImage and skips disabled entries", () => {
+  it("warns about an entry without runtimeImage and applies the lease-time rule to disabled entries", () => {
     const registry: AdapterRegistryEntry[] = [
       { adapterType: "claude_local", runtimeImage: "img" },
       { adapterType: "cursor_local", envKeys: ["CURSOR_API_KEY"] },
-      { adapterType: "codex_local", enabled: false },
-      { adapterType: "codex_local", enabled: false },
+      // A disabled entry next to an enabled one is not ambiguous: the enabled one wins.
+      { adapterType: "gemini_local", runtimeImage: "img/gemini:v2" },
+      { adapterType: "gemini_local", enabled: false, runtimeImage: "img/gemini:v1" },
+      // Two disabled entries and no enabled one are ambiguous for existing agents.
+      { adapterType: "codex_local", enabled: false, runtimeImage: "a" },
+      { adapterType: "codex_local", enabled: false, runtimeImage: "b" },
     ];
     expect(checkAdapterRegistry(registry)).toEqual({
-      errors: [],
+      errors: [
+        'Adapter "codex_local" has 2 entries in the configured adapter registry ("codex_local", "codex_local"); keep exactly one',
+      ],
       warnings: [
         'Adapter "cursor" has no runtimeImage in the configured adapter registry; runs of it in this environment will be refused',
       ],
