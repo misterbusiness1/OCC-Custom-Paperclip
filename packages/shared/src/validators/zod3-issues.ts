@@ -524,12 +524,6 @@ function isLengthOrSizeIssue(issue: AnyIssue) {
   return (issue.code === "too_small" || issue.code === "too_big") && LENGTH_OR_SIZE_ORIGINS.has(String(issue.origin ?? ""));
 }
 
-function samePath(a: readonly PropertyKey[] | undefined, b: readonly PropertyKey[] | undefined) {
-  const left = a ?? [];
-  const right = b ?? [];
-  return left.length === right.length && left.every((segment, index) => segment === right[index]);
-}
-
 function extendsPath(prefix: readonly PropertyKey[] | undefined, path: readonly PropertyKey[] | undefined) {
   const head = prefix ?? [];
   const full = path ?? [];
@@ -549,21 +543,57 @@ function extendsPath(prefix: readonly PropertyKey[] | undefined, path: readonly 
  *   before it.
  */
 function inZod3Order(issues: readonly AnyIssue[]): AnyIssue[] {
-  const kept = issues.filter(
-    (issue, index) =>
-      !isLengthOrSizeIssue(issue)
-      || !issues.slice(0, index).some((earlier) => earlier.code === "invalid_type" && samePath(earlier.path, issue.path)),
-  );
-  for (let index = 0; index < kept.length; index += 1) {
-    const issue = kept[index]!;
-    if (!isLengthOrSizeIssue(issue) || issue.origin !== "array") continue;
-    let target = index;
-    while (target > 0 && extendsPath(issue.path, kept[target - 1]!.path)) target -= 1;
-    if (target === index) continue;
-    kept.splice(index, 1);
-    kept.splice(target, 0, issue);
+  // Index earlier type errors by their exact path instead of rescanning a
+  // growing prefix for every size error (quadratic for large invalid arrays).
+  type TypeErrorPath = { children: Map<PropertyKey, TypeErrorPath>; invalid: boolean };
+  const typeErrors: TypeErrorPath = { children: new Map(), invalid: false };
+  // Moving a bound before its contiguous descendant block must not splice a
+  // growing array either. A linked list makes each block insertion constant
+  // time once its start has been found. Nested bounds visit their descendants
+  // only along schema ancestry, rather than shifting all unrelated siblings.
+  type Node = { issue: AnyIssue; previous?: Node; next?: Node };
+  let head: Node | undefined;
+  let tail: Node | undefined;
+  for (const issue of issues) {
+    const size = isLengthOrSizeIssue(issue);
+    if (size || issue.code === "invalid_type") {
+      let entry = typeErrors;
+      for (const segment of issue.path ?? []) {
+        let child = entry.children.get(segment);
+        if (!child) {
+          child = { children: new Map(), invalid: false };
+          entry.children.set(segment, child);
+        }
+        entry = child;
+      }
+      if (size && entry.invalid) continue;
+      if (issue.code === "invalid_type") entry.invalid = true;
+    }
+    const node: Node = { issue };
+    let following: Node | undefined;
+    if (size && issue.origin === "array") {
+      let candidate = tail;
+      while (candidate && extendsPath(issue.path, candidate.issue.path)) {
+        following = candidate;
+        candidate = candidate.previous;
+      }
+    }
+    if (following) {
+      node.previous = following.previous;
+      node.next = following;
+      if (following.previous) following.previous.next = node;
+      else head = node;
+      following.previous = node;
+    } else {
+      node.previous = tail;
+      if (tail) tail.next = node;
+      else head = node;
+      tail = node;
+    }
   }
-  return kept;
+  const ordered: AnyIssue[] = [];
+  for (let node = head; node; node = node.next) ordered.push(node.issue);
+  return ordered;
 }
 
 /**

@@ -321,6 +321,47 @@ describe("toZod3Issues + zod3IssueParams (zod 3.25.76 probes)", async () => {
   }
 });
 
+describe("issue ordering on large invalid collections", () => {
+  it("does not rescan every preceding issue for each invalid skill selection", () => {
+    // The skills/sync endpoint accepts an unbounded array. Even a small JSON
+    // request can therefore produce thousands of minimum-length failures.
+    const result = z.array(z.string().min(1)).safeParse(Array(2_000).fill(""), zod3IssueParams);
+    expect(result.success).toBe(false);
+    const issues = result.error!.issues;
+    let codeReads = 0;
+    const observed = issues.map((issue) => new Proxy(issue, {
+      get(target, key, receiver) {
+        if (key === "code") codeReads += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    }));
+    const converted = toZod3Issues(observed);
+    expect(converted).toHaveLength(issues.length);
+    expect(converted[0]!.path).toEqual([0]);
+    expect(converted.at(-1)!.path).toEqual([issues.length - 1]);
+    // Count work, not elapsed time: a prefix scan reads O(n²) codes even
+    // though every failure is at a different path and none is a type error.
+    expect(codeReads).toBeLessThan(issues.length * 20);
+  });
+
+  it("moves nested array bounds ahead of elements while preserving sibling and bound order", () => {
+    const nested = z.object({
+      before: z.string(),
+      groups: z.array(z.array(z.string().min(1)).min(2)).min(3),
+      after: z.string(),
+    }).safeParse({ before: 1, groups: [[""], [""]], after: 2 }, zod3IssueParams);
+    expect(toZod3Issues(nested.error!.issues).map((issue) => [issue.code, issue.path])).toEqual([
+      ["invalid_type", ["before"]],
+      ["too_small", ["groups"]],
+      ["too_small", ["groups", 0]],
+      ["too_small", ["groups", 0, 0]],
+      ["too_small", ["groups", 1]],
+      ["too_small", ["groups", 1, 0]],
+      ["invalid_type", ["after"]],
+    ]);
+  });
+});
+
 describe("zod3 issue record", () => {
   it("reaches the final zod 4 issue (fails if a zod upgrade stops copying raw issue keys)", () => {
     const result = z.string().safeParse(5, zod3IssueParams);
