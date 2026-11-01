@@ -284,6 +284,8 @@ function spawnVitest(args, label) {
     PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
   };
+  // Vitest applies this environment override after its CLI worker options.
+  if (args.includes("--no-file-parallelism")) env.VITEST_MAX_WORKERS = "1";
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
   const result = spawnSync("pnpm", ["exec", "vitest", "run", ...args], {
