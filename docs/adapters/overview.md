@@ -20,9 +20,11 @@ When a heartbeat fires, Paperclip:
 |---------|----------|-------------|
 | [Claude Code](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally, with a native ACP engine when available |
 | [Codex](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally, with a native ACP engine when available |
-| [Gemini CLI](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally (experimental — adapter package exists, not yet in stable type enum) |
+| [Gemini CLI](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally |
 | OpenCode | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
 | Cursor | `cursor` | Runs Cursor in background mode |
+| Cursor Cloud | `cursor_cloud` | Runs Cursor Cloud Agents through the official Cursor SDK, with durable remote sessions |
+| Grok Build | `grok_local` | Runs the Grok Build CLI locally, with resumable sessions |
 | Pi | `pi_local` | Runs an embedded Pi agent locally |
 | Hermes | `hermes_local` | Runs the local Hermes CLI through `@paperclipai/hermes-paperclip-adapter` |
 | Hermes Gateway | `hermes_gateway` | Calls an already-running Hermes API server through `@paperclipai/hermes-paperclip-adapter/gateway` |

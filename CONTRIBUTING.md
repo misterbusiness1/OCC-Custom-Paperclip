@@ -193,7 +193,9 @@ Happy hacking!
 
 ### Before starting a perf PR
 
-1. Sync local DB to current master schema: `pnpm db:reset && pnpm db:migrate`.
+1. Sync local DB to current master schema: `pnpm db:migrate`. To start from an
+   empty dev database, first delete the embedded data directory
+   (`~/.paperclip/instances/default/db/`, see `doc/DATABASE.md`).
 2. If you touch raw SQL (`db.execute(sql\`...\`)`), verify every column
    referenced exists in master's schema. Local A/B against your own DB
    proves only "matches my DB" — not "exists upstream."
