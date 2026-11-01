@@ -54,7 +54,7 @@ import type { AgentToolDescriptor, PluginToolDispatcher } from "./plugin-tool-di
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
-import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
+import { assertPublicRemoteHttpEndpoint, fetchRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
@@ -3035,7 +3035,7 @@ export function createToolGatewayService(
     const timer = setTimeout(() => controller.abort(), ms);
     timer.unref?.();
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetchRemoteHttpEndpoint(new URL(endpoint), {
         method: "POST",
         redirect: "manual",
         // MCP Streamable HTTP requires the Accept header advertising both a JSON
@@ -3051,7 +3051,8 @@ export function createToolGatewayService(
             arguments: parameters ?? {},
           },
         }),
-      });
+      }, { allowPrivateNetwork: allowPrivateRemoteEndpoints() },
+      (message, code) => new ToolGatewayHttpError(422, message, code));
       const body = await readBoundedRemoteResponse(response);
       execution.response = {
         httpStatus: response.status,

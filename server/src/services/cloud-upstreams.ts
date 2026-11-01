@@ -33,6 +33,7 @@ import { companyPortabilityService } from "./company-portability.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import {
   assertPublicRemoteHttpEndpoint,
+  fetchRemoteHttpEndpoint,
   type RemoteHttpEndpointGuardOptions,
   type RemoteHttpEndpointLookup,
 } from "./remote-http-endpoint-guard.js";
@@ -251,7 +252,7 @@ export function cloudUpstreamService(db: Db, options: CloudUpstreamServiceOption
         code: input.code,
         redirectUri: pending.pendingRedirectUri,
         codeVerifier: await unsealCloudUpstreamCredential(pending.pendingCodeVerifier),
-      });
+      }, endpointGuard);
       const accessToken = stringField(tokenResponse, "accessToken");
       const token = objectField(tokenResponse, "token");
       const expiresAt = optionalString(token.expiresAt) ?? optionalString(tokenResponse.expiresAt);
@@ -752,8 +753,9 @@ async function fetchDiscovery(remoteUrl: string, guard: CloudUpstreamEndpointGua
   if (stackId) {
     discoveryUrl.searchParams.set("stackId", stackId);
   }
-  const response = await fetchWithTimeout(discoveryUrl, undefined, DISCOVERY_FETCH_TIMEOUT_MS);
+  const response = await fetchWithTimeout(discoveryUrl, undefined, DISCOVERY_FETCH_TIMEOUT_MS, guard);
   if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
     throw badRequest(`Cloud upstream discovery failed: ${response.status}`);
   }
   return await response.json() as Record<string, unknown>;
@@ -1075,7 +1077,7 @@ async function remoteGet(connection: ConnectionRow, path: string, guard: CloudUp
   const response = await fetchWithTimeout(await remoteTargetUrl(connection, path, guard), {
     method: "GET",
     headers: await proofHeaders(connection, "GET", path),
-  }, REMOTE_FETCH_TIMEOUT_MS);
+  }, REMOTE_FETCH_TIMEOUT_MS, guard);
   return parseRemoteResponse(response);
 }
 
@@ -1092,7 +1094,7 @@ async function remotePost(
       ...await proofHeaders(connection, "POST", path),
     },
     body: JSON.stringify(body),
-  }, REMOTE_FETCH_TIMEOUT_MS);
+  }, REMOTE_FETCH_TIMEOUT_MS, guard);
   return parseRemoteResponse(response);
 }
 
@@ -1138,8 +1140,9 @@ async function parseRemoteResponse(response: Response): Promise<unknown> {
   return parsed;
 }
 
-async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit | undefined, timeoutMs: number): Promise<Response> {
-  return fetch(input, {
+async function fetchWithTimeout(input: string | URL, init: RequestInit | undefined, timeoutMs: number, guard: CloudUpstreamEndpointGuard): Promise<Response> {
+  const endpoint = new URL(input);
+  return fetchRemoteHttpEndpoint(endpoint, {
     ...init,
     // Never follow redirects. Every target URL is validated before the request,
     // and a redirect could carry the PKCE verifier, the bearer token or the
@@ -1147,7 +1150,8 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit | un
     // would also re-send the request body.
     redirect: "error",
     signal: AbortSignal.timeout(timeoutMs),
-  });
+  }, { ...guard, allowPrivateNetwork: isLocalDevelopmentHost(endpoint) },
+  (message, code) => badRequest(message, { code }));
 }
 
 export async function sealCloudUpstreamCredential(value: string): Promise<string> {
@@ -1195,12 +1199,12 @@ function remoteErrorBody(details: unknown): { error?: string; message?: string }
   };
 }
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
+async function postJson<T>(url: string, body: unknown, guard: CloudUpstreamEndpointGuard): Promise<T> {
   const response = await fetchWithTimeout(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  }, DISCOVERY_FETCH_TIMEOUT_MS);
+  }, DISCOVERY_FETCH_TIMEOUT_MS, guard);
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     throw badRequest((payload as { error?: string } | null)?.error ?? `Cloud upstream request failed: ${response.status}`);

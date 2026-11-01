@@ -1114,6 +1114,7 @@ describeEmbeddedPostgres("tool access service", () => {
   });
 
   it("does not follow catalog refresh redirects to private hosts with credential headers", async () => {
+    const cancelBody = vi.fn();
     const company = await createCompany(db);
     const service = toolAccessService(db, { deploymentMode: "authenticated", deploymentExposure: "public" });
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
@@ -1125,6 +1126,7 @@ describeEmbeddedPostgres("tool access service", () => {
         return {
           ok: false,
           status: 307,
+          body: new ReadableStream({ cancel: cancelBody }),
           headers: new Headers({ location: "http://169.254.169.254/mcp" }),
           text: async () => "",
           json: async () => ({}),
@@ -1143,6 +1145,7 @@ describeEmbeddedPostgres("tool access service", () => {
       credentialValues: { "headers.X-API-Key": "raw-api-key" },
     }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({ status: 502 });
 
+    expect(cancelBody).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(
       "https://8.8.8.8/mcp",
@@ -4303,6 +4306,8 @@ describeEmbeddedPostgres("tool access service", () => {
   });
 
   it("rejects OAuth metadata redirects to private endpoints", async () => {
+    const cancelCatalog = vi.fn();
+    const cancelRedirect = vi.fn();
     const company = await createCompany(db);
     const app = createRouteApp(db, undefined, undefined, {
       deploymentMode: "authenticated",
@@ -4314,6 +4319,7 @@ describeEmbeddedPostgres("tool access service", () => {
         return {
           ok: false,
           status: 401,
+          body: new ReadableStream({ cancel: cancelCatalog }),
           headers: { get: (name: string) => name.toLowerCase() === "www-authenticate"
             ? 'Bearer resource_metadata="https://8.8.8.8/.well-known/oauth-protected-resource"'
             : null },
@@ -4326,6 +4332,7 @@ describeEmbeddedPostgres("tool access service", () => {
         return {
           ok: false,
           status: 302,
+          body: new ReadableStream({ cancel: cancelRedirect }),
           headers: { get: (name: string) => name.toLowerCase() === "location" ? "http://169.254.169.254/oauth" : null },
           json: async () => ({}),
         } as Response;
@@ -4338,6 +4345,11 @@ describeEmbeddedPostgres("tool access service", () => {
       .send({ link: "https://8.8.8.8/mcp", name: "Redirect OAuth MCP" });
 
     expect(res.status).toBe(502);
+    expect(cancelCatalog).toHaveBeenCalledTimes(1);
+    const redirectResponses = fetchMock.mock.calls.filter(([url]) =>
+      String(url) === "https://8.8.8.8/.well-known/oauth-protected-resource").length;
+    expect(redirectResponses).toBeGreaterThan(0);
+    expect(cancelRedirect).toHaveBeenCalledTimes(redirectResponses);
     expect(fetchMock).toHaveBeenCalledWith(
       "https://8.8.8.8/.well-known/oauth-protected-resource",
       expect.objectContaining({ redirect: "manual" }),

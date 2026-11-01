@@ -111,7 +111,7 @@ import { CLASS3_STATIC_LEASE_ALLOWLIST, credentialConfigPath, getAvailableConnec
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
-import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
+import { assertPublicRemoteHttpEndpoint, fetchRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
@@ -1308,11 +1308,19 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const method = (init.method ?? "GET").toUpperCase();
     for (let redirectCount = 0; redirectCount <= MAX_REMOTE_HTTP_REDIRECTS; redirectCount += 1) {
       const safeUrl = await assertRemoteHttpUrlAllowed(currentUrl);
-      const response = await fetch(safeUrl, { ...init, redirect: "manual" });
+      const response = await fetchRemoteHttpEndpoint(
+        new URL(safeUrl),
+        { ...init, redirect: "manual" },
+        { allowPrivateNetwork: allowPrivateRemoteEndpoints() },
+        (message, code) => badRequest(message, { code }),
+      );
       const location = REMOTE_HTTP_REDIRECT_STATUSES.has(response.status)
         ? response.headers?.get?.("location") ?? null
         : null;
       if (!location) return response;
+      // This response will never be consumed. Release its dispatcher/socket
+      // before rejecting or fetching the next hop, even for streaming 3xxs.
+      await response.body?.cancel().catch(() => undefined);
       if (method !== "GET" && method !== "HEAD") {
         throw new HttpError(502, "Remote OAuth endpoint redirected unexpectedly", { code: "oauth_redirect_rejected" });
       }
@@ -2795,7 +2803,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function remoteTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
     const headers = await resolveCredentialHeaders(connection);
     const endpoint = await assertRemoteEndpointAllowed(connection.config);
-    const response = await fetch(endpoint, {
+    const response = await fetchRemoteHttpEndpoint(new URL(endpoint), {
       method: "POST",
       // Only the configured endpoint is validated, and the request carries the
       // connection's credential headers, so a redirect (e.g. to an internal
@@ -2811,8 +2819,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         method: "tools/list",
         params: {},
       }),
-    });
+    }, { allowPrivateNetwork: allowPrivateRemoteEndpoints() }, (message, code) => badRequest(message, { code }));
     if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
       const authenticate = response.headers.get("www-authenticate") ?? "";
       if (response.status === 401 && /bearer|oauth|authorization/i.test(authenticate)) {
         const endpoints = await discoverOAuthEndpoints(connection, authenticate);
@@ -3808,7 +3817,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function fetchJsonRecord(url: string): Promise<Record<string, unknown> | null> {
     try {
       const response = await fetchRemoteHttpUrl(url);
-      if (!response.ok) return null;
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        return null;
+      }
       return asRecord(await response.json() as unknown) ?? null;
     } catch {
       return null;
@@ -3919,7 +3931,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const metadataUrl = method.defaults?.metadataUrl ?? null;
     if ((!authorizationUrl || !tokenUrl) && metadataUrl) {
       const response = await fetchRemoteHttpUrl(metadataUrl);
-      if (!response.ok) throw new HttpError(502, "OAuth provider metadata could not be loaded", { code: "oauth_metadata_failed" });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new HttpError(502, "OAuth provider metadata could not be loaded", { code: "oauth_metadata_failed" });
+      }
       const metadata = asRecord(await response.json() as unknown);
       authorizationUrl = authorizationUrl ?? (typeof metadata.authorization_endpoint === "string" ? metadata.authorization_endpoint : null);
       tokenUrl = tokenUrl ?? (typeof metadata.token_endpoint === "string" ? metadata.token_endpoint : null);
