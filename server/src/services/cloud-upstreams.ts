@@ -31,6 +31,11 @@ import {
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { companyPortabilityService } from "./company-portability.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
+import {
+  assertPublicRemoteHttpEndpoint,
+  type RemoteHttpEndpointGuardOptions,
+  type RemoteHttpEndpointLookup,
+} from "./remote-http-endpoint-guard.js";
 
 const DEFAULT_SCOPES = ["upstream_import:preview", "upstream_import:write", "upstream_import:read"];
 const TRANSFER_SCHEMA = {
@@ -119,10 +124,18 @@ type LocalUpstreamExportBundle = {
 
 type ConnectionRow = typeof cloudUpstreamConnections.$inferSelect;
 type RunRow = typeof cloudUpstreamRuns.$inferSelect;
+type CloudUpstreamEndpointGuard = Pick<RemoteHttpEndpointGuardOptions, "lookup" | "dnsTimeoutMs">;
 
-export function cloudUpstreamService(db: Db, options: { instanceId?: string } = {}) {
+export type CloudUpstreamServiceOptions = {
+  instanceId?: string;
+  /** DNS lookup used to check that remote endpoints resolve to public addresses (tests inject one). */
+  endpointLookup?: RemoteHttpEndpointLookup;
+};
+
+export function cloudUpstreamService(db: Db, options: CloudUpstreamServiceOptions = {}) {
   const sourceInstanceId = `paperclip-local-${options.instanceId ?? "default"}`;
   const portability = companyPortabilityService(db);
+  const endpointGuard: CloudUpstreamEndpointGuard = { lookup: options.endpointLookup };
 
   return {
     list: async (companyId: string): Promise<CloudUpstreamsState> => {
@@ -154,8 +167,14 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       const remoteUrl = input.remoteUrl.trim();
       if (!remoteUrl) throw badRequest("Remote URL is required");
 
-      const discovery = await fetchDiscovery(remoteUrl);
-      const target = targetFromDiscovery(discovery);
+      const discovery = await fetchDiscovery(remoteUrl, endpointGuard);
+      const discoveredTarget = targetFromDiscovery(discovery);
+      const target = {
+        ...discoveredTarget,
+        origin: await assertTargetOrigin(discoveredTarget.origin, remoteUrl, endpointGuard),
+      };
+      const pendingTokenUrl = await assertDiscoveryUrl(tokenUrlFromDiscovery(discovery), remoteUrl, "tokenUrl", endpointGuard);
+      const consentUrl = await assertDiscoveryUrl(consentUrlFromDiscovery(discovery), remoteUrl, "consentUrl", endpointGuard);
       const connectionId = crypto.randomUUID();
       const state = crypto.randomBytes(24).toString("base64url");
       const codeVerifier = crypto.randomBytes(32).toString("base64url");
@@ -189,11 +208,11 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
         pendingState: state,
         pendingCodeVerifier: await sealCloudUpstreamCredential(codeVerifier),
         pendingRedirectUri: input.redirectUri,
-        pendingTokenUrl: tokenUrlFromDiscovery(discovery),
+        pendingTokenUrl,
       }).returning();
       if (!row) throw badRequest("Failed to create cloud upstream connection");
 
-      const authorizationUrl = new URL(consentUrlFromDiscovery(discovery));
+      const authorizationUrl = new URL(consentUrl);
       authorizationUrl.searchParams.set("stackId", target.stackId);
       authorizationUrl.searchParams.set("redirectUri", input.redirectUri);
       authorizationUrl.searchParams.set("state", state);
@@ -215,13 +234,19 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       pendingConnectionId: string;
       code: string;
       state: string;
+      /** Throws when the caller may not act on the pending connection's company. */
+      authorizeCompany?: (companyId: string) => void;
     }): Promise<CloudUpstreamConnection> => {
       const pending = await getConnectionRow(input.pendingConnectionId);
+      input.authorizeCompany?.(pending.companyId);
       if (!pending.pendingState || !pending.pendingCodeVerifier || !pending.pendingRedirectUri || !pending.pendingTokenUrl) {
         throw notFound("Pending cloud upstream connection was not found");
       }
       if (input.state !== pending.pendingState) throw badRequest("Cloud upstream state did not match");
-      const tokenResponse = await postJson<Record<string, unknown>>(pending.pendingTokenUrl, {
+      // Re-check at use time: rows created before discovery URLs were validated
+      // may still hold an internal or plain-HTTP token URL.
+      const tokenUrl = await assertDiscoveryUrl(pending.pendingTokenUrl, pending.remoteUrl, "tokenUrl", endpointGuard);
+      const tokenResponse = await postJson<Record<string, unknown>>(tokenUrl, {
         grantType: "authorization_code",
         code: input.code,
         redirectUri: pending.pendingRedirectUri,
@@ -267,7 +292,7 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
         manifest: bundle.manifest,
         previewShape: "manifest_only",
         conflictKeysBySource,
-      });
+      }, endpointGuard);
       return {
         ...basePreview,
         warnings: mergeWarnings(basePreview.warnings, warningsFromRemote(remotePreview)),
@@ -331,7 +356,7 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
           mode: "apply",
           manifest: bundle.manifest,
           entities: bundle.entities,
-        });
+        }, endpointGuard);
         const remoteRunId = remoteRunIdFromResponse(remoteRun);
         const pushedRun = await updateRunIfRunning(runId, {
           remoteRunId,
@@ -345,7 +370,7 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
         if (pushedRun.status !== "running") return pushedRun;
 
         for (const chunk of bundle.chunks) {
-          await remotePost(connection, `/api/upstream-import-runs/${encodeURIComponent(remoteRunId)}/chunks`, chunk);
+          await remotePost(connection, `/api/upstream-import-runs/${encodeURIComponent(remoteRunId)}/chunks`, chunk, endpointGuard);
         }
         const verifiedRun = await updateRunIfRunning(runId, {
           activeStep: "verify",
@@ -357,8 +382,8 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
         });
         if (verifiedRun.status !== "running") return verifiedRun;
 
-        const applied = await remotePost(connection, `/api/upstream-import-runs/${encodeURIComponent(remoteRunId)}/apply`, {});
-        const remoteEvents = await remoteGet(connection, `/api/upstream-import-runs/${encodeURIComponent(remoteRunId)}/events`).catch(() => null);
+        const applied = await remotePost(connection, `/api/upstream-import-runs/${encodeURIComponent(remoteRunId)}/apply`, {}, endpointGuard);
+        const remoteEvents = await remoteGet(connection, `/api/upstream-import-runs/${encodeURIComponent(remoteRunId)}/events`, endpointGuard).catch(() => null);
         const completedAt = new Date();
         const finalEvents = [
           ...initialEvents,
@@ -428,7 +453,7 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       if (row.status !== "running") return runFromRow(row);
       const connection = await getConnectionRow(connectionId, companyId);
       if (row.remoteRunId) {
-        await remotePost(connection, `/api/upstream-import-runs/${encodeURIComponent(row.remoteRunId)}/cancel`, {}).catch(() => null);
+        await remotePost(connection, `/api/upstream-import-runs/${encodeURIComponent(row.remoteRunId)}/cancel`, {}, endpointGuard).catch(() => null);
       }
       return updateRun(row.id, {
         status: "cancelled",
@@ -645,11 +670,83 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
   }
 }
 
-async function fetchDiscovery(remoteUrl: string): Promise<Record<string, unknown>> {
-  const parsed = new URL(remoteUrl);
-  if (parsed.protocol !== "https:" && parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
-    throw badRequest("Cloud upstream targets require HTTPS except localhost development");
+function isLocalDevelopmentHost(url: URL): boolean {
+  return url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+}
+
+function parseCloudUpstreamUrl(value: string, description: string): URL {
+  try {
+    return new URL(value);
+  } catch {
+    throw badRequest(`${description} is not a valid URL`);
   }
+}
+
+/**
+ * Every URL this service sends credentials or company data to, or hands to the
+ * browser, must be HTTPS on a public address. Only the remote URL is entered by
+ * the operator; the discovery document (token URL, consent URL, stack origin)
+ * is attacker-controlled when the remote is untrusted. The one exception is
+ * explicit localhost development, where both the remote URL and the checked
+ * URL are loopback hosts.
+ */
+async function assertCloudUpstreamEndpoint(
+  url: URL,
+  remote: URL,
+  description: string,
+  guard: CloudUpstreamEndpointGuard,
+): Promise<void> {
+  const localDevelopment = isLocalDevelopmentHost(remote) && isLocalDevelopmentHost(url);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && localDevelopment)) {
+    throw badRequest(`${description} must use HTTPS`);
+  }
+  await assertPublicRemoteHttpEndpoint(
+    url,
+    { ...guard, allowPrivateNetwork: localDevelopment },
+    (_message, code) => badRequest(
+      code === "remote_http_dns_failed"
+        ? `${description} hostname could not be resolved`
+        : `${description} cannot target private or reserved network addresses`,
+      { code },
+    ),
+  );
+}
+
+/** Validates a URL taken from the remote discovery document and returns it normalized. */
+export async function assertDiscoveryUrl(
+  value: string,
+  remoteUrl: string,
+  label: string,
+  guard: CloudUpstreamEndpointGuard = {},
+): Promise<string> {
+  const parsed = parseCloudUpstreamUrl(value, `Cloud upstream discovery ${label}`);
+  const remote = parseCloudUpstreamUrl(remoteUrl, "Cloud upstream remote URL");
+  await assertCloudUpstreamEndpoint(parsed, remote, `Cloud upstream discovery ${label}`, guard);
+  return parsed.toString();
+}
+
+/**
+ * The stack origin receives the bearer token, signed proof headers and the full
+ * company export, so it is bound to the origin of the operator-entered remote
+ * URL (and must itself pass the endpoint checks). Returns the normalized origin.
+ */
+export async function assertTargetOrigin(
+  value: string,
+  remoteUrl: string,
+  guard: CloudUpstreamEndpointGuard = {},
+): Promise<string> {
+  const parsed = parseCloudUpstreamUrl(value, "Cloud upstream stack origin");
+  const remote = parseCloudUpstreamUrl(remoteUrl, "Cloud upstream remote URL");
+  if (parsed.origin !== remote.origin) {
+    throw badRequest("Cloud upstream stack origin must match the remote URL origin");
+  }
+  await assertCloudUpstreamEndpoint(parsed, remote, "Cloud upstream stack origin", guard);
+  return parsed.origin;
+}
+
+async function fetchDiscovery(remoteUrl: string, guard: CloudUpstreamEndpointGuard): Promise<Record<string, unknown>> {
+  const parsed = parseCloudUpstreamUrl(remoteUrl, "Cloud upstream remote URL");
+  await assertCloudUpstreamEndpoint(parsed, parsed, "Cloud upstream remote URL", guard);
   const stackId = firstPathSegment(parsed.pathname);
   const discoveryUrl = new URL("/.well-known/paperclip-upstream", parsed.origin);
   if (stackId) {
@@ -967,16 +1064,28 @@ function buildLocalChunks(entities: LocalUpstreamExportEntity[], maxEntitiesPerC
   });
 }
 
-async function remoteGet(connection: ConnectionRow, path: string): Promise<unknown> {
-  const response = await fetchWithTimeout(`${connection.targetOrigin}${path}`, {
+// Re-validated on every request: connections created before the stack origin
+// was validated may still point at an internal or plain-HTTP origin.
+async function remoteTargetUrl(connection: ConnectionRow, path: string, guard: CloudUpstreamEndpointGuard): Promise<string> {
+  const origin = await assertTargetOrigin(connection.targetOrigin, connection.remoteUrl, guard);
+  return `${origin}${path}`;
+}
+
+async function remoteGet(connection: ConnectionRow, path: string, guard: CloudUpstreamEndpointGuard): Promise<unknown> {
+  const response = await fetchWithTimeout(await remoteTargetUrl(connection, path, guard), {
     method: "GET",
     headers: await proofHeaders(connection, "GET", path),
   }, REMOTE_FETCH_TIMEOUT_MS);
   return parseRemoteResponse(response);
 }
 
-async function remotePost(connection: ConnectionRow, path: string, body: unknown): Promise<unknown> {
-  const response = await fetchWithTimeout(`${connection.targetOrigin}${path}`, {
+async function remotePost(
+  connection: ConnectionRow,
+  path: string,
+  body: unknown,
+  guard: CloudUpstreamEndpointGuard,
+): Promise<unknown> {
+  const response = await fetchWithTimeout(await remoteTargetUrl(connection, path, guard), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1032,6 +1141,11 @@ async function parseRemoteResponse(response: Response): Promise<unknown> {
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit | undefined, timeoutMs: number): Promise<Response> {
   return fetch(input, {
     ...init,
+    // Never follow redirects. Every target URL is validated before the request,
+    // and a redirect could carry the PKCE verifier, the bearer token or the
+    // company export to an unvalidated (possibly internal) host; a 307/308
+    // would also re-send the request body.
+    redirect: "error",
     signal: AbortSignal.timeout(timeoutMs),
   });
 }
