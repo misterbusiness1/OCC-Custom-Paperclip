@@ -232,8 +232,40 @@ fs.appendFileSync(process.env.LOCAL_CI_FIXTURE_LOG, JSON.stringify({ tool: "pnpm
 if (args[0] === "store" && args[1] === "path") console.log("/fake/pnpm-store");
 if (args.includes("--lockfile-only")) fs.writeFileSync("pnpm-lock.yaml", "regenerated-lockfile\\n");
 if (process.env.LOCAL_CI_FIXTURE_HANG && args.join(" ").startsWith(process.env.LOCAL_CI_FIXTURE_HANG)) {
+  if (process.env.LOCAL_CI_FIXTURE_TREE_SCRIPT) {
+    const { spawn } = require("node:child_process");
+    fs.appendFileSync(process.env.LOCAL_CI_FIXTURE_LOG + ".pids", process.pid + "\\n");
+    // pnpm/shell wrappers may not forward a signal received by themselves.
+    process.on("SIGINT", () => { if (process.env.LOCAL_CI_FIXTURE_WRAPPER_EXITS) process.exit(0); });
+    process.on("SIGTERM", () => { if (process.env.LOCAL_CI_FIXTURE_WRAPPER_EXITS) process.exit(0); });
+    const nested = spawn(process.execPath, [process.env.LOCAL_CI_FIXTURE_TREE_SCRIPT, "child"], { stdio: "inherit" });
+    nested.on("exit", () => process.exit(0));
+  } else {
+    console.log("FIXTURE_READY");
+    setTimeout(() => process.exit(0), 20000);
+  }
+}
+`;
+
+const FAKE_TREE_CHILD = `
+const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+fs.appendFileSync(process.env.LOCAL_CI_FIXTURE_LOG + ".pids", process.pid + "\\n");
+if (process.argv[2] === "child") {
+  process.on("SIGINT", () => {});
+  process.on("SIGTERM", () => {});
+  const leaf = spawn(process.execPath, [__filename, "leaf"], { stdio: "inherit" });
+  leaf.on("exit", () => process.exit(0));
+} else {
+  const tick = setInterval(() => fs.writeFileSync(process.env.LOCAL_CI_FIXTURE_TREE_LOCKFILE, "descendant-still-running\\n"), 20);
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.on(signal, () => {
+      if (process.env.LOCAL_CI_FIXTURE_IGNORE_SIGNALS) return;
+      clearInterval(tick);
+      setTimeout(() => process.exit(0), 50);
+    });
+  }
   console.log("FIXTURE_READY");
-  setTimeout(() => process.exit(0), 20000);
 }
 `;
 
@@ -249,11 +281,21 @@ exit "\${LOCAL_CI_FIXTURE_RELEASE_EXIT:-0}"
 
 function fixture(t, { release = true } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), "paperclip-local-ci-fixture-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => { killTree(); rmSync(root, { recursive: true, force: true }); });
   const repo = path.join(root, "repo");
   const bin = path.join(root, "bin");
   const tmp = path.join(root, "tmp");
   const log = path.join(root, "calls.log");
+  function killTree() {
+    try {
+      const pids = readFileSync(`${log}.pids`, "utf8").trim().split("\n").map(Number);
+      for (const pid of pids.filter((value) => Number.isSafeInteger(value) && value > 1)) {
+        try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+      }
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  const treeScript = path.join(root, "nested-process.cjs");
+  writeFileSync(treeScript, FAKE_TREE_CHILD);
   mkdirSync(path.join(repo, "scripts", "ci"), { recursive: true });
   mkdirSync(bin);
   mkdirSync(tmp);
@@ -309,6 +351,10 @@ process.exit(Number(process.env.LOCAL_CI_FIXTURE_PROVIDER_EXIT ?? 0));
   };
   return {
     repo,
+    treeEnv: {
+      LOCAL_CI_FIXTURE_TREE_SCRIPT: treeScript,
+      LOCAL_CI_FIXTURE_TREE_LOCKFILE: path.join(repo, "pnpm-lock.yaml"),
+    },
     tmp,
     env,
     git,
@@ -333,7 +379,7 @@ function statusCalls(calls) {
     });
 }
 
-async function interruptWhenReady(child, signal) {
+async function interruptWhenReady(child, signal, { exitTimeoutMs = 15000, secondSignalAfterMs = null } = {}) {
   let output = "";
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`fixture never became ready:\n${output}`)), 15000);
@@ -348,10 +394,12 @@ async function interruptWhenReady(child, signal) {
     child.stderr.on("data", (chunk) => (output += chunk));
   });
   child.kill(signal);
+  const forceTimer = secondSignalAfterMs === null ? null : setTimeout(() => child.kill(signal), secondSignalAfterMs);
   const [code, exitSignal] = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("runner did not exit after the signal")), 15000);
+    const timer = setTimeout(() => reject(new Error("runner did not exit after the signal")), exitTimeoutMs);
     child.once("exit", (exitCode, killedBy) => {
       clearTimeout(timer);
+      clearTimeout(forceTimer);
       resolve([exitCode, killedBy]);
     });
   });
@@ -424,6 +472,50 @@ test("SIGINT during the canary removes the clone and exits 130", async (t) => {
   assert.deepEqual(readdirSync(f.tmp), []);
   assert.equal(f.releaseRuns().length, 0);
   assert.equal(f.lockfile(), "committed-lockfile\n");
+});
+
+for (const [signal, expectedCode] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+  test(`${signal} reaches nested pnpm/shell workers and restores the lockfile`, { skip: process.platform === "win32" }, async (t) => {
+    const f = fixture(t);
+    const child = f.spawn(["--gates", "install", "--base", "HEAD"], {
+      ...f.treeEnv, LOCAL_CI_FIXTURE_HANG: "install --frozen-lockfile",
+    });
+    t.after(() => child.kill("SIGKILL"));
+    const result = await interruptWhenReady(child, signal, { exitTimeoutMs: 2500 });
+    assert.equal(result.code, expectedCode, result.output);
+    assert.equal(result.signal, null);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(f.lockfile(), "committed-lockfile\n", "no nested worker may mutate the restored lockfile");
+  });
+}
+
+test("an exited wrapper cannot leave workers mutating the restored lockfile", { skip: process.platform === "win32" }, async (t) => {
+  const f = fixture(t);
+  const child = f.spawn(["--gates", "install", "--base", "HEAD"], {
+    ...f.treeEnv,
+    LOCAL_CI_FIXTURE_HANG: "install --frozen-lockfile",
+    LOCAL_CI_FIXTURE_WRAPPER_EXITS: "1",
+    LOCAL_CI_FIXTURE_IGNORE_SIGNALS: "1",
+  });
+  t.after(() => child.kill("SIGKILL"));
+  const result = await interruptWhenReady(child, "SIGTERM", { exitTimeoutMs: 2500 });
+  assert.equal(result.code, 143, result.output);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(f.lockfile(), "committed-lockfile\n");
+});
+
+test("a second signal forcibly stops an uncooperative whole worker group before cleanup", { skip: process.platform === "win32" }, async (t) => {
+  const f = fixture(t);
+  const child = f.spawn(["--gates", "install", "--base", "HEAD"], {
+    ...f.treeEnv,
+    LOCAL_CI_FIXTURE_HANG: "install --frozen-lockfile",
+    LOCAL_CI_FIXTURE_IGNORE_SIGNALS: "1",
+  });
+  t.after(() => child.kill("SIGKILL"));
+  const result = await interruptWhenReady(child, "SIGINT", { exitTimeoutMs: 2500, secondSignalAfterMs: 100 });
+  assert.equal(result.code, 130, result.output);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(f.lockfile(), "committed-lockfile\n", "force must stop descendants as well as the direct child");
 });
 
 test("--dry-run creates no temporary directories", (t) => {

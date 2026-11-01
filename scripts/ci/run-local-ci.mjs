@@ -161,7 +161,7 @@ export function isolatedEnv(baseEnv, gateEnv = {}) {
 // ---------------------------------------------------------------------------
 // Interrupt handling. Children run asynchronously so SIGINT/SIGTERM reach this
 // process while a gate is running; the signal is forwarded to the active
-// child, its gate unwinds through its `finally` blocks, and registered cleanups
+// process group, its gate unwinds through its `finally` blocks, and registered cleanups
 // (lockfile restore, temporary clones) run before exiting with 130/143. A
 // second signal skips the wait for the child and cleans up immediately.
 
@@ -175,6 +175,32 @@ class Interrupted extends Error {
 const cleanupTasks = [];
 let interruptedBy = null;
 let activeChild = null;
+let activeProcessGroup = null;
+
+/** Signal only the worker tree created by this runner, never its own terminal group. */
+function signalActiveWorker(signal) {
+  if (!activeChild?.pid) return;
+  if (activeProcessGroup !== null) {
+    try {
+      process.kill(-activeProcessGroup, signal);
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+    return;
+  }
+  // Windows has no POSIX process-group signals. taskkill /T is the available
+  // tree fallback (/F on the second signal); unlike POSIX it cannot promise
+  // delivery of SIGINT/SIGTERM to each descendant's JavaScript handlers.
+  const result = spawnSync("taskkill", ["/PID", String(activeChild.pid), "/T", ...(signal === "SIGKILL" ? ["/F"] : [])], {
+    stdio: "ignore",
+    windowsHide: true,
+    timeout: 5_000,
+  });
+  if (result.error || result.status !== 0) {
+    console.error("[local-ci] taskkill could not stop the Windows worker tree; falling back to its immediate child");
+    activeChild.kill(signal);
+  }
+}
 
 /** Registers a synchronous cleanup. The returned function runs it at most once. */
 function onCleanup(task) {
@@ -196,13 +222,13 @@ function onCleanup(task) {
 
 function handleSignal(signal) {
   if (interruptedBy) {
-    activeChild?.kill("SIGKILL");
+    signalActiveWorker("SIGKILL");
     while (cleanupTasks.length > 0) cleanupTasks[cleanupTasks.length - 1]();
     process.exit(SIGNAL_EXIT_CODES[interruptedBy]);
   }
   interruptedBy = signal;
   console.error(`\n[local-ci] ${signal} received: stopping and cleaning up (send it again to force)`);
-  activeChild?.kill(signal);
+  signalActiveWorker(signal);
 }
 
 function childEnv(opts) {
@@ -222,17 +248,28 @@ function run(command, args, opts = {}) {
       if (settled) return;
       settled = true;
       activeChild = null;
+      activeProcessGroup = null;
       fn(value);
     };
-    const child = spawn(command, args, { cwd, stdio: "inherit", env: childEnv(opts), shell: false });
+    // A dedicated POSIX process group makes nested pnpm -> shell -> Vitest
+    // workers addressable even when a wrapper does not forward signals.
+    const child = spawn(command, args, {
+      cwd, stdio: "inherit", env: childEnv(opts), shell: false,
+      detached: process.platform !== "win32",
+    });
     activeChild = child;
+    activeProcessGroup = process.platform !== "win32" ? child.pid ?? null : null;
     child.once("error", (error) => settle(reject, error));
     child.once("close", (status, signal) => {
-      // Let a signal delivered to this process alongside the child (Ctrl-C
-      // reaches the whole process group) be handled before deciding.
+      // Let any already-queued signal to this runner be handled before
+      // deciding whether the command completed normally.
       setImmediate(() => {
-        if (interruptedBy) settle(reject, new Interrupted(interruptedBy));
-        else settle(resolve, { status, signal });
+        if (interruptedBy) {
+          // A wrapper may exit before an uncooperative grandchild. Do not let
+          // it continue writing files after the runner restores the lockfile.
+          signalActiveWorker("SIGKILL");
+          settle(reject, new Interrupted(interruptedBy));
+        } else settle(resolve, { status, signal });
       });
     });
   });

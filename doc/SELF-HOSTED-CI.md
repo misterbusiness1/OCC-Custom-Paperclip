@@ -81,8 +81,31 @@ do not run.
 
 The working tree is left as it was. A lockfile regenerated for the run is
 restored, and the canary clone is deleted. This also happens on Ctrl-C or
-SIGTERM: the runner then exits with 130 or 143, and a second Ctrl-C skips
-waiting for the current command. `--dry-run` creates nothing.
+SIGTERM: the runner then exits with 130 or 143. On POSIX, each command owns a
+separate process group, so signals reach nested pnpm, shell and test workers.
+Remaining group members are killed before cleanup, including when a wrapper
+exits early; a second signal forces that cleanup immediately. On Windows,
+`taskkill /T` provides best-effort tree termination (`/F` on the second signal),
+without the same JavaScript signal-handler guarantees. `--dry-run` creates
+nothing.
+
+### Avoiding hosted-runner charges
+
+Running local CI does not stop GitHub from starting its own workflows on a
+push or PR update. For zero hosted PR minutes, an administrator must also
+disable the PR-triggered workflows, or configure qualified ephemeral runners
+for every applicable verification workflow. Audit all open PR branches:
+release branches can define additional workflows that are absent on master.
+`pull_request_target` reviews and label-triggered visual workflows count too.
+
+Use `gh workflow list --all`, record the current workflow states, and use
+`gh workflow disable <workflow>` for the applicable workflows. This setting is
+repository-wide and persists until explicitly restored with
+`gh workflow enable <workflow>`. Keep local checks, exact commit/tree and
+qualified-lockfile evidence, and independent review. A disabled workflow is
+unexecuted, not a passing check; the informational statuses below do not
+replace required GitHub Actions checks. Publishing and deployment workflows
+require their own explicit operational decision.
 
 ### Reporting to pull requests (`--report`)
 
