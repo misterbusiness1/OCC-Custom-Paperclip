@@ -27,6 +27,7 @@ test("defaults to every pr.yml verify gate in CI order", () => {
     "typecheck",
     "audit",
     "typesafe-skill",
+    "sandbox-providers",
     "general-tests",
     "serialized-tests",
     "build",
@@ -259,6 +260,12 @@ function fixture(t, { release = true } = {}) {
   copyFileSync(runnerSource, path.join(repo, "scripts", "ci", "run-local-ci.mjs"));
   writeFileSync(path.join(repo, "package.json"), '{"name":"local-ci-fixture","private":true}\n');
   writeFileSync(path.join(repo, "pnpm-lock.yaml"), "committed-lockfile\n");
+  writeFileSync(path.join(repo, "scripts", "run-sandbox-provider-tests.mjs"), `
+import { appendFileSync } from "node:fs";
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(DATABASE_|PAPERCLIP_)/.test(key)));
+appendFileSync(process.env.LOCAL_CI_FIXTURE_LOG, JSON.stringify({ tool: "sandbox-providers", env }) + "\\n");
+process.exit(Number(process.env.LOCAL_CI_FIXTURE_PROVIDER_EXIT ?? 0));
+`);
   if (release) {
     writeFileSync(path.join(repo, "scripts", "release.sh"), FAKE_RELEASE);
     chmodSync(path.join(repo, "scripts", "release.sh"), 0o755);
@@ -427,9 +434,9 @@ test("--dry-run creates no temporary directories", (t) => {
   assert.deepEqual(f.calls(), [], "a dry run must not execute gate commands");
 });
 
-test("test and e2e gates never inherit the operator's database or Paperclip instance", (t) => {
+test("test, provider and e2e gates never inherit the operator's database or Paperclip instance", (t) => {
   const f = fixture(t);
-  const result = f.run(["--gates", "general-tests,serialized-tests,e2e", "--base", "HEAD"], {
+  const result = f.run(["--gates", "general-tests,serialized-tests,sandbox-providers,e2e", "--base", "HEAD"], {
     DATABASE_URL: "postgres://operator@db.internal/prod",
     DATABASE_MIGRATION_URL: "postgres://operator@db.internal/prod",
     PAPERCLIP_HOME: "/home/operator/.paperclip",
@@ -441,6 +448,8 @@ test("test and e2e gates never inherit the operator's database or Paperclip inst
   const byScript = (name) => pnpmCalls.find((call) => call.args.includes(name));
   assert.deepEqual(byScript("test:run:general").env, {});
   assert.deepEqual(byScript("test:run:serialized").env, {});
+  assert.deepEqual(byScript("@paperclipai/plugin-sdk").env, {});
+  assert.deepEqual(f.calls().find((call) => call.tool === "sandbox-providers").env, {});
   const e2e = byScript("test:e2e");
   assert.deepEqual(e2e.env, {
     PAPERCLIP_E2E_SKIP_LLM: "true",
@@ -488,4 +497,17 @@ test("--report posts local-ci/verify only when every default gate ran", (t) => {
   assert.equal(subset.status, 0, subset.stdout + subset.stderr);
   assert.doesNotMatch(subset.stdout, /context=local-ci\/verify/);
   assert.match(subset.stdout, /local-ci\/verify is not posted/);
+});
+
+test("provider failures prevent aggregate verification success", (t) => {
+  const f = fixture(t);
+  const result = f.run(["--report", "--gates", "sandbox-providers", "--base", "HEAD"], {
+    LOCAL_CI_FIXTURE_PROVIDER_EXIT: "1",
+  });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.deepEqual(statusCalls(f.calls()).map(({ context, state }) => ({ context, state })), [
+    { context: "local-ci/sandbox-providers", state: "pending" },
+    { context: "local-ci/sandbox-providers", state: "failure" },
+  ]);
+  assert.equal(coversDefaultGates(DEFAULT_GATES.filter((gate) => gate !== "sandbox-providers")), false);
 });

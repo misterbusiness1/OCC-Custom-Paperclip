@@ -43,6 +43,7 @@ is ignored.
 | `typecheck` | `Typecheck + Release Registry` |
 | `audit` | `Dependency Audit` |
 | `typesafe-skill` | `TypeSafe skill-suggestion standalone` |
+| `sandbox-providers` | `Sandbox providers standalone` (build SDK, install and test each provider) |
 | `general-tests` | `General tests` (server shards, workspaces-a, workspaces-b) |
 | `serialized-tests` | `Verify serialized server suites` |
 | `build` | `Build` |
@@ -66,7 +67,7 @@ do not run.
   prunes the clone's own remote (your checkout), so none of your branches,
   tags or remote-tracking refs change. It needs network access to the npm
   registry and takes several minutes.
-- **Test and e2e gates run with a cleaned environment.** `DATABASE_URL`,
+- **Test, sandbox-provider and e2e gates run with a cleaned environment.** `DATABASE_URL`,
   `DATABASE_MIGRATION_URL` and every `PAPERCLIP_*` variable are removed. The
   server and `onboard` would otherwise prefer an exported `DATABASE_URL` over
   embedded Postgres. The e2e gate sets `PAPERCLIP_E2E_SKIP_LLM=true` and

@@ -11,8 +11,8 @@
  *     [--with-canary] [--report] [--keep-going] [--dry-run]
  *
  * Gates (default order): policy, install, typecheck, audit, typesafe-skill,
- * general-tests, serialized-tests, build. Opt-in: e2e (--with-e2e, needs a
- * local Chrome), canary (--with-canary, runs release.sh in a throwaway clone
+ * sandbox-providers, general-tests, serialized-tests, build. Opt-in: e2e
+ * (--with-e2e, needs a local Chrome), canary (--with-canary, runs release.sh in a throwaway clone
  * of HEAD).
  *
  * What is tested: the working tree (HEAD plus uncommitted changes; the canary
@@ -43,6 +43,7 @@ export const DEFAULT_GATES = [
   "typecheck",
   "audit",
   "typesafe-skill",
+  "sandbox-providers",
   "general-tests",
   "serialized-tests",
   "build",
@@ -59,6 +60,7 @@ export const PR_JOB_GATES = {
   typecheck_release_registry: ["install", "typecheck"],
   dependency_audit: ["install", "audit"],
   typesafe_skill_suggestion: ["install", "typesafe-skill"],
+  sandbox_providers: ["install", "sandbox-providers"],
   general_tests: ["install", "general-tests"],
   verify: [],
   build: ["install", "build"],
@@ -270,6 +272,8 @@ function gatePolicy(ctx) {
       ["node", ["--test", "./scripts/__tests__/pr-lockfile-workflow.test.mjs"]],
       ["node", ["--test", "./scripts/__tests__/build-standalone-concurrency.test.mjs"]],
       ["node", ["--test", "./scripts/__tests__/run-local-ci.test.mjs"]],
+      ["node", ["--test", "./scripts/__tests__/run-vitest-stable-projects.test.mjs"]],
+      ["node", ["--test", "./scripts/__tests__/run-sandbox-provider-tests.test.mjs"]],
       ["node", ["./scripts/release-package-map.mjs", "check"]],
       [
         "node",
@@ -397,6 +401,14 @@ const GATES = {
     steps([["pnpm", ["run", "typecheck:build-gaps"]], ["pnpm", ["run", "test:release-registry"]]], ctx),
   audit: (ctx) => steps([["pnpm", ["run", "audit:prod"]]], ctx),
   "typesafe-skill": gateTypesafeSkill,
+  "sandbox-providers": (ctx) =>
+    steps(
+      [
+        ["pnpm", ["--filter", "@paperclipai/plugin-sdk", "build"]],
+        ["node", ["scripts/run-sandbox-provider-tests.mjs"]],
+      ],
+      { ...ctx, isolated: true },
+    ),
   "general-tests": (ctx) => steps([["pnpm", ["test:run:general"], { isolated: true }]], ctx),
   "serialized-tests": (ctx) => steps([["pnpm", ["test:run:serialized"], { isolated: true }]], ctx),
   build: (ctx) => steps([["pnpm", ["build"]]], ctx),
