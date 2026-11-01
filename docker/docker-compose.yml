@@ -10,8 +10,11 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+    # Loopback only: the database uses the well-known default credentials
+    # above, so it must not be reachable from other hosts. The server reaches
+    # it over the compose network (db:5432) regardless of this mapping.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
