@@ -40,6 +40,16 @@ describe("resolveImage", () => {
     ).toBe("registry.example.com/paperclip/agent-runtime-claude:v1");
   });
 
+  it("also rewrites a registry-supplied runtimeImage when imageRegistry is set (documented in README Cursor section)", () => {
+    expect(
+      resolveImage(
+        { imageOverride: null },
+        { runtimeImage: "registry.example.com/my-org/agent-runtime-cursor:v1" },
+        { imageAllowList: [], imageRegistry: "mirror.example.com:5000" },
+      ),
+    ).toBe("mirror.example.com:5000/agent-runtime-cursor:v1");
+  });
+
   it("accepts imageOverride when in allowlist", () => {
     expect(
       resolveImage(

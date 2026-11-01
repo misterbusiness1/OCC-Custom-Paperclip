@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   getAdapterDefaults,
+  checkAdapterRegistry,
   buildAdapterEnv,
   resolveRunAdapterType,
+  normalizeAdapterType,
   KNOWN_ADAPTER_TYPES,
   type AdapterDefaults,
 } from "../../src/adapter-defaults.js";
@@ -28,17 +30,40 @@ describe("adapter-defaults (built-in)", () => {
     expect(() => getAdapterDefaults("nonexistent_local")).toThrow(/unknown adapter type/i);
   });
 
-  it("KNOWN_ADAPTER_TYPES contains all 6 supported adapters", () => {
+  it("KNOWN_ADAPTER_TYPES contains the 5 built-in adapters plus registry-only cursor (no aliases)", () => {
     expect(KNOWN_ADAPTER_TYPES).toEqual(
       new Set([
         "claude_local",
         "codex_local",
         "gemini_local",
-        "cursor_local",
         "opencode_local",
         "pi_local",
+        "cursor",
       ]),
     );
+  });
+
+  it("ships NO built-in Cursor defaults (no agent-runtime-cursor image exists): throws an actionable error", () => {
+    for (const type of ["cursor", "cursor_local"]) {
+      expect(() => getAdapterDefaults(type)).toThrow(
+        /Cursor has no built-in Kubernetes runtime image; add an adapters registry entry for "cursor"/,
+      );
+      expect(() => getAdapterDefaults(type)).toThrow(/CURSOR_API_KEY/);
+      expect(() => getAdapterDefaults(type)).toThrow(/allowFqdns/);
+      expect(() => getAdapterDefaults(type, [])).toThrow(/no built-in Kubernetes runtime image/);
+    }
+  });
+});
+
+describe("normalizeAdapterType", () => {
+  it("maps the legacy cursor_local alias to Paperclip's canonical cursor type", () => {
+    expect(normalizeAdapterType("cursor_local")).toBe("cursor");
+  });
+  it("leaves canonical and unknown types unchanged", () => {
+    expect(normalizeAdapterType("cursor")).toBe("cursor");
+    expect(normalizeAdapterType("claude_local")).toBe("claude_local");
+    expect(normalizeAdapterType("nope")).toBe("nope");
+    expect(normalizeAdapterType("toString")).toBe("toString");
   });
 });
 
@@ -52,6 +77,12 @@ describe("getAdapterDefaults", () => {
 
   it("throws on an unknown built-in type when no registry is supplied", () => {
     expect(() => getAdapterDefaults("nope")).toThrow(/Unknown adapter type/);
+  });
+
+  it("does not resolve Object.prototype members as built-in adapters", () => {
+    for (const type of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
+      expect(() => getAdapterDefaults(type)).toThrow(`Unknown adapter type: ${type}`);
+    }
   });
 
   it("resolves from the supplied registry (replace semantics, not merge)", () => {
@@ -106,6 +137,141 @@ describe("getAdapterDefaults", () => {
   });
 });
 
+describe("getAdapterDefaults (cursor via the adapters registry)", () => {
+  const cursorEntry: AdapterRegistryEntry = {
+    adapterType: "cursor",
+    enabled: true,
+    runtimeImage: "registry.example/cursor:v1",
+    envKeys: ["CURSOR_API_KEY"],
+    allowFqdns: ["api2.cursor.sh"],
+    probeCommand: ["agent", "--version"],
+  };
+
+  it("resolves cursor from a registry entry", () => {
+    const d = getAdapterDefaults("cursor", [cursorEntry]);
+    expect(d.runtimeImage).toBe("registry.example/cursor:v1");
+    expect(d.envKeys).toEqual(["CURSOR_API_KEY"]);
+    expect(d.allowFqdns).toEqual(["api2.cursor.sh"]);
+  });
+
+  it("resolves the legacy cursor_local alias against a registry entry keyed \"cursor\"", () => {
+    expect(getAdapterDefaults("cursor_local", [cursorEntry])).toEqual(
+      getAdapterDefaults("cursor", [cursorEntry]),
+    );
+  });
+
+  it("matches a registry entry still keyed with the legacy alias", () => {
+    const legacy: AdapterRegistryEntry = { ...cursorEntry, adapterType: "cursor_local" };
+    expect(getAdapterDefaults("cursor", [legacy]).runtimeImage).toBe("registry.example/cursor:v1");
+  });
+
+  it("rejects a registry holding both a \"cursor\" and a legacy \"cursor_local\" entry instead of picking one", () => {
+    const registry: AdapterRegistryEntry[] = [
+      cursorEntry,
+      { ...cursorEntry, adapterType: "cursor_local", runtimeImage: "registry.example/other:v1" },
+    ];
+    for (const type of ["cursor", "cursor_local"]) {
+      expect(() => getAdapterDefaults(type, registry)).toThrow(
+        'Adapter "cursor" has 2 entries in the configured adapter registry ("cursor", "cursor_local"); keep exactly one',
+      );
+    }
+  });
+
+  it("names the canonical type when an alias-keyed entry is missing runtimeImage", () => {
+    const registry: AdapterRegistryEntry[] = [
+      { adapterType: "cursor_local", enabled: true, envKeys: ["CURSOR_API_KEY"] },
+    ];
+    expect(() => getAdapterDefaults("cursor", registry)).toThrow(
+      'Adapter "cursor" is missing required runtime field: runtimeImage',
+    );
+  });
+
+  it("still resolves an adapter whose only registry entry has enabled: false", () => {
+    // enabled:false hides an adapter from the picker (server
+    // reconcileAdapterAvailability); existing agents of that adapter keep running.
+    const registry: AdapterRegistryEntry[] = [
+      { adapterType: "claude_local", enabled: true, runtimeImage: "img" },
+      { ...cursorEntry, enabled: false },
+      { adapterType: "codex_local", enabled: false, runtimeImage: "img/codex:v1" },
+    ];
+    for (const type of ["cursor", "cursor_local"]) {
+      expect(getAdapterDefaults(type, registry).runtimeImage).toBe("registry.example/cursor:v1");
+    }
+    expect(getAdapterDefaults("codex_local", registry).runtimeImage).toBe("img/codex:v1");
+  });
+
+  it("refuses an adapter with more than one disabled entry and no enabled one", () => {
+    const registry: AdapterRegistryEntry[] = [
+      { adapterType: "codex_local", enabled: false, runtimeImage: "a" },
+      { adapterType: "codex_local", enabled: false, runtimeImage: "b" },
+    ];
+    expect(() => getAdapterDefaults("codex_local", registry)).toThrow(
+      'Adapter "codex_local" has 2 entries in the configured adapter registry ("codex_local", "codex_local"); keep exactly one',
+    );
+  });
+
+  it("ignores a disabled entry when counting duplicates", () => {
+    const registry: AdapterRegistryEntry[] = [
+      cursorEntry,
+      { ...cursorEntry, adapterType: "cursor_local", enabled: false, runtimeImage: "registry.example/old:v1" },
+    ];
+    expect(getAdapterDefaults("cursor", registry).runtimeImage).toBe("registry.example/cursor:v1");
+  });
+
+  it("explains how to add cursor when a registry is configured without it", () => {
+    const registry: AdapterRegistryEntry[] = [
+      { adapterType: "claude_local", enabled: true, runtimeImage: "img" },
+    ];
+    expect(() => getAdapterDefaults("cursor_local", registry)).toThrow(
+      /Adapter "cursor" is not in the configured adapter registry\. Cursor has no built-in Kubernetes runtime image/,
+    );
+  });
+});
+
+describe("checkAdapterRegistry", () => {
+  it("returns no findings without a registry", () => {
+    expect(checkAdapterRegistry(undefined)).toEqual({ errors: [], warnings: [] });
+  });
+
+  it("reports duplicate enabled entries for every adapter, aliases included", () => {
+    const registry: AdapterRegistryEntry[] = [
+      { adapterType: "claude_local", runtimeImage: "img" },
+      { adapterType: "cursor", runtimeImage: "registry.example/cursor:v1" },
+      { adapterType: "cursor_local", runtimeImage: "registry.example/cursor:v1" },
+      { adapterType: "codex_local", runtimeImage: "a" },
+      { adapterType: "codex_local", runtimeImage: "b" },
+    ];
+    expect(checkAdapterRegistry(registry)).toEqual({
+      errors: [
+        'Adapter "cursor" has 2 entries in the configured adapter registry ("cursor", "cursor_local"); keep exactly one',
+        'Adapter "codex_local" has 2 entries in the configured adapter registry ("codex_local", "codex_local"); keep exactly one',
+      ],
+      warnings: [],
+    });
+  });
+
+  it("warns about an entry without runtimeImage and applies the lease-time rule to disabled entries", () => {
+    const registry: AdapterRegistryEntry[] = [
+      { adapterType: "claude_local", runtimeImage: "img" },
+      { adapterType: "cursor_local", envKeys: ["CURSOR_API_KEY"] },
+      // A disabled entry next to an enabled one is not ambiguous: the enabled one wins.
+      { adapterType: "gemini_local", runtimeImage: "img/gemini:v2" },
+      { adapterType: "gemini_local", enabled: false, runtimeImage: "img/gemini:v1" },
+      // Two disabled entries and no enabled one are ambiguous for existing agents.
+      { adapterType: "codex_local", enabled: false, runtimeImage: "a" },
+      { adapterType: "codex_local", enabled: false, runtimeImage: "b" },
+    ];
+    expect(checkAdapterRegistry(registry)).toEqual({
+      errors: [
+        'Adapter "codex_local" has 2 entries in the configured adapter registry ("codex_local", "codex_local"); keep exactly one',
+      ],
+      warnings: [
+        'Adapter "cursor" has no runtimeImage in the configured adapter registry; runs of it in this environment will be refused',
+      ],
+    });
+  });
+});
+
 describe("buildAdapterEnv", () => {
   it("layers process-env (secret) over defaultEnv (non-secret base)", () => {
     const defaults: AdapterDefaults = {
@@ -144,5 +310,9 @@ describe("resolveRunAdapterType", () => {
   });
   it("trims the run adapter", () => {
     expect(resolveRunAdapterType("  pi_local  ", "opencode_local")).toBe("pi_local");
+  });
+  it("normalises the legacy cursor_local alias (run hint or environment default)", () => {
+    expect(resolveRunAdapterType("cursor_local", "claude_local")).toBe("cursor");
+    expect(resolveRunAdapterType(undefined, "cursor_local")).toBe("cursor");
   });
 });

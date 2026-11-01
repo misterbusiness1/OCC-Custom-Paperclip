@@ -89,8 +89,9 @@ const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/t
  * `@paperclipai/plugin-kubernetes`) are allowed to read from the
  * server's process environment so they can inject them into per-run
  * pod Secrets. All other host env vars remain stripped from plugin
- * workers (see `PluginWorkerManager.spawnProcess`). The passthrough
- * is gated on the plugin manifest declaring
+ * workers (see `PluginWorkerManager.spawnProcess`), so a Kubernetes
+ * `adapters` entry's `envKeys` can only forward keys listed here. The
+ * passthrough is gated on the plugin manifest declaring
  * `environment.drivers.register` — non-sandbox plugins never receive
  * these keys.
  */
@@ -100,6 +101,8 @@ const ADAPTER_ENV_PASSTHROUGH = [
   "GOOGLE_API_KEY",
   "GEMINI_API_KEY",
   "OPENROUTER_API_KEY",
+  // Cursor (adapter type "cursor") authenticates its CLI with this key.
+  "CURSOR_API_KEY",
 ];
 
 /**

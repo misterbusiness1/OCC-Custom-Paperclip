@@ -31,6 +31,24 @@ describe("kubernetesProviderConfigSchema", () => {
     ).toThrow();
   });
 
+  it("accepts Paperclip's cursor adapter type (resolved via an adapters registry entry)", () => {
+    expect(parseKubernetesProviderConfig({ inCluster: true, adapterType: "cursor" }).adapterType).toBe(
+      "cursor",
+    );
+  });
+
+  it("normalises the legacy cursor_local alias to cursor", () => {
+    expect(
+      parseKubernetesProviderConfig({ inCluster: true, adapterType: "cursor_local" }).adapterType,
+    ).toBe("cursor");
+  });
+
+  it("still rejects unknown adapter types", () => {
+    expect(() =>
+      parseKubernetesProviderConfig({ inCluster: true, adapterType: "nonexistent_local" }),
+    ).toThrow(/known adapter types/);
+  });
+
   it("rejects egressAllowCidrs entries that are not valid CIDR", () => {
     expect(() =>
       parseKubernetesProviderConfig({ inCluster: true, egressAllowCidrs: ["not-a-cidr"] }),

@@ -168,6 +168,23 @@ describe("buildPluginWorkerEnv", () => {
     });
   });
 
+  it("passes CURSOR_API_KEY through so a Kubernetes adapters entry can forward it", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: { capabilities: ["environment.drivers.register"] },
+      instanceInfo,
+      processEnv: {
+        CURSOR_API_KEY: "cursor-token",
+        AWS_SECRET_ACCESS_KEY: "aws-secret",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      CURSOR_API_KEY: "cursor-token",
+    });
+  });
+
   it("passes in-cluster Kubernetes service-discovery vars to environment driver plugins", () => {
     const env = buildPluginWorkerEnv({
       manifest: { capabilities: ["environment.drivers.register"] },
@@ -194,6 +211,7 @@ describe("buildPluginWorkerEnv", () => {
       instanceInfo,
       processEnv: {
         OPENAI_API_KEY: "openai-token",
+        CURSOR_API_KEY: "cursor-token",
       },
     });
 

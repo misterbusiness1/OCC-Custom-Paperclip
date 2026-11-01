@@ -22,7 +22,13 @@ import {
 } from "./types.js";
 import { zod3ParseParams } from "./zod3-compat.js";
 import { createKubeConfig, makeKubeClients } from "./kube-client.js";
-import { getAdapterDefaults, buildAdapterEnv, resolveRunAdapterType } from "./adapter-defaults.js";
+import {
+  getAdapterDefaults,
+  checkAdapterRegistry,
+  buildAdapterEnv,
+  resolveRunAdapterType,
+  type AdapterDefaults,
+} from "./adapter-defaults.js";
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
 import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
@@ -131,7 +137,21 @@ const plugin = definePlugin({
     }
     const warnings: string[] = [];
     const cfg = parsed.data;
-    const adapterDefaults = getAdapterDefaults(cfg.adapterType, cfg.adapters);
+    // Surface an unresolvable adapter (e.g. "cursor" with no `adapters` registry
+    // entry) as a validation error with its actionable message, not a thrown RPC.
+    // The rest of the registry is checked too: runs may name any adapter in it.
+    const registryCheck = checkAdapterRegistry(cfg.adapters);
+    let adapterDefaults: AdapterDefaults;
+    try {
+      adapterDefaults = getAdapterDefaults(cfg.adapterType, cfg.adapters);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, errors: [...new Set([message, ...registryCheck.errors])] };
+    }
+    if (registryCheck.errors.length > 0) {
+      return { ok: false, errors: registryCheck.errors };
+    }
+    warnings.push(...registryCheck.warnings);
     const totalFqdns = [...adapterDefaults.allowFqdns, ...cfg.egressAllowFqdns];
     if (cfg.egressMode === "standard" && totalFqdns.length > 0) {
       if (cfg.egressAllowCidrs.length === 0) {
