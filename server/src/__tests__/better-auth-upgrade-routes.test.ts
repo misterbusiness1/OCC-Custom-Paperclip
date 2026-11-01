@@ -20,12 +20,12 @@
  * better-auth-origin-routes.test.ts runs the same chain with that check on.
  */
 
-import { createHash, randomBytes, randomUUID, scrypt } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, scrypt } from "node:crypto";
 import fs from "node:fs";
 import type express from "express";
 import request from "supertest";
 import { sql } from "drizzle-orm";
-import { hashPassword, makeSignature } from "better-auth/crypto";
+import { hashPassword } from "better-auth/crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { applyPendingMigrations, authAccounts, authSessions, createDb } from "@paperclipai/db";
 import {
@@ -91,6 +91,16 @@ async function betterAuth16ScryptHash(password: string): Promise<string> {
     );
   });
   return `${salt}:${key.toString("hex")}`;
+}
+
+/**
+ * A session cookie value signed the way better-call signs it in both the 1.6
+ * and 1.7 lines, computed independently of the installed Better Auth:
+ * `token.signature`, where the signature is base64 HMAC-SHA256 of the token
+ * keyed with the auth secret, then URI-encoded.
+ */
+function betterAuth16SignedCookieValue(token: string, secret: string): string {
+  return encodeURIComponent(`${token}.${createHmac("sha256", secret).update(token).digest("base64")}`);
 }
 
 async function rawAccountsForUser(db: Db, userId: string) {
@@ -207,12 +217,10 @@ describeEmbeddedPostgres("Better Auth 1.7.10 on a master-lineage database", () =
       ipAddress: null,
       userAgent: null,
     });
-    // Signed the way better-call signs session cookies in both the 1.6 and 1.7
-    // lines: HMAC-SHA256 with the auth secret, `token.signature`, URI-encoded.
-    const signedValue = encodeURIComponent(`${token}.${await makeSignature(token, SECRET)}`);
+    const signedValue = betterAuth16SignedCookieValue(token, SECRET);
     await expectSignedInAs(app, `${sessionCookieName()}=${signedValue}`, userId);
 
-    const tampered = encodeURIComponent(`${token}.${await makeSignature(token, "some-other-secret")}`);
+    const tampered = betterAuth16SignedCookieValue(token, "some-other-secret");
     const rejected = await request(app)
       .get("/api/auth/get-session")
       .set("cookie", `${sessionCookieName()}=${tampered}`);

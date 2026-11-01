@@ -84,9 +84,13 @@ export function useBetterAuthTestEnv() {
   });
 }
 
-export function sessionCookieName() {
-  // Local http origins keep the cookie non-secure, so there is no __Secure- prefix.
-  return `${deriveAuthCookiePrefix()}.session_token`;
+/**
+ * Better Auth's session cookie name. Local http origins keep the cookie
+ * non-secure, with no prefix; an https base URL makes it secure, which adds
+ * the __Secure- prefix.
+ */
+export function sessionCookieName(opts: { secure?: boolean } = {}) {
+  return `${opts.secure ? "__Secure-" : ""}${deriveAuthCookiePrefix()}.session_token`;
 }
 
 export function setCookies(response: request.Response): string[] {
@@ -95,9 +99,9 @@ export function setCookies(response: request.Response): string[] {
 }
 
 /** The session cookie a browser would send back, as `name=value`. */
-export function sessionCookie(response: request.Response): string {
-  const cookie = setCookies(response).find((value) => value.startsWith(`${sessionCookieName()}=`));
-  expect(cookie, `no ${sessionCookieName()} in ${JSON.stringify(setCookies(response))}`).toBeTruthy();
+export function sessionCookie(response: request.Response, name = sessionCookieName()): string {
+  const cookie = setCookies(response).find((value) => value.startsWith(`${name}=`));
+  expect(cookie, `no ${name} in ${JSON.stringify(setCookies(response))}`).toBeTruthy();
   return cookie!.split(";")[0]!;
 }
 
