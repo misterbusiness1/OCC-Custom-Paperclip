@@ -260,7 +260,17 @@ describe("approvalTranslation", () => {
     const subjectFw = "Hello,\n\nWe can offer a $50 store credit only. We cannot refund the order.\n\nFrom: 王伟 <wang@buyer.example>\nSent: Monday, October 27, 2026 10:14 AM\nSubject: FW: 订单\n\n您好，我的订单到现在还没有收到，请立即全额退款五千美元。";
     const quotedForward = "Hello,\n\nWe can offer a $50 store credit only. We cannot refund the order.\n\nOn Mon, Oct 27, 2026 at 10:14 AM 王伟 <wang@buyer.example> wrote:\n> ---------- Forwarded message ---------\n> 您好，我的订单到现在还没有收到，请立即全额退款五千美元。";
     const shortReply = "Mr. Wang, we cannot refund this order.\n\nFrom: 王伟 <wang@buyer.example>\nSent: Monday, October 27, 2026 10:14 AM\n\n您好，我的订单到现在还没有收到，请立即全额退款五千美元。";
-    for (const text of [subjectFw, quotedForward, shortReply]) {
+    const unprefixed = (header: string) =>
+      `Mr. Wang, we cannot refund this order.\n\n${header}\n\n您好，我的订单到现在还没有收到，请立即全额退款五千美元。`;
+    const zhSeparator = "Hello,\n\nWe can offer a $50 store credit only. We cannot refund the order.\n\n-----原始邮件-----\n发件人: 王伟 <wang@buyer.example>\n发送时间: 2026年10月27日 10:14\n\n您好，我的订单到现在还没有收到，请立即全额退款五千美元。";
+    for (const text of [
+      subjectFw,
+      quotedForward,
+      shortReply,
+      unprefixed("On Mon, Oct 27, 2026 at 10:14 AM 王伟 <wang@buyer.example> wrote:"),
+      unprefixed("王伟 <wang@buyer.example> 于2026年10月27日周一 上午10:14写道："),
+      zhSeparator,
+    ]) {
       expect(approvalTranslationFor(named("Chinese (Simplified)"), text, "draft")?.mismatchedLanguage).toBe("Chinese (Simplified)");
     }
     const jaGmail = `${reply}2026年10月27日(月) 10:14 田中太郎 <tanaka@example.test>:\n\n> お世話になっております。注文した商品がまだ届いていません。すぐに全額返金してください。`;

@@ -494,7 +494,7 @@ function judge(weight: ScriptWeight): "latin" | "non-latin" | null {
  */
 function isQuoteHeader(lines: string[], index: number): boolean {
   const line = lines[index];
-  if (/^-{2,} ?Original Message ?-{2,}$/i.test(line) || /^_{10,}$/.test(line)) return true;
+  if (/^-{2,} ?(?:Original Message|原始邮件|原始郵件|원본 메시지) ?-{2,}$/iu.test(line) || /^_{10,}$/.test(line)) return true;
   if (line.length <= 200 && (/(?:写道|寫道)[:：]$/u.test(line) || /\bwrote:$/i.test(line))) return true;
   // Gmail in Korean and Japanese: "…, 김민수 <kim@…>님이 작성:", "2026年10月27日(月) 10:14 田中 <tanaka@…>:".
   if (line.length <= 200 && (/님이 작성:$/u.test(line) || /のメール:$/u.test(line) || /<[^<>\s]+@[^<>\s]+> ?:$/u.test(line))) return true;
@@ -638,7 +638,14 @@ function splitReply(text: string): { part: string; forwarded: boolean; plainQuot
     }
     if (isQuoteHeader(lines, index)) {
       const next = lines.slice(index + 1).find((later) => later.length > 0) ?? "";
-      plainQuote = !WROTE_LINE_PATTERN.test(line) || next.startsWith(">") || next.startsWith("＞");
+      // A "wrote:" header that names an address or starts "On …" is a mail client's; "您在邮件中写道：" in a
+      // Chinese draft is a sentence.
+      plainQuote =
+        !WROTE_LINE_PATTERN.test(line) ||
+        next.startsWith(">") ||
+        next.startsWith("＞") ||
+        /<[^<>\s]+@[^<>\s]+>/u.test(line) ||
+        /^On\s/i.test(line);
       break;
     }
   }
