@@ -428,6 +428,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #resultTurnId: string | null;
   #semanticResultTextBoundary: number | null = null;
   #semanticResultProviderMessageId: string | null = null;
+  #semanticResultProviderTextBoundary: number | null = null;
   #lastNonTerminalToolSourceSeq = 0;
   #usage: Record<string, unknown> | null = null;
   readonly #conversationMode: "task" | "prepared";
@@ -526,6 +527,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#resultTurnId = null;
     this.#semanticResultTextBoundary = null;
     this.#semanticResultProviderMessageId = null;
+    this.#semanticResultProviderTextBoundary = null;
     this.#lastNonTerminalToolSourceSeq = 0;
     this.#completedTextPartIds.clear();
     this.#completedReasoningPartIds.clear();
@@ -1628,6 +1630,14 @@ class OpenCodeHarnessSession implements HarnessSession {
       // part from the same assistant message complete. Correlating by native
       // message identity selects that response while excluding both earlier
       // commentary messages and later acknowledgement-only messages.
+      if (this.#semanticResultProviderMessageId !== messageId) {
+        // MCP completion arrives over a different connection from the native
+        // event feed. Buffered pre-tool prose can be observed after the MCP
+        // response, so use the native tool part as the structural boundary.
+        // Duplicate updates for this same message must not move it past prose
+        // that was already completed after the tool.
+        this.#semanticResultProviderTextBoundary = this.#completedTextParts.length;
+      }
       this.#semanticResultProviderMessageId = messageId;
     }
     for (const canonical of canonicalProviderEventsFromOpenCodePart(part)) {
@@ -1820,7 +1830,7 @@ class OpenCodeHarnessSession implements HarnessSession {
       part,
       index: this.#completedTextParts.indexOf(part),
     }));
-    const boundary = this.#semanticResultTextBoundary;
+    const boundary = this.#semanticResultProviderTextBoundary ?? this.#semanticResultTextBoundary;
     const beforeResult = indexed.filter(
       ({ index }) => boundary !== null && index < boundary,
     );

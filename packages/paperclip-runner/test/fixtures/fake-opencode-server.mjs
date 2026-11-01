@@ -572,7 +572,8 @@ const server = createServer(async (request, response) => {
         const correlatedFinal = String(parsedPrompt.message ?? "").includes(
           "correlated-final-message",
         );
-        const finalAfterToolCommentary = String(
+        const bufferedPreToolCommentary = String(parsedPrompt.message ?? "").includes("buffered-pre-tool-commentary");
+        const finalAfterToolCommentary = bufferedPreToolCommentary || String(
           parsedPrompt.message ?? "",
         ).includes("final-after-tool-commentary");
         const commentaryOnlyBeforeWork = String(
@@ -659,6 +660,9 @@ const server = createServer(async (request, response) => {
           });
           await callTerminalTool(promptPayload);
         } else if (finalAfterToolCommentary) {
+          // The MCP response and SSE feed are separate transports. Model the
+          // tool result arriving before buffered, structurally pre-tool text.
+          if (bufferedPreToolCommentary) await callTerminalTool(promptPayload);
           emit({
             type: "message.part.updated",
             id: "event-tool-commentary",
@@ -673,7 +677,7 @@ const server = createServer(async (request, response) => {
               },
             },
           });
-          await callTerminalTool(promptPayload);
+          if (!bufferedPreToolCommentary) await callTerminalTool(promptPayload);
           emit({
             type: "message.part.updated",
             id: "event-tool-part",

@@ -1120,10 +1120,15 @@ it.each([
       if (terminalReplay) {
         // Forward failures now preserve a startup fence. Keep this genuinely
         // produced failed copy intact; it is NOT a legacy replay candidate.
+        // The failure proof specifically requires a failed spawn. An executor
+        // may have a real Codex on its ambient PATH, so use an owned empty bin
+        // directory rather than accidentally launching the operator's CLI.
+        const unavailableProviderBin = join(original, "..", "unavailable-provider-bin");
+        await mkdir(unavailableProviderBin);
         await expect(
           settleRetainedRunnerdSession({
             ...input,
-            environment: undefined,
+            environment: { PATH: unavailableProviderBin },
             sourceCodexHome: null,
           }),
         ).rejects.toThrow("native_cleanup_maintenance_unproven");
