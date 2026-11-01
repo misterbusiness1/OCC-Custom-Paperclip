@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { urlString } from "./validators/zod-compat.js";
 import {
   AUTH_BASE_URL_MODES,
   BIND_MODES,
@@ -32,12 +33,12 @@ export const databaseConfigSchema = z.object({
   connectionString: z.string().optional(),
   embeddedPostgresDataDir: z.string().default("~/.paperclip/instances/default/db"),
   embeddedPostgresPort: z.number().int().min(1).max(65535).default(54329),
-  backup: databaseBackupConfigSchema.default({
+  backup: databaseBackupConfigSchema.default(() => ({
     enabled: true,
     intervalMinutes: 60,
     retentionDays: 7,
     dir: "~/.paperclip/instances/default/data/backups",
-  }),
+  })),
 });
 
 export const loggingConfigSchema = z.object({
@@ -58,7 +59,7 @@ export const serverConfigSchema = z.object({
 
 export const authConfigSchema = z.object({
   baseUrlMode: z.enum(AUTH_BASE_URL_MODES).default("auto"),
-  publicBaseUrl: z.string().url().optional(),
+  publicBaseUrl: urlString().optional(),
   disableSignUp: z.boolean().default(false),
 });
 
@@ -76,15 +77,15 @@ export const storageS3ConfigSchema = z.object({
 
 export const storageConfigSchema = z.object({
   provider: z.enum(STORAGE_PROVIDERS).default("local_disk"),
-  localDisk: storageLocalDiskConfigSchema.default({
+  localDisk: storageLocalDiskConfigSchema.default(() => ({
     baseDir: "~/.paperclip/instances/default/data/storage",
-  }),
-  s3: storageS3ConfigSchema.default({
+  })),
+  s3: storageS3ConfigSchema.default(() => ({
     bucket: "paperclip",
     region: "us-east-1",
     prefix: "",
     forcePathStyle: false,
-  }),
+  })),
 });
 
 export const secretsLocalEncryptedConfigSchema = z.object({
@@ -94,14 +95,14 @@ export const secretsLocalEncryptedConfigSchema = z.object({
 export const secretsConfigSchema = z.object({
   provider: z.enum(SECRET_PROVIDERS).default("local_encrypted"),
   strictMode: z.boolean().default(false),
-  localEncrypted: secretsLocalEncryptedConfigSchema.default({
+  localEncrypted: secretsLocalEncryptedConfigSchema.default(() => ({
     keyFilePath: "~/.paperclip/instances/default/secrets/master.key",
-  }),
+  })),
 });
 
 export const telemetryConfigSchema = z.object({
   enabled: z.boolean().default(true),
-}).default({});
+}).prefault({});
 
 export const paperclipConfigSchema = z
   .object({
@@ -111,12 +112,15 @@ export const paperclipConfigSchema = z
     logging: loggingConfigSchema,
     server: serverConfigSchema,
     telemetry: telemetryConfigSchema,
-    auth: authConfigSchema.default({
-      baseUrlMode: "auto",
+    // Default factories: zod 4 returns a `.default(value)` object without
+    // parsing (cloning) it, so nested default objects would be shared between
+    // parse results; zod 3 parsed the default and returned fresh objects.
+    auth: authConfigSchema.default(() => ({
+      baseUrlMode: "auto" as const,
       disableSignUp: false,
-    }),
-    storage: storageConfigSchema.default({
-      provider: "local_disk",
+    })),
+    storage: storageConfigSchema.default(() => ({
+      provider: "local_disk" as const,
       localDisk: {
         baseDir: "~/.paperclip/instances/default/data/storage",
       },
@@ -126,14 +130,14 @@ export const paperclipConfigSchema = z
         prefix: "",
         forcePathStyle: false,
       },
-    }),
-    secrets: secretsConfigSchema.default({
-      provider: "local_encrypted",
+    })),
+    secrets: secretsConfigSchema.default(() => ({
+      provider: "local_encrypted" as const,
       strictMode: false,
       localEncrypted: {
         keyFilePath: "~/.paperclip/instances/default/secrets/master.key",
       },
-    }),
+    })),
   })
   .superRefine((value, ctx) => {
     if (value.server.deploymentMode === "local_trusted" && value.server.exposure !== "private") {

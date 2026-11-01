@@ -355,7 +355,7 @@ describe("approval routes idempotent retries", () => {
       .post("/api/companies/company-1/approvals")
       .send({
         type: "request_board_approval",
-        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        issueIds: ["00000000-0000-4000-8000-000000000001"],
         payload: {
           gate: "gate_a",
           orderId: "1001",
@@ -386,7 +386,7 @@ describe("approval routes idempotent retries", () => {
     );
     expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
       "approval-1",
-      ["00000000-0000-0000-0000-000000000001"],
+      ["00000000-0000-4000-8000-000000000001"],
       { agentId: "agent-1", userId: null },
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
@@ -423,7 +423,7 @@ describe("approval routes idempotent retries", () => {
       .post("/api/companies/company-1/approvals")
       .send({
         type: "request_board_approval",
-        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        issueIds: ["00000000-0000-4000-8000-000000000001"],
         payload,
       });
 
@@ -821,7 +821,7 @@ describe("approval routes idempotent retries", () => {
       .set("Idempotency-Key", "approval:OXFA-2794")
       .send({
         type: "request_board_approval",
-        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        issueIds: ["00000000-0000-4000-8000-000000000001"],
         payload: {
           gate: "gate_a",
           orderId: "1001",
@@ -840,11 +840,11 @@ describe("approval routes idempotent retries", () => {
       "company-1",
       expect.objectContaining({ type: "request_board_approval" }),
       "approval:OXFA-2794",
-      ["00000000-0000-0000-0000-000000000001"],
+      ["00000000-0000-4000-8000-000000000001"],
     );
     expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
       "approval-replay",
-      ["00000000-0000-0000-0000-000000000001"],
+      ["00000000-0000-4000-8000-000000000001"],
       { agentId: "agent-1", userId: null },
     );
     expect(mockLogActivity).not.toHaveBeenCalled();

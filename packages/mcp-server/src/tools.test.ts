@@ -1,14 +1,17 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PaperclipApiClient } from "./client.js";
+import { createPaperclipMcpServer } from "./index.js";
 import { createToolDefinitions } from "./tools.js";
 
 function makeClient() {
   return new PaperclipApiClient({
     apiUrl: "http://localhost:3100/api",
     apiKey: "token-123",
-    companyId: "11111111-1111-1111-1111-111111111111",
-    agentId: "22222222-2222-2222-2222-222222222222",
-    runId: "33333333-3333-3333-3333-333333333333",
+    companyId: "11111111-1111-4111-8111-111111111111",
+    agentId: "22222222-2222-4222-8222-222222222222",
+    runId: "33333333-3333-4333-8333-333333333333",
   });
 }
 
@@ -16,6 +19,28 @@ function getTool(name: string) {
   const tool = createToolDefinitions(makeClient()).find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`Missing tool ${name}`);
   return tool;
+}
+
+async function callToolOverMcp(name: string, args: Record<string, unknown>) {
+  const { server } = createPaperclipMcpServer({
+    apiUrl: "http://localhost:3100/api",
+    apiKey: "token-123",
+    companyId: "11111111-1111-4111-8111-111111111111",
+    agentId: "22222222-2222-4222-8222-222222222222",
+    runId: "33333333-3333-4333-8333-333333333333",
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "tools-test", version: "0.0.0" });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    return (await client.callTool({ name, arguments: args })) as {
+      isError?: boolean;
+      content: Array<{ type: string; text: string }>;
+    };
+  } finally {
+    await client.close();
+    await server.close();
+  }
 }
 
 function mockJsonResponse(body: unknown, status = 200) {
@@ -48,7 +73,7 @@ describe("paperclip MCP tools", () => {
     expect(init.method).toBe("PATCH");
     expect((init.headers as Record<string, string>)["Authorization"]).toBe("Bearer token-123");
     expect((init.headers as Record<string, string>)["X-Paperclip-Run-Id"]).toBe(
-      "33333333-3333-3333-3333-333333333333",
+      "33333333-3333-4333-8333-333333333333",
     );
   });
 
@@ -64,7 +89,7 @@ describe("paperclip MCP tools", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url] = fetchMock.mock.calls[0] as [string];
     expect(String(url)).toBe(
-      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/issues",
+      "http://localhost:3100/api/companies/11111111-1111-4111-8111-111111111111/issues",
     );
     expect(response.content[0]?.text).toContain("issue-1");
   });
@@ -82,7 +107,7 @@ describe("paperclip MCP tools", () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({
-      agentId: "22222222-2222-2222-2222-222222222222",
+      agentId: "22222222-2222-4222-8222-222222222222",
       expectedStatuses: ["todo", "backlog", "blocked"],
     });
   });
@@ -129,7 +154,7 @@ describe("paperclip MCP tools", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(String(url)).toBe(
-      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/approvals",
+      "http://localhost:3100/api/companies/11111111-1111-4111-8111-111111111111/approvals",
     );
     expect(JSON.parse(String(init.body))).toEqual({
       type: "request_board_approval",
@@ -160,19 +185,19 @@ describe("paperclip MCP tools", () => {
     const tool = getTool("paperclipCreateIssue");
     await tool.execute({
       title: "Assigned follow-up",
-      assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     });
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(String(url)).toBe(
-      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/issues",
+      "http://localhost:3100/api/companies/11111111-1111-4111-8111-111111111111/issues",
     );
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
       title: "Assigned follow-up",
       workMode: "standard",
       priority: "medium",
-      assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
       requestDepth: 0,
       allowDuplicate: false,
     });
@@ -423,20 +448,105 @@ describe("paperclip MCP tools", () => {
     await tool.execute({
       type: "hire_agent",
       payload: { branch: "pap-1167" },
-      issueIds: ["44444444-4444-4444-4444-444444444444"],
+      issueIds: ["44444444-4444-4444-8444-444444444444"],
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(String(url)).toBe(
-      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/approvals",
+      "http://localhost:3100/api/companies/11111111-1111-4111-8111-111111111111/approvals",
     );
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
       type: "hire_agent",
       payload: { branch: "pap-1167" },
-      issueIds: ["44444444-4444-4444-4444-444444444444"],
+      issueIds: ["44444444-4444-4444-8444-444444444444"],
     });
+  });
+
+  it("patches only the issue fields the caller sends (no zod 4 defaults)", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => mockJsonResponse({ id: "issue-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Direct tool execution and a real MCP tools/call (the SDK parses the
+    // arguments with the tool's shape before the tool parses them again).
+    await getTool("paperclipUpdateIssue").execute({ issueId: "PAP-1135", title: "Renamed" });
+    const viaMcp = await callToolOverMcp("paperclipUpdateIssue", { issueId: "PAP-1135", title: "Renamed" });
+    expect(viaMcp.isError).toBeFalsy();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [url, init] of fetchMock.mock.calls as Array<[string, RequestInit]>) {
+      expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135");
+      expect(init.method).toBe("PATCH");
+      // zod 3 never applied updateIssueSchema's priority/workMode defaults.
+      expect(JSON.parse(String(init.body))).toEqual({ title: "Renamed" });
+    }
+  });
+
+  it("keeps zod 3's issue text in tool input validation errors", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await getTool("paperclipGetComment").execute({ commentId: "not-a-uuid" });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Recorded with zod 3.25.76: { error: ZodError.message } for
+    // z.object({ issueId: z.string().min(1), commentId: z.string().uuid() }).
+    expect(response.content[0]?.text).toBe(
+      JSON.stringify(
+        {
+          error:
+            "[\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"string\",\n    \"received\": \"undefined\",\n" +
+            "    \"path\": [\n      \"issueId\"\n    ],\n    \"message\": \"Required\"\n  },\n  {\n" +
+            "    \"validation\": \"uuid\",\n    \"code\": \"invalid_string\",\n    \"message\": \"Invalid uuid\",\n" +
+            "    \"path\": [\n      \"commentId\"\n    ]\n  }\n]",
+        },
+        null,
+        2,
+      ),
+    );
+  });
+
+  it("reports board approval payload issues in zod 3 form over MCP", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    // The payload is only checked by the tool's own input schema (the SDK
+    // validates the shape, where payload is a record), so this error text
+    // comes from the tool, not from the MCP SDK.
+    const response = await callToolOverMcp("paperclipCreateApproval", {
+      type: "request_board_approval",
+      payload: { title: "Approve something", recommendedAction: "Approve it", risks: ["None"] },
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const body = JSON.parse(response.content[0]!.text) as { error: string };
+    expect(JSON.parse(body.error)).toEqual([
+      {
+        code: "invalid_type",
+        expected: "string",
+        received: "undefined",
+        path: ["payload", "summary"],
+        message: "Required",
+      },
+    ]);
+  });
+
+  it("leaves argument validation by the MCP SDK to zod 4's wording", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    // The SDK validates the arguments against the tool's shape before the tool
+    // runs and words the error from zod's issue messages. Under zod 3 this read
+    // "...: Required at issueId"; zod 4's default message is used now.
+    const response = await callToolOverMcp("paperclipGetIssue", {});
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.isError).toBe(true);
+    expect(response.content[0]?.text).toBe(
+      "MCP error -32602: Input validation error: Invalid arguments for tool paperclipGetIssue: " +
+        "Invalid input: expected string, received undefined at issueId",
+    );
   });
 
   it("rejects invalid generic request paths", async () => {

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { zod3IssueParams } from "@paperclipai/shared";
 import { paperclipConfigSchema, type PaperclipConfig } from "./schema.js";
 import {
   resolveDefaultConfigPath,
@@ -88,7 +89,7 @@ export function readConfig(configPath?: string): PaperclipConfig | null {
   if (!fs.existsSync(filePath)) return null;
   const raw = parseJson(filePath);
   const migrated = migrateLegacyConfig(raw);
-  const parsed = paperclipConfigSchema.safeParse(migrated);
+  const parsed = paperclipConfigSchema.safeParse(migrated, zod3IssueParams);
   if (!parsed.success) {
     throw new Error(`Invalid config at ${filePath}: ${formatValidationError(parsed.error)}`);
   }

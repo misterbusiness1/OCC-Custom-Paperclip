@@ -28,6 +28,7 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import {
   resolvePaperclipInstanceRootForAdapter,
@@ -2174,7 +2175,7 @@ export function agentRoutes(
       return;
     }
 
-    const query = agentMineInboxQuerySchema.parse(req.query);
+    const query = agentMineInboxQuerySchema.parse(req.query, zod3IssueParams);
     const issuesSvc = issueService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
       touchedByUserId: query.userId,

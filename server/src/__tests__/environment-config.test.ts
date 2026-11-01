@@ -13,7 +13,7 @@ describe("environment config helpers", () => {
         remoteWorkspacePath: "/srv/paperclip/workspace",
         privateKeySecretRef: {
           type: "secret_ref",
-          secretId: "11111111-1111-1111-1111-111111111111",
+          secretId: "11111111-1111-4111-8111-111111111111",
           version: "latest",
         },
         knownHosts: "",
@@ -28,7 +28,7 @@ describe("environment config helpers", () => {
       privateKey: null,
       privateKeySecretRef: {
         type: "secret_ref",
-        secretId: "11111111-1111-1111-1111-111111111111",
+        secretId: "11111111-1111-4111-8111-111111111111",
         version: "latest",
       },
       knownHosts: null,
@@ -147,7 +147,7 @@ describe("environment config helpers", () => {
       config: {
         provider: "secure-plugin",
         template: "  base  ",
-        apiKey: "22222222-2222-2222-2222-222222222222",
+        apiKey: "22222222-2222-4222-8222-222222222222",
         timeoutMs: "450000",
       },
     });
@@ -155,7 +155,7 @@ describe("environment config helpers", () => {
     expect(config).toEqual({
       provider: "secure-plugin",
       template: "  base  ",
-      apiKey: "22222222-2222-2222-2222-222222222222",
+      apiKey: "22222222-2222-4222-8222-222222222222",
       timeoutMs: 450000,
       reuseLease: false,
     });
@@ -188,7 +188,7 @@ describe("environment config helpers", () => {
       config: {
         provider: "secure-plugin",
         template: "base",
-        apiKey: "22222222-2222-2222-2222-222222222222",
+        apiKey: "22222222-2222-4222-8222-222222222222",
         timeoutMs: 300000,
         reuseLease: true,
       },
@@ -199,7 +199,7 @@ describe("environment config helpers", () => {
       config: {
         provider: "secure-plugin",
         template: "base",
-        apiKey: "22222222-2222-2222-2222-222222222222",
+        apiKey: "22222222-2222-4222-8222-222222222222",
         timeoutMs: 300000,
         reuseLease: true,
       },

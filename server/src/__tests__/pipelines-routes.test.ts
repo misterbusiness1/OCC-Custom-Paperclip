@@ -1009,6 +1009,75 @@ describeEmbeddedPostgres("pipeline routes", () => {
       .expect(422);
   });
 
+  it("keeps the stored stage config and routine link when a stage PATCH omits config", async () => {
+    // zod 4 applies a default that sits under .optional(); the stage `config`
+    // schema defaults to {}. A PATCH that only renames or moves a stage must
+    // not arrive with config: {} and wipe the onEnter routine, its routine
+    // link or the review targets (zod 3 left the key absent).
+    const company = await seedCompany();
+    const http = request(app(boardActor));
+    const [routine] = await db.insert(routines).values({ companyId: company.id, title: "Stage routine" }).returning();
+    const reviewConfig = { approveToStageKey: "done", rejectToStageKey: "cancelled", requireRejectReason: true };
+    const pipeline = await http
+      .post(`/api/companies/${company.id}/pipelines`)
+      .send({
+        key: "config-preserved",
+        name: "Config preserved",
+        stages: [
+          { key: "intake", name: "Intake", kind: "open", position: 100 },
+          {
+            key: "build",
+            name: "Build",
+            kind: "working",
+            position: 150,
+            config: { onEnter: { type: "run_routine", id: "build-step", routineId: routine!.id } },
+          },
+          { key: "review", name: "Review", kind: "review", position: 200, config: reviewConfig },
+          { key: "done", name: "Done", kind: "done", position: 900 },
+          { key: "cancelled", name: "Cancelled", kind: "cancelled", position: 1000 },
+        ],
+      })
+      .expect(201);
+    const pipelineId = pipeline.body.id as string;
+    const stageByKey = (key: string) => pipeline.body.stages.find((stage: { key: string }) => stage.key === key);
+    const buildStageId = stageByKey("build").id as string;
+    const reviewStageId = stageByKey("review").id as string;
+
+    const storedConfig = async (stageId: string) =>
+      (await db.select({ config: pipelineStages.config }).from(pipelineStages).where(eq(pipelineStages.id, stageId)))[0]!.config;
+    const routineOrigin = async () =>
+      (await db
+        .select({ originKind: routines.originKind, originId: routines.originId })
+        .from(routines)
+        .where(eq(routines.id, routine!.id)))[0];
+
+    // Link the routine through a PATCH that does send config.
+    await http
+      .patch(`/api/pipelines/${pipelineId}/stages/${buildStageId}`)
+      .send({ config: { onEnter: { type: "run_routine", id: "build-step", routineId: routine!.id } } })
+      .expect(200);
+    const buildConfigBefore = await storedConfig(buildStageId);
+    const reviewConfigBefore = await storedConfig(reviewStageId);
+    expect(buildConfigBefore).toMatchObject({ onEnter: { type: "run_routine", id: "build-step", routineId: routine!.id } });
+    expect(reviewConfigBefore).toMatchObject(reviewConfig);
+    expect(await routineOrigin()).toEqual({ originKind: "pipeline_automation", originId: pipelineId });
+
+    for (const patch of [{ name: "Build renamed" }, { position: 175 }, { kind: "working" }, { key: "build-2" }]) {
+      const res = await http.patch(`/api/pipelines/${pipelineId}/stages/${buildStageId}`).send(patch).expect(200);
+      expect(res.body.config).toEqual(buildConfigBefore);
+      expect(await storedConfig(buildStageId)).toEqual(buildConfigBefore);
+      expect(await routineOrigin()).toEqual({ originKind: "pipeline_automation", originId: pipelineId });
+    }
+
+    // An empty review config is invalid, so dropping it would turn a rename into a 422.
+    const renamedReview = await http
+      .patch(`/api/pipelines/${pipelineId}/stages/${reviewStageId}`)
+      .send({ name: "Review renamed" })
+      .expect(200);
+    expect(renamedReview.body.config).toEqual(reviewConfigBefore);
+    expect(await storedConfig(reviewStageId)).toEqual(reviewConfigBefore);
+  });
+
   it("applies review decisions atomically with edits and stores reject reasons verbatim", async () => {
     const company = await seedCompany();
     const http = request(app(boardActor));

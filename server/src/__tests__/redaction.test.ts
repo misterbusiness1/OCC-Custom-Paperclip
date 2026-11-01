@@ -13,7 +13,7 @@ describe("redaction", () => {
         OPENAI_API_KEY: "sk-openai",
         OPENAI_API_KEY_REF: {
           type: "secret_ref",
-          secretId: "11111111-1111-1111-1111-111111111111",
+          secretId: "11111111-1111-4111-8111-111111111111",
         },
         OPENAI_API_KEY_PLAIN: {
           type: "plain",
@@ -34,7 +34,7 @@ describe("redaction", () => {
       OPENAI_API_KEY: REDACTED_EVENT_VALUE,
       OPENAI_API_KEY_REF: {
         type: "secret_ref",
-        secretId: "11111111-1111-1111-1111-111111111111",
+        secretId: "11111111-1111-4111-8111-111111111111",
       },
       OPENAI_API_KEY_PLAIN: {
         type: "plain",

@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import type { Db } from "@paperclipai/db";
-import { ZodError } from "zod";
+import { isZodError, toZod3Issues } from "@paperclipai/shared";
 import { HttpError } from "../errors.js";
 import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -117,8 +117,10 @@ export function errorHandler(
     return;
   }
 
-  if (err instanceof ZodError) {
-    res.status(400).json({ error: "Validation error", details: err.errors });
+  if (isZodError(err)) {
+    // zod 3 issue objects: the API contract predates zod 4 (see
+    // packages/shared/src/validators/zod3-issues.ts).
+    res.status(400).json({ error: "Validation error", details: toZod3Issues(err.issues) });
     return;
   }
 

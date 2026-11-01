@@ -1,0 +1,116 @@
+{
+ "capturedWith": "zod@3.25.76",
+ "note": "Behaviour of the Kubernetes provider zod schemas captured before the zod 4 migration (absent field entry = required). Do not regenerate on zod 4.",
+ "data": {
+  "fields": {
+   "adapter-registry.ts#adapterRegistryEntrySchema.allowFqdns": "omitted",
+   "adapter-registry.ts#adapterRegistryEntrySchema.defaultEnv": "omitted",
+   "adapter-registry.ts#adapterRegistryEntrySchema.enabled": {
+    "filled": true
+   },
+   "adapter-registry.ts#adapterRegistryEntrySchema.envKeys": "omitted",
+   "adapter-registry.ts#adapterRegistryEntrySchema.probeCommand": "omitted",
+   "adapter-registry.ts#adapterRegistryEntrySchema.runtimeImage": "omitted",
+   "adapter-registry.ts#adapterRegistrySchema[].allowFqdns": "omitted",
+   "adapter-registry.ts#adapterRegistrySchema[].defaultEnv": "omitted",
+   "adapter-registry.ts#adapterRegistrySchema[].enabled": {
+    "filled": true
+   },
+   "adapter-registry.ts#adapterRegistrySchema[].envKeys": "omitted",
+   "adapter-registry.ts#adapterRegistrySchema[].probeCommand": "omitted",
+   "adapter-registry.ts#adapterRegistrySchema[].runtimeImage": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.adapterType": {
+    "filled": "claude_local"
+   },
+   "types.ts#kubernetesProviderConfigSchema.adapters": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.adapters[].allowFqdns": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.adapters[].defaultEnv": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.adapters[].enabled": {
+    "filled": true
+   },
+   "types.ts#kubernetesProviderConfigSchema.adapters[].envKeys": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.adapters[].probeCommand": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.adapters[].runtimeImage": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.backend": {
+    "filled": "sandbox-cr"
+   },
+   "types.ts#kubernetesProviderConfigSchema.companySlug": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.defaultResources": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.defaultResources.limits": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.defaultResources.limits.cpu": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.defaultResources.limits.memory": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.defaultResources.requests": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.defaultResources.requests.cpu": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.defaultResources.requests.memory": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.egressAllowCidrs": {
+    "filled": []
+   },
+   "types.ts#kubernetesProviderConfigSchema.egressAllowFqdns": {
+    "filled": []
+   },
+   "types.ts#kubernetesProviderConfigSchema.egressMode": {
+    "filled": "standard"
+   },
+   "types.ts#kubernetesProviderConfigSchema.imageAllowList": {
+    "filled": []
+   },
+   "types.ts#kubernetesProviderConfigSchema.imagePullSecrets": {
+    "filled": []
+   },
+   "types.ts#kubernetesProviderConfigSchema.imageRegistry": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.inCluster": {
+    "filled": false
+   },
+   "types.ts#kubernetesProviderConfigSchema.jobTtlSecondsAfterFinished": {
+    "filled": 900
+   },
+   "types.ts#kubernetesProviderConfigSchema.kubeconfig": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.namespacePrefix": {
+    "filled": "paperclip-"
+   },
+   "types.ts#kubernetesProviderConfigSchema.podActivityDeadlineSec": {
+    "filled": 3600
+   },
+   "types.ts#kubernetesProviderConfigSchema.runtimeClassName": "omitted",
+   "types.ts#kubernetesProviderConfigSchema.serviceAccountAnnotations": {
+    "filled": {}
+   }
+  },
+  "objects": {
+   "adapter-registry.ts#adapterRegistryEntrySchema": "strict",
+   "adapter-registry.ts#adapterRegistrySchema[]": "strict",
+   "types.ts#kubernetesProviderConfigSchema": "strip",
+   "types.ts#kubernetesProviderConfigSchema.adapters[]": "strict",
+   "types.ts#kubernetesProviderConfigSchema.defaultResources": "strip",
+   "types.ts#kubernetesProviderConfigSchema.defaultResources.limits": "strip",
+   "types.ts#kubernetesProviderConfigSchema.defaultResources.requests": "strip"
+  },
+  "defaultsUnderOptional": [],
+  "roots": {
+   "adapter-registry.ts#adapterRegistryEntrySchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "adapter-registry.ts#adapterRegistrySchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "types.ts#kubernetesProviderConfigSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   }
+  }
+ }
+}

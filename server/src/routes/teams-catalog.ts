@@ -4,6 +4,7 @@ import {
   catalogTeamInstallSchema,
   catalogTeamListQuerySchema,
   catalogTeamPreviewSchema,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { accessService, agentService } from "../services/index.js";
@@ -68,7 +69,7 @@ export function teamsCatalogRoutes(db: Db) {
       kind: firstQueryString(req.query.kind),
       category: firstQueryString(req.query.category),
       q: firstQueryString(req.query.q),
-    });
+    }, zod3IssueParams);
     res.json(await listCatalogTeams(query));
   });
 

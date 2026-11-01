@@ -8,14 +8,14 @@ import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleRes
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 
-const createActivitySchema = z.object({
+export const createActivitySchema = z.object({
   actorType: z.enum(["agent", "user", "system", "plugin"]).optional().default("system"),
   actorId: z.string().min(1),
   action: z.string().min(1),
   entityType: z.string().min(1),
   entityId: z.string().min(1),
-  agentId: z.string().uuid().optional().nullable(),
-  details: z.record(z.unknown()).optional().nullable(),
+  agentId: z.uuid().optional().nullable(),
+  details: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
 export function activityRoutes(db: Db) {

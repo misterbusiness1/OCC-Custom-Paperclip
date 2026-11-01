@@ -9,6 +9,8 @@ import {
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
+  flattenZod3Issues,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
@@ -94,11 +96,11 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     assertCompanyAccess(req, companyId);
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, companyId))) return;
 
-    const parsed = workspaceOverviewQuerySchema.safeParse(req.query);
+    const parsed = workspaceOverviewQuerySchema.safeParse(req.query, zod3IssueParams);
     if (!parsed.success) {
       res.status(422).json({
         error: "Invalid workspace overview query",
-        details: parsed.error.flatten(),
+        details: flattenZod3Issues(parsed.error.issues),
       });
       return;
     }

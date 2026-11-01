@@ -7,7 +7,7 @@ import { inboxDismissalService, logActivity } from "../services/index.js";
 
 const ITEM_KEY_RE = /^(approval|join|run|attention):.+$/;
 
-const inboxDismissalSchema = z.object({
+export const inboxDismissalSchema = z.object({
   itemKey: z.string().trim().min(1).regex(ITEM_KEY_RE, "Unsupported inbox item key"),
   kind: z.enum(["dismiss", "snooze"]).default("dismiss"),
   snoozedUntil: z.string().trim().optional(),

@@ -727,7 +727,7 @@ Scoped API routes:
 /** Top-level helper for defining a plugin with type checking */
 export function definePlugin(definition: PluginDefinition): PaperclipPlugin;
 
-/** Re-exported from Zod for config schema definitions */
+/** Re-exported from Zod 4 (the `zod` package root) for config schema definitions */
 export { z } from "zod";
 
 export interface PluginContext {

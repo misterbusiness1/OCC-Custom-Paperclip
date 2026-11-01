@@ -13,6 +13,12 @@ updates:
       # Ignore major version bumps — review those manually
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # zod is pinned exactly in every manifest that declares it and in the
+      # root pnpm.overrides, and the zod 3 compatibility layer relies on that
+      # exact version's internals (packages/shared/src/validators/zod3-issues.ts).
+      # A bump must change all of them together and re-run the zod baselines;
+      # packages/shared/src/zod-version-pins.test.ts fails if they diverge.
+      - dependency-name: "zod"
 
   - package-ecosystem: github-actions
     directory: "/"

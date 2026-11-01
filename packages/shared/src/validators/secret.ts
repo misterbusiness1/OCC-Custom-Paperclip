@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { urlString } from "./zod-compat.js";
+import { zod3IssueParams } from "./zod3-issues.js";
 import {
   SECRET_BINDING_TARGET_TYPES,
   SECRET_MANAGED_MODES,
@@ -19,7 +21,7 @@ export const envBindingPlainSchema = z.object({
 
 export const envBindingSecretRefSchema = z.object({
   type: z.literal("secret_ref"),
-  secretId: z.string().uuid(),
+  secretId: z.uuid(),
   version: secretVersionSelectorSchema.optional(),
   projectionClass: z.enum(SECRET_PROJECTION_CLASSES).optional(),
   projectionAllowlistKey: z.string().trim().min(1).max(160).optional().nullable(),
@@ -47,7 +49,7 @@ export const createSecretSchema = z.object({
   name: z.string().min(1),
   key: secretKeySchema.optional(),
   provider: z.enum(SECRET_PROVIDERS).optional(),
-  providerConfigId: z.string().uuid().optional().nullable(),
+  providerConfigId: z.uuid().optional().nullable(),
   managedMode: z.enum(SECRET_MANAGED_MODES).optional(),
   value: z.string().min(1).optional().nullable(),
   description: z.string().optional().nullable(),
@@ -110,7 +112,7 @@ export const rotateSecretSchema = z.object({
   value: z.string().min(1).optional().nullable(),
   externalRef: z.string().optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
-  providerConfigId: z.string().uuid().optional().nullable(),
+  providerConfigId: z.uuid().optional().nullable(),
 }).superRefine(requireSecretRotationInput);
 
 export type RotateSecret = z.infer<typeof rotateSecretSchema>;
@@ -119,7 +121,7 @@ export const updateSecretSchema = z.object({
   name: z.string().min(1).optional(),
   key: secretKeySchema.optional(),
   status: z.enum(SECRET_STATUSES).optional(),
-  providerConfigId: z.string().uuid().optional().nullable(),
+  providerConfigId: z.uuid().optional().nullable(),
   description: z.string().optional().nullable(),
   externalRef: z.string().optional().nullable(),
   providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
@@ -134,7 +136,7 @@ export const secretBindingTargetSchema = z.object({
 });
 
 export const createSecretBindingSchema = secretBindingTargetSchema.extend({
-  secretId: z.string().uuid(),
+  secretId: z.uuid(),
   versionSelector: secretVersionSelectorSchema.default("latest"),
   required: z.boolean().default(true),
   label: z.string().optional().nullable(),
@@ -150,7 +152,7 @@ export const createUserSecretDefinitionSchema = z.object({
   description: z.string().trim().max(500).optional().nullable(),
   status: creatableSecretStatusSchema.optional(),
   provider: z.enum(SECRET_PROVIDERS).optional(),
-  providerConfigId: z.string().uuid().optional().nullable(),
+  providerConfigId: z.uuid().optional().nullable(),
   managedMode: z.enum(SECRET_MANAGED_MODES).optional(),
   providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
   usageGuidance: z.string().trim().max(1000).optional().nullable(),
@@ -162,7 +164,7 @@ export const updateUserSecretDefinitionSchema = z.object({
   name: z.string().trim().min(1).max(160).optional(),
   description: z.string().trim().max(500).optional().nullable(),
   status: z.enum(SECRET_STATUSES).optional(),
-  providerConfigId: z.string().uuid().optional().nullable(),
+  providerConfigId: z.uuid().optional().nullable(),
   providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
   usageGuidance: z.string().trim().max(1000).optional().nullable(),
 });
@@ -171,11 +173,11 @@ export type UpdateUserSecretDefinition = z.infer<typeof updateUserSecretDefiniti
 
 export const createUserSecretValueSchema = z.object({
   definitionKey: secretKeySchema.optional(),
-  definitionId: z.string().uuid().optional(),
+  definitionId: z.uuid().optional(),
   value: z.string().min(1).optional().nullable(),
   externalRef: z.string().optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
-  providerConfigId: z.string().uuid().optional().nullable(),
+  providerConfigId: z.uuid().optional().nullable(),
 }).superRefine((value, ctx) => {
   if (!value.definitionKey && !value.definitionId) {
     ctx.addIssue({
@@ -200,7 +202,7 @@ export const updateUserSecretValueSchema = z.object({
   value: z.string().min(1).optional().nullable(),
   externalRef: z.string().min(1).optional().nullable(),
   providerVersionRef: z.string().min(1).optional().nullable(),
-  providerConfigId: z.string().uuid().optional().nullable(),
+  providerConfigId: z.uuid().optional().nullable(),
 });
 
 export type UpdateUserSecretValue = z.infer<typeof updateUserSecretValueSchema>;
@@ -209,7 +211,7 @@ export const rotateUserSecretValueSchema = z.object({
   value: z.string().min(1).optional().nullable(),
   externalRef: z.string().min(1).optional().nullable(),
   providerVersionRef: z.string().min(1).optional().nullable(),
-  providerConfigId: z.string().uuid().optional().nullable(),
+  providerConfigId: z.uuid().optional().nullable(),
 }).superRefine(requireSecretRotationInput);
 
 export type RotateUserSecretValue = z.infer<typeof rotateUserSecretValueSchema>;
@@ -265,7 +267,7 @@ export const gcpSecretManagerProviderConfigSchema = z.object({
 
 const vaultAddressSchema = z.preprocess(
   (value) => typeof value === "string" ? value.trim() : value,
-  z.string().url().superRefine((value, ctx) => {
+  urlString().superRefine((value, ctx) => {
     let url: URL;
     try {
       url = new URL(value);
@@ -291,7 +293,7 @@ const vaultAddressSchema = z.preprocess(
 
 function rejectUnsafeVaultAddress(value: unknown, ctx: z.RefinementCtx) {
   if (value === undefined || value === null) return;
-  const parsed = vaultAddressSchema.safeParse(value);
+  const parsed = vaultAddressSchema.safeParse(value, zod3IssueParams);
   if (parsed.success) return;
   for (const issue of parsed.error.issues) {
     ctx.addIssue({
@@ -326,7 +328,7 @@ export const createSecretProviderConfigSchema = z.object({
   const parsed = secretProviderConfigPayloadSchema.safeParse({
     provider: value.provider,
     config: value.config,
-  });
+  }, zod3IssueParams);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
       ctx.addIssue({
@@ -376,7 +378,7 @@ export const updateSecretProviderConfigSchema = z.object({
 export type UpdateSecretProviderConfig = z.infer<typeof updateSecretProviderConfigSchema>;
 
 export const remoteSecretImportPreviewSchema = z.object({
-  providerConfigId: z.string().uuid(),
+  providerConfigId: z.uuid(),
   query: z.string().trim().max(200).optional().nullable(),
   nextToken: z.string().trim().min(1).max(4096).optional().nullable(),
   pageSize: z.number().int().min(1).max(100).optional(),
@@ -386,7 +388,7 @@ export type RemoteSecretImportPreview = z.infer<typeof remoteSecretImportPreview
 
 export const secretProviderConfigDiscoveryPreviewSchema = z.object({
   provider: z.enum(SECRET_PROVIDERS),
-  config: z.record(z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).default({}),
   query: z.string().trim().max(200).optional().nullable(),
   nextToken: z.string().trim().min(1).max(4096).optional().nullable(),
   pageSize: z.number().int().min(1).max(100).optional(),
@@ -395,7 +397,7 @@ export const secretProviderConfigDiscoveryPreviewSchema = z.object({
   const parsed = secretProviderConfigPayloadSchema.safeParse({
     provider: value.provider,
     config: value.config,
-  });
+  }, zod3IssueParams);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
       ctx.addIssue({
@@ -418,7 +420,7 @@ export const remoteSecretImportSelectionSchema = z.object({
 });
 
 export const remoteSecretImportSchema = z.object({
-  providerConfigId: z.string().uuid(),
+  providerConfigId: z.uuid(),
   secrets: z.array(remoteSecretImportSelectionSchema).min(1).max(100),
 });
 

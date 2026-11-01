@@ -1,0 +1,995 @@
+{
+ "capturedWith": "zod@3.25.76",
+ "note": "Omitted-key behaviour of every MCP tool input schema captured before the zod 4 migration (absent entry = required). Do not regenerate on zod 4.",
+ "data": {
+  "fields": {
+   "tool:paperclipAddComment.authorType": "omitted",
+   "tool:paperclipAddComment.interrupt": "omitted",
+   "tool:paperclipAddComment.metadata": "omitted",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|0.label": "omitted",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|1.label": "omitted",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|1.language": "omitted",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|3.identifier": "omitted",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|3.issueId": "omitted",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|3.label": "omitted",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|3.title": "omitted",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|4.label": "omitted",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|4.name": "omitted",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|5.label": "omitted",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|5.title": "omitted",
+   "tool:paperclipAddComment.metadata.sections[].title": "omitted",
+   "tool:paperclipAddComment.metadata.sourceRunId": "omitted",
+   "tool:paperclipAddComment.presentation": "omitted",
+   "tool:paperclipAddComment.presentation.detailsDefaultOpen": {
+    "filled": false
+   },
+   "tool:paperclipAddComment.presentation.kind": {
+    "filled": "message"
+   },
+   "tool:paperclipAddComment.presentation.title": "omitted",
+   "tool:paperclipAddComment.presentation.tone": {
+    "filled": "neutral"
+   },
+   "tool:paperclipAddComment.reopen": "omitted",
+   "tool:paperclipAddComment.resume": "omitted",
+   "tool:paperclipApiRequest.jsonBody": "omitted",
+   "tool:paperclipApprovalDecision.decisionNote": "omitted",
+   "tool:paperclipApprovalDecision.payloadJson": "omitted",
+   "tool:paperclipAskUserQuestions.continuationPolicy": {
+    "filled": "wake_assignee"
+   },
+   "tool:paperclipAskUserQuestions.idempotencyKey": "omitted",
+   "tool:paperclipAskUserQuestions.payload.questions[].helpText": "omitted",
+   "tool:paperclipAskUserQuestions.payload.questions[].options[].description": "omitted",
+   "tool:paperclipAskUserQuestions.payload.questions[].required": "omitted",
+   "tool:paperclipAskUserQuestions.payload.submitLabel": "omitted",
+   "tool:paperclipAskUserQuestions.payload.supersedeOnUserComment": "omitted",
+   "tool:paperclipAskUserQuestions.payload.title": "omitted",
+   "tool:paperclipAskUserQuestions.sourceCommentId": "omitted",
+   "tool:paperclipAskUserQuestions.sourceRunId": "omitted",
+   "tool:paperclipAskUserQuestions.summary": "omitted",
+   "tool:paperclipAskUserQuestions.title": "omitted",
+   "tool:paperclipCheckoutIssue.agentId": "omitted",
+   "tool:paperclipCheckoutIssue.expectedStatuses": "omitted",
+   "tool:paperclipControlIssueWorkspaceServices.runtimeServiceId": "omitted",
+   "tool:paperclipControlIssueWorkspaceServices.serviceIndex": "omitted",
+   "tool:paperclipControlIssueWorkspaceServices.workspaceCommandId": "omitted",
+   "tool:paperclipCreateApproval.companyId": "omitted",
+   "tool:paperclipCreateApproval.idempotencyKey": "omitted",
+   "tool:paperclipCreateApproval.issueIds": "omitted",
+   "tool:paperclipCreateApproval.requestedByAgentId": "omitted",
+   "tool:paperclipCreateIssue.allowDuplicate": {
+    "filled": false
+   },
+   "tool:paperclipCreateIssue.assigneeAdapterOverrides": "omitted",
+   "tool:paperclipCreateIssue.assigneeAdapterOverrides.adapterConfig": "omitted",
+   "tool:paperclipCreateIssue.assigneeAdapterOverrides.modelProfile": "omitted",
+   "tool:paperclipCreateIssue.assigneeAdapterOverrides.useProjectWorkspace": "omitted",
+   "tool:paperclipCreateIssue.assigneeAgentId": "omitted",
+   "tool:paperclipCreateIssue.assigneeUserId": "omitted",
+   "tool:paperclipCreateIssue.billingCode": "omitted",
+   "tool:paperclipCreateIssue.blockedByIssueIds": "omitted",
+   "tool:paperclipCreateIssue.capacityOverride": "omitted",
+   "tool:paperclipCreateIssue.companyId": "omitted",
+   "tool:paperclipCreateIssue.createdByUserId": "omitted",
+   "tool:paperclipCreateIssue.description": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.reviewPreset": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.trustBoundary": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.trustBoundary.allowedAgentIds": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.trustBoundary.allowedSecretBindingIds": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.trustBoundary.allowedToolClasses": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.trustBoundary.companyId": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.trustBoundary.issueIds": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.trustBoundary.outputPromotionTarget": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.trustBoundary.projectIds": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.trustBoundary.rootIssueId": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.trustPreset": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.commentRequired": {
+    "filled": true
+   },
+   "tool:paperclipCreateIssue.executionPolicy.mode": {
+    "filled": "normal"
+   },
+   "tool:paperclipCreateIssue.executionPolicy.monitor": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.monitor.externalRef": {
+    "filled": null
+   },
+   "tool:paperclipCreateIssue.executionPolicy.monitor.kind": {
+    "filled": null
+   },
+   "tool:paperclipCreateIssue.executionPolicy.monitor.maxAttempts": {
+    "filled": null
+   },
+   "tool:paperclipCreateIssue.executionPolicy.monitor.notes": {
+    "filled": null
+   },
+   "tool:paperclipCreateIssue.executionPolicy.monitor.recoveryPolicy": {
+    "filled": null
+   },
+   "tool:paperclipCreateIssue.executionPolicy.monitor.scheduledBy": {
+    "filled": "assignee"
+   },
+   "tool:paperclipCreateIssue.executionPolicy.monitor.serviceName": {
+    "filled": null
+   },
+   "tool:paperclipCreateIssue.executionPolicy.monitor.timeoutAt": {
+    "filled": null
+   },
+   "tool:paperclipCreateIssue.executionPolicy.reviewPreset": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.stages": {
+    "filled": []
+   },
+   "tool:paperclipCreateIssue.executionPolicy.stages[].approvalsNeeded": {
+    "filled": 1
+   },
+   "tool:paperclipCreateIssue.executionPolicy.stages[].id": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.stages[].participants": {
+    "filled": []
+   },
+   "tool:paperclipCreateIssue.executionPolicy.stages[].participants[].agentId": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.stages[].participants[].id": "omitted",
+   "tool:paperclipCreateIssue.executionPolicy.stages[].participants[].userId": "omitted",
+   "tool:paperclipCreateIssue.executionWorkspaceId": "omitted",
+   "tool:paperclipCreateIssue.executionWorkspacePreference": "omitted",
+   "tool:paperclipCreateIssue.executionWorkspaceSettings": "omitted",
+   "tool:paperclipCreateIssue.executionWorkspaceSettings.environmentId": "omitted",
+   "tool:paperclipCreateIssue.executionWorkspaceSettings.mode": "omitted",
+   "tool:paperclipCreateIssue.executionWorkspaceSettings.workspaceRuntime": "omitted",
+   "tool:paperclipCreateIssue.executionWorkspaceSettings.workspaceStrategy": "omitted",
+   "tool:paperclipCreateIssue.executionWorkspaceSettings.workspaceStrategy.baseRef": "omitted",
+   "tool:paperclipCreateIssue.executionWorkspaceSettings.workspaceStrategy.branchTemplate": "omitted",
+   "tool:paperclipCreateIssue.executionWorkspaceSettings.workspaceStrategy.provisionCommand": "omitted",
+   "tool:paperclipCreateIssue.executionWorkspaceSettings.workspaceStrategy.teardownCommand": "omitted",
+   "tool:paperclipCreateIssue.executionWorkspaceSettings.workspaceStrategy.type": "omitted",
+   "tool:paperclipCreateIssue.executionWorkspaceSettings.workspaceStrategy.worktreeParentDir": "omitted",
+   "tool:paperclipCreateIssue.goalId": "omitted",
+   "tool:paperclipCreateIssue.harnessKind": "omitted",
+   "tool:paperclipCreateIssue.idempotencyKey": "omitted",
+   "tool:paperclipCreateIssue.inheritExecutionWorkspaceFromIssueId": "omitted",
+   "tool:paperclipCreateIssue.labelIds": "omitted",
+   "tool:paperclipCreateIssue.parentId": "omitted",
+   "tool:paperclipCreateIssue.priority": {
+    "filled": "medium"
+   },
+   "tool:paperclipCreateIssue.projectId": "omitted",
+   "tool:paperclipCreateIssue.projectWorkspaceId": "omitted",
+   "tool:paperclipCreateIssue.requestDepth": {
+    "filled": 0
+   },
+   "tool:paperclipCreateIssue.responsibleUserId": "omitted",
+   "tool:paperclipCreateIssue.status": "omitted",
+   "tool:paperclipCreateIssue.watchdog": "omitted",
+   "tool:paperclipCreateIssue.watchdog.instructions": "omitted",
+   "tool:paperclipCreateIssue.watchdogDiscovery": "omitted",
+   "tool:paperclipCreateIssue.watchdogDiscovery.evidenceMarkdown": "omitted",
+   "tool:paperclipCreateIssue.workMode": {
+    "filled": "standard"
+   },
+   "tool:paperclipGetAgent.companyId": "omitted",
+   "tool:paperclipGetHeartbeatContext.wakeCommentId": "omitted",
+   "tool:paperclipGetProject.companyId": "omitted",
+   "tool:paperclipListAgents.companyId": "omitted",
+   "tool:paperclipListApprovals.companyId": "omitted",
+   "tool:paperclipListApprovals.status": "omitted",
+   "tool:paperclipListComments.after": "omitted",
+   "tool:paperclipListComments.limit": "omitted",
+   "tool:paperclipListComments.order": "omitted",
+   "tool:paperclipListGoals.companyId": "omitted",
+   "tool:paperclipListIssues.assigneeAgentId": "omitted",
+   "tool:paperclipListIssues.assigneeUserId": "omitted",
+   "tool:paperclipListIssues.companyId": "omitted",
+   "tool:paperclipListIssues.executionWorkspaceId": "omitted",
+   "tool:paperclipListIssues.inboxArchivedByUserId": "omitted",
+   "tool:paperclipListIssues.includeLiveDescendantSummary": "omitted",
+   "tool:paperclipListIssues.includeRoutineExecutions": "omitted",
+   "tool:paperclipListIssues.labelId": "omitted",
+   "tool:paperclipListIssues.originId": "omitted",
+   "tool:paperclipListIssues.originKind": "omitted",
+   "tool:paperclipListIssues.participantAgentId": "omitted",
+   "tool:paperclipListIssues.projectId": "omitted",
+   "tool:paperclipListIssues.q": "omitted",
+   "tool:paperclipListIssues.status": "omitted",
+   "tool:paperclipListIssues.touchedByUserId": "omitted",
+   "tool:paperclipListIssues.unreadForUserId": "omitted",
+   "tool:paperclipListProjects.companyId": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.continuationPolicy": {
+    "filled": "wake_assignee"
+   },
+   "tool:paperclipRequestCheckboxConfirmation.idempotencyKey": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.acceptLabel": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.allowDeclineReason": {
+    "filled": true
+   },
+   "tool:paperclipRequestCheckboxConfirmation.payload.declineReasonPlaceholder": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.defaultSelectedOptionIds": {
+    "filled": []
+   },
+   "tool:paperclipRequestCheckboxConfirmation.payload.detailsMarkdown": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.maxSelected": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.minSelected": {
+    "filled": 0
+   },
+   "tool:paperclipRequestCheckboxConfirmation.payload.options[].description": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.rejectLabel": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.rejectReasonLabel": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.rejectRequiresReason": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.supersedeOnUserComment": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.target": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.target|0.documentId": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.target|0.href": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.target|0.issueId": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.target|0.label": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.target|0.revisionNumber": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.target|1.href": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.target|1.label": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.target|1.revisionId": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.payload.target|1.revisionNumber": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.sourceCommentId": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.sourceRunId": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.summary": "omitted",
+   "tool:paperclipRequestCheckboxConfirmation.title": "omitted",
+   "tool:paperclipRequestConfirmation.continuationPolicy": {
+    "filled": "none"
+   },
+   "tool:paperclipRequestConfirmation.idempotencyKey": "omitted",
+   "tool:paperclipRequestConfirmation.payload.acceptLabel": "omitted",
+   "tool:paperclipRequestConfirmation.payload.allowDeclineReason": {
+    "filled": true
+   },
+   "tool:paperclipRequestConfirmation.payload.declineReasonPlaceholder": "omitted",
+   "tool:paperclipRequestConfirmation.payload.detailsMarkdown": "omitted",
+   "tool:paperclipRequestConfirmation.payload.rejectLabel": "omitted",
+   "tool:paperclipRequestConfirmation.payload.rejectReasonLabel": "omitted",
+   "tool:paperclipRequestConfirmation.payload.rejectRequiresReason": "omitted",
+   "tool:paperclipRequestConfirmation.payload.supersedeOnUserComment": "omitted",
+   "tool:paperclipRequestConfirmation.payload.target": "omitted",
+   "tool:paperclipRequestConfirmation.payload.target|0.documentId": "omitted",
+   "tool:paperclipRequestConfirmation.payload.target|0.href": "omitted",
+   "tool:paperclipRequestConfirmation.payload.target|0.issueId": "omitted",
+   "tool:paperclipRequestConfirmation.payload.target|0.label": "omitted",
+   "tool:paperclipRequestConfirmation.payload.target|0.revisionNumber": "omitted",
+   "tool:paperclipRequestConfirmation.payload.target|1.href": "omitted",
+   "tool:paperclipRequestConfirmation.payload.target|1.label": "omitted",
+   "tool:paperclipRequestConfirmation.payload.target|1.revisionId": "omitted",
+   "tool:paperclipRequestConfirmation.payload.target|1.revisionNumber": "omitted",
+   "tool:paperclipRequestConfirmation.payload.toolAction": "omitted",
+   "tool:paperclipRequestConfirmation.sourceCommentId": "omitted",
+   "tool:paperclipRequestConfirmation.sourceRunId": "omitted",
+   "tool:paperclipRequestConfirmation.summary": "omitted",
+   "tool:paperclipRequestConfirmation.title": "omitted",
+   "tool:paperclipSuggestTasks.continuationPolicy": {
+    "filled": "wake_assignee"
+   },
+   "tool:paperclipSuggestTasks.idempotencyKey": "omitted",
+   "tool:paperclipSuggestTasks.payload.defaultParentId": "omitted",
+   "tool:paperclipSuggestTasks.payload.tasks[].assigneeAgentId": "omitted",
+   "tool:paperclipSuggestTasks.payload.tasks[].assigneeUserId": "omitted",
+   "tool:paperclipSuggestTasks.payload.tasks[].billingCode": "omitted",
+   "tool:paperclipSuggestTasks.payload.tasks[].description": "omitted",
+   "tool:paperclipSuggestTasks.payload.tasks[].goalId": "omitted",
+   "tool:paperclipSuggestTasks.payload.tasks[].hiddenInPreview": "omitted",
+   "tool:paperclipSuggestTasks.payload.tasks[].labels": "omitted",
+   "tool:paperclipSuggestTasks.payload.tasks[].parentClientKey": "omitted",
+   "tool:paperclipSuggestTasks.payload.tasks[].parentId": "omitted",
+   "tool:paperclipSuggestTasks.payload.tasks[].priority": "omitted",
+   "tool:paperclipSuggestTasks.payload.tasks[].projectId": "omitted",
+   "tool:paperclipSuggestTasks.payload.tasks[].workMode": "omitted",
+   "tool:paperclipSuggestTasks.sourceCommentId": "omitted",
+   "tool:paperclipSuggestTasks.sourceRunId": "omitted",
+   "tool:paperclipSuggestTasks.summary": "omitted",
+   "tool:paperclipSuggestTasks.title": "omitted",
+   "tool:paperclipUpdateIssue.assigneeAdapterOverrides": "omitted",
+   "tool:paperclipUpdateIssue.assigneeAdapterOverrides.adapterConfig": "omitted",
+   "tool:paperclipUpdateIssue.assigneeAdapterOverrides.modelProfile": "omitted",
+   "tool:paperclipUpdateIssue.assigneeAdapterOverrides.useProjectWorkspace": "omitted",
+   "tool:paperclipUpdateIssue.assigneeAgentId": "omitted",
+   "tool:paperclipUpdateIssue.assigneeUserId": "omitted",
+   "tool:paperclipUpdateIssue.billingCode": "omitted",
+   "tool:paperclipUpdateIssue.blockedByIssueIds": "omitted",
+   "tool:paperclipUpdateIssue.capacityOverride": "omitted",
+   "tool:paperclipUpdateIssue.comment": "omitted",
+   "tool:paperclipUpdateIssue.description": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.reviewPreset": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.trustBoundary": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.trustBoundary.allowedAgentIds": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.trustBoundary.allowedSecretBindingIds": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.trustBoundary.allowedToolClasses": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.trustBoundary.companyId": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.trustBoundary.issueIds": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.trustBoundary.outputPromotionTarget": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.trustBoundary.projectIds": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.trustBoundary.rootIssueId": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.trustPreset": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.commentRequired": {
+    "filled": true
+   },
+   "tool:paperclipUpdateIssue.executionPolicy.mode": {
+    "filled": "normal"
+   },
+   "tool:paperclipUpdateIssue.executionPolicy.monitor": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.monitor.externalRef": {
+    "filled": null
+   },
+   "tool:paperclipUpdateIssue.executionPolicy.monitor.kind": {
+    "filled": null
+   },
+   "tool:paperclipUpdateIssue.executionPolicy.monitor.maxAttempts": {
+    "filled": null
+   },
+   "tool:paperclipUpdateIssue.executionPolicy.monitor.notes": {
+    "filled": null
+   },
+   "tool:paperclipUpdateIssue.executionPolicy.monitor.recoveryPolicy": {
+    "filled": null
+   },
+   "tool:paperclipUpdateIssue.executionPolicy.monitor.scheduledBy": {
+    "filled": "assignee"
+   },
+   "tool:paperclipUpdateIssue.executionPolicy.monitor.serviceName": {
+    "filled": null
+   },
+   "tool:paperclipUpdateIssue.executionPolicy.monitor.timeoutAt": {
+    "filled": null
+   },
+   "tool:paperclipUpdateIssue.executionPolicy.reviewPreset": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.stages": {
+    "filled": []
+   },
+   "tool:paperclipUpdateIssue.executionPolicy.stages[].approvalsNeeded": {
+    "filled": 1
+   },
+   "tool:paperclipUpdateIssue.executionPolicy.stages[].id": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.stages[].participants": {
+    "filled": []
+   },
+   "tool:paperclipUpdateIssue.executionPolicy.stages[].participants[].agentId": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.stages[].participants[].id": "omitted",
+   "tool:paperclipUpdateIssue.executionPolicy.stages[].participants[].userId": "omitted",
+   "tool:paperclipUpdateIssue.executionWorkspaceId": "omitted",
+   "tool:paperclipUpdateIssue.executionWorkspacePreference": "omitted",
+   "tool:paperclipUpdateIssue.executionWorkspaceSettings": "omitted",
+   "tool:paperclipUpdateIssue.executionWorkspaceSettings.environmentId": "omitted",
+   "tool:paperclipUpdateIssue.executionWorkspaceSettings.mode": "omitted",
+   "tool:paperclipUpdateIssue.executionWorkspaceSettings.workspaceRuntime": "omitted",
+   "tool:paperclipUpdateIssue.executionWorkspaceSettings.workspaceStrategy": "omitted",
+   "tool:paperclipUpdateIssue.executionWorkspaceSettings.workspaceStrategy.baseRef": "omitted",
+   "tool:paperclipUpdateIssue.executionWorkspaceSettings.workspaceStrategy.branchTemplate": "omitted",
+   "tool:paperclipUpdateIssue.executionWorkspaceSettings.workspaceStrategy.provisionCommand": "omitted",
+   "tool:paperclipUpdateIssue.executionWorkspaceSettings.workspaceStrategy.teardownCommand": "omitted",
+   "tool:paperclipUpdateIssue.executionWorkspaceSettings.workspaceStrategy.type": "omitted",
+   "tool:paperclipUpdateIssue.executionWorkspaceSettings.workspaceStrategy.worktreeParentDir": "omitted",
+   "tool:paperclipUpdateIssue.goalId": "omitted",
+   "tool:paperclipUpdateIssue.harnessKind": "omitted",
+   "tool:paperclipUpdateIssue.hiddenAt": "omitted",
+   "tool:paperclipUpdateIssue.inheritExecutionWorkspaceFromIssueId": "omitted",
+   "tool:paperclipUpdateIssue.interrupt": "omitted",
+   "tool:paperclipUpdateIssue.labelIds": "omitted",
+   "tool:paperclipUpdateIssue.parentId": "omitted",
+   "tool:paperclipUpdateIssue.priority": "omitted",
+   "tool:paperclipUpdateIssue.projectId": "omitted",
+   "tool:paperclipUpdateIssue.projectWorkspaceId": "omitted",
+   "tool:paperclipUpdateIssue.reopen": "omitted",
+   "tool:paperclipUpdateIssue.requestDepth": "omitted",
+   "tool:paperclipUpdateIssue.resume": "omitted",
+   "tool:paperclipUpdateIssue.reviewRequest": "omitted",
+   "tool:paperclipUpdateIssue.status": "omitted",
+   "tool:paperclipUpdateIssue.title": "omitted",
+   "tool:paperclipUpdateIssue.watchdogDiscovery": "omitted",
+   "tool:paperclipUpdateIssue.watchdogDiscovery.evidenceMarkdown": "omitted",
+   "tool:paperclipUpdateIssue.workMode": "omitted",
+   "tool:paperclipUpsertIssueDocument.baseRevisionId": "omitted",
+   "tool:paperclipUpsertIssueDocument.changeSummary": "omitted",
+   "tool:paperclipUpsertIssueDocument.format": {
+    "filled": "markdown"
+   },
+   "tool:paperclipUpsertIssueDocument.title": "omitted",
+   "tool:paperclipWaitForIssueWorkspaceService.runtimeServiceId": "omitted",
+   "tool:paperclipWaitForIssueWorkspaceService.serviceName": "omitted",
+   "tool:paperclipWaitForIssueWorkspaceService.timeoutSeconds": "omitted",
+   "tools.ts#createAskUserQuestionsToolSchema.continuationPolicy": {
+    "filled": "wake_assignee"
+   },
+   "tools.ts#createAskUserQuestionsToolSchema.idempotencyKey": "omitted",
+   "tools.ts#createAskUserQuestionsToolSchema.payload.questions[].helpText": "omitted",
+   "tools.ts#createAskUserQuestionsToolSchema.payload.questions[].options[].description": "omitted",
+   "tools.ts#createAskUserQuestionsToolSchema.payload.questions[].required": "omitted",
+   "tools.ts#createAskUserQuestionsToolSchema.payload.submitLabel": "omitted",
+   "tools.ts#createAskUserQuestionsToolSchema.payload.supersedeOnUserComment": "omitted",
+   "tools.ts#createAskUserQuestionsToolSchema.payload.title": "omitted",
+   "tools.ts#createAskUserQuestionsToolSchema.sourceCommentId": "omitted",
+   "tools.ts#createAskUserQuestionsToolSchema.sourceRunId": "omitted",
+   "tools.ts#createAskUserQuestionsToolSchema.summary": "omitted",
+   "tools.ts#createAskUserQuestionsToolSchema.title": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.continuationPolicy": {
+    "filled": "wake_assignee"
+   },
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.idempotencyKey": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.acceptLabel": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.allowDeclineReason": {
+    "filled": true
+   },
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.declineReasonPlaceholder": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.defaultSelectedOptionIds": {
+    "filled": []
+   },
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.detailsMarkdown": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.maxSelected": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.minSelected": {
+    "filled": 0
+   },
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.options[].description": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.rejectLabel": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.rejectReasonLabel": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.rejectRequiresReason": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.supersedeOnUserComment": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.target": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.target|0.documentId": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.target|0.href": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.target|0.issueId": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.target|0.label": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.target|0.revisionNumber": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.target|1.href": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.target|1.label": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.target|1.revisionId": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.target|1.revisionNumber": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.sourceCommentId": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.sourceRunId": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.summary": "omitted",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.title": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.continuationPolicy": {
+    "filled": "none"
+   },
+   "tools.ts#createRequestConfirmationToolSchema.idempotencyKey": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.acceptLabel": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.allowDeclineReason": {
+    "filled": true
+   },
+   "tools.ts#createRequestConfirmationToolSchema.payload.declineReasonPlaceholder": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.detailsMarkdown": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.rejectLabel": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.rejectReasonLabel": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.rejectRequiresReason": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.supersedeOnUserComment": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.target": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.target|0.documentId": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.target|0.href": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.target|0.issueId": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.target|0.label": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.target|0.revisionNumber": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.target|1.href": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.target|1.label": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.target|1.revisionId": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.target|1.revisionNumber": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.payload.toolAction": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.sourceCommentId": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.sourceRunId": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.summary": "omitted",
+   "tools.ts#createRequestConfirmationToolSchema.title": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.continuationPolicy": {
+    "filled": "wake_assignee"
+   },
+   "tools.ts#createSuggestTasksToolSchema.idempotencyKey": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.payload.defaultParentId": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.payload.tasks[].assigneeAgentId": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.payload.tasks[].assigneeUserId": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.payload.tasks[].billingCode": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.payload.tasks[].description": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.payload.tasks[].goalId": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.payload.tasks[].hiddenInPreview": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.payload.tasks[].labels": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.payload.tasks[].parentClientKey": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.payload.tasks[].parentId": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.payload.tasks[].priority": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.payload.tasks[].projectId": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.payload.tasks[].workMode": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.sourceCommentId": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.sourceRunId": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.summary": "omitted",
+   "tools.ts#createSuggestTasksToolSchema.title": "omitted",
+   "tools.ts#upsertDocumentToolSchema.baseRevisionId": "omitted",
+   "tools.ts#upsertDocumentToolSchema.changeSummary": "omitted",
+   "tools.ts#upsertDocumentToolSchema.format": {
+    "filled": "markdown"
+   },
+   "tools.ts#upsertDocumentToolSchema.title": "omitted"
+  },
+  "objects": {
+   "tool:paperclipAddApprovalComment": "strip",
+   "tool:paperclipAddComment": "strip",
+   "tool:paperclipAddComment.metadata": "strict",
+   "tool:paperclipAddComment.metadata.sections[]": "strict",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|0": "strict",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|1": "strict",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|2": "strict",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|3": "strict",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|4": "strict",
+   "tool:paperclipAddComment.metadata.sections[].rows[]|5": "strict",
+   "tool:paperclipAddComment.presentation": "strict",
+   "tool:paperclipApiRequest": "strip",
+   "tool:paperclipApprovalDecision": "strip",
+   "tool:paperclipAskUserQuestions": "strip",
+   "tool:paperclipAskUserQuestions.payload": "strip",
+   "tool:paperclipAskUserQuestions.payload.questions[]": "strip",
+   "tool:paperclipAskUserQuestions.payload.questions[].options[]": "strip",
+   "tool:paperclipCheckoutIssue": "strip",
+   "tool:paperclipControlIssueWorkspaceServices": "strip",
+   "tool:paperclipCreateApproval": "strip",
+   "tool:paperclipCreateIssue": "strip",
+   "tool:paperclipCreateIssue.assigneeAdapterOverrides": "strict",
+   "tool:paperclipCreateIssue.capacityOverride": "strict",
+   "tool:paperclipCreateIssue.executionPolicy": "strip",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy": "passthrough",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.reviewPreset": "strict",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.trustBoundary": "strict",
+   "tool:paperclipCreateIssue.executionPolicy.authorizationPolicy.trustBoundary.outputPromotionTarget": "strict",
+   "tool:paperclipCreateIssue.executionPolicy.monitor": "strip",
+   "tool:paperclipCreateIssue.executionPolicy.reviewPreset": "strict",
+   "tool:paperclipCreateIssue.executionPolicy.stages[]": "strip",
+   "tool:paperclipCreateIssue.executionPolicy.stages[].participants[]": "strip",
+   "tool:paperclipCreateIssue.executionWorkspaceSettings": "strict",
+   "tool:paperclipCreateIssue.executionWorkspaceSettings.workspaceStrategy": "strict",
+   "tool:paperclipCreateIssue.watchdog": "strict",
+   "tool:paperclipCreateIssue.watchdogDiscovery": "strict",
+   "tool:paperclipGetAgent": "strip",
+   "tool:paperclipGetApproval": "strip",
+   "tool:paperclipGetApprovalIssues": "strip",
+   "tool:paperclipGetComment": "strip",
+   "tool:paperclipGetDocument": "strip",
+   "tool:paperclipGetGoal": "strip",
+   "tool:paperclipGetHeartbeatContext": "strip",
+   "tool:paperclipGetIssue": "strip",
+   "tool:paperclipGetIssueWorkspaceRuntime": "strip",
+   "tool:paperclipGetProject": "strip",
+   "tool:paperclipInboxLite": "strip",
+   "tool:paperclipLinkIssueApproval": "strip",
+   "tool:paperclipListAgents": "strip",
+   "tool:paperclipListApprovalComments": "strip",
+   "tool:paperclipListApprovals": "strip",
+   "tool:paperclipListComments": "strip",
+   "tool:paperclipListDocumentRevisions": "strip",
+   "tool:paperclipListDocuments": "strip",
+   "tool:paperclipListGoals": "strip",
+   "tool:paperclipListIssueApprovals": "strip",
+   "tool:paperclipListIssues": "strip",
+   "tool:paperclipListProjects": "strip",
+   "tool:paperclipMe": "strip",
+   "tool:paperclipReleaseIssue": "strip",
+   "tool:paperclipRequestCheckboxConfirmation": "strip",
+   "tool:paperclipRequestCheckboxConfirmation.payload": "strip",
+   "tool:paperclipRequestCheckboxConfirmation.payload.options[]": "strip",
+   "tool:paperclipRequestCheckboxConfirmation.payload.target|0": "strip",
+   "tool:paperclipRequestCheckboxConfirmation.payload.target|1": "strip",
+   "tool:paperclipRequestConfirmation": "strip",
+   "tool:paperclipRequestConfirmation.payload": "strip",
+   "tool:paperclipRequestConfirmation.payload.target|0": "strip",
+   "tool:paperclipRequestConfirmation.payload.target|1": "strip",
+   "tool:paperclipRequestConfirmation.payload.toolAction": "strip",
+   "tool:paperclipRestoreIssueDocumentRevision": "strip",
+   "tool:paperclipSuggestTasks": "strip",
+   "tool:paperclipSuggestTasks.payload": "strip",
+   "tool:paperclipSuggestTasks.payload.tasks[]": "strip",
+   "tool:paperclipUnlinkIssueApproval": "strip",
+   "tool:paperclipUpdateIssue": "strip",
+   "tool:paperclipUpdateIssue.assigneeAdapterOverrides": "strict",
+   "tool:paperclipUpdateIssue.capacityOverride": "strict",
+   "tool:paperclipUpdateIssue.executionPolicy": "strip",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy": "passthrough",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.reviewPreset": "strict",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.trustBoundary": "strict",
+   "tool:paperclipUpdateIssue.executionPolicy.authorizationPolicy.trustBoundary.outputPromotionTarget": "strict",
+   "tool:paperclipUpdateIssue.executionPolicy.monitor": "strip",
+   "tool:paperclipUpdateIssue.executionPolicy.reviewPreset": "strict",
+   "tool:paperclipUpdateIssue.executionPolicy.stages[]": "strip",
+   "tool:paperclipUpdateIssue.executionPolicy.stages[].participants[]": "strip",
+   "tool:paperclipUpdateIssue.executionWorkspaceSettings": "strict",
+   "tool:paperclipUpdateIssue.executionWorkspaceSettings.workspaceStrategy": "strict",
+   "tool:paperclipUpdateIssue.reviewRequest": "strict",
+   "tool:paperclipUpdateIssue.watchdogDiscovery": "strict",
+   "tool:paperclipUpsertIssueDocument": "strip",
+   "tool:paperclipWaitForIssueWorkspaceService": "strip",
+   "tools.ts#createAskUserQuestionsToolSchema": "strip",
+   "tools.ts#createAskUserQuestionsToolSchema.payload": "strip",
+   "tools.ts#createAskUserQuestionsToolSchema.payload.questions[]": "strip",
+   "tools.ts#createAskUserQuestionsToolSchema.payload.questions[].options[]": "strip",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema": "strip",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload": "strip",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.options[]": "strip",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.target|0": "strip",
+   "tools.ts#createRequestCheckboxConfirmationToolSchema.payload.target|1": "strip",
+   "tools.ts#createRequestConfirmationToolSchema": "strip",
+   "tools.ts#createRequestConfirmationToolSchema.payload": "strip",
+   "tools.ts#createRequestConfirmationToolSchema.payload.target|0": "strip",
+   "tools.ts#createRequestConfirmationToolSchema.payload.target|1": "strip",
+   "tools.ts#createRequestConfirmationToolSchema.payload.toolAction": "strip",
+   "tools.ts#createSuggestTasksToolSchema": "strip",
+   "tools.ts#createSuggestTasksToolSchema.payload": "strip",
+   "tools.ts#createSuggestTasksToolSchema.payload.tasks[]": "strip",
+   "tools.ts#upsertDocumentToolSchema": "strip"
+  },
+  "defaultsUnderOptional": [
+   "tool:paperclipUpdateIssue.priority",
+   "tool:paperclipUpdateIssue.workMode"
+  ],
+  "roots": {
+   "tool:paperclipAddApprovalComment": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipAddComment": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipApiRequest": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipApprovalDecision": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipAskUserQuestions": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipCheckoutIssue": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipControlIssueWorkspaceServices": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipCreateApproval": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipCreateIssue": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipGetAgent": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipGetApproval": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipGetApprovalIssues": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipGetComment": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipGetDocument": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipGetGoal": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipGetHeartbeatContext": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipGetIssue": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipGetIssueWorkspaceRuntime": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipGetProject": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipInboxLite": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {}
+    }
+   },
+   "tool:paperclipLinkIssueApproval": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipListAgents": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {}
+    }
+   },
+   "tool:paperclipListApprovalComments": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipListApprovals": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {}
+    }
+   },
+   "tool:paperclipListComments": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipListDocumentRevisions": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipListDocuments": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipListGoals": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {}
+    }
+   },
+   "tool:paperclipListIssueApprovals": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipListIssues": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {}
+    }
+   },
+   "tool:paperclipListProjects": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {}
+    }
+   },
+   "tool:paperclipMe": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {}
+    }
+   },
+   "tool:paperclipReleaseIssue": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipRequestCheckboxConfirmation": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipRequestConfirmation": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipRestoreIssueDocumentRevision": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipSuggestTasks": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipUnlinkIssueApproval": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipUpdateIssue": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipUpsertIssueDocument": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tool:paperclipWaitForIssueWorkspaceService": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tools.ts#createAskUserQuestionsToolSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tools.ts#createRequestCheckboxConfirmationToolSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tools.ts#createRequestConfirmationToolSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tools.ts#createSuggestTasksToolSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "tools.ts#upsertDocumentToolSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   }
+  }
+ }
+}

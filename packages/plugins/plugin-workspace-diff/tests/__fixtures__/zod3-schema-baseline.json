@@ -1,0 +1,134 @@
+{
+ "capturedWith": "zod@3.25.76",
+ "note": "Behaviour of the workspace-diff plugin contracts captured before the zod 4 migration (absent field entry = required). Do not regenerate on zod 4.",
+ "data": {
+  "fields": {
+   "contracts.ts#workspaceDiffQuerySchema.baseRef": "omitted",
+   "contracts.ts#workspaceDiffQuerySchema.includeUntracked": {
+    "filled": true
+   },
+   "contracts.ts#workspaceDiffQuerySchema.path": "omitted",
+   "contracts.ts#workspaceDiffQuerySchema.paths": "omitted",
+   "contracts.ts#workspaceDiffQuerySchema.view": {
+    "filled": "working-tree"
+   }
+  },
+  "objects": {
+   "contracts.ts#workspaceDiffCapsSchema": "strict",
+   "contracts.ts#workspaceDiffFilePatchSchema": "strict",
+   "contracts.ts#workspaceDiffFilePatchSchema.warnings[]": "strict",
+   "contracts.ts#workspaceDiffFileSchema": "strict",
+   "contracts.ts#workspaceDiffFileSchema.patches[]": "strict",
+   "contracts.ts#workspaceDiffFileSchema.patches[].warnings[]": "strict",
+   "contracts.ts#workspaceDiffFileSchema.warnings[]": "strict",
+   "contracts.ts#workspaceDiffQuerySchema": "passthrough",
+   "contracts.ts#workspaceDiffResponseSchema": "strict",
+   "contracts.ts#workspaceDiffResponseSchema.caps": "strict",
+   "contracts.ts#workspaceDiffResponseSchema.files[]": "strict",
+   "contracts.ts#workspaceDiffResponseSchema.files[].patches[]": "strict",
+   "contracts.ts#workspaceDiffResponseSchema.files[].patches[].warnings[]": "strict",
+   "contracts.ts#workspaceDiffResponseSchema.files[].warnings[]": "strict",
+   "contracts.ts#workspaceDiffResponseSchema.stats": "strict",
+   "contracts.ts#workspaceDiffResponseSchema.warnings[]": "strict",
+   "contracts.ts#workspaceDiffStatsSchema": "strict",
+   "contracts.ts#workspaceDiffWarningSchema": "strict"
+  },
+  "defaultsUnderOptional": [],
+  "roots": {
+   "contracts.ts#workspaceDiffCapsSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "contracts.ts#workspaceDiffFilePatchSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "contracts.ts#workspaceDiffFileSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "contracts.ts#workspaceDiffFileStatusSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "contracts.ts#workspaceDiffPatchKindSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "contracts.ts#workspaceDiffQuerySchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {
+      "view": "working-tree",
+      "baseRef": null,
+      "includeUntracked": true,
+      "paths": []
+     }
+    }
+   },
+   "contracts.ts#workspaceDiffResponseSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "contracts.ts#workspaceDiffStatsSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "contracts.ts#workspaceDiffViewSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "contracts.ts#workspaceDiffWarningCodeSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "contracts.ts#workspaceDiffWarningSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   }
+  }
+ }
+}

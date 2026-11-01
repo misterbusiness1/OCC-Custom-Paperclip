@@ -11,6 +11,8 @@ import {
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
+  toZod3Issues,
+  zod3IssueParams,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
@@ -61,11 +63,11 @@ function verifyGateBBodyHash(payload: Record<string, unknown>) {
 }
 
 function validateRequestBoardApprovalPayload(payload: unknown): Record<string, unknown> {
-  const result = requestBoardApprovalPayloadSchema.safeParse(payload);
+  const result = requestBoardApprovalPayloadSchema.safeParse(payload, zod3IssueParams);
   if (!result.success) {
     throw badRequest(
       "Validation error",
-      result.error.issues.map((issue) => ({
+      toZod3Issues(result.error.issues).map((issue) => ({
         ...issue,
         path: ["payload", ...issue.path],
       })),
