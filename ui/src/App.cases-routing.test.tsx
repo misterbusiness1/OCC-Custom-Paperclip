@@ -15,12 +15,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+let App: (typeof import("./App"))["App"];
+
 // jsdom's CSS parser rejects the custom-property marker rule stitches inserts
 // (`--sxs{--sxs:N}`), pulled into <App>'s eager import graph transitively via
 // @codesandbox/sandpack-react. Substitute a benign, valid rule on parse failure
 // so stitches' index bookkeeping stays intact and the module graph evaluates.
 // (sandpack itself is never exercised by the routing under test.)
-beforeAll(() => {
+beforeAll(async () => {
   const sheetProto = window.CSSStyleSheet.prototype as unknown as {
     insertRule: (rule: string, index?: number) => number;
     __pap13002Patched?: boolean;
@@ -40,7 +42,10 @@ beforeAll(() => {
     };
     sheetProto.__pap13002Patched = true;
   }
-});
+  // App eagerly imports the full page graph. Compile it during setup so the
+  // route behavior deadlines do not depend on cold transform time or load.
+  ({ App } = await import("./App"));
+}, 60_000);
 
 // Real Layout renders the full authenticated shell (sidebar, data queries) and
 // owns the "No company matches prefix" NotFound. For routing we only need it to
@@ -109,7 +114,6 @@ async function waitForText(container: HTMLElement, text: string) {
 }
 
 async function renderAppAt(container: HTMLElement, path: string) {
-  const { App } = await import("./App");
   const root = createRoot(container);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   flushSync(() => {
