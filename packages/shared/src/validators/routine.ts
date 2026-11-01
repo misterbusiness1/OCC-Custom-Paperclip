@@ -123,7 +123,7 @@ export const routineRevisionSnapshotSchema = routineRevisionSnapshotV1Schema;
 export type RoutineRevisionSnapshotV1 = z.infer<typeof routineRevisionSnapshotV1Schema>;
 export type RoutineRevisionSnapshot = z.infer<typeof routineRevisionSnapshotSchema>;
 
-const baseTriggerSchema = z.object({
+export const baseTriggerSchema = z.object({
   label: z.string().trim().max(120).optional().nullable(),
   enabled: z.boolean().optional().default(true),
 });

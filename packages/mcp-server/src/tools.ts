@@ -89,7 +89,7 @@ const listCommentsSchema = z.object({
   limit: z.number().int().positive().max(500).optional(),
 });
 
-const upsertDocumentToolSchema = z.object({
+export const upsertDocumentToolSchema = z.object({
   issueId: issueIdSchema,
   key: documentKeySchema,
   title: z.string().trim().max(200).nullable().optional(),
@@ -117,7 +117,7 @@ const addCommentToolSchema = z.object({
   issueId: issueIdSchema,
 }).merge(addIssueCommentSchema);
 
-const createSuggestTasksToolSchema = z.object({
+export const createSuggestTasksToolSchema = z.object({
   issueId: issueIdSchema,
   idempotencyKey: z.string().trim().max(255).nullable().optional(),
   sourceCommentId: z.string().uuid().nullable().optional(),
@@ -128,7 +128,7 @@ const createSuggestTasksToolSchema = z.object({
   payload: suggestTasksPayloadSchema,
 });
 
-const createAskUserQuestionsToolSchema = z.object({
+export const createAskUserQuestionsToolSchema = z.object({
   issueId: issueIdSchema,
   idempotencyKey: z.string().trim().max(255).nullable().optional(),
   sourceCommentId: z.string().uuid().nullable().optional(),
@@ -139,7 +139,7 @@ const createAskUserQuestionsToolSchema = z.object({
   payload: askUserQuestionsPayloadSchema,
 });
 
-const createRequestConfirmationToolSchema = z.object({
+export const createRequestConfirmationToolSchema = z.object({
   issueId: issueIdSchema,
   idempotencyKey: z.string().trim().max(255).nullable().optional(),
   sourceCommentId: z.string().uuid().nullable().optional(),
@@ -150,7 +150,7 @@ const createRequestConfirmationToolSchema = z.object({
   payload: requestConfirmationPayloadSchema,
 });
 
-const createRequestCheckboxConfirmationToolSchema = z.object({
+export const createRequestCheckboxConfirmationToolSchema = z.object({
   issueId: issueIdSchema,
   idempotencyKey: z.string().trim().max(255).nullable().optional(),
   sourceCommentId: z.string().uuid().nullable().optional(),

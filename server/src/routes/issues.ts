@@ -213,7 +213,7 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
 const refreshExternalObjectsSchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
 }).strict();
-const inboxArchiveBodySchema = z.object({
+export const inboxArchiveBodySchema = z.object({
   userId: z.string().trim().min(1).optional(),
 }).strict().default({});
 const externalObjectSummariesSchema = z.object({
@@ -398,7 +398,7 @@ function requiresPaperclipAttachmentMetadata(input: {
   return type === "artifact" && provider === "paperclip";
 }
 
-const attachmentArtifactMetadataInputSchema = z.object({
+export const attachmentArtifactMetadataInputSchema = z.object({
   attachmentId: z.string().uuid(),
 }).passthrough();
 

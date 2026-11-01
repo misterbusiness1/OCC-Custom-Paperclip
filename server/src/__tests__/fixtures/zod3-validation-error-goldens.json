@@ -1,0 +1,1481 @@
+{
+ "capturedWith": "zod@3.25.76",
+ "note": "Full 4xx bodies captured before the zod 4 migration. The contract compared after the migration is the status, the envelope, and code/path/message/expected/received of every zod issue (see contractView).",
+ "data": {
+  "route POST /api/companies/:companyId/issues {} (validate createIssueSchema)": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "title"
+      ],
+      "message": "Required"
+     }
+    ]
+   }
+  },
+  "route POST /api/companies/:companyId/issues mixed invalid fields": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "validation": "uuid",
+      "code": "invalid_string",
+      "message": "Invalid uuid",
+      "path": [
+       "projectId"
+      ]
+     },
+     {
+      "validation": "uuid",
+      "code": "invalid_string",
+      "message": "Invalid uuid",
+      "path": [
+       "blockedByIssueIds",
+       0
+      ]
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "number",
+      "path": [
+       "title"
+      ],
+      "message": "Expected string, received number"
+     },
+     {
+      "received": "nope",
+      "code": "invalid_enum_value",
+      "options": [
+       "backlog",
+       "todo",
+       "in_progress",
+       "in_review",
+       "done",
+       "blocked",
+       "cancelled"
+      ],
+      "path": [
+       "status"
+      ],
+      "message": "Invalid enum value. Expected 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'blocked' | 'cancelled', received 'nope'"
+     },
+     {
+      "received": "urgent",
+      "code": "invalid_enum_value",
+      "options": [
+       "critical",
+       "high",
+       "medium",
+       "low"
+      ],
+      "path": [
+       "priority"
+      ],
+      "message": "Invalid enum value. Expected 'critical' | 'high' | 'medium' | 'low', received 'urgent'"
+     }
+    ]
+   }
+  },
+  "route PATCH /api/issues/:id invalid fields (validate updateIssueRouteSchema)": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "too_small",
+      "minimum": 1,
+      "type": "string",
+      "inclusive": true,
+      "exact": false,
+      "message": "String must contain at least 1 character(s)",
+      "path": [
+       "title"
+      ]
+     },
+     {
+      "expected": "'critical' | 'high' | 'medium' | 'low'",
+      "received": "null",
+      "code": "invalid_type",
+      "path": [
+       "priority"
+      ],
+      "message": "Expected 'critical' | 'high' | 'medium' | 'low', received null"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "number",
+      "path": [
+       "assigneeAgentId"
+      ],
+      "message": "Expected string, received number"
+     }
+    ]
+   }
+  },
+  "route PUT /api/issues/:id/documents/:key {} (validate upsertIssueDocumentSchema)": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "expected": "'markdown'",
+      "received": "undefined",
+      "code": "invalid_type",
+      "path": [
+       "format"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "body"
+      ],
+      "message": "Required"
+     }
+    ]
+   }
+  },
+  "route GET /api/issues/:id/documents/:key invalid key (issues.ts details: error.issues)": {
+   "status": 400,
+   "body": {
+    "error": "Invalid document key",
+    "details": [
+     {
+      "validation": "regex",
+      "code": "invalid_string",
+      "message": "Document key must be lowercase letters, numbers, _ or -",
+      "path": []
+     }
+    ]
+   }
+  },
+  "route POST /api/issues/:id/inbox-archive unknown key (validate strict inboxArchiveBodySchema)": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "unrecognized_keys",
+      "keys": [
+       "bogus"
+      ],
+      "path": [],
+      "message": "Unrecognized key(s) in object: 'bogus'"
+     }
+    ]
+   }
+  },
+  "route PUT /api/companies/:companyId/skill-policy {} (422 issues)": {
+   "status": 422,
+   "body": {
+    "error": "Invalid skill policy document",
+    "code": "skill_policy_validation_failed",
+    "details": {
+     "code": "skill_policy_validation_failed",
+     "issues": [
+      {
+       "code": "invalid_literal",
+       "expected": 1,
+       "path": [
+        "schemaVersion"
+       ],
+       "message": "Invalid literal value, expected 1"
+      },
+      {
+       "expected": "'allow' | 'deny'",
+       "received": "undefined",
+       "code": "invalid_type",
+       "path": [
+        "defaultEffect"
+       ],
+       "message": "Required"
+      },
+      {
+       "code": "invalid_type",
+       "expected": "array",
+       "received": "undefined",
+       "path": [
+        "rules"
+       ],
+       "message": "Required"
+      },
+      {
+       "code": "invalid_type",
+       "expected": "number",
+       "received": "undefined",
+       "path": [
+        "expectedRevision"
+       ],
+       "message": "Required"
+      }
+     ]
+    }
+   }
+  },
+  "route PUT /api/companies/:companyId/skill-policy invalid rules (422 issues)": {
+   "status": 422,
+   "body": {
+    "error": "Invalid skill policy document",
+    "code": "skill_policy_validation_failed",
+    "details": {
+     "code": "skill_policy_validation_failed",
+     "issues": [
+      {
+       "code": "invalid_literal",
+       "expected": 1,
+       "path": [
+        "schemaVersion"
+       ],
+       "message": "Invalid literal value, expected 1"
+      },
+      {
+       "expected": "'allow' | 'deny'",
+       "received": "undefined",
+       "code": "invalid_type",
+       "path": [
+        "defaultEffect"
+       ],
+       "message": "Required"
+      },
+      {
+       "code": "invalid_type",
+       "expected": "string",
+       "received": "undefined",
+       "path": [
+        "rules",
+        0,
+        "id"
+       ],
+       "message": "Required"
+      },
+      {
+       "code": "invalid_type",
+       "expected": "number",
+       "received": "undefined",
+       "path": [
+        "rules",
+        0,
+        "priority"
+       ],
+       "message": "Required"
+      },
+      {
+       "received": "maybe",
+       "code": "invalid_enum_value",
+       "options": [
+        "allow",
+        "deny"
+       ],
+       "path": [
+        "rules",
+        0,
+        "effect"
+       ],
+       "message": "Invalid enum value. Expected 'allow' | 'deny', received 'maybe'"
+      },
+      {
+       "code": "invalid_type",
+       "expected": "object",
+       "received": "undefined",
+       "path": [
+        "rules",
+        0,
+        "subject"
+       ],
+       "message": "Required"
+      },
+      {
+       "code": "invalid_type",
+       "expected": "array",
+       "received": "undefined",
+       "path": [
+        "rules",
+        0,
+        "actions"
+       ],
+       "message": "Required"
+      },
+      {
+       "code": "invalid_type",
+       "expected": "number",
+       "received": "undefined",
+       "path": [
+        "expectedRevision"
+       ],
+       "message": "Required"
+      },
+      {
+       "code": "unrecognized_keys",
+       "keys": [
+        "extra"
+       ],
+       "path": [],
+       "message": "Unrecognized key(s) in object: 'extra'"
+      }
+     ]
+    }
+   }
+  },
+  "route GET /api/companies/:companyId/decision-training invalid query (flatten)": {
+   "status": 400,
+   "body": {
+    "error": "Invalid decision training query",
+    "details": {
+     "formErrors": [],
+     "fieldErrors": {
+      "project": [
+       "Invalid uuid"
+      ],
+      "kind": [
+       "Invalid enum value. Expected 'interaction' | 'approval' | 'execution_decision', received 'bogus'"
+      ]
+     }
+    }
+   }
+  },
+  "route POST /api/companies/:companyId/decision-training {} (validate createSchema)": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "expected": "'interaction' | 'approval' | 'execution_decision'",
+      "received": "undefined",
+      "code": "invalid_type",
+      "path": [
+       "sourceKind"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "sourceId"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "issueId"
+      ],
+      "message": "Required"
+     }
+    ]
+   }
+  },
+  "validate createApprovalSchema unknown discriminator": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_union_discriminator",
+      "options": [
+       "request_board_approval",
+       "hire_agent",
+       "approve_ceo_strategy",
+       "budget_override_required"
+      ],
+      "path": [
+       "type"
+      ],
+      "message": "Invalid discriminator value. Expected 'request_board_approval' | 'hire_agent' | 'approve_ceo_strategy' | 'budget_override_required'"
+     }
+    ]
+   }
+  },
+  "validate createApprovalSchema {}": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_union_discriminator",
+      "options": [
+       "request_board_approval",
+       "hire_agent",
+       "approve_ceo_strategy",
+       "budget_override_required"
+      ],
+      "path": [
+       "type"
+      ],
+      "message": "Invalid discriminator value. Expected 'request_board_approval' | 'hire_agent' | 'approve_ceo_strategy' | 'budget_override_required'"
+     }
+    ]
+   }
+  },
+  "validate createRoutineTriggerSchema schedule missing cron": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "cronExpression"
+      ],
+      "message": "Required"
+     }
+    ]
+   }
+  },
+  "validate createCostEventSchema bad datetime and types": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "validation": "uuid",
+      "code": "invalid_string",
+      "message": "Invalid uuid",
+      "path": [
+       "agentId"
+      ]
+     },
+     {
+      "code": "too_small",
+      "minimum": 1,
+      "type": "string",
+      "inclusive": true,
+      "exact": false,
+      "message": "String must contain at least 1 character(s)",
+      "path": [
+       "provider"
+      ]
+     },
+     {
+      "code": "invalid_type",
+      "expected": "integer",
+      "received": "float",
+      "message": "Expected integer, received float",
+      "path": [
+       "inputTokens"
+      ]
+     },
+     {
+      "code": "too_small",
+      "minimum": 0,
+      "type": "number",
+      "inclusive": true,
+      "exact": false,
+      "message": "Number must be greater than or equal to 0",
+      "path": [
+       "costCents"
+      ]
+     },
+     {
+      "code": "invalid_string",
+      "validation": "datetime",
+      "message": "Invalid datetime",
+      "path": [
+       "occurredAt"
+      ]
+     }
+    ]
+   }
+  },
+  "validate updateCompanySchema int and min": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "too_small",
+      "minimum": 1,
+      "type": "string",
+      "inclusive": true,
+      "exact": false,
+      "message": "String must contain at least 1 character(s)",
+      "path": [
+       "name"
+      ]
+     },
+     {
+      "code": "invalid_type",
+      "expected": "integer",
+      "received": "float",
+      "message": "Expected integer, received float",
+      "path": [
+       "budgetMonthlyCents"
+      ]
+     }
+    ]
+   }
+  },
+  "validate updateCompanySchema negative budget": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "too_small",
+      "minimum": 0,
+      "type": "number",
+      "inclusive": true,
+      "exact": false,
+      "message": "Number must be greater than or equal to 0",
+      "path": [
+       "budgetMonthlyCents"
+      ]
+     }
+    ]
+   }
+  },
+  "validate patchInstanceExperimentalSettingsSchema unknown key and wrong type": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "boolean",
+      "received": "string",
+      "path": [
+       "enableApps"
+      ],
+      "message": "Expected boolean, received string"
+     }
+    ]
+   }
+  },
+  "validate updateCurrentUserProfileSchema union miss": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "name"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_union",
+      "unionErrors": [
+       {
+        "issues": [
+         {
+          "code": "invalid_type",
+          "expected": "string",
+          "received": "number",
+          "path": [
+           "image"
+          ],
+          "message": "Expected string, received number"
+         }
+        ],
+        "name": "ZodError"
+       },
+       {
+        "issues": [
+         {
+          "received": 5,
+          "code": "invalid_literal",
+          "expected": "",
+          "path": [
+           "image"
+          ],
+          "message": "Invalid literal value, expected \"\""
+         }
+        ],
+        "name": "ZodError"
+       },
+       {
+        "issues": [
+         {
+          "code": "invalid_type",
+          "expected": "null",
+          "received": "number",
+          "path": [
+           "image"
+          ],
+          "message": "Expected null, received number"
+         }
+        ],
+        "name": "ZodError"
+       }
+      ],
+      "path": [
+       "image"
+      ],
+      "message": "Invalid input"
+     }
+    ]
+   }
+  },
+  "validate createIssueSchema too long title and null description": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "number",
+      "path": [
+       "description"
+      ],
+      "message": "Expected string, received number"
+     }
+    ]
+   }
+  },
+  "validate createToolMcpGatewaySchema nested invalid": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "too_small",
+      "minimum": 1,
+      "type": "string",
+      "inclusive": true,
+      "exact": false,
+      "message": "String must contain at least 1 character(s)",
+      "path": [
+       "name"
+      ]
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "profileId"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "boolean",
+      "received": "string",
+      "path": [
+       "authConfig",
+       "bearer",
+       "enabled"
+      ],
+      "message": "Expected boolean, received string"
+     }
+    ]
+   }
+  },
+  "validate requestBoardApprovalPayloadSchema gate_b email": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "recipient"
+      ],
+      "message": "Required"
+     },
+     {
+      "validation": "email",
+      "code": "invalid_string",
+      "message": "Invalid email",
+      "path": [
+       "ccRecipient"
+      ]
+     },
+     {
+      "expected": "'email' | 'helpdesk' | 'klaviyo' | 'sms' | 'whatsapp' | 'ig_dm' | 'fb_dm' | 'marketplace'",
+      "received": "undefined",
+      "code": "invalid_type",
+      "path": [
+       "channel"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "subject"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "body"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "threadOrOrderRef"
+      ],
+      "message": "Required"
+     }
+    ]
+   }
+  },
+  "validate createIssueThreadInteractionSchema unknown kind": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_union_discriminator",
+      "options": [
+       "suggest_tasks",
+       "ask_user_questions",
+       "request_confirmation",
+       "request_checkbox_confirmation",
+       "request_item_verdicts"
+      ],
+      "path": [
+       "kind"
+      ],
+      "message": "Invalid discriminator value. Expected 'suggest_tasks' | 'ask_user_questions' | 'request_confirmation' | 'request_checkbox_confirmation' | 'request_item_verdicts'"
+     }
+    ]
+   }
+  },
+  "validate createIssueThreadInteractionSchema bad payload": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "received": 2,
+      "code": "invalid_literal",
+      "expected": 1,
+      "path": [
+       "payload",
+       "version"
+      ],
+      "message": "Invalid literal value, expected 1"
+     },
+     {
+      "code": "too_small",
+      "minimum": 1,
+      "type": "string",
+      "inclusive": true,
+      "exact": false,
+      "message": "String must contain at least 1 character(s)",
+      "path": [
+       "payload",
+       "prompt"
+      ]
+     }
+    ]
+   }
+  },
+  "validate pluginManifestV1Schema {}": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "id"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_literal",
+      "expected": 1,
+      "path": [
+       "apiVersion"
+      ],
+      "message": "Invalid literal value, expected 1"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "version"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "displayName"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "description"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "author"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "array",
+      "received": "undefined",
+      "path": [
+       "categories"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "array",
+      "received": "undefined",
+      "path": [
+       "capabilities"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "object",
+      "received": "undefined",
+      "path": [
+       "entrypoints"
+      ],
+      "message": "Required"
+     }
+    ]
+   }
+  },
+  "site assets.ts invalid image metadata": {
+   "status": 400,
+   "body": {
+    "error": "Invalid image metadata",
+    "details": [
+     {
+      "validation": "regex",
+      "code": "invalid_string",
+      "message": "Invalid",
+      "path": [
+       "namespace"
+      ]
+     }
+    ]
+   }
+  },
+  "site cases.ts invalid document key": {
+   "status": 400,
+   "body": {
+    "error": "Invalid document key",
+    "details": [
+     {
+      "validation": "regex",
+      "code": "invalid_string",
+      "message": "Invalid",
+      "path": []
+     }
+    ]
+   }
+  },
+  "site cases.ts invalid case list query": {
+   "status": 400,
+   "body": {
+    "error": "Invalid case list query",
+    "details": [
+     {
+      "code": "too_small",
+      "minimum": 1,
+      "type": "number",
+      "inclusive": true,
+      "exact": false,
+      "message": "Number must be greater than or equal to 1",
+      "path": [
+       "limit"
+      ]
+     }
+    ]
+   }
+  },
+  "site cases.ts invalid case events query": {
+   "status": 400,
+   "body": {
+    "error": "Invalid case events query",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "number",
+      "received": "nan",
+      "path": [
+       "limit"
+      ],
+      "message": "Expected number, received nan"
+     }
+    ]
+   }
+  },
+  "site tool-gateway.ts createToolMcpGatewaySchema {}": {
+   "status": 422,
+   "body": {
+    "error": "Invalid gateway payload",
+    "issues": [
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "name"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "profileId"
+      ],
+      "message": "Required"
+     }
+    ]
+   }
+  },
+  "site tool-gateway.ts updateToolMcpGatewaySchema {}": {
+   "status": 422,
+   "body": {
+    "error": "Invalid gateway payload",
+    "issues": [
+     {
+      "code": "custom",
+      "message": "At least one gateway field is required",
+      "path": []
+     }
+    ]
+   }
+  },
+  "site tool-gateway.ts createToolMcpGatewayTokenSchema {}": {
+   "status": 422,
+   "body": {
+    "error": "Invalid gateway token payload",
+    "issues": [
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "name"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "clientLabel"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "ownerNote"
+      ],
+      "message": "Required"
+     }
+    ]
+   }
+  },
+  "site approvals.ts request_board_approval payload": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "payload",
+       "title"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "payload",
+       "summary"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "payload",
+       "recommendedAction"
+      ],
+      "message": "Required"
+     },
+     {
+      "code": "invalid_type",
+      "expected": "array",
+      "received": "undefined",
+      "path": [
+       "payload",
+       "risks"
+      ],
+      "message": "Required"
+     }
+    ]
+   }
+  },
+  "site secrets.ts invalid provider vault config (flatten)": {
+   "status": 422,
+   "body": {
+    "error": "Invalid provider vault config",
+    "details": {
+     "formErrors": [],
+     "fieldErrors": {
+      "config": [
+       "Expected string, received number"
+      ]
+     }
+    }
+   }
+  },
+  "site secrets.ts invalid provider discovery config (flatten)": {
+   "status": 422,
+   "body": {
+    "error": "Invalid provider vault discovery config",
+    "details": {
+     "formErrors": [],
+     "fieldErrors": {
+      "provider": [
+       "Invalid enum value. Expected 'local_encrypted' | 'aws_secrets_manager' | 'gcp_secret_manager' | 'vault', received 'nope'"
+      ],
+      "query": [
+       "Expected string, received number"
+      ],
+      "pageSize": [
+       "Number must be greater than or equal to 1"
+      ]
+     }
+    }
+   }
+  },
+  "site issue-execution-policy.ts normalizeIssueExecutionPolicy (flatten)": {
+   "status": 422,
+   "body": {
+    "error": "Invalid execution policy",
+    "details": {
+     "formErrors": [],
+     "fieldErrors": {
+      "mode": [
+       "Invalid enum value. Expected 'normal' | 'auto', received 'bogus'"
+      ],
+      "stages": [
+       "Expected array, received string"
+      ]
+     }
+    }
+   }
+  },
+  "site execution-workspaces.ts invalid overview query (flatten)": {
+   "status": 422,
+   "body": {
+    "error": "Invalid workspace overview query",
+    "details": {
+     "formErrors": [],
+     "fieldErrors": {
+      "limit": [
+       "Expected number, received nan"
+      ]
+     }
+    }
+   }
+  },
+  "site environment-config.ts ssh config missing fields": {
+   "status": 422,
+   "body": {
+    "error": "SSH environments require a host.",
+    "details": {
+     "issues": [
+      {
+       "code": "invalid_type",
+       "expected": "string",
+       "received": "undefined",
+       "path": [
+        "host"
+       ],
+       "message": "SSH environments require a host."
+      },
+      {
+       "code": "invalid_type",
+       "expected": "string",
+       "received": "undefined",
+       "path": [
+        "username"
+       ],
+       "message": "SSH environments require a username."
+      },
+      {
+       "code": "invalid_type",
+       "expected": "string",
+       "received": "undefined",
+       "path": [
+        "remoteWorkspacePath"
+       ],
+       "message": "SSH environments require a remote workspace path."
+      }
+     ]
+    }
+   }
+  },
+  "site environment-config.ts ssh config wrong types": {
+   "status": 422,
+   "body": {
+    "error": "Expected number, received nan",
+    "details": {
+     "issues": [
+      {
+       "code": "invalid_type",
+       "expected": "number",
+       "received": "nan",
+       "path": [
+        "port"
+       ],
+       "message": "Expected number, received nan"
+      },
+      {
+       "code": "custom",
+       "message": "SSH remote workspace path must be absolute.",
+       "path": [
+        "remoteWorkspacePath"
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "site tool-access-policy.ts unsupported policy conditions": {
+   "status": 422,
+   "body": {
+    "error": "Tool policy conditions include unsupported runtime semantics",
+    "details": {
+     "issues": [
+      {
+       "path": "arguments.fieldMatches",
+       "message": "Expected object, received number"
+      },
+      {
+       "path": "",
+       "message": "Unrecognized key(s) in object: 'bogus'"
+      }
+     ]
+    }
+   }
+  },
+  "site summary-slots.ts invalid selector": {
+   "status": 422,
+   "body": {
+    "error": "Invalid summary slot selector",
+    "details": [
+     {
+      "received": "nope",
+      "code": "invalid_enum_value",
+      "options": [
+       "project",
+       "workspaces_overview",
+       "project_workspace"
+      ],
+      "path": [
+       "scopeKind"
+      ],
+      "message": "Invalid enum value. Expected 'project' | 'workspaces_overview' | 'project_workspace', received 'nope'"
+     },
+     {
+      "received": "",
+      "code": "invalid_enum_value",
+      "options": [
+       "header"
+      ],
+      "path": [
+       "slotKey"
+      ],
+      "message": "Invalid enum value. Expected 'header', received ''"
+     }
+    ]
+   }
+  },
+  "site documents.ts invalid document key": {
+   "status": 422,
+   "body": {
+    "error": "Invalid document key",
+    "details": [
+     {
+      "validation": "regex",
+      "code": "invalid_string",
+      "message": "Document key must be lowercase letters, numbers, _ or -",
+      "path": []
+     }
+    ]
+   }
+  },
+  "site pipelines.ts invalid document key": {
+   "status": 400,
+   "body": {
+    "error": "Invalid document key",
+    "details": [
+     {
+      "validation": "regex",
+      "code": "invalid_string",
+      "message": "Document key must be lowercase letters, numbers, _ or -",
+      "path": []
+     }
+    ]
+   }
+  },
+  "site issues.ts invalid attachment artifact metadata": {
+   "status": 422,
+   "body": {
+    "error": "Invalid attachment artifact metadata",
+    "code": "invalid_attachment_artifact_metadata",
+    "details": {
+     "code": "invalid_attachment_artifact_metadata",
+     "details": [
+      {
+       "validation": "uuid",
+       "code": "invalid_string",
+       "message": "Invalid uuid",
+       "path": [
+        "attachmentId"
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "site issues.ts invalid search query (first issue message)": {
+   "status": 400,
+   "body": {
+    "error": "limit must be an integer"
+   }
+  },
+  "site issues.ts invalid extract search query (first issue message)": {
+   "status": 400,
+   "body": {
+    "error": "contains must be at least 2 characters"
+   }
+  },
+  "site file-resources.ts readQuery control character in path": {
+   "status": 422,
+   "body": {
+    "error": "Workspace file path contains an invalid character",
+    "code": "invalid_path",
+    "details": {
+     "code": "invalid_path"
+    }
+   }
+  },
+  "site file-resources.ts readQuery half a target": {
+   "status": 422,
+   "body": {
+    "error": "Workspace file target requires both projectId and workspaceId",
+    "code": "invalid_target",
+    "details": {
+     "code": "invalid_target"
+    }
+   }
+  },
+  "site file-resources.ts readQuery missing path": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "undefined",
+      "path": [
+       "path"
+      ],
+      "message": "Required"
+     }
+    ]
+   }
+  },
+  "site plugin-manifest-validator.ts parse({})": {
+   "status": 0,
+   "body": {
+    "success": false,
+    "errors": "id: Required; apiVersion: Invalid literal value, expected 1; version: Required; displayName: Required; description: Required; author: Required; categories: Required; capabilities: Required; entrypoints: Required",
+    "details": [
+     {
+      "path": [
+       "id"
+      ],
+      "message": "Required"
+     },
+     {
+      "path": [
+       "apiVersion"
+      ],
+      "message": "Invalid literal value, expected 1"
+     },
+     {
+      "path": [
+       "version"
+      ],
+      "message": "Required"
+     },
+     {
+      "path": [
+       "displayName"
+      ],
+      "message": "Required"
+     },
+     {
+      "path": [
+       "description"
+      ],
+      "message": "Required"
+     },
+     {
+      "path": [
+       "author"
+      ],
+      "message": "Required"
+     },
+     {
+      "path": [
+       "categories"
+      ],
+      "message": "Required"
+     },
+     {
+      "path": [
+       "capabilities"
+      ],
+      "message": "Required"
+     },
+     {
+      "path": [
+       "entrypoints"
+      ],
+      "message": "Required"
+     }
+    ]
+   }
+  },
+  "site plugin-manifest-validator.ts parse(invalid fields)": {
+   "status": 0,
+   "body": {
+    "success": false,
+    "errors": "id: Plugin id must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores; apiVersion: Invalid literal value, expected 1; categories.0: Invalid enum value. Expected 'connector' | 'workspace' | 'automation' | 'ui', received 'nope'; capabilities.0: Invalid enum value. Expected 'companies.read' | 'projects.read' | 'project.workspaces.read' | 'execution.workspaces.read' | 'issues.read' | 'issue.relations.read' | 'issue.subtree.read' | 'issue.comments.read' | 'issue.documents.read' | 'agents.read' | 'goals.read' | 'goals.create' | 'goals.update' | 'activity.read' | 'costs.read' | 'issues.orchestration.read' | 'access.members.read' | 'access.invites.read' | 'authorization.grants.read' | 'authorization.policies.read' | 'authorization.audit.read' | 'database.namespace.read' | 'issues.create' | 'issues.update' | 'issue.relations.write' | 'issues.checkout' | 'issues.wakeup' | 'issue.comments.create' | 'issue.comments.create_human_attributed' | 'issue.interactions.create' | 'issue.documents.write' | 'projects.managed' | 'routines.managed' | 'skills.managed' | 'agents.pause' | 'agents.resume' | 'agents.invoke' | 'agents.managed' | 'access.members.write' | 'access.invites.write' | 'authorization.grants.write' | 'authorization.policies.write' | 'agent.sessions.create' | 'agent.sessions.list' | 'agent.sessions.send' | 'agent.sessions.close' | 'activity.log.write' | 'metrics.write' | 'telemetry.track' | 'database.namespace.migrate' | 'database.namespace.write' | 'external.objects.detect' | 'external.objects.read' | 'external.objects.write' | 'external.objects.refresh' | 'plugin.state.read' | 'plugin.state.write' | 'events.subscribe' | 'events.emit' | 'jobs.schedule' | 'webhooks.receive' | 'api.routes.register' | 'http.outbound' | 'secrets.read-ref' | 'environment.drivers.register' | 'local.folders' | 'agent.tools.register' | 'instance.settings.register' | 'ui.sidebar.register' | 'ui.page.register' | 'ui.detailTab.register' | 'ui.dashboardWidget.register' | 'ui.commentAnnotation.register' | 'ui.action.register', received 'nope'",
+    "details": [
+     {
+      "path": [
+       "id"
+      ],
+      "message": "Plugin id must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores"
+     },
+     {
+      "path": [
+       "apiVersion"
+      ],
+      "message": "Invalid literal value, expected 1"
+     },
+     {
+      "path": [
+       "categories",
+       0
+      ],
+      "message": "Invalid enum value. Expected 'connector' | 'workspace' | 'automation' | 'ui', received 'nope'"
+     },
+     {
+      "path": [
+       "capabilities",
+       0
+      ],
+      "message": "Invalid enum value. Expected 'companies.read' | 'projects.read' | 'project.workspaces.read' | 'execution.workspaces.read' | 'issues.read' | 'issue.relations.read' | 'issue.subtree.read' | 'issue.comments.read' | 'issue.documents.read' | 'agents.read' | 'goals.read' | 'goals.create' | 'goals.update' | 'activity.read' | 'costs.read' | 'issues.orchestration.read' | 'access.members.read' | 'access.invites.read' | 'authorization.grants.read' | 'authorization.policies.read' | 'authorization.audit.read' | 'database.namespace.read' | 'issues.create' | 'issues.update' | 'issue.relations.write' | 'issues.checkout' | 'issues.wakeup' | 'issue.comments.create' | 'issue.comments.create_human_attributed' | 'issue.interactions.create' | 'issue.documents.write' | 'projects.managed' | 'routines.managed' | 'skills.managed' | 'agents.pause' | 'agents.resume' | 'agents.invoke' | 'agents.managed' | 'access.members.write' | 'access.invites.write' | 'authorization.grants.write' | 'authorization.policies.write' | 'agent.sessions.create' | 'agent.sessions.list' | 'agent.sessions.send' | 'agent.sessions.close' | 'activity.log.write' | 'metrics.write' | 'telemetry.track' | 'database.namespace.migrate' | 'database.namespace.write' | 'external.objects.detect' | 'external.objects.read' | 'external.objects.write' | 'external.objects.refresh' | 'plugin.state.read' | 'plugin.state.write' | 'events.subscribe' | 'events.emit' | 'jobs.schedule' | 'webhooks.receive' | 'api.routes.register' | 'http.outbound' | 'secrets.read-ref' | 'environment.drivers.register' | 'local.folders' | 'agent.tools.register' | 'instance.settings.register' | 'ui.sidebar.register' | 'ui.page.register' | 'ui.detailTab.register' | 'ui.dashboardWidget.register' | 'ui.commentAnnotation.register' | 'ui.action.register', received 'nope'"
+     }
+    ]
+   }
+  },
+  "site plugin-manifest-validator.ts parseOrThrow(invalid)": {
+   "status": 400,
+   "body": {
+    "error": "Invalid plugin manifest: version: String must contain at least 1 character(s); version: Version must follow semver (e.g. 1.0.0 or 1.0.0-beta.1); capabilities: Array must contain at least 1 element(s); entrypoints.worker: Required",
+    "details": [
+     {
+      "path": [
+       "version"
+      ],
+      "message": "String must contain at least 1 character(s)"
+     },
+     {
+      "path": [
+       "version"
+      ],
+      "message": "Version must follow semver (e.g. 1.0.0 or 1.0.0-beta.1)"
+     },
+     {
+      "path": [
+       "capabilities"
+      ],
+      "message": "Array must contain at least 1 element(s)"
+     },
+     {
+      "path": [
+       "entrypoints",
+       "worker"
+      ],
+      "message": "Required"
+     }
+    ]
+   }
+  }
+ }
+}

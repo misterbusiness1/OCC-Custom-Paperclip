@@ -88,7 +88,7 @@ type PipelineRouteDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 const stageKindSchema = z.enum(["open", "working", "review", "done", "cancelled"]);
 const jsonObjectSchema = z.record(z.string(), z.unknown());
-const stageConfigSchema = z.record(z.string(), z.unknown()).default({});
+export const stageConfigSchema = z.record(z.string(), z.unknown()).default({});
 const casePatchSchema = z.object({
   title: z.string().trim().min(1).max(500).optional(),
   summary: z.string().max(8_000).nullable().optional(),
@@ -193,7 +193,7 @@ const resolveSuggestionSchema = z.object({
 const acknowledgeDriftSchema = z.object({
   expectedVersion: z.number().int().positive().optional(),
 });
-const retryAutomationQuerySchema = z.object({
+export const retryAutomationQuerySchema = z.object({
   scope: pipelineAutomationRetryScopeSchema.default("previous_stage"),
   targetStageId: z.string().uuid().optional(),
 });
@@ -224,7 +224,7 @@ const upsertPipelineDocumentSchema = z.object({
   body: z.string().max(200_000),
   baseRevisionId: z.string().uuid().nullable().optional(),
 });
-const upsertPipelineCaseDocumentSchema = z.object({
+export const upsertPipelineCaseDocumentSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   format: z.string().trim().min(1).max(80).optional().default("markdown"),
   body: z.string().max(200_000),

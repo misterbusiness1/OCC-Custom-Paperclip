@@ -97,7 +97,7 @@ export const updateProjectWorkspaceSchema = z.object({
 
 export type UpdateProjectWorkspace = z.infer<typeof updateProjectWorkspaceSchema>;
 
-const projectFields = {
+export const projectFields = {
   /** @deprecated Use goalIds instead */
   goalId: z.string().uuid().optional().nullable(),
   goalIds: z.array(z.string().uuid()).optional(),

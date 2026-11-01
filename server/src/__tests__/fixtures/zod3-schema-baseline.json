@@ -1,0 +1,272 @@
+{
+ "capturedWith": "zod@3.25.76",
+ "note": "Behaviour of the server's locally defined zod schemas captured before the zod 4 migration. fields: omitted-key behaviour per object field (absent entry = required). Do not regenerate on zod 4; see packages/shared/src/testing/zod-baseline-golden.ts.",
+ "data": {
+  "fields": {
+   "routes/activity.ts#createActivitySchema.actorType": {
+    "filled": "system"
+   },
+   "routes/activity.ts#createActivitySchema.agentId": "omitted",
+   "routes/activity.ts#createActivitySchema.details": "omitted",
+   "routes/cases.ts#listCasesQuerySchema.includeAncestors": "omitted",
+   "routes/cases.ts#listCasesQuerySchema.includeNoProject": "omitted",
+   "routes/cases.ts#listCasesQuerySchema.label": "omitted",
+   "routes/cases.ts#listCasesQuerySchema.labelId": "omitted",
+   "routes/cases.ts#listCasesQuerySchema.limit": {
+    "filled": 100
+   },
+   "routes/cases.ts#listCasesQuerySchema.parent": "omitted",
+   "routes/cases.ts#listCasesQuerySchema.project": "omitted",
+   "routes/cases.ts#listCasesQuerySchema.projectId": "omitted",
+   "routes/cases.ts#listCasesQuerySchema.projectIds": "omitted",
+   "routes/cases.ts#listCasesQuerySchema.q": "omitted",
+   "routes/cases.ts#listCasesQuerySchema.status": "omitted",
+   "routes/cases.ts#listCasesQuerySchema.statuses": "omitted",
+   "routes/cases.ts#listCasesQuerySchema.type": "omitted",
+   "routes/cases.ts#listCasesQuerySchema.types": "omitted",
+   "routes/cases.ts#listEventsQuerySchema.limit": {
+    "filled": 100
+   },
+   "routes/cases.ts#upsertCaseDocumentSchema.baseRevisionId": "omitted",
+   "routes/cases.ts#upsertCaseDocumentSchema.changeSummary": "omitted",
+   "routes/cases.ts#upsertCaseDocumentSchema.format": {
+    "filled": "markdown"
+   },
+   "routes/cases.ts#upsertCaseDocumentSchema.title": "omitted",
+   "routes/decision-training.ts#createSchema.notes": {
+    "filled": ""
+   },
+   "routes/inbox-dismissals.ts#inboxDismissalSchema.kind": {
+    "filled": "dismiss"
+   },
+   "routes/inbox-dismissals.ts#inboxDismissalSchema.snoozedUntil": "omitted",
+   "routes/issues.ts#inboxArchiveBodySchema.userId": "omitted",
+   "routes/pipelines.ts#retryAutomationQuerySchema.scope": {
+    "filled": "previous_stage"
+   },
+   "routes/pipelines.ts#retryAutomationQuerySchema.targetStageId": "omitted",
+   "routes/pipelines.ts#upsertPipelineCaseDocumentSchema.baseRevisionId": "omitted",
+   "routes/pipelines.ts#upsertPipelineCaseDocumentSchema.changeSummary": "omitted",
+   "routes/pipelines.ts#upsertPipelineCaseDocumentSchema.format": {
+    "filled": "markdown"
+   },
+   "routes/pipelines.ts#upsertPipelineCaseDocumentSchema.title": "omitted",
+   "services/environment-config.ts#fakeSandboxEnvironmentConfigSchema.archiveOnRelease": "omitted",
+   "services/environment-config.ts#fakeSandboxEnvironmentConfigSchema.image": {
+    "filled": "ubuntu:24.04"
+   },
+   "services/environment-config.ts#fakeSandboxEnvironmentConfigSchema.provider": {
+    "filled": "fake"
+   },
+   "services/environment-config.ts#fakeSandboxEnvironmentConfigSchema.reuseLease": {
+    "filled": false
+   },
+   "services/environment-config.ts#fakeSandboxEnvironmentConfigSchema.streamRunLogs": "omitted",
+   "services/environment-config.ts#pluginEnvironmentConfigSchema.driverConfig": {
+    "filled": {}
+   },
+   "services/environment-config.ts#pluginSandboxEnvironmentConfigSchema.archiveOnRelease": "omitted",
+   "services/environment-config.ts#pluginSandboxEnvironmentConfigSchema.reuseLease": {
+    "filled": false
+   },
+   "services/environment-config.ts#pluginSandboxEnvironmentConfigSchema.streamRunLogs": "omitted",
+   "services/environment-config.ts#pluginSandboxEnvironmentConfigSchema.timeoutMs": "omitted",
+   "services/environment-config.ts#secretRefSchema.version": {
+    "filled": "latest"
+   },
+   "services/environment-config.ts#sshEnvironmentConfigSchema.knownHosts": {
+    "filled": null
+   },
+   "services/environment-config.ts#sshEnvironmentConfigSchema.port": {
+    "filled": 22
+   },
+   "services/environment-config.ts#sshEnvironmentConfigSchema.privateKey": {
+    "filled": null
+   },
+   "services/environment-config.ts#sshEnvironmentConfigSchema.privateKeySecretRef": {
+    "filled": null
+   },
+   "services/environment-config.ts#sshEnvironmentConfigSchema.privateKeySecretRef.version": {
+    "filled": "latest"
+   },
+   "services/environment-config.ts#sshEnvironmentConfigSchema.strictHostKeyChecking": {
+    "filled": true
+   }
+  },
+  "objects": {
+   "routes/activity.ts#createActivitySchema": "strip",
+   "routes/cases.ts#listCasesQuerySchema": "strict",
+   "routes/cases.ts#listEventsQuerySchema": "strict",
+   "routes/cases.ts#upsertCaseDocumentSchema": "strict",
+   "routes/decision-training.ts#createSchema": "strict",
+   "routes/inbox-dismissals.ts#inboxDismissalSchema": "strip",
+   "routes/issues.ts#attachmentArtifactMetadataInputSchema": "passthrough",
+   "routes/issues.ts#inboxArchiveBodySchema": "strict",
+   "routes/pipelines.ts#retryAutomationQuerySchema": "strip",
+   "routes/pipelines.ts#upsertPipelineCaseDocumentSchema": "strip",
+   "services/environment-config.ts#fakeSandboxEnvironmentConfigSchema": "strict",
+   "services/environment-config.ts#pluginEnvironmentConfigSchema": "strict",
+   "services/environment-config.ts#pluginSandboxEnvironmentConfigSchema": "catchall",
+   "services/environment-config.ts#secretRefSchema": "strict",
+   "services/environment-config.ts#sshEnvironmentConfigSchema": "strict",
+   "services/environment-config.ts#sshEnvironmentConfigSchema.privateKeySecretRef": "strict"
+  },
+  "defaultsUnderOptional": [],
+  "roots": {
+   "routes/activity.ts#createActivitySchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "routes/cases.ts#documentKeySchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "routes/cases.ts#listCasesQuerySchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {
+      "limit": 100
+     }
+    }
+   },
+   "routes/cases.ts#listEventsQuerySchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {
+      "limit": 100
+     }
+    }
+   },
+   "routes/cases.ts#upsertCaseDocumentSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "routes/decision-training.ts#createSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "routes/inbox-dismissals.ts#inboxDismissalSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "routes/issues.ts#attachmentArtifactMetadataInputSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "routes/issues.ts#inboxArchiveBodySchema": {
+    "undefined": {
+     "ok": true,
+     "data": {}
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {}
+    }
+   },
+   "routes/pipelines.ts#retryAutomationQuerySchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {
+      "scope": "previous_stage"
+     }
+    }
+   },
+   "routes/pipelines.ts#stageConfigSchema": {
+    "undefined": {
+     "ok": true,
+     "data": {}
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {}
+    }
+   },
+   "routes/pipelines.ts#upsertPipelineCaseDocumentSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "services/environment-config.ts#fakeSandboxEnvironmentConfigSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": true,
+     "data": {
+      "provider": "fake",
+      "image": "ubuntu:24.04",
+      "reuseLease": false
+     }
+    }
+   },
+   "services/environment-config.ts#pluginEnvironmentConfigSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "services/environment-config.ts#pluginSandboxEnvironmentConfigSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "services/environment-config.ts#secretRefSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   },
+   "services/environment-config.ts#sshEnvironmentConfigSchema": {
+    "undefined": {
+     "ok": false
+    },
+    "emptyObject": {
+     "ok": false
+    }
+   }
+  }
+ }
+}

@@ -1,0 +1,745 @@
+{
+ "capturedWith": "zod@3.25.76",
+ "note": "Accept/reject and output of each string/number format probe, captured before the zod 4 migration. Do not regenerate on zod 4; see packages/shared/src/testing/zod-baseline-golden.ts.",
+ "data": {
+  "string.datetime()": {
+   "\"2026-10-31T12:00:00Z\"": {
+    "ok": true,
+    "output": "2026-10-31T12:00:00Z"
+   },
+   "\"2026-10-31T12:00:00.123Z\"": {
+    "ok": true,
+    "output": "2026-10-31T12:00:00.123Z"
+   },
+   "\"2026-10-31T12:00:00.123456789Z\"": {
+    "ok": true,
+    "output": "2026-10-31T12:00:00.123456789Z"
+   },
+   "\"2026-10-31T12:00Z\"": {
+    "ok": true,
+    "output": "2026-10-31T12:00Z"
+   },
+   "\"2026-10-31T12Z\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00:00\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00:00+02:00\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00+02:00\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00:00+0200\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00+0200\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00:00+02\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00:00.5-05:30\"": {
+    "ok": false
+   },
+   "\"2026-10-31 12:00:00Z\"": {
+    "ok": false
+   },
+   "\"2026-10-31\"": {
+    "ok": false
+   },
+   "\"2026-13-31T12:00:00Z\"": {
+    "ok": false
+   },
+   "\"2026-02-30T12:00:00Z\"": {
+    "ok": false
+   },
+   "\"2026-10-31T24:00:00Z\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:60:00Z\"": {
+    "ok": false
+   },
+   "\"2026-10-31t12:00:00z\"": {
+    "ok": false
+   },
+   "\" 2026-10-31T12:00:00Z\"": {
+    "ok": false
+   },
+   "\"\"": {
+    "ok": false
+   },
+   "\"not a date\"": {
+    "ok": false
+   }
+  },
+  "string.datetime({offset:true})": {
+   "\"2026-10-31T12:00:00Z\"": {
+    "ok": true,
+    "output": "2026-10-31T12:00:00Z"
+   },
+   "\"2026-10-31T12:00:00.123Z\"": {
+    "ok": true,
+    "output": "2026-10-31T12:00:00.123Z"
+   },
+   "\"2026-10-31T12:00:00.123456789Z\"": {
+    "ok": true,
+    "output": "2026-10-31T12:00:00.123456789Z"
+   },
+   "\"2026-10-31T12:00Z\"": {
+    "ok": true,
+    "output": "2026-10-31T12:00Z"
+   },
+   "\"2026-10-31T12Z\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00:00\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00:00+02:00\"": {
+    "ok": true,
+    "output": "2026-10-31T12:00:00+02:00"
+   },
+   "\"2026-10-31T12:00+02:00\"": {
+    "ok": true,
+    "output": "2026-10-31T12:00+02:00"
+   },
+   "\"2026-10-31T12:00:00+0200\"": {
+    "ok": true,
+    "output": "2026-10-31T12:00:00+0200"
+   },
+   "\"2026-10-31T12:00+0200\"": {
+    "ok": true,
+    "output": "2026-10-31T12:00+0200"
+   },
+   "\"2026-10-31T12:00:00+02\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00:00.5-05:30\"": {
+    "ok": true,
+    "output": "2026-10-31T12:00:00.5-05:30"
+   },
+   "\"2026-10-31 12:00:00Z\"": {
+    "ok": false
+   },
+   "\"2026-10-31\"": {
+    "ok": false
+   },
+   "\"2026-13-31T12:00:00Z\"": {
+    "ok": false
+   },
+   "\"2026-02-30T12:00:00Z\"": {
+    "ok": false
+   },
+   "\"2026-10-31T24:00:00Z\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:60:00Z\"": {
+    "ok": false
+   },
+   "\"2026-10-31t12:00:00z\"": {
+    "ok": false
+   },
+   "\" 2026-10-31T12:00:00Z\"": {
+    "ok": false
+   },
+   "\"\"": {
+    "ok": false
+   },
+   "\"not a date\"": {
+    "ok": false
+   }
+  },
+  "string.url()": {
+   "\"https://example.com\"": {
+    "ok": true,
+    "output": "https://example.com"
+   },
+   "\"https://example.com/path?q=1#frag\"": {
+    "ok": true,
+    "output": "https://example.com/path?q=1#frag"
+   },
+   "\"http://localhost:3100/api\"": {
+    "ok": true,
+    "output": "http://localhost:3100/api"
+   },
+   "\"ftp://example.com/file\"": {
+    "ok": true,
+    "output": "ftp://example.com/file"
+   },
+   "\"mailto:user@example.com\"": {
+    "ok": true,
+    "output": "mailto:user@example.com"
+   },
+   "\"file:///tmp/x\"": {
+    "ok": true,
+    "output": "file:///tmp/x"
+   },
+   "\"javascript:alert(1)\"": {
+    "ok": true,
+    "output": "javascript:alert(1)"
+   },
+   "\"example.com\"": {
+    "ok": false
+   },
+   "\"//example.com\"": {
+    "ok": false
+   },
+   "\" https://example.com \"": {
+    "ok": true,
+    "output": " https://example.com "
+   },
+   "\"https://exa mple.com\"": {
+    "ok": false
+   },
+   "\"https://example.com/\\n\"": {
+    "ok": true,
+    "output": "https://example.com/\n"
+   },
+   "\"https://\"": {
+    "ok": false
+   },
+   "\"\"": {
+    "ok": false
+   }
+  },
+  "string.trim().url()": {
+   "\"https://example.com\"": {
+    "ok": true,
+    "output": "https://example.com"
+   },
+   "\"https://example.com/path?q=1#frag\"": {
+    "ok": true,
+    "output": "https://example.com/path?q=1#frag"
+   },
+   "\"http://localhost:3100/api\"": {
+    "ok": true,
+    "output": "http://localhost:3100/api"
+   },
+   "\"ftp://example.com/file\"": {
+    "ok": true,
+    "output": "ftp://example.com/file"
+   },
+   "\"mailto:user@example.com\"": {
+    "ok": true,
+    "output": "mailto:user@example.com"
+   },
+   "\"file:///tmp/x\"": {
+    "ok": true,
+    "output": "file:///tmp/x"
+   },
+   "\"javascript:alert(1)\"": {
+    "ok": true,
+    "output": "javascript:alert(1)"
+   },
+   "\"example.com\"": {
+    "ok": false
+   },
+   "\"//example.com\"": {
+    "ok": false
+   },
+   "\" https://example.com \"": {
+    "ok": true,
+    "output": "https://example.com"
+   },
+   "\"https://exa mple.com\"": {
+    "ok": false
+   },
+   "\"https://example.com/\\n\"": {
+    "ok": true,
+    "output": "https://example.com/"
+   },
+   "\"https://\"": {
+    "ok": false
+   },
+   "\"\"": {
+    "ok": false
+   }
+  },
+  "string.email()": {
+   "\"user@example.com\"": {
+    "ok": true,
+    "output": "user@example.com"
+   },
+   "\"USER@EXAMPLE.COM\"": {
+    "ok": true,
+    "output": "USER@EXAMPLE.COM"
+   },
+   "\"first.last+tag@sub.example.co.uk\"": {
+    "ok": true,
+    "output": "first.last+tag@sub.example.co.uk"
+   },
+   "\"user@localhost\"": {
+    "ok": false
+   },
+   "\"user@[127.0.0.1]\"": {
+    "ok": false
+   },
+   "\"user name@example.com\"": {
+    "ok": false
+   },
+   "\"user@example\"": {
+    "ok": false
+   },
+   "\" user@example.com\"": {
+    "ok": false
+   },
+   "\"user..dots@example.com\"": {
+    "ok": false
+   },
+   "\"\"": {
+    "ok": false
+   }
+  },
+  "string.uuid()": {
+   "\"123e4567-e89b-42d3-a456-426614174000\"": {
+    "ok": true,
+    "output": "123e4567-e89b-42d3-a456-426614174000"
+   },
+   "\"123E4567-E89B-42D3-A456-426614174000\"": {
+    "ok": true,
+    "output": "123E4567-E89B-42D3-A456-426614174000"
+   },
+   "\"00000000-0000-0000-0000-000000000000\"": {
+    "ok": true,
+    "output": "00000000-0000-0000-0000-000000000000"
+   },
+   "\"ffffffff-ffff-ffff-ffff-ffffffffffff\"": {
+    "ok": true,
+    "output": "ffffffff-ffff-ffff-ffff-ffffffffffff"
+   },
+   "\"11111111-1111-1111-1111-111111111111\"": {
+    "ok": true,
+    "output": "11111111-1111-1111-1111-111111111111"
+   },
+   "\"00000000-0000-0000-0000-000000000001\"": {
+    "ok": true,
+    "output": "00000000-0000-0000-0000-000000000001"
+   },
+   "\"11111111-1111-4111-8111-111111111111\"": {
+    "ok": true,
+    "output": "11111111-1111-4111-8111-111111111111"
+   },
+   "\"123e4567-e89b-12d3-a456-426614174000\"": {
+    "ok": true,
+    "output": "123e4567-e89b-12d3-a456-426614174000"
+   },
+   "\"123e4567-e89b-92d3-a456-426614174000\"": {
+    "ok": true,
+    "output": "123e4567-e89b-92d3-a456-426614174000"
+   },
+   "\"123e4567-e89b-42d3-c456-426614174000\"": {
+    "ok": true,
+    "output": "123e4567-e89b-42d3-c456-426614174000"
+   },
+   "\"123e4567e89b42d3a456426614174000\"": {
+    "ok": false
+   },
+   "\"{123e4567-e89b-42d3-a456-426614174000}\"": {
+    "ok": false
+   },
+   "\"123e4567-e89b-42d3-a456-42661417400\"": {
+    "ok": false
+   },
+   "\"\"": {
+    "ok": false
+   }
+  },
+  "number()": {
+   "0": {
+    "ok": true,
+    "output": 0
+   },
+   "1": {
+    "ok": true,
+    "output": 1
+   },
+   "-1": {
+    "ok": true,
+    "output": -1
+   },
+   "1.5": {
+    "ok": true,
+    "output": 1.5
+   },
+   "9007199254740991": {
+    "ok": true,
+    "output": 9007199254740991
+   },
+   "9007199254740992": {
+    "ok": true,
+    "output": 9007199254740992
+   },
+   "-9007199254740992": {
+    "ok": true,
+    "output": -9007199254740992
+   },
+   "1e+21": {
+    "ok": true,
+    "output": 1e+21
+   },
+   "Infinity": {
+    "ok": true,
+    "output": {
+     "number": "Infinity"
+    }
+   },
+   "-Infinity": {
+    "ok": true,
+    "output": {
+     "number": "-Infinity"
+    }
+   },
+   "NaN": {
+    "ok": false
+   },
+   "\"1\"": {
+    "ok": false
+   },
+   "\"\"": {
+    "ok": false
+   },
+   "\" 2 \"": {
+    "ok": false
+   },
+   "\"1e3\"": {
+    "ok": false
+   },
+   "\"0x10\"": {
+    "ok": false
+   },
+   "\"abc\"": {
+    "ok": false
+   },
+   "null": {
+    "ok": false
+   },
+   "true": {
+    "ok": false
+   },
+   "undefined": {
+    "ok": false
+   }
+  },
+  "number().int()": {
+   "0": {
+    "ok": true,
+    "output": 0
+   },
+   "1": {
+    "ok": true,
+    "output": 1
+   },
+   "-1": {
+    "ok": true,
+    "output": -1
+   },
+   "1.5": {
+    "ok": false
+   },
+   "9007199254740991": {
+    "ok": true,
+    "output": 9007199254740991
+   },
+   "9007199254740992": {
+    "ok": true,
+    "output": 9007199254740992
+   },
+   "-9007199254740992": {
+    "ok": true,
+    "output": -9007199254740992
+   },
+   "1e+21": {
+    "ok": true,
+    "output": 1e+21
+   },
+   "Infinity": {
+    "ok": false
+   },
+   "-Infinity": {
+    "ok": false
+   },
+   "NaN": {
+    "ok": false
+   },
+   "\"1\"": {
+    "ok": false
+   },
+   "\"\"": {
+    "ok": false
+   },
+   "\" 2 \"": {
+    "ok": false
+   },
+   "\"1e3\"": {
+    "ok": false
+   },
+   "\"0x10\"": {
+    "ok": false
+   },
+   "\"abc\"": {
+    "ok": false
+   },
+   "null": {
+    "ok": false
+   },
+   "true": {
+    "ok": false
+   },
+   "undefined": {
+    "ok": false
+   }
+  },
+  "coerce.number()": {
+   "0": {
+    "ok": true,
+    "output": 0
+   },
+   "1": {
+    "ok": true,
+    "output": 1
+   },
+   "-1": {
+    "ok": true,
+    "output": -1
+   },
+   "1.5": {
+    "ok": true,
+    "output": 1.5
+   },
+   "9007199254740991": {
+    "ok": true,
+    "output": 9007199254740991
+   },
+   "9007199254740992": {
+    "ok": true,
+    "output": 9007199254740992
+   },
+   "-9007199254740992": {
+    "ok": true,
+    "output": -9007199254740992
+   },
+   "1e+21": {
+    "ok": true,
+    "output": 1e+21
+   },
+   "Infinity": {
+    "ok": true,
+    "output": {
+     "number": "Infinity"
+    }
+   },
+   "-Infinity": {
+    "ok": true,
+    "output": {
+     "number": "-Infinity"
+    }
+   },
+   "NaN": {
+    "ok": false
+   },
+   "\"1\"": {
+    "ok": true,
+    "output": 1
+   },
+   "\"\"": {
+    "ok": true,
+    "output": 0
+   },
+   "\" 2 \"": {
+    "ok": true,
+    "output": 2
+   },
+   "\"1e3\"": {
+    "ok": true,
+    "output": 1000
+   },
+   "\"0x10\"": {
+    "ok": true,
+    "output": 16
+   },
+   "\"abc\"": {
+    "ok": false
+   },
+   "null": {
+    "ok": true,
+    "output": 0
+   },
+   "true": {
+    "ok": true,
+    "output": 1
+   },
+   "undefined": {
+    "ok": false
+   }
+  },
+  "coerce.number().int()": {
+   "0": {
+    "ok": true,
+    "output": 0
+   },
+   "1": {
+    "ok": true,
+    "output": 1
+   },
+   "-1": {
+    "ok": true,
+    "output": -1
+   },
+   "1.5": {
+    "ok": false
+   },
+   "9007199254740991": {
+    "ok": true,
+    "output": 9007199254740991
+   },
+   "9007199254740992": {
+    "ok": true,
+    "output": 9007199254740992
+   },
+   "-9007199254740992": {
+    "ok": true,
+    "output": -9007199254740992
+   },
+   "1e+21": {
+    "ok": true,
+    "output": 1e+21
+   },
+   "Infinity": {
+    "ok": false
+   },
+   "-Infinity": {
+    "ok": false
+   },
+   "NaN": {
+    "ok": false
+   },
+   "\"1\"": {
+    "ok": true,
+    "output": 1
+   },
+   "\"\"": {
+    "ok": true,
+    "output": 0
+   },
+   "\" 2 \"": {
+    "ok": true,
+    "output": 2
+   },
+   "\"1e3\"": {
+    "ok": true,
+    "output": 1000
+   },
+   "\"0x10\"": {
+    "ok": true,
+    "output": 16
+   },
+   "\"abc\"": {
+    "ok": false
+   },
+   "null": {
+    "ok": true,
+    "output": 0
+   },
+   "true": {
+    "ok": true,
+    "output": 1
+   },
+   "undefined": {
+    "ok": false
+   }
+  },
+  "date()": {
+   "0": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00:00Z\"": {
+    "ok": false
+   },
+   "\"2026-10-31\"": {
+    "ok": false
+   },
+   "\"2026-10-31T12:00Z\"": {
+    "ok": false
+   },
+   "\"not a date\"": {
+    "ok": false
+   },
+   "\"\"": {
+    "ok": false
+   },
+   "1700000000000": {
+    "ok": false
+   },
+   "null": {
+    "ok": false
+   },
+   "undefined": {
+    "ok": false
+   },
+   "true": {
+    "ok": false
+   }
+  },
+  "coerce.date()": {
+   "0": {
+    "ok": true,
+    "output": {
+     "date": "1970-01-01T00:00:00.000Z"
+    }
+   },
+   "\"2026-10-31T12:00:00Z\"": {
+    "ok": true,
+    "output": {
+     "date": "2026-10-31T12:00:00.000Z"
+    }
+   },
+   "\"2026-10-31\"": {
+    "ok": true,
+    "output": {
+     "date": "2026-10-31T00:00:00.000Z"
+    }
+   },
+   "\"2026-10-31T12:00Z\"": {
+    "ok": true,
+    "output": {
+     "date": "2026-10-31T12:00:00.000Z"
+    }
+   },
+   "\"not a date\"": {
+    "ok": false
+   },
+   "\"\"": {
+    "ok": false
+   },
+   "1700000000000": {
+    "ok": true,
+    "output": {
+     "date": "2023-11-14T22:13:20.000Z"
+    }
+   },
+   "null": {
+    "ok": true,
+    "output": {
+     "date": "1970-01-01T00:00:00.000Z"
+    }
+   },
+   "undefined": {
+    "ok": false
+   },
+   "true": {
+    "ok": true,
+    "output": {
+     "date": "1970-01-01T00:00:00.001Z"
+    }
+   }
+  }
+ }
+}

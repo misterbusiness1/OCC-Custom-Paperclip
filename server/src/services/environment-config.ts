@@ -30,13 +30,13 @@ import {
 } from "./json-schema-secret-refs.js";
 import { resolveActiveEnvironmentCustomImageTemplateForRuntime } from "./environment-custom-image-runtime.js";
 
-const secretRefSchema = z.object({
+export const secretRefSchema = z.object({
   type: z.literal("secret_ref"),
   secretId: z.string().uuid(),
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
 }).strict();
 
-const sshEnvironmentConfigSchema = z.object({
+export const sshEnvironmentConfigSchema = z.object({
   host: z.string({ required_error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
   username: z.string({ required_error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
@@ -67,7 +67,7 @@ const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
 
 const sshEnvironmentConfigPersistenceSchema = sshEnvironmentConfigProbeSchema;
 
-const fakeSandboxEnvironmentConfigSchema = z.object({
+export const fakeSandboxEnvironmentConfigSchema = z.object({
   provider: z.literal("fake").default("fake"),
   image: z
     .string()
@@ -87,7 +87,7 @@ const pluginSandboxProviderKeySchema = z.string()
     "Sandbox provider key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
   );
 
-const pluginSandboxEnvironmentConfigSchema = z.object({
+export const pluginSandboxEnvironmentConfigSchema = z.object({
   provider: pluginSandboxProviderKeySchema,
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
@@ -95,7 +95,7 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
   archiveOnRelease: z.boolean().optional(),
 }).catchall(z.unknown());
 
-const pluginEnvironmentConfigSchema = z.object({
+export const pluginEnvironmentConfigSchema = z.object({
   pluginKey: z.string().min(1),
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,

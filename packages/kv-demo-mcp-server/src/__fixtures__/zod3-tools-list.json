@@ -1,0 +1,117 @@
+{
+ "capturedWith": "zod@3.25.76",
+ "note": "tools/list result of the KV demo MCP server captured before the zod 4 migration. Do not regenerate on zod 4.",
+ "data": [
+  {
+   "name": "kv_set",
+   "description": "Set a key to a string value in the demo store.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+     },
+     "value": {
+      "type": "string",
+      "maxLength": 10000
+     }
+    },
+    "required": [
+     "key",
+     "value"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "annotations": {
+    "title": "Set a key to a string value in the demo store.",
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "openWorldHint": false
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "kv_get",
+   "description": "Get the current value for a key in the demo store.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+     }
+    },
+    "required": [
+     "key"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "annotations": {
+    "title": "Get the current value for a key in the demo store.",
+    "readOnlyHint": true,
+    "openWorldHint": false
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "kv_list",
+   "description": "List all keys and values in the demo store, optionally filtered by key prefix.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "prefix": {
+      "type": "string",
+      "maxLength": 256
+     }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "annotations": {
+    "title": "List all keys and values in the demo store, optionally filtered by key prefix.",
+    "readOnlyHint": true,
+    "openWorldHint": false
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "kv_delete",
+   "description": "Delete a key from the demo store.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+     }
+    },
+    "required": [
+     "key"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "annotations": {
+    "title": "Delete a key from the demo store.",
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "openWorldHint": false
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  }
+ ]
+}

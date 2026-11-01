@@ -7,7 +7,7 @@ import { assertBoard, assertCompanyAccess, getActorInfo, hasCompanyAccess } from
 
 const sourceKindSchema = z.enum(["interaction", "approval", "execution_decision"]);
 const exampleIdSchema = z.string().uuid();
-const createSchema = z.object({
+export const createSchema = z.object({
   sourceKind: sourceKindSchema,
   sourceId: z.string().uuid(),
   issueId: z.string().uuid(),

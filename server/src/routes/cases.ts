@@ -45,7 +45,7 @@ const jsonObjectSchema = z.record(z.string(), z.unknown());
 const caseStatusSchema = z.enum(CASE_STATUSES);
 const caseTypeSchema = z.string().trim().min(1).max(120);
 const caseKeySchema = z.string().trim().min(1).max(512);
-const documentKeySchema = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.:-]+$/);
+export const documentKeySchema = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.:-]+$/);
 
 const createCaseSchema = z.object({
   projectId: z.string().uuid().nullable().optional(),
@@ -74,7 +74,7 @@ const createIssueLinkSchema = z.object({
   role: z.enum(CASE_LINK_ROLES),
 }).strict();
 
-const upsertCaseDocumentSchema = z.object({
+export const upsertCaseDocumentSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   format: z.string().trim().min(1).max(80).optional().default("markdown"),
   body: z.string().max(200_000),
@@ -84,7 +84,7 @@ const upsertCaseDocumentSchema = z.object({
 
 const queryListParamSchema = z.union([z.string(), z.array(z.string())]).optional();
 
-const listCasesQuerySchema = z.object({
+export const listCasesQuerySchema = z.object({
   type: z.string().trim().min(1).max(120).optional(),
   types: queryListParamSchema,
   status: z.string().trim().min(1).max(120).optional(),
@@ -101,7 +101,7 @@ const listCasesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional().default(100),
 }).strict();
 
-const listEventsQuerySchema = z.object({
+export const listEventsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(MAX_EVENTS_LIMIT).optional().default(DEFAULT_EVENTS_LIMIT),
 }).strict();
 

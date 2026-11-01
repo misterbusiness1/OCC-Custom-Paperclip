@@ -12,7 +12,7 @@ export const environmentStatusSchema = z.enum(ENVIRONMENT_STATUSES);
 export const environmentLeaseStatusSchema = z.enum(ENVIRONMENT_LEASE_STATUSES);
 export const environmentLeaseCleanupStatusSchema = z.enum(ENVIRONMENT_LEASE_CLEANUP_STATUSES);
 
-const environmentFields = {
+export const environmentFields = {
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   driver: environmentDriverSchema,

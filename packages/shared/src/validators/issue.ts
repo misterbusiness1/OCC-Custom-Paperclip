@@ -385,7 +385,7 @@ export const agentCapacityOverrideSchema = z.object({
   reason: z.string().trim().min(AGENT_CAPACITY_OVERRIDE_MIN_REASON_LENGTH),
 }).strict();
 
-const createIssueBaseSchema = z.object({
+export const createIssueBaseSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
@@ -421,7 +421,7 @@ const createIssueBaseSchema = z.object({
   }).strict().optional().nullable(),
 });
 
-const createIssueDuplicateGuardSchema = {
+export const createIssueDuplicateGuardSchema = {
   idempotencyKey: z.string().trim().min(1).max(255).optional().nullable(),
   allowDuplicate: z.boolean()
     .describe("Bypasses recent-title duplicate detection; idempotency keys always replay their original issue")

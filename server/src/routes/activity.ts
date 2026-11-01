@@ -8,7 +8,7 @@ import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleRes
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 
-const createActivitySchema = z.object({
+export const createActivitySchema = z.object({
   actorType: z.enum(["agent", "user", "system", "plugin"]).optional().default("system"),
   actorId: z.string().min(1),
   action: z.string().min(1),

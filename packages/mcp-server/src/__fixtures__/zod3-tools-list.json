@@ -1,0 +1,4976 @@
+{
+ "capturedWith": "zod@3.25.76",
+ "note": "tools/list result of the Paperclip MCP server captured before the zod 4 migration. Do not regenerate on zod 4.",
+ "data": [
+  {
+   "name": "paperclipMe",
+   "description": "Get the current authenticated Paperclip actor details",
+   "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipInboxLite",
+   "description": "Get the current authenticated agent inbox-lite assignment list",
+   "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipListAgents",
+   "description": "List agents in a company",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "companyId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipGetAgent",
+   "description": "Get a single agent by id",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "agentId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "companyId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "agentId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipListIssues",
+   "description": "List issues for a company with optional filters",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "companyId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "status": {
+      "type": "string"
+     },
+     "projectId": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "assigneeAgentId": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "participantAgentId": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "assigneeUserId": {
+      "type": "string"
+     },
+     "touchedByUserId": {
+      "type": "string"
+     },
+     "inboxArchivedByUserId": {
+      "type": "string"
+     },
+     "unreadForUserId": {
+      "type": "string"
+     },
+     "labelId": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "executionWorkspaceId": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "originKind": {
+      "type": "string"
+     },
+     "originId": {
+      "type": "string"
+     },
+     "includeRoutineExecutions": {
+      "type": "boolean"
+     },
+     "includeLiveDescendantSummary": {
+      "type": "boolean"
+     },
+     "q": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipGetIssue",
+   "description": "Get a single issue by UUID or identifier",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "issueId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipGetHeartbeatContext",
+   "description": "Get compact heartbeat context for an issue",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "wakeCommentId": {
+      "type": "string",
+      "format": "uuid"
+     }
+    },
+    "required": [
+     "issueId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipListComments",
+   "description": "List issue comments with incremental options",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "after": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "order": {
+      "type": "string",
+      "enum": [
+       "asc",
+       "desc"
+      ]
+     },
+     "limit": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 500
+     }
+    },
+    "required": [
+     "issueId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipGetComment",
+   "description": "Get a specific issue comment by id",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "commentId": {
+      "type": "string",
+      "format": "uuid"
+     }
+    },
+    "required": [
+     "issueId",
+     "commentId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipListIssueApprovals",
+   "description": "List approvals linked to an issue",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "issueId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipListDocuments",
+   "description": "List issue documents",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "issueId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipGetDocument",
+   "description": "Get one issue document by key",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+     }
+    },
+    "required": [
+     "issueId",
+     "key"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipListDocumentRevisions",
+   "description": "List revisions for an issue document",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+     }
+    },
+    "required": [
+     "issueId",
+     "key"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipListProjects",
+   "description": "List projects in a company",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "companyId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipGetProject",
+   "description": "Get a project by id or company-scoped short reference",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "projectId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "companyId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "projectId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipGetIssueWorkspaceRuntime",
+   "description": "Get the current execution workspace and runtime services for an issue, including service URLs",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "issueId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipControlIssueWorkspaceServices",
+   "description": "Start, stop, or restart the current issue execution workspace runtime services",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "start",
+       "stop",
+       "restart"
+      ]
+     },
+     "workspaceCommandId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "minLength": 1
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "runtimeServiceId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "serviceIndex": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "integer",
+          "minimum": 0
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "issueId",
+     "action"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipWaitForIssueWorkspaceService",
+   "description": "Wait until an issue execution workspace runtime service is running and has a URL when one is exposed",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "runtimeServiceId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "serviceName": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "minLength": 1
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "timeoutSeconds": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 300
+     }
+    },
+    "required": [
+     "issueId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipListGoals",
+   "description": "List goals in a company",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "companyId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipGetGoal",
+   "description": "Get a goal by id",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "goalId": {
+      "type": "string",
+      "format": "uuid"
+     }
+    },
+    "required": [
+     "goalId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipListApprovals",
+   "description": "List approvals in a company",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "companyId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "status": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipCreateApproval",
+   "description": "Create a board approval request, optionally linked to one or more issues",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "companyId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "type": {
+      "type": "string",
+      "enum": [
+       "request_board_approval",
+       "hire_agent",
+       "approve_ceo_strategy",
+       "budget_override_required"
+      ]
+     },
+     "requestedByAgentId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "payload": {
+      "type": "object",
+      "additionalProperties": {}
+     },
+     "issueIds": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "format": "uuid"
+      }
+     },
+     "idempotencyKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+     }
+    },
+    "required": [
+     "type",
+     "payload"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipGetApproval",
+   "description": "Get an approval by id",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "approvalId": {
+      "type": "string",
+      "format": "uuid"
+     }
+    },
+    "required": [
+     "approvalId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipGetApprovalIssues",
+   "description": "List issues linked to an approval",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "approvalId": {
+      "type": "string",
+      "format": "uuid"
+     }
+    },
+    "required": [
+     "approvalId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipListApprovalComments",
+   "description": "List comments for an approval",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "approvalId": {
+      "type": "string",
+      "format": "uuid"
+     }
+    },
+    "required": [
+     "approvalId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipCreateIssue",
+   "description": "Create a new issue",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "companyId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "projectId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "projectWorkspaceId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "goalId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "parentId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "blockedByIssueIds": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "format": "uuid"
+      }
+     },
+     "inheritExecutionWorkspaceFromIssueId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "title": {
+      "type": "string",
+      "minLength": 1
+     },
+     "description": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "backlog",
+       "todo",
+       "in_progress",
+       "in_review",
+       "done",
+       "blocked",
+       "cancelled"
+      ]
+     },
+     "workMode": {
+      "type": "string",
+      "enum": [
+       "standard",
+       "ask",
+       "planning",
+       "skill_test"
+      ],
+      "default": "standard"
+     },
+     "harnessKind": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "enum": [
+           "skill_test"
+          ]
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "priority": {
+      "type": "string",
+      "enum": [
+       "critical",
+       "high",
+       "medium",
+       "low"
+      ],
+      "default": "medium"
+     },
+     "assigneeAgentId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "assigneeUserId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "capacityOverride": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "object",
+          "properties": {
+           "reason": {
+            "type": "string",
+            "minLength": 12
+           }
+          },
+          "required": [
+           "reason"
+          ],
+          "additionalProperties": false
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "requestDepth": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+     },
+     "createdByUserId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "responsibleUserId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "billingCode": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "assigneeAdapterOverrides": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "object",
+          "properties": {
+           "modelProfile": {
+            "type": "string",
+            "enum": [
+             "cheap"
+            ]
+           },
+           "adapterConfig": {
+            "type": "object",
+            "additionalProperties": {}
+           },
+           "useProjectWorkspace": {
+            "type": "boolean"
+           }
+          },
+          "additionalProperties": false
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "executionPolicy": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "object",
+          "properties": {
+           "mode": {
+            "type": "string",
+            "enum": [
+             "normal",
+             "auto"
+            ],
+            "default": "normal"
+           },
+           "commentRequired": {
+            "type": "boolean",
+            "default": true
+           },
+           "stages": {
+            "type": "array",
+            "items": {
+             "type": "object",
+             "properties": {
+              "id": {
+               "type": "string",
+               "format": "uuid"
+              },
+              "type": {
+               "type": "string",
+               "enum": [
+                "review",
+                "approval"
+               ]
+              },
+              "approvalsNeeded": {
+               "type": "number",
+               "const": 1,
+               "default": 1
+              },
+              "participants": {
+               "type": "array",
+               "items": {
+                "type": "object",
+                "properties": {
+                 "type": {
+                  "type": "string",
+                  "enum": [
+                   "agent",
+                   "user"
+                  ]
+                 },
+                 "agentId": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "format": "uuid"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "userId": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "id": {
+                  "type": "string",
+                  "format": "uuid"
+                 }
+                },
+                "required": [
+                 "type"
+                ],
+                "additionalProperties": false
+               },
+               "default": []
+              }
+             },
+             "required": [
+              "type"
+             ],
+             "additionalProperties": false
+            },
+            "default": []
+           },
+           "monitor": {
+            "anyOf": [
+             {
+              "anyOf": [
+               {
+                "not": {}
+               },
+               {
+                "type": "object",
+                "properties": {
+                 "nextCheckAt": {
+                  "type": "string",
+                  "format": "date-time"
+                 },
+                 "notes": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "maxLength": 500
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 },
+                 "scheduledBy": {
+                  "type": "string",
+                  "enum": [
+                   "assignee",
+                   "board"
+                  ],
+                  "default": "assignee"
+                 },
+                 "kind": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "enum": [
+                       "external_service"
+                      ]
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 },
+                 "serviceName": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 },
+                 "externalRef": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 },
+                 "timeoutAt": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "format": "date-time"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 },
+                 "maxAttempts": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 100
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 },
+                 "recoveryPolicy": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "enum": [
+                       "wake_owner",
+                       "create_recovery_issue",
+                       "escalate_to_board"
+                      ]
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 }
+                },
+                "required": [
+                 "nextCheckAt"
+                ],
+                "additionalProperties": false
+               }
+              ]
+             },
+             {
+              "type": "null"
+             }
+            ]
+           },
+           "reviewPreset": {
+            "type": "object",
+            "properties": {
+             "id": {
+              "type": "string",
+              "const": "low_trust_review"
+             },
+             "version": {
+              "type": "number",
+              "const": 1
+             },
+             "rawOutputDisposition": {
+              "type": "string",
+              "const": "quarantine"
+             }
+            },
+            "required": [
+             "id",
+             "version",
+             "rawOutputDisposition"
+            ],
+            "additionalProperties": false
+           },
+           "authorizationPolicy": {
+            "type": "object",
+            "properties": {
+             "trustPreset": {
+              "type": "string",
+              "enum": [
+               "standard",
+               "low_trust_review"
+              ]
+             },
+             "reviewPreset": {
+              "$ref": "#/properties/executionPolicy/anyOf/0/anyOf/1/properties/reviewPreset"
+             },
+             "trustBoundary": {
+              "type": "object",
+              "properties": {
+               "mode": {
+                "type": "string",
+                "const": "low_trust_review"
+               },
+               "companyId": {
+                "type": "string",
+                "format": "uuid"
+               },
+               "projectIds": {
+                "type": "array",
+                "items": {
+                 "type": "string",
+                 "format": "uuid"
+                }
+               },
+               "rootIssueId": {
+                "type": "string",
+                "format": "uuid"
+               },
+               "issueIds": {
+                "type": "array",
+                "items": {
+                 "type": "string",
+                 "format": "uuid"
+                }
+               },
+               "allowedAgentIds": {
+                "type": "array",
+                "items": {
+                 "type": "string",
+                 "format": "uuid"
+                }
+               },
+               "allowedSecretBindingIds": {
+                "type": "array",
+                "items": {
+                 "type": "string",
+                 "format": "uuid"
+                }
+               },
+               "allowedToolClasses": {
+                "type": "array",
+                "items": {
+                 "type": "string",
+                 "minLength": 1
+                }
+               },
+               "outputPromotionTarget": {
+                "type": "object",
+                "properties": {
+                 "type": {
+                  "type": "string",
+                  "const": "issue"
+                 },
+                 "issueId": {
+                  "type": "string",
+                  "format": "uuid"
+                 }
+                },
+                "required": [
+                 "type",
+                 "issueId"
+                ],
+                "additionalProperties": false
+               }
+              },
+              "required": [
+               "mode"
+              ],
+              "additionalProperties": false
+             }
+            },
+            "additionalProperties": {}
+           }
+          },
+          "additionalProperties": false
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "executionWorkspaceId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "executionWorkspacePreference": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "enum": [
+           "inherit",
+           "shared_workspace",
+           "isolated_workspace",
+           "operator_branch",
+           "reuse_existing",
+           "agent_default"
+          ]
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "executionWorkspaceSettings": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "object",
+          "properties": {
+           "mode": {
+            "type": "string",
+            "enum": [
+             "inherit",
+             "shared_workspace",
+             "isolated_workspace",
+             "operator_branch",
+             "reuse_existing",
+             "agent_default"
+            ]
+           },
+           "environmentId": {
+            "anyOf": [
+             {
+              "anyOf": [
+               {
+                "not": {}
+               },
+               {
+                "type": "string",
+                "format": "uuid"
+               }
+              ]
+             },
+             {
+              "type": "null"
+             }
+            ]
+           },
+           "workspaceStrategy": {
+            "anyOf": [
+             {
+              "anyOf": [
+               {
+                "not": {}
+               },
+               {
+                "type": "object",
+                "properties": {
+                 "type": {
+                  "type": "string",
+                  "enum": [
+                   "project_primary",
+                   "git_worktree",
+                   "adapter_managed",
+                   "cloud_sandbox"
+                  ]
+                 },
+                 "baseRef": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "branchTemplate": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "worktreeParentDir": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "provisionCommand": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "teardownCommand": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 }
+                },
+                "additionalProperties": false
+               }
+              ]
+             },
+             {
+              "type": "null"
+             }
+            ]
+           },
+           "workspaceRuntime": {
+            "anyOf": [
+             {
+              "anyOf": [
+               {
+                "not": {}
+               },
+               {
+                "type": "object",
+                "additionalProperties": {}
+               }
+              ]
+             },
+             {
+              "type": "null"
+             }
+            ]
+           }
+          },
+          "additionalProperties": false
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "labelIds": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "format": "uuid"
+      }
+     },
+     "watchdogDiscovery": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "object",
+          "properties": {
+           "kind": {
+            "type": "string",
+            "enum": [
+             "product_bug",
+             "platform_bug"
+            ]
+           },
+           "evidenceMarkdown": {
+            "anyOf": [
+             {
+              "anyOf": [
+               {
+                "not": {}
+               },
+               {
+                "$ref": "#/properties/description/anyOf/0/anyOf/1"
+               }
+              ]
+             },
+             {
+              "type": "null"
+             }
+            ]
+           }
+          },
+          "required": [
+           "kind"
+          ],
+          "additionalProperties": false
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "watchdog": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "object",
+          "properties": {
+           "agentId": {
+            "type": "string",
+            "format": "uuid"
+           },
+           "instructions": {
+            "anyOf": [
+             {
+              "anyOf": [
+               {
+                "not": {}
+               },
+               {
+                "$ref": "#/properties/description/anyOf/0/anyOf/1"
+               }
+              ]
+             },
+             {
+              "type": "null"
+             }
+            ]
+           }
+          },
+          "required": [
+           "agentId"
+          ],
+          "additionalProperties": false
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "idempotencyKey": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "allowDuplicate": {
+      "type": "boolean",
+      "description": "Bypasses recent-title duplicate detection; idempotency keys always replay their original issue",
+      "default": false
+     }
+    },
+    "required": [
+     "title"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipUpdateIssue",
+   "description": "Patch an issue, optionally including a comment; include resume=true when intentionally requesting follow-up on resumable closed work",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "projectId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "projectWorkspaceId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "goalId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "parentId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "blockedByIssueIds": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "format": "uuid"
+      }
+     },
+     "inheritExecutionWorkspaceFromIssueId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "title": {
+      "type": "string",
+      "minLength": 1
+     },
+     "description": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "backlog",
+       "todo",
+       "in_progress",
+       "in_review",
+       "done",
+       "blocked",
+       "cancelled"
+      ]
+     },
+     "workMode": {
+      "type": "string",
+      "enum": [
+       "standard",
+       "ask",
+       "planning",
+       "skill_test"
+      ],
+      "default": "standard"
+     },
+     "harnessKind": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "enum": [
+           "skill_test"
+          ]
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "priority": {
+      "type": "string",
+      "enum": [
+       "critical",
+       "high",
+       "medium",
+       "low"
+      ],
+      "default": "medium"
+     },
+     "assigneeAgentId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "minLength": 1
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "assigneeUserId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "capacityOverride": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "object",
+          "properties": {
+           "reason": {
+            "type": "string",
+            "minLength": 12
+           }
+          },
+          "required": [
+           "reason"
+          ],
+          "additionalProperties": false
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "requestDepth": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "billingCode": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "assigneeAdapterOverrides": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "object",
+          "properties": {
+           "modelProfile": {
+            "type": "string",
+            "enum": [
+             "cheap"
+            ]
+           },
+           "adapterConfig": {
+            "type": "object",
+            "additionalProperties": {}
+           },
+           "useProjectWorkspace": {
+            "type": "boolean"
+           }
+          },
+          "additionalProperties": false
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "executionPolicy": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "object",
+          "properties": {
+           "mode": {
+            "type": "string",
+            "enum": [
+             "normal",
+             "auto"
+            ],
+            "default": "normal"
+           },
+           "commentRequired": {
+            "type": "boolean",
+            "default": true
+           },
+           "stages": {
+            "type": "array",
+            "items": {
+             "type": "object",
+             "properties": {
+              "id": {
+               "type": "string",
+               "format": "uuid"
+              },
+              "type": {
+               "type": "string",
+               "enum": [
+                "review",
+                "approval"
+               ]
+              },
+              "approvalsNeeded": {
+               "type": "number",
+               "const": 1,
+               "default": 1
+              },
+              "participants": {
+               "type": "array",
+               "items": {
+                "type": "object",
+                "properties": {
+                 "type": {
+                  "type": "string",
+                  "enum": [
+                   "agent",
+                   "user"
+                  ]
+                 },
+                 "agentId": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "format": "uuid"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "userId": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "id": {
+                  "type": "string",
+                  "format": "uuid"
+                 }
+                },
+                "required": [
+                 "type"
+                ],
+                "additionalProperties": false
+               },
+               "default": []
+              }
+             },
+             "required": [
+              "type"
+             ],
+             "additionalProperties": false
+            },
+            "default": []
+           },
+           "monitor": {
+            "anyOf": [
+             {
+              "anyOf": [
+               {
+                "not": {}
+               },
+               {
+                "type": "object",
+                "properties": {
+                 "nextCheckAt": {
+                  "type": "string",
+                  "format": "date-time"
+                 },
+                 "notes": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "maxLength": 500
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 },
+                 "scheduledBy": {
+                  "type": "string",
+                  "enum": [
+                   "assignee",
+                   "board"
+                  ],
+                  "default": "assignee"
+                 },
+                 "kind": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "enum": [
+                       "external_service"
+                      ]
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 },
+                 "serviceName": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 },
+                 "externalRef": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 },
+                 "timeoutAt": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "format": "date-time"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 },
+                 "maxAttempts": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 100
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 },
+                 "recoveryPolicy": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string",
+                      "enum": [
+                       "wake_owner",
+                       "create_recovery_issue",
+                       "escalate_to_board"
+                      ]
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ],
+                  "default": null
+                 }
+                },
+                "required": [
+                 "nextCheckAt"
+                ],
+                "additionalProperties": false
+               }
+              ]
+             },
+             {
+              "type": "null"
+             }
+            ]
+           },
+           "reviewPreset": {
+            "type": "object",
+            "properties": {
+             "id": {
+              "type": "string",
+              "const": "low_trust_review"
+             },
+             "version": {
+              "type": "number",
+              "const": 1
+             },
+             "rawOutputDisposition": {
+              "type": "string",
+              "const": "quarantine"
+             }
+            },
+            "required": [
+             "id",
+             "version",
+             "rawOutputDisposition"
+            ],
+            "additionalProperties": false
+           },
+           "authorizationPolicy": {
+            "type": "object",
+            "properties": {
+             "trustPreset": {
+              "type": "string",
+              "enum": [
+               "standard",
+               "low_trust_review"
+              ]
+             },
+             "reviewPreset": {
+              "$ref": "#/properties/executionPolicy/anyOf/0/anyOf/1/properties/reviewPreset"
+             },
+             "trustBoundary": {
+              "type": "object",
+              "properties": {
+               "mode": {
+                "type": "string",
+                "const": "low_trust_review"
+               },
+               "companyId": {
+                "type": "string",
+                "format": "uuid"
+               },
+               "projectIds": {
+                "type": "array",
+                "items": {
+                 "type": "string",
+                 "format": "uuid"
+                }
+               },
+               "rootIssueId": {
+                "type": "string",
+                "format": "uuid"
+               },
+               "issueIds": {
+                "type": "array",
+                "items": {
+                 "type": "string",
+                 "format": "uuid"
+                }
+               },
+               "allowedAgentIds": {
+                "type": "array",
+                "items": {
+                 "type": "string",
+                 "format": "uuid"
+                }
+               },
+               "allowedSecretBindingIds": {
+                "type": "array",
+                "items": {
+                 "type": "string",
+                 "format": "uuid"
+                }
+               },
+               "allowedToolClasses": {
+                "type": "array",
+                "items": {
+                 "type": "string",
+                 "minLength": 1
+                }
+               },
+               "outputPromotionTarget": {
+                "type": "object",
+                "properties": {
+                 "type": {
+                  "type": "string",
+                  "const": "issue"
+                 },
+                 "issueId": {
+                  "type": "string",
+                  "format": "uuid"
+                 }
+                },
+                "required": [
+                 "type",
+                 "issueId"
+                ],
+                "additionalProperties": false
+               }
+              },
+              "required": [
+               "mode"
+              ],
+              "additionalProperties": false
+             }
+            },
+            "additionalProperties": {}
+           }
+          },
+          "additionalProperties": false
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "executionWorkspaceId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "executionWorkspacePreference": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "enum": [
+           "inherit",
+           "shared_workspace",
+           "isolated_workspace",
+           "operator_branch",
+           "reuse_existing",
+           "agent_default"
+          ]
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "executionWorkspaceSettings": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "object",
+          "properties": {
+           "mode": {
+            "type": "string",
+            "enum": [
+             "inherit",
+             "shared_workspace",
+             "isolated_workspace",
+             "operator_branch",
+             "reuse_existing",
+             "agent_default"
+            ]
+           },
+           "environmentId": {
+            "anyOf": [
+             {
+              "anyOf": [
+               {
+                "not": {}
+               },
+               {
+                "type": "string",
+                "format": "uuid"
+               }
+              ]
+             },
+             {
+              "type": "null"
+             }
+            ]
+           },
+           "workspaceStrategy": {
+            "anyOf": [
+             {
+              "anyOf": [
+               {
+                "not": {}
+               },
+               {
+                "type": "object",
+                "properties": {
+                 "type": {
+                  "type": "string",
+                  "enum": [
+                   "project_primary",
+                   "git_worktree",
+                   "adapter_managed",
+                   "cloud_sandbox"
+                  ]
+                 },
+                 "baseRef": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "branchTemplate": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "worktreeParentDir": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "provisionCommand": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "teardownCommand": {
+                  "anyOf": [
+                   {
+                    "anyOf": [
+                     {
+                      "not": {}
+                     },
+                     {
+                      "type": "string"
+                     }
+                    ]
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 }
+                },
+                "additionalProperties": false
+               }
+              ]
+             },
+             {
+              "type": "null"
+             }
+            ]
+           },
+           "workspaceRuntime": {
+            "anyOf": [
+             {
+              "anyOf": [
+               {
+                "not": {}
+               },
+               {
+                "type": "object",
+                "additionalProperties": {}
+               }
+              ]
+             },
+             {
+              "type": "null"
+             }
+            ]
+           }
+          },
+          "additionalProperties": false
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "labelIds": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "format": "uuid"
+      }
+     },
+     "watchdogDiscovery": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "object",
+          "properties": {
+           "kind": {
+            "type": "string",
+            "enum": [
+             "product_bug",
+             "platform_bug"
+            ]
+           },
+           "evidenceMarkdown": {
+            "anyOf": [
+             {
+              "anyOf": [
+               {
+                "not": {}
+               },
+               {
+                "$ref": "#/properties/description/anyOf/0/anyOf/1"
+               }
+              ]
+             },
+             {
+              "type": "null"
+             }
+            ]
+           }
+          },
+          "required": [
+           "kind"
+          ],
+          "additionalProperties": false
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "comment": {
+      "$ref": "#/properties/description/anyOf/0/anyOf/1"
+     },
+     "reviewRequest": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "object",
+          "properties": {
+           "instructions": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+           }
+          },
+          "required": [
+           "instructions"
+          ],
+          "additionalProperties": false
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "reopen": {
+      "type": "boolean"
+     },
+     "resume": {
+      "type": "boolean"
+     },
+     "interrupt": {
+      "type": "boolean"
+     },
+     "hiddenAt": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "issueId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipCheckoutIssue",
+   "description": "Checkout an issue for an agent",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "agentId": {
+      "anyOf": [
+       {
+        "anyOf": [
+         {
+          "not": {}
+         },
+         {
+          "type": "string",
+          "format": "uuid"
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "expectedStatuses": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "backlog",
+        "todo",
+        "in_progress",
+        "in_review",
+        "done",
+        "blocked",
+        "cancelled"
+       ]
+      },
+      "minItems": 1
+     }
+    },
+    "required": [
+     "issueId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipReleaseIssue",
+   "description": "Release an issue checkout",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "issueId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipAddComment",
+   "description": "Add a comment to an issue; include resume=true when intentionally requesting follow-up on resumable closed work",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "body": {
+      "type": "string"
+     },
+     "authorType": {
+      "type": "string",
+      "enum": [
+       "user",
+       "agent",
+       "system"
+      ]
+     },
+     "presentation": {
+      "anyOf": [
+       {
+        "type": "object",
+        "properties": {
+         "kind": {
+          "type": "string",
+          "enum": [
+           "message",
+           "system_notice"
+          ],
+          "default": "message"
+         },
+         "tone": {
+          "type": "string",
+          "enum": [
+           "neutral",
+           "info",
+           "success",
+           "warning",
+           "danger"
+          ],
+          "default": "neutral"
+         },
+         "title": {
+          "anyOf": [
+           {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+           },
+           {
+            "type": "null"
+           }
+          ]
+         },
+         "detailsDefaultOpen": {
+          "type": "boolean",
+          "default": false
+         }
+        },
+        "additionalProperties": false
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "metadata": {
+      "anyOf": [
+       {
+        "type": "object",
+        "properties": {
+         "version": {
+          "type": "number",
+          "const": 1
+         },
+         "sourceRunId": {
+          "anyOf": [
+           {
+            "type": "string",
+            "format": "uuid"
+           },
+           {
+            "type": "null"
+           }
+          ]
+         },
+         "sections": {
+          "type": "array",
+          "items": {
+           "type": "object",
+           "properties": {
+            "title": {
+             "anyOf": [
+              {
+               "type": "string",
+               "minLength": 1,
+               "maxLength": 160
+              },
+              {
+               "type": "null"
+              }
+             ]
+            },
+            "rows": {
+             "type": "array",
+             "items": {
+              "anyOf": [
+               {
+                "type": "object",
+                "properties": {
+                 "type": {
+                  "type": "string",
+                  "const": "text"
+                 },
+                 "label": {
+                  "anyOf": [
+                   {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
+                 }
+                },
+                "required": [
+                 "type",
+                 "text"
+                ],
+                "additionalProperties": false
+               },
+               {
+                "type": "object",
+                "properties": {
+                 "type": {
+                  "type": "string",
+                  "const": "code"
+                 },
+                 "label": {
+                  "$ref": "#/properties/metadata/anyOf/0/properties/sections/items/properties/rows/items/anyOf/0/properties/label"
+                 },
+                 "code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000
+                 },
+                 "language": {
+                  "anyOf": [
+                   {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 }
+                },
+                "required": [
+                 "type",
+                 "code"
+                ],
+                "additionalProperties": false
+               },
+               {
+                "type": "object",
+                "properties": {
+                 "type": {
+                  "type": "string",
+                  "const": "key_value"
+                 },
+                 "label": {
+                  "$ref": "#/properties/metadata/anyOf/0/properties/sections/items/properties/rows/items/anyOf/0/properties/label/anyOf/0"
+                 },
+                 "value": {
+                  "$ref": "#/properties/metadata/anyOf/0/properties/sections/items/properties/rows/items/anyOf/0/properties/text"
+                 }
+                },
+                "required": [
+                 "type",
+                 "label",
+                 "value"
+                ],
+                "additionalProperties": false
+               },
+               {
+                "type": "object",
+                "properties": {
+                 "type": {
+                  "type": "string",
+                  "const": "issue_link"
+                 },
+                 "label": {
+                  "$ref": "#/properties/metadata/anyOf/0/properties/sections/items/properties/rows/items/anyOf/0/properties/label"
+                 },
+                 "issueId": {
+                  "anyOf": [
+                   {
+                    "type": "string",
+                    "format": "uuid"
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "identifier": {
+                  "anyOf": [
+                   {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 },
+                 "title": {
+                  "anyOf": [
+                   {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 }
+                },
+                "required": [
+                 "type"
+                ],
+                "additionalProperties": false
+               },
+               {
+                "type": "object",
+                "properties": {
+                 "type": {
+                  "type": "string",
+                  "const": "agent_link"
+                 },
+                 "label": {
+                  "$ref": "#/properties/metadata/anyOf/0/properties/sections/items/properties/rows/items/anyOf/0/properties/label"
+                 },
+                 "agentId": {
+                  "type": "string",
+                  "format": "uuid"
+                 },
+                 "name": {
+                  "anyOf": [
+                   {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 }
+                },
+                "required": [
+                 "type",
+                 "agentId"
+                ],
+                "additionalProperties": false
+               },
+               {
+                "type": "object",
+                "properties": {
+                 "type": {
+                  "type": "string",
+                  "const": "run_link"
+                 },
+                 "label": {
+                  "$ref": "#/properties/metadata/anyOf/0/properties/sections/items/properties/rows/items/anyOf/0/properties/label"
+                 },
+                 "runId": {
+                  "type": "string",
+                  "format": "uuid"
+                 },
+                 "title": {
+                  "anyOf": [
+                   {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                   },
+                   {
+                    "type": "null"
+                   }
+                  ]
+                 }
+                },
+                "required": [
+                 "type",
+                 "runId"
+                ],
+                "additionalProperties": false
+               }
+              ]
+             },
+             "minItems": 1,
+             "maxItems": 50
+            }
+           },
+           "required": [
+            "rows"
+           ],
+           "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 20
+         }
+        },
+        "required": [
+         "version",
+         "sections"
+        ],
+        "additionalProperties": false
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "reopen": {
+      "type": "boolean"
+     },
+     "resume": {
+      "type": "boolean"
+     },
+     "interrupt": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "issueId",
+     "body"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipSuggestTasks",
+   "description": "Create a suggest_tasks interaction on an issue",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "idempotencyKey": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 255
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "sourceCommentId": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "sourceRunId": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 240
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "summary": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 1000
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "continuationPolicy": {
+      "type": "string",
+      "enum": [
+       "none",
+       "wake_assignee",
+       "wake_assignee_on_accept"
+      ],
+      "default": "wake_assignee"
+     },
+     "payload": {
+      "type": "object",
+      "properties": {
+       "version": {
+        "type": "number",
+        "const": 1
+       },
+       "defaultParentId": {
+        "anyOf": [
+         {
+          "type": "string",
+          "format": "uuid"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "tasks": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "clientKey": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 120
+          },
+          "parentClientKey": {
+           "anyOf": [
+            {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 120
+            },
+            {
+             "type": "null"
+            }
+           ]
+          },
+          "parentId": {
+           "anyOf": [
+            {
+             "type": "string",
+             "format": "uuid"
+            },
+            {
+             "type": "null"
+            }
+           ]
+          },
+          "title": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 240
+          },
+          "description": {
+           "anyOf": [
+            {
+             "type": "string"
+            },
+            {
+             "type": "null"
+            }
+           ]
+          },
+          "priority": {
+           "anyOf": [
+            {
+             "type": "string",
+             "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low"
+             ]
+            },
+            {
+             "type": "null"
+            }
+           ]
+          },
+          "workMode": {
+           "anyOf": [
+            {
+             "type": "string",
+             "enum": [
+              "standard",
+              "ask",
+              "planning",
+              "skill_test"
+             ]
+            },
+            {
+             "type": "null"
+            }
+           ]
+          },
+          "assigneeAgentId": {
+           "anyOf": [
+            {
+             "type": "string",
+             "format": "uuid"
+            },
+            {
+             "type": "null"
+            }
+           ]
+          },
+          "assigneeUserId": {
+           "anyOf": [
+            {
+             "type": "string",
+             "minLength": 1
+            },
+            {
+             "type": "null"
+            }
+           ]
+          },
+          "projectId": {
+           "anyOf": [
+            {
+             "type": "string",
+             "format": "uuid"
+            },
+            {
+             "type": "null"
+            }
+           ]
+          },
+          "goalId": {
+           "anyOf": [
+            {
+             "type": "string",
+             "format": "uuid"
+            },
+            {
+             "type": "null"
+            }
+           ]
+          },
+          "billingCode": {
+           "anyOf": [
+            {
+             "type": "string",
+             "maxLength": 120
+            },
+            {
+             "type": "null"
+            }
+           ]
+          },
+          "labels": {
+           "type": "array",
+           "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 48
+           },
+           "maxItems": 20
+          },
+          "hiddenInPreview": {
+           "type": "boolean"
+          }
+         },
+         "required": [
+          "clientKey",
+          "title"
+         ],
+         "additionalProperties": false
+        },
+        "minItems": 1,
+        "maxItems": 50
+       }
+      },
+      "required": [
+       "version",
+       "tasks"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "issueId",
+     "payload"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipAskUserQuestions",
+   "description": "Create an ask_user_questions interaction on an issue",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "idempotencyKey": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 255
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "sourceCommentId": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "sourceRunId": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 240
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "summary": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 1000
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "continuationPolicy": {
+      "type": "string",
+      "enum": [
+       "none",
+       "wake_assignee",
+       "wake_assignee_on_accept"
+      ],
+      "default": "wake_assignee"
+     },
+     "payload": {
+      "type": "object",
+      "properties": {
+       "version": {
+        "type": "number",
+        "const": 1
+       },
+       "title": {
+        "anyOf": [
+         {
+          "type": "string",
+          "maxLength": 240
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "submitLabel": {
+        "anyOf": [
+         {
+          "type": "string",
+          "maxLength": 120
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "supersedeOnUserComment": {
+        "type": "boolean"
+       },
+       "questions": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "id": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 120
+          },
+          "prompt": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 500
+          },
+          "helpText": {
+           "anyOf": [
+            {
+             "type": "string",
+             "maxLength": 1000
+            },
+            {
+             "type": "null"
+            }
+           ]
+          },
+          "selectionMode": {
+           "type": "string",
+           "enum": [
+            "single",
+            "multi"
+           ]
+          },
+          "required": {
+           "type": "boolean"
+          },
+          "options": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "properties": {
+             "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+             },
+             "label": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+             },
+             "description": {
+              "anyOf": [
+               {
+                "type": "string",
+                "maxLength": 500
+               },
+               {
+                "type": "null"
+               }
+              ]
+             }
+            },
+            "required": [
+             "id",
+             "label"
+            ],
+            "additionalProperties": false
+           },
+           "minItems": 1,
+           "maxItems": 10
+          }
+         },
+         "required": [
+          "id",
+          "prompt",
+          "selectionMode",
+          "options"
+         ],
+         "additionalProperties": false
+        },
+        "minItems": 1,
+        "maxItems": 10
+       }
+      },
+      "required": [
+       "version",
+       "questions"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "issueId",
+     "payload"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipRequestConfirmation",
+   "description": "Create a request_confirmation interaction on an issue",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "idempotencyKey": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 255
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "sourceCommentId": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "sourceRunId": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 240
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "summary": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 1000
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "continuationPolicy": {
+      "type": "string",
+      "enum": [
+       "none",
+       "wake_assignee",
+       "wake_assignee_on_accept"
+      ],
+      "default": "none"
+     },
+     "payload": {
+      "type": "object",
+      "properties": {
+       "version": {
+        "type": "number",
+        "const": 1
+       },
+       "prompt": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000
+       },
+       "acceptLabel": {
+        "anyOf": [
+         {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "rejectLabel": {
+        "anyOf": [
+         {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "rejectRequiresReason": {
+        "type": "boolean"
+       },
+       "rejectReasonLabel": {
+        "anyOf": [
+         {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "allowDeclineReason": {
+        "type": "boolean",
+        "default": true
+       },
+       "declineReasonPlaceholder": {
+        "anyOf": [
+         {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "detailsMarkdown": {
+        "anyOf": [
+         {
+          "type": "string",
+          "maxLength": 20000
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "supersedeOnUserComment": {
+        "type": "boolean"
+       },
+       "target": {
+        "anyOf": [
+         {
+          "anyOf": [
+           {
+            "type": "object",
+            "properties": {
+             "label": {
+              "anyOf": [
+               {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+               },
+               {
+                "type": "null"
+               }
+              ]
+             },
+             "href": {
+              "anyOf": [
+               {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+               },
+               {
+                "type": "null"
+               }
+              ]
+             },
+             "type": {
+              "type": "string",
+              "const": "issue_document"
+             },
+             "issueId": {
+              "anyOf": [
+               {
+                "type": "string",
+                "format": "uuid"
+               },
+               {
+                "type": "null"
+               }
+              ]
+             },
+             "documentId": {
+              "anyOf": [
+               {
+                "type": "string",
+                "format": "uuid"
+               },
+               {
+                "type": "null"
+               }
+              ]
+             },
+             "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9_-]*$"
+             },
+             "revisionId": {
+              "type": "string",
+              "format": "uuid"
+             },
+             "revisionNumber": {
+              "anyOf": [
+               {
+                "type": "integer",
+                "exclusiveMinimum": 0
+               },
+               {
+                "type": "null"
+               }
+              ]
+             }
+            },
+            "required": [
+             "type",
+             "key",
+             "revisionId"
+            ],
+            "additionalProperties": false
+           },
+           {
+            "type": "object",
+            "properties": {
+             "label": {
+              "$ref": "#/properties/payload/properties/target/anyOf/0/anyOf/0/properties/label"
+             },
+             "href": {
+              "$ref": "#/properties/payload/properties/target/anyOf/0/anyOf/0/properties/href"
+             },
+             "type": {
+              "type": "string",
+              "const": "custom"
+             },
+             "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+             },
+             "revisionId": {
+              "anyOf": [
+               {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+               },
+               {
+                "type": "null"
+               }
+              ]
+             },
+             "revisionNumber": {
+              "anyOf": [
+               {
+                "type": "integer",
+                "exclusiveMinimum": 0
+               },
+               {
+                "type": "null"
+               }
+              ]
+             }
+            },
+            "required": [
+             "type",
+             "key"
+            ],
+            "additionalProperties": false
+           }
+          ]
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "toolAction": {
+        "type": "object",
+        "properties": {
+         "version": {
+          "type": "number",
+          "const": 1
+         },
+         "actionRequestId": {
+          "type": "string",
+          "format": "uuid"
+         },
+         "invocationId": {
+          "type": "string",
+          "format": "uuid"
+         },
+         "toolName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+         },
+         "toolDisplayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+         },
+         "connectionId": {
+          "anyOf": [
+           {
+            "type": "string",
+            "format": "uuid"
+           },
+           {
+            "type": "null"
+           }
+          ]
+         },
+         "applicationId": {
+          "anyOf": [
+           {
+            "type": "string",
+            "format": "uuid"
+           },
+           {
+            "type": "null"
+           }
+          ]
+         },
+         "appDisplayName": {
+          "anyOf": [
+           {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+           },
+           {
+            "type": "null"
+           }
+          ]
+         },
+         "risk": {
+          "type": "string",
+          "enum": [
+           "write",
+           "destructive"
+          ]
+         },
+         "previewMarkdown": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+         },
+         "argumentsSummaryJson": {
+          "type": "string",
+          "maxLength": 20000
+         },
+         "argumentsHash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+         },
+         "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+         }
+        },
+        "required": [
+         "version",
+         "actionRequestId",
+         "invocationId",
+         "toolName",
+         "toolDisplayName",
+         "connectionId",
+         "applicationId",
+         "appDisplayName",
+         "risk",
+         "previewMarkdown",
+         "argumentsSummaryJson",
+         "argumentsHash",
+         "expiresAt"
+        ],
+        "additionalProperties": false
+       }
+      },
+      "required": [
+       "version",
+       "prompt"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "issueId",
+     "payload"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipRequestCheckboxConfirmation",
+   "description": "Create a request_checkbox_confirmation interaction on an issue",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "idempotencyKey": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 255
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "sourceCommentId": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "sourceRunId": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 240
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "summary": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 1000
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "continuationPolicy": {
+      "type": "string",
+      "enum": [
+       "none",
+       "wake_assignee",
+       "wake_assignee_on_accept"
+      ],
+      "default": "wake_assignee"
+     },
+     "payload": {
+      "type": "object",
+      "properties": {
+       "version": {
+        "type": "number",
+        "const": 1
+       },
+       "prompt": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000
+       },
+       "detailsMarkdown": {
+        "anyOf": [
+         {
+          "type": "string",
+          "maxLength": 20000
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "options": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "id": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 120
+          },
+          "label": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 120
+          },
+          "description": {
+           "anyOf": [
+            {
+             "type": "string",
+             "maxLength": 500
+            },
+            {
+             "type": "null"
+            }
+           ]
+          }
+         },
+         "required": [
+          "id",
+          "label"
+         ],
+         "additionalProperties": false
+        },
+        "minItems": 1,
+        "maxItems": 200
+       },
+       "defaultSelectedOptionIds": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 120
+        },
+        "maxItems": 200,
+        "default": []
+       },
+       "minSelected": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 0
+       },
+       "maxSelected": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "acceptLabel": {
+        "anyOf": [
+         {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "rejectLabel": {
+        "anyOf": [
+         {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "rejectRequiresReason": {
+        "type": "boolean"
+       },
+       "rejectReasonLabel": {
+        "anyOf": [
+         {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "allowDeclineReason": {
+        "type": "boolean",
+        "default": true
+       },
+       "declineReasonPlaceholder": {
+        "anyOf": [
+         {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "supersedeOnUserComment": {
+        "type": "boolean"
+       },
+       "target": {
+        "anyOf": [
+         {
+          "anyOf": [
+           {
+            "type": "object",
+            "properties": {
+             "label": {
+              "anyOf": [
+               {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+               },
+               {
+                "type": "null"
+               }
+              ]
+             },
+             "href": {
+              "anyOf": [
+               {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+               },
+               {
+                "type": "null"
+               }
+              ]
+             },
+             "type": {
+              "type": "string",
+              "const": "issue_document"
+             },
+             "issueId": {
+              "anyOf": [
+               {
+                "type": "string",
+                "format": "uuid"
+               },
+               {
+                "type": "null"
+               }
+              ]
+             },
+             "documentId": {
+              "anyOf": [
+               {
+                "type": "string",
+                "format": "uuid"
+               },
+               {
+                "type": "null"
+               }
+              ]
+             },
+             "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9_-]*$"
+             },
+             "revisionId": {
+              "type": "string",
+              "format": "uuid"
+             },
+             "revisionNumber": {
+              "anyOf": [
+               {
+                "type": "integer",
+                "exclusiveMinimum": 0
+               },
+               {
+                "type": "null"
+               }
+              ]
+             }
+            },
+            "required": [
+             "type",
+             "key",
+             "revisionId"
+            ],
+            "additionalProperties": false
+           },
+           {
+            "type": "object",
+            "properties": {
+             "label": {
+              "$ref": "#/properties/payload/properties/target/anyOf/0/anyOf/0/properties/label"
+             },
+             "href": {
+              "$ref": "#/properties/payload/properties/target/anyOf/0/anyOf/0/properties/href"
+             },
+             "type": {
+              "type": "string",
+              "const": "custom"
+             },
+             "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+             },
+             "revisionId": {
+              "anyOf": [
+               {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+               },
+               {
+                "type": "null"
+               }
+              ]
+             },
+             "revisionNumber": {
+              "anyOf": [
+               {
+                "type": "integer",
+                "exclusiveMinimum": 0
+               },
+               {
+                "type": "null"
+               }
+              ]
+             }
+            },
+            "required": [
+             "type",
+             "key"
+            ],
+            "additionalProperties": false
+           }
+          ]
+         },
+         {
+          "type": "null"
+         }
+        ]
+       }
+      },
+      "required": [
+       "version",
+       "prompt",
+       "options"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "issueId",
+     "payload"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipUpsertIssueDocument",
+   "description": "Create or update an issue document",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "format": {
+      "type": "string",
+      "enum": [
+       "markdown"
+      ],
+      "default": "markdown"
+     },
+     "body": {
+      "type": "string",
+      "maxLength": 524288
+     },
+     "changeSummary": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 500
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "baseRevisionId": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "uuid"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "issueId",
+     "key",
+     "body"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipRestoreIssueDocumentRevision",
+   "description": "Restore a prior revision of an issue document",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+     },
+     "revisionId": {
+      "type": "string",
+      "format": "uuid"
+     }
+    },
+    "required": [
+     "issueId",
+     "key",
+     "revisionId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipLinkIssueApproval",
+   "description": "Link an approval to an issue",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "approvalId": {
+      "type": "string",
+      "format": "uuid"
+     }
+    },
+    "required": [
+     "issueId",
+     "approvalId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipUnlinkIssueApproval",
+   "description": "Unlink an approval from an issue",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "issueId": {
+      "type": "string",
+      "minLength": 1
+     },
+     "approvalId": {
+      "type": "string",
+      "format": "uuid"
+     }
+    },
+    "required": [
+     "issueId",
+     "approvalId"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipApprovalDecision",
+   "description": "Approve, reject, request revision, or resubmit an approval",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "approvalId": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "approve",
+       "reject",
+       "requestRevision",
+       "resubmit"
+      ]
+     },
+     "decisionNote": {
+      "type": "string"
+     },
+     "payloadJson": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "approvalId",
+     "action"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipAddApprovalComment",
+   "description": "Add a comment to an approval",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "approvalId": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "approvalId",
+     "body"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  },
+  {
+   "name": "paperclipApiRequest",
+   "description": "Make a JSON request to an existing Paperclip /api endpoint for unsupported operations",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "method": {
+      "type": "string",
+      "enum": [
+       "GET",
+       "POST",
+       "PUT",
+       "PATCH",
+       "DELETE"
+      ]
+     },
+     "path": {
+      "type": "string",
+      "minLength": 1
+     },
+     "jsonBody": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "method",
+     "path"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+   },
+   "execution": {
+    "taskSupport": "forbidden"
+   }
+  }
+ ]
+}
