@@ -142,7 +142,11 @@ describeEmbeddedPostgres("migration 9100_better_auth_relax_account_issuer", () =
   it("is a recorded no-op on a master-lineage database that has no issuer column", async () => {
     const { database, sql } = await startDatabase("paperclip-issuer-relax-master-");
     await insertCredentialUser(sql, "master-user");
-    expect(await issuerColumn(sql)).toBeNull();
+    expect(
+      await issuerColumn(sql),
+      "master's migrations must not create account.issuer; if a merge adds a migration that does, " +
+        "see better-auth-issuer-migration-guard.test.ts before changing this expectation",
+    ).toBeNull();
     expect(await migrationHistoryCount(sql)).toBe(1);
 
     await forgetMigration(sql);
@@ -238,6 +242,55 @@ describeEmbeddedPostgres("migration 9100_better_auth_relax_account_issuer", () =
     expect(await accountColumns(sql)).toEqual(columnsBefore);
     expect(await accountIndexes(sql)).toEqual(indexesBefore);
     expect(await accountRows(sql)).toEqual(rowsBefore);
+  }, 60_000);
+
+  it("does not run again on an existing database, so a NOT NULL migration merged later would win", async () => {
+    // An existing master-lineage database: fully migrated, 9100 recorded.
+    const { database, sql } = await startDatabase("paperclip-issuer-relax-later-0230-");
+    await insertCredentialUser(sql, "existing-user");
+    expect(await migrationHistoryCount(sql)).toBe(1);
+
+    // If master merged upstream 0230, it would be pending here and run after
+    // 9100, whatever its number. 9100 is recorded, so it never runs again.
+    await runMigrationFile(sql, upstream0230Sql);
+    await applyPendingMigrations(database.connectionString);
+    expect(await migrationHistoryCount(sql)).toBe(1);
+    expect(await issuerColumn(sql)).toMatchObject({ is_nullable: "NO" });
+
+    // Only a new relax migration journaled after 0230 fixes it, which is what
+    // better-auth-issuer-migration-guard.test.ts requires of such a merge.
+    await runMigrationFile(sql, migrationSql);
+    expect(await issuerColumn(sql)).toMatchObject({ is_nullable: "YES" });
+  }, 60_000);
+
+  it("gives up after its lock_timeout instead of stalling reads of account behind a long transaction", async () => {
+    const { database, sql } = await startIssuerLineageDatabase("paperclip-issuer-relax-lock-timeout-");
+    // Stands in for a long transaction that has read "account", such as a
+    // pg_dump backup on an instance that is still running.
+    const reader = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    cleanups.push(async () => reader.end());
+    await reader.unsafe("BEGIN");
+    await reader.unsafe('SELECT count(*) FROM "account"');
+
+    const startedAt = Date.now();
+    const outcome = await Promise.race([
+      applyPendingMigrations(database.connectionString).then(
+        () => "applied",
+        (error: unknown) => error,
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("still waiting after 20s"), 20_000)),
+    ]);
+    expect(outcome).toMatchObject({ code: "55P03" });
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(4_500);
+    // The failed attempt changed nothing and recorded nothing.
+    expect(await issuerColumn(sql)).toMatchObject({ is_nullable: "NO" });
+    expect(await migrationHistoryCount(sql)).toBe(0);
+
+    // The next start, once the long transaction has ended, applies it.
+    await reader.unsafe("COMMIT");
+    await applyPendingMigrations(database.connectionString);
+    expect(await issuerColumn(sql)).toMatchObject({ is_nullable: "YES" });
+    expect(await migrationHistoryCount(sql)).toBe(1);
   }, 60_000);
 
   it("succeeds for both of two instances applying it at the same time", async () => {

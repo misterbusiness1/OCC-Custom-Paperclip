@@ -156,6 +156,13 @@ When authoring migrations or one-time backfills:
 - Split schema changes, index creation, and data backfill into separate phases so each step has clear locking and rollback behavior.
 - Treat the `check:migrations` CI gate as the enforcement backstop for these rules. If it flags a migration, rewrite the migration or add a suppression comment with the indexed predicate, batch bound, and reason the remaining scan is safe.
 
+## Migration numbering on this fork
+
+- Upstream Paperclip numbers its migrations `0186` and up, and this fork's release lines carry those plus their own `9000`-`9009`. master's own migrations after `0185` therefore start at `9100` (`9100_better_auth_relax_account_issuer`).
+- `pnpm db:generate` numbers a new migration as the journal's last `idx` + 1, so the next one on master is `9101_*`. Keep that number. `check:migrations` requires the journal to stay in file-name order, so a hand-picked `9010`-`9099` would have to be inserted before `9100`.
+- Release lines keep their own `90xx` sequence. For the Better Auth `account.issuer` fix they take `9009_hesitant_mockingbird` and its nullable Drizzle `issuer` column, not a cherry-pick of `9100`.
+- A migration's number orders it only on a fresh database. An existing database runs whatever it has not recorded yet after everything it has, so a migration merged in later runs last there, whatever its number. In particular, merging upstream's `0230_better_auth_account_issuer` (or anything else that makes `account.issuer` NOT NULL) needs a new relax migration journaled after it. `packages/db/src/better-auth-issuer-migration-guard.test.ts` fails until the merge has one.
+
 ## Resource membership tables
 
 Paperclip stores current-user sidebar membership state in:
