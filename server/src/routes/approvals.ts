@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
 import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
@@ -27,11 +28,35 @@ import {
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, unprocessable } from "../errors.js";
 import { redactEventPayload } from "../redaction.js";
+import {
+  assertNoAgentAdapterConfigMutation,
+  assertNoAgentRuntimeConfigAdapterConfigMutation,
+  assertNoLegacyPromptTemplateForNewAgent,
+  supportsManagedInstructionsBundle,
+} from "./agent-config-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 function readPayloadAgentId(payload: Record<string, unknown> | null | undefined): string | null {
   const value = payload?.agentId;
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// What `next` adds or changes relative to `previous`: nested records are
+// compared key by key and unchanged values are dropped.
+function addedOrChangedValues(next: unknown, previous: unknown): unknown {
+  if (!isPlainRecord(next) || !isPlainRecord(previous)) {
+    return isDeepStrictEqual(next, previous) ? undefined : next;
+  }
+  const changed: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(next)) {
+    const changedValue = addedOrChangedValues(value, previous[key]);
+    if (changedValue !== undefined) changed[key] = changedValue;
+  }
+  return changed;
 }
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
@@ -185,6 +210,68 @@ export function approvalRoutes(
     );
   }
 
+  // A hire_agent approval becomes an agent when approved: approvalService.approve
+  // creates one from the payload, or, for an agent-hires approval, applies the
+  // payload to the pending agent (adapterType, adapterConfig, runtimeConfig).
+  // Every hire payload created or resubmitted here therefore gets the same
+  // guards as POST /companies/:companyId/agent-hires.
+  async function assertCanRequestAgentHire(req: Request, companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agents:create",
+      resource: { type: "company", companyId },
+    });
+    if (!decision.allowed) {
+      throw forbidden(decision.explanation ?? "Not allowed to request new agents for this company");
+    }
+  }
+
+  // Requires a known adapter type (no silent "process" default), rejects legacy
+  // prompt templates for adapters with managed instructions, and blocks agent
+  // callers from setting instructions paths or host-executed workspace commands
+  // in adapterConfig or any runtimeConfig model profile. Returns the payload with
+  // the normalised adapterType, which is what must be persisted.
+  //
+  // For a resubmission, `previousPayload` is the payload being revised: agent
+  // callers may keep values it already carries (agent-hires stores the
+  // server-materialized instructions bundle paths there) but cannot add or
+  // change any.
+  async function normalizeHireApprovalPayload(
+    req: Request,
+    payload: Record<string, unknown>,
+    previousPayload?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const adapterType = typeof payload.adapterType === "string" ? payload.adapterType.trim() : "";
+    if (!adapterType) {
+      throw unprocessable("payload.adapterType is required for hire_agent approvals");
+    }
+    // Loaded lazily: the adapter registry pulls in every adapter package, and
+    // only hire approvals need it.
+    const { findActiveServerAdapter, findServerAdapter } = await import("../adapters/registry.js");
+    if (!findServerAdapter(adapterType)) {
+      throw unprocessable(`Unknown adapter type: ${adapterType}`);
+    }
+
+    const adapterConfig = isPlainRecord(payload.adapterConfig) ? payload.adapterConfig : {};
+    assertNoLegacyPromptTemplateForNewAgent(
+      supportsManagedInstructionsBundle(adapterType, findActiveServerAdapter(adapterType)),
+      adapterConfig,
+    );
+    const requestedAdapterConfig = previousPayload
+      ? addedOrChangedValues(adapterConfig, previousPayload.adapterConfig)
+      : adapterConfig;
+    const requestedRuntimeConfig = previousPayload
+      ? addedOrChangedValues(payload.runtimeConfig, previousPayload.runtimeConfig)
+      : payload.runtimeConfig;
+    assertNoAgentAdapterConfigMutation(
+      req,
+      isPlainRecord(requestedAdapterConfig) ? requestedAdapterConfig : {},
+      "payload.adapterConfig",
+    );
+    assertNoAgentRuntimeConfigAdapterConfigMutation(req, requestedRuntimeConfig, "payload.runtimeConfig");
+    return { ...payload, adapterType };
+  }
+
   // The requester is woken when an approval resolves, so it must be the calling
   // agent itself, or (for board users) an agent in the same company.
   async function resolveRequestedByAgentId(
@@ -235,10 +322,13 @@ export function approvalRoutes(
 
     let normalizedPayload: Record<string, unknown> = approvalInput.payload;
     if (approvalInput.type === "hire_agent") {
+      // Permission first, so callers without agents:create learn nothing from
+      // the payload checks.
+      await assertCanRequestAgentHire(req, companyId);
       assertGenericHirePayloadHasNoAgentId(approvalInput.payload);
       normalizedPayload = await secretsSvc.normalizeHireApprovalPayloadForPersistence(
         companyId,
-        approvalInput.payload,
+        await normalizeHireApprovalPayload(req, approvalInput.payload),
         { strictMode: strictSecretsMode },
       );
     } else if (approvalInput.type === "request_board_approval") {
@@ -460,6 +550,7 @@ export function approvalRoutes(
     let normalizedPayload: Record<string, unknown> | undefined;
     if (req.body.payload) {
       if (existing.type === "hire_agent") {
+        await assertCanRequestAgentHire(req, existing.companyId);
         const previousAgentId = readPayloadAgentId(existing.payload as Record<string, unknown>);
         const nextAgentId = readPayloadAgentId(req.body.payload);
         if (nextAgentId !== previousAgentId) {
@@ -467,7 +558,7 @@ export function approvalRoutes(
         }
         normalizedPayload = await secretsSvc.normalizeHireApprovalPayloadForPersistence(
           existing.companyId,
-          req.body.payload,
+          await normalizeHireApprovalPayload(req, req.body.payload, existing.payload as Record<string, unknown>),
           { strictMode: strictSecretsMode },
         );
       } else if (existing.type === "request_board_approval") {

