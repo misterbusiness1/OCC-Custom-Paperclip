@@ -1289,6 +1289,13 @@
       "when": 1784760000000,
       "tag": "0185_approval_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 9100,
+      "version": "7",
+      "when": 1793496063749,
+      "tag": "9100_better_auth_relax_account_issuer",
+      "breakpoints": true
     }
   ]
 }
