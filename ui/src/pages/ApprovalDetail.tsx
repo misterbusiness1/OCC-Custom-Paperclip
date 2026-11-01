@@ -488,7 +488,7 @@ export function ApprovalDetail() {
               <p className="hidden items-center gap-3 text-xs text-muted-foreground sm:flex">
                 {APPROVAL_SHORTCUT_HINTS.map((hint) => (
                   <span key={hint.keys} className="inline-flex items-center gap-1">
-                    <kbd className="rounded border border-border/70 bg-muted px-1.5 py-0.5 font-mono text-[10px]">
+                    <kbd className="rounded border border-border/70 bg-muted px-1.5 py-0.5 font-mono text-(length:--text-nano)">
                       {hint.keys}
                     </kbd>
                     {hint.label}
