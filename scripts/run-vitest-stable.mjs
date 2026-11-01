@@ -346,6 +346,8 @@ function runVitest(args, label, { watch = false, testShard = null } = {}) {
   for (const key of ["DATABASE_URL", "DATABASE_MIGRATION_URL", "PAPERCLIP_TEST_DATABASE_URL", "PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL", "TEST_DATABASE_URL"]) {
     delete env[key];
   }
+  // Vitest applies this environment override after its CLI worker options.
+  if (args.includes("--no-file-parallelism")) env.VITEST_MAX_WORKERS = "1";
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
   if (testShard) {
