@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1.20
+# Playwright verification overlay for this repository's own image, built by
+# .github/workflows/overlay-image.yml. UPSTREAM_IMAGE is required: the workflow
+# passes the docker.yml image for source_sha, pinned by digest, after checking
+# that its org.opencontainers.image.revision label equals source_sha.
+#
+# The main Dockerfile is based on mcr.microsoft.com/playwright, which already
+# ships Chromium and its system libraries at PLAYWRIGHT_BROWSERS_PATH
+# (/ms-playwright). So this overlay installs nothing and keeps the base's
+# PLAYWRIGHT_BROWSERS_PATH. It fails the build when the browsers for
+# PLAYWRIGHT_VERSION are missing there, or when they sit under /paperclip:
+# that is HOME, and docker-compose mounts a volume over it (the quickstart a
+# bind mount), which hides at runtime anything the image put there.
+#
+# PLAYWRIGHT_VERSION must match the playwright version in pnpm-lock.yaml so
+# /app/node_modules/.pnpm/playwright@<version> exists.
+ARG UPSTREAM_IMAGE
+FROM ${UPSTREAM_IMAGE}
+
+ARG PLAYWRIGHT_VERSION=1.61.1
+
+RUN <<'EOF'
+set -eu
+fail() { echo "ERROR: $*" >&2; exit 1; }
+
+browsers="${PLAYWRIGHT_BROWSERS_PATH:-}"
+[ -n "$browsers" ] || fail "the base image does not set PLAYWRIGHT_BROWSERS_PATH"
+case "${browsers%/}/" in
+  /paperclip/*) fail "PLAYWRIGHT_BROWSERS_PATH=$browsers is under the /paperclip volume mount" ;;
+esac
+home="${HOME:-}"
+home="${home%/}"
+if [ -n "$home" ]; then
+  case "${browsers%/}/" in
+    "$home"/*) fail "PLAYWRIGHT_BROWSERS_PATH=$browsers is under HOME=$HOME" ;;
+  esac
+fi
+[ -d "$browsers" ] || fail "PLAYWRIGHT_BROWSERS_PATH=$browsers does not exist in the base image"
+
+pkg="/app/node_modules/.pnpm/playwright@${PLAYWRIGHT_VERSION}/node_modules/playwright"
+[ -d "$pkg" ] || fail "playwright@${PLAYWRIGHT_VERSION} is not installed under /app; PLAYWRIGHT_VERSION must match pnpm-lock.yaml"
+
+chromium="$(node -e 'process.stdout.write(require(process.argv[1]).chromium.executablePath())' "$pkg")"
+[ -x "$chromium" ] || fail "Chromium for playwright@${PLAYWRIGHT_VERSION} is missing: $chromium"
+
+headless_shell="$(find "$browsers" -type f \( -name chrome-headless-shell -o -name headless_shell \) -perm -u+x | head -n1)"
+[ -n "$headless_shell" ] || fail "no Chromium headless shell under PLAYWRIGHT_BROWSERS_PATH=$browsers"
+
+echo "Playwright ${PLAYWRIGHT_VERSION} browsers present at $browsers ($chromium, $headless_shell)"
+EOF

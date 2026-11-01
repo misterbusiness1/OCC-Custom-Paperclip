@@ -73,6 +73,9 @@ jobs:
       - name: Test PR lockfile qualification
         run: node --test ./scripts/__tests__/pr-lockfile-workflow.test.mjs
 
+      - name: Test overlay image workflow
+        run: node --test ./scripts/__tests__/overlay-image-workflow.test.mjs
+
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 
