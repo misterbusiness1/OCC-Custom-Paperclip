@@ -113,7 +113,11 @@ const manifest: PaperclipPluginManifestV1 = {
                   type: "string",
                   description: "Paperclip adapter type, e.g. `cursor` or `claude_local`.",
                 },
-                enabled: { type: "boolean", default: true },
+                enabled: {
+                  type: "boolean",
+                  default: true,
+                  description: "Set false to refuse runs of this adapter in this environment.",
+                },
                 runtimeImage: {
                   type: "string",
                   description:
@@ -123,7 +127,7 @@ const manifest: PaperclipPluginManifestV1 = {
                   type: "array",
                   items: { type: "string" },
                   description:
-                    "Server env vars forwarded into the pod as secrets (e.g. `CURSOR_API_KEY`).",
+                    "Server env vars forwarded into the pod as secrets. Only the keys the server passes to sandbox-provider plugins can be forwarded: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, CURSOR_API_KEY.",
                 },
                 allowFqdns: {
                   type: "array",
@@ -133,12 +137,14 @@ const manifest: PaperclipPluginManifestV1 = {
                 probeCommand: {
                   type: "array",
                   items: { type: "string" },
-                  description: "Command used to probe the runtime (e.g. `cursor-agent`, `--version`).",
+                  description:
+                    "Command used to probe the runtime (e.g. `agent`, `--version` for Cursor). Recorded only; the plugin does not run it.",
                 },
                 defaultEnv: {
                   type: "object",
                   additionalProperties: { type: "string" },
-                  description: "Non-secret env vars set in the pod.",
+                  description:
+                    "Non-secret env vars set in the pod. This form cannot edit key/value maps yet; set it through the environments API.",
                 },
               },
               required: ["adapterType"],

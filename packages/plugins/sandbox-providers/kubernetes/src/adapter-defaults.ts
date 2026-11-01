@@ -96,13 +96,22 @@ function fromRegistryEntry(entry: AdapterRegistryEntry, type: string): AdapterDe
   };
 }
 
+/** Error for a canonical type with more than one enabled registry entry. */
+function duplicateEntriesError(type: string, entries: readonly AdapterRegistryEntry[]): string {
+  // e.g. both "cursor" and the legacy "cursor_local": refuse to pick one silently.
+  return `Adapter "${type}" has ${entries.length} entries in the configured adapter registry (${entries
+    .map((e) => `"${e.adapterType}"`)
+    .join(", ")}); keep exactly one`;
+}
+
 /**
  * Resolve the runtime defaults for an adapter. When a `registry` is supplied it
- * is authoritative (replace semantics): the type MUST be present exactly once
- * (counting aliases) and complete, else this throws. With no registry, falls
- * back to the built-in REGISTRY; registry-only types (e.g. "cursor") throw an
- * actionable error there. Legacy aliases are normalised on both sides of the
- * registry lookup.
+ * is authoritative (replace semantics): the type MUST have exactly one enabled
+ * entry (counting aliases) and that entry must be complete, else this throws.
+ * Entries with `enabled: false` are ignored, so a disabled-only adapter is
+ * refused. With no registry, falls back to the built-in REGISTRY;
+ * registry-only types (e.g. "cursor") throw an actionable error there. Legacy
+ * aliases are normalised on both sides of the registry lookup.
  */
 export function getAdapterDefaults(
   adapterType: string,
@@ -111,18 +120,17 @@ export function getAdapterDefaults(
   const type = normalizeAdapterType(adapterType);
   const registryOnlyHint = REGISTRY_ONLY_ADAPTER_TYPES.get(type);
   if (registry && registry.length > 0) {
-    const entries = registry.filter((e) => normalizeAdapterType(e.adapterType) === type);
+    const matching = registry.filter((e) => normalizeAdapterType(e.adapterType) === type);
+    const entries = matching.filter((e) => e.enabled !== false);
     if (entries.length === 0) {
+      if (matching.length > 0) {
+        throw new Error(`Adapter "${type}" is disabled in the configured adapter registry`);
+      }
       const base = `Adapter "${type}" is not in the configured adapter registry`;
       throw new Error(registryOnlyHint ? `${base}. ${registryOnlyHint}` : base);
     }
     if (entries.length > 1) {
-      // e.g. both "cursor" and the legacy "cursor_local": refuse to pick one silently.
-      throw new Error(
-        `Adapter "${type}" has ${entries.length} entries in the configured adapter registry (${entries
-          .map((e) => `"${e.adapterType}"`)
-          .join(", ")}); keep exactly one`,
-      );
+      throw new Error(duplicateEntriesError(type, entries));
     }
     return fromRegistryEntry(entries[0], type);
   }
@@ -136,6 +144,42 @@ export function getAdapterDefaults(
     throw new Error(`Unknown adapter type: ${type}`);
   }
   return defaults;
+}
+
+/**
+ * Save-time check of a whole `adapters` registry. Lease time only resolves the
+ * run's adapter, so without this a broken entry for any adapter other than the
+ * environment default would only surface when a run of it is dispatched.
+ * - errors: an adapter type (aliases included) with more than one enabled
+ *   entry; every run of that adapter would be refused.
+ * - warnings: an enabled entry without `runtimeImage`; runs of that adapter in
+ *   this environment will be refused. Not an error because the registry is
+ *   shared with picker availability and may list adapters that never run on
+ *   Kubernetes. (The environment default is checked strictly by
+ *   getAdapterDefaults.)
+ */
+export function checkAdapterRegistry(registry: readonly AdapterRegistryEntry[] | undefined): {
+  errors: string[];
+  warnings: string[];
+} {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const byType = new Map<string, AdapterRegistryEntry[]>();
+  for (const entry of registry ?? []) {
+    if (entry.enabled === false) continue;
+    const type = normalizeAdapterType(entry.adapterType);
+    byType.set(type, [...(byType.get(type) ?? []), entry]);
+  }
+  for (const [type, entries] of byType) {
+    if (entries.length > 1) {
+      errors.push(duplicateEntriesError(type, entries));
+    } else if (!entries[0].runtimeImage) {
+      warnings.push(
+        `Adapter "${type}" has no runtimeImage in the configured adapter registry; runs of it in this environment will be refused`,
+      );
+    }
+  }
+  return { errors, warnings };
 }
 
 /**

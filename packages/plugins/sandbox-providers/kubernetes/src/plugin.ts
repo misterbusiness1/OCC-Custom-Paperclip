@@ -23,6 +23,7 @@ import {
 import { createKubeConfig, makeKubeClients } from "./kube-client.js";
 import {
   getAdapterDefaults,
+  checkAdapterRegistry,
   buildAdapterEnv,
   resolveRunAdapterType,
   type AdapterDefaults,
@@ -137,12 +138,19 @@ const plugin = definePlugin({
     const cfg = parsed.data;
     // Surface an unresolvable adapter (e.g. "cursor" with no `adapters` registry
     // entry) as a validation error with its actionable message, not a thrown RPC.
+    // The rest of the registry is checked too: runs may name any adapter in it.
+    const registryCheck = checkAdapterRegistry(cfg.adapters);
     let adapterDefaults: AdapterDefaults;
     try {
       adapterDefaults = getAdapterDefaults(cfg.adapterType, cfg.adapters);
     } catch (err) {
-      return { ok: false, errors: [err instanceof Error ? err.message : String(err)] };
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, errors: [...new Set([message, ...registryCheck.errors])] };
     }
+    if (registryCheck.errors.length > 0) {
+      return { ok: false, errors: registryCheck.errors };
+    }
+    warnings.push(...registryCheck.warnings);
     const totalFqdns = [...adapterDefaults.allowFqdns, ...cfg.egressAllowFqdns];
     if (cfg.egressMode === "standard" && totalFqdns.length > 0) {
       if (cfg.egressAllowCidrs.length === 0) {

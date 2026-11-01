@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   getAdapterDefaults,
+  checkAdapterRegistry,
   buildAdapterEnv,
   resolveRunAdapterType,
   normalizeAdapterType,
@@ -143,7 +144,7 @@ describe("getAdapterDefaults (cursor via the adapters registry)", () => {
     runtimeImage: "registry.example/cursor:v1",
     envKeys: ["CURSOR_API_KEY"],
     allowFqdns: ["api2.cursor.sh"],
-    probeCommand: ["cursor-agent", "--version"],
+    probeCommand: ["agent", "--version"],
   };
 
   it("resolves cursor from a registry entry", () => {
@@ -185,6 +186,26 @@ describe("getAdapterDefaults (cursor via the adapters registry)", () => {
     );
   });
 
+  it("refuses an adapter whose only registry entry has enabled: false", () => {
+    const registry: AdapterRegistryEntry[] = [
+      { adapterType: "claude_local", enabled: true, runtimeImage: "img" },
+      { ...cursorEntry, enabled: false },
+    ];
+    for (const type of ["cursor", "cursor_local"]) {
+      expect(() => getAdapterDefaults(type, registry)).toThrow(
+        'Adapter "cursor" is disabled in the configured adapter registry',
+      );
+    }
+  });
+
+  it("ignores a disabled entry when counting duplicates", () => {
+    const registry: AdapterRegistryEntry[] = [
+      cursorEntry,
+      { ...cursorEntry, adapterType: "cursor_local", enabled: false, runtimeImage: "registry.example/old:v1" },
+    ];
+    expect(getAdapterDefaults("cursor", registry).runtimeImage).toBe("registry.example/cursor:v1");
+  });
+
   it("explains how to add cursor when a registry is configured without it", () => {
     const registry: AdapterRegistryEntry[] = [
       { adapterType: "claude_local", enabled: true, runtimeImage: "img" },
@@ -192,6 +213,44 @@ describe("getAdapterDefaults (cursor via the adapters registry)", () => {
     expect(() => getAdapterDefaults("cursor_local", registry)).toThrow(
       /Adapter "cursor" is not in the configured adapter registry\. Cursor has no built-in Kubernetes runtime image/,
     );
+  });
+});
+
+describe("checkAdapterRegistry", () => {
+  it("returns no findings without a registry", () => {
+    expect(checkAdapterRegistry(undefined)).toEqual({ errors: [], warnings: [] });
+  });
+
+  it("reports duplicate enabled entries for every adapter, aliases included", () => {
+    const registry: AdapterRegistryEntry[] = [
+      { adapterType: "claude_local", runtimeImage: "img" },
+      { adapterType: "cursor", runtimeImage: "registry.example/cursor:v1" },
+      { adapterType: "cursor_local", runtimeImage: "registry.example/cursor:v1" },
+      { adapterType: "codex_local", runtimeImage: "a" },
+      { adapterType: "codex_local", runtimeImage: "b" },
+    ];
+    expect(checkAdapterRegistry(registry)).toEqual({
+      errors: [
+        'Adapter "cursor" has 2 entries in the configured adapter registry ("cursor", "cursor_local"); keep exactly one',
+        'Adapter "codex_local" has 2 entries in the configured adapter registry ("codex_local", "codex_local"); keep exactly one',
+      ],
+      warnings: [],
+    });
+  });
+
+  it("warns about an enabled entry without runtimeImage and skips disabled entries", () => {
+    const registry: AdapterRegistryEntry[] = [
+      { adapterType: "claude_local", runtimeImage: "img" },
+      { adapterType: "cursor_local", envKeys: ["CURSOR_API_KEY"] },
+      { adapterType: "codex_local", enabled: false },
+      { adapterType: "codex_local", enabled: false },
+    ];
+    expect(checkAdapterRegistry(registry)).toEqual({
+      errors: [],
+      warnings: [
+        'Adapter "cursor" has no runtimeImage in the configured adapter registry; runs of it in this environment will be refused',
+      ],
+    });
   });
 });
 

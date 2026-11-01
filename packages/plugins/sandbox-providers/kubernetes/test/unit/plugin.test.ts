@@ -132,6 +132,75 @@ describe("plugin", () => {
     expect(result.errors?.[0]).toMatch(/Adapter "cursor" has 2 entries .*keep exactly one/);
   });
 
+  it("validateConfig rejects duplicate entries for an adapter other than the environment default", async () => {
+    const cursor = { adapterType: "cursor", runtimeImage: "registry.example/cursor:v1" };
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: {
+        inCluster: true,
+        adapterType: "claude_local",
+        egressMode: "cilium",
+        adapters: [
+          { adapterType: "claude_local", runtimeImage: "registry.example/claude:v1" },
+          cursor,
+          { ...cursor, adapterType: "cursor_local" },
+        ],
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual([
+      'Adapter "cursor" has 2 entries in the configured adapter registry ("cursor", "cursor_local"); keep exactly one',
+    ]);
+  });
+
+  it("validateConfig reports a duplicate default adapter once", async () => {
+    const entry = { adapterType: "cursor", runtimeImage: "registry.example/cursor:v1" };
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: {
+        inCluster: true,
+        adapterType: "cursor",
+        adapters: [entry, { ...entry, adapterType: "cursor_local" }],
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors).toHaveLength(1);
+  });
+
+  it("validateConfig warns about a non-default registry entry without runtimeImage", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: {
+        inCluster: true,
+        adapterType: "claude_local",
+        egressMode: "cilium",
+        adapters: [
+          { adapterType: "claude_local", runtimeImage: "registry.example/claude:v1" },
+          { adapterType: "cursor", envKeys: ["CURSOR_API_KEY"] },
+        ],
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toEqual([
+      'Adapter "cursor" has no runtimeImage in the configured adapter registry; runs of it in this environment will be refused',
+    ]);
+  });
+
+  it("validateConfig rejects an environment whose default adapter entry is disabled", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: {
+        inCluster: true,
+        adapterType: "cursor",
+        adapters: [
+          { adapterType: "cursor", enabled: false, runtimeImage: "registry.example/cursor:v1" },
+        ],
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(['Adapter "cursor" is disabled in the configured adapter registry']);
+  });
+
   it("validateConfig does NOT warn when egressMode is cilium", async () => {
     const result = await plugin.definition.onEnvironmentValidateConfig!({
       driverKey: "kubernetes",
