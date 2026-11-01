@@ -35,6 +35,7 @@
     "release:github": "./scripts/create-github-release.sh",
     "release:rollback": "./scripts/rollback-latest.sh",
     "release:bootstrap-package": "node scripts/bootstrap-npm-package.mjs",
+    "ci:local": "node scripts/ci/run-local-ci.mjs",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "check:token-gates": "node scripts/check-token-gates.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",

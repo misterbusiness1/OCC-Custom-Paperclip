@@ -10,9 +10,14 @@ concurrency:
   group: pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# These jobs may run on self-hosted runners (doc/SELF-HOSTED-CI.md), so the
+# token stays read-only regardless of the repository's default permissions.
+permissions:
+  contents: read
+
 jobs:
   policy:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
       lockfile_regenerated: ${{ steps.regen_lockfile.outputs.regenerated }}
@@ -71,6 +76,9 @@ jobs:
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 
+      - name: Test local CI runner
+        run: node --test ./scripts/__tests__/run-local-ci.test.mjs
+
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
@@ -105,7 +113,7 @@ jobs:
   typecheck_release_registry:
     name: Typecheck + Release Registry
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 20
 
     steps:
@@ -142,7 +150,7 @@ jobs:
   dependency_audit:
     name: Dependency Audit
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 10
 
     steps:
@@ -176,7 +184,7 @@ jobs:
   typesafe_skill_suggestion:
     name: TypeSafe skill-suggestion standalone
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 15
 
     steps:
@@ -222,7 +230,7 @@ jobs:
   general_tests:
     name: General tests (${{ matrix.group_label }})
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -287,7 +295,7 @@ jobs:
     name: verify
     if: ${{ always() }}
     needs: [typecheck_release_registry, dependency_audit, typesafe_skill_suggestion, general_tests, build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 5
 
     steps:
@@ -308,7 +316,7 @@ jobs:
   build:
     name: Build
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 20
 
     steps:
@@ -342,7 +350,7 @@ jobs:
   verify_serialized_server:
     name: Verify serialized server suites (${{ matrix.shard_label }})
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -392,7 +400,7 @@ jobs:
   canary_dry_run:
     name: Canary Dry Run
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 20
 
     steps:
@@ -447,7 +455,7 @@ jobs:
   e2e_shards:
     name: e2e shard (${{ matrix.shard_label }})
     needs: [policy]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -495,21 +503,10 @@ jobs:
         # browser bundles inside the 30 minute job budget.
         run: google-chrome --version
 
-      - name: Generate Paperclip config
-        run: |
-          mkdir -p ~/.paperclip/instances/default
-          cat > ~/.paperclip/instances/default/config.json << 'CONF'
-          {
-            "$meta": { "version": 1, "updatedAt": "2026-01-01T00:00:00.000Z", "source": "onboard" },
-            "database": { "mode": "embedded-postgres" },
-            "logging": { "mode": "file" },
-            "server": { "deploymentMode": "local_trusted", "host": "127.0.0.1", "port": 3100 },
-            "auth": { "baseUrlMode": "auto" },
-            "storage": { "provider": "local_disk" },
-            "secrets": { "provider": "local_encrypted", "strictMode": false }
-          }
-          CONF
-
+      # No Paperclip config is written into the runner user's home:
+      # tests/e2e/playwright.config.ts boots the server in its own temporary
+      # PAPERCLIP_HOME/PAPERCLIP_CONFIG, and a config in the home directory
+      # would clobber a self-hosted runner's own Paperclip instance.
       - name: Run e2e tests
         env:
           PAPERCLIP_E2E_SKIP_LLM: "true"
@@ -539,7 +536,7 @@ jobs:
     name: e2e
     if: ${{ always() }}
     needs: [e2e_shards]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.PAPERCLIP_CI_RUNS_ON != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.PAPERCLIP_CI_RUNS_ON) || 'ubuntu-latest' }}
     timeout-minutes: 5
 
     steps:
