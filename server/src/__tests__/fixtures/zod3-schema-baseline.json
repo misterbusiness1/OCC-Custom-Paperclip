@@ -106,7 +106,7 @@
    "routes/pipelines.ts#upsertPipelineCaseDocumentSchema": "strip",
    "services/environment-config.ts#fakeSandboxEnvironmentConfigSchema": "strict",
    "services/environment-config.ts#pluginEnvironmentConfigSchema": "strict",
-   "services/environment-config.ts#pluginSandboxEnvironmentConfigSchema": "catchall",
+   "services/environment-config.ts#pluginSandboxEnvironmentConfigSchema": "passthrough",
    "services/environment-config.ts#secretRefSchema": "strict",
    "services/environment-config.ts#sshEnvironmentConfigSchema": "strict",
    "services/environment-config.ts#sshEnvironmentConfigSchema.privateKeySecretRef": "strict"

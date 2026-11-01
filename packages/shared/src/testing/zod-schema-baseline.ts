@@ -161,7 +161,12 @@ export function objectPolicy(schema: AnySchema): ObjectPolicy {
     if (kind === "unknown" || kind === "any") return "passthrough";
     return "catchall";
   }
-  if (catchall && schemaKind(catchall) !== "never") return "catchall";
+  if (catchall && schemaKind(catchall) !== "never") {
+    // `.catchall(z.unknown())` keeps unknown keys untouched, exactly like
+    // `.passthrough()`; zod 4 implements both as a `z.unknown()` catchall.
+    const kind = schemaKind(catchall);
+    return kind === "unknown" || kind === "any" ? "passthrough" : "catchall";
+  }
   const unknownKeys = schema._def.unknownKeys as string | undefined;
   if (unknownKeys === "strict") return "strict";
   if (unknownKeys === "passthrough") return "passthrough";
