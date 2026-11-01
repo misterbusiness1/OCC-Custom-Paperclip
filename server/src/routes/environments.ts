@@ -12,6 +12,7 @@ import {
   redactEnvironmentCustomImageTemplate,
   startEnvironmentCustomImageSetupSessionSchema,
   type EnvironmentDeleteBlastRadius,
+  type EnvironmentLease,
   updateEnvironmentSchema,
 } from "@paperclipai/shared";
 import { conflict, forbidden, unprocessable } from "../errors.js";
@@ -45,7 +46,7 @@ import { probeEnvironment } from "../services/environment-probe.js";
 import { secretService } from "../services/secrets.js";
 import { listReadyPluginEnvironmentDrivers } from "../services/plugin-environment-driver.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { assertBoardOrgAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
@@ -93,6 +94,23 @@ export function environmentRoutes(
     if (!allowedCompanies.includes(companyId)) {
       throw forbidden("User does not have access to this company");
     }
+  }
+
+  // Environments are instance-scoped, but each lease belongs to one company and
+  // carries its issue, run, and provider details. Non-admin members only see
+  // leases for companies they belong to.
+  function canReadLeaseForCompany(req: Request, companyId: string) {
+    if (canReadFullInstanceEnvironment(req)) return true;
+    return req.actor.type === "board" && hasCompanyAccess(req, companyId);
+  }
+
+  // A lease's providerLeaseId and metadata mirror the environment config (for
+  // SSH: host, port, username, remote workspace path), so restricted readers
+  // get them blanked the same way presentEnvironmentForRead blanks config.
+  function presentLeaseForRead(req: Request, lease: EnvironmentLease): EnvironmentLease {
+    return canReadFullInstanceEnvironment(req)
+      ? lease
+      : { ...lease, providerLeaseId: null, metadata: null };
   }
 
   function canReadFullInstanceEnvironment(req: Request) {
@@ -704,18 +722,26 @@ export function environmentRoutes(
     }
     const leases = await svc.listLeases(environment.id, {
       status: req.query.status as string | undefined,
+      // Restricted readers only load their own companies' rows; the per-lease
+      // check below stays the authoritative gate.
+      ...(canReadFullInstanceEnvironment(req) ? {} : { companyIds: req.actor.companyIds ?? [] }),
     });
-    res.json(leases);
+    res.json(
+      leases
+        .filter((lease) => canReadLeaseForCompany(req, lease.companyId))
+        .map((lease) => presentLeaseForRead(req, lease)),
+    );
   });
 
   router.get("/environment-leases/:leaseId", async (req, res) => {
     assertCanReadInstanceEnvironments(req);
     const lease = await svc.getLeaseById(req.params.leaseId as string);
-    if (!lease) {
+    // Same 404 for missing and foreign leases so ids cannot be probed.
+    if (!lease || !canReadLeaseForCompany(req, lease.companyId)) {
       res.status(404).json({ error: "Environment lease not found" });
       return;
     }
-    res.json(lease);
+    res.json(presentLeaseForRead(req, lease));
   });
 
   router.patch("/environments/:id", validate(updateEnvironmentSchema), async (req, res) => {

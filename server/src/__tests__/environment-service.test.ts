@@ -167,6 +167,31 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(stillActive.map((lease) => lease.id)).toEqual([otherLease.id]);
   });
 
+  it("limits listed leases to the requested company ids", async () => {
+    const { companyId, environmentId } = await seedEnvironment();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co",
+      issuePrefix: "OTH",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const ownLease = await svc.acquireLease({ companyId, environmentId });
+    const otherLease = await svc.acquireLease({ companyId: otherCompanyId, environmentId });
+
+    const all = await svc.listLeases(environmentId);
+    expect(all.map((lease) => lease.id).sort()).toEqual([ownLease.id, otherLease.id].sort());
+
+    const scoped = await svc.listLeases(environmentId, { companyIds: [companyId] });
+    expect(scoped.map((lease) => lease.id)).toEqual([ownLease.id]);
+
+    const none = await svc.listLeases(environmentId, { companyIds: [] });
+    expect(none).toEqual([]);
+  });
+
   it("aggregates delete blast radius counts into static and active tiers", async () => {
     const companyId = randomUUID();
     const otherCompanyId = randomUUID();
