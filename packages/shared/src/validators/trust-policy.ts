@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { datetimeString } from "./zod-compat.js";
 import {
   LOW_TRUST_REVIEW_PRESET,
   LOW_TRUST_REVIEW_PRESET_VERSION,
@@ -10,17 +11,17 @@ export const trustPresetSchema = z.enum(TRUST_PRESETS);
 
 export const lowTrustOutputPromotionTargetSchema = z.object({
   type: z.literal("issue"),
-  issueId: z.string().uuid(),
+  issueId: z.uuid(),
 }).strict();
 
 export const lowTrustBoundarySchema = z.object({
   mode: z.literal(LOW_TRUST_REVIEW_PRESET),
-  companyId: z.string().uuid().optional(),
-  projectIds: z.array(z.string().uuid()).optional(),
-  rootIssueId: z.string().uuid().optional(),
-  issueIds: z.array(z.string().uuid()).optional(),
-  allowedAgentIds: z.array(z.string().uuid()).optional(),
-  allowedSecretBindingIds: z.array(z.string().uuid()).optional(),
+  companyId: z.uuid().optional(),
+  projectIds: z.array(z.uuid()).optional(),
+  rootIssueId: z.uuid().optional(),
+  issueIds: z.array(z.uuid()).optional(),
+  allowedAgentIds: z.array(z.uuid()).optional(),
+  allowedSecretBindingIds: z.array(z.uuid()).optional(),
   allowedToolClasses: z.array(z.string().trim().min(1)).optional(),
   outputPromotionTarget: lowTrustOutputPromotionTargetSchema.optional(),
 }).strict();
@@ -42,17 +43,17 @@ export const sourceTrustArtifactKindSchema = z.enum(["issue", "comment", "docume
 export const sourceTrustMetadataSchema = z.object({
   preset: trustPresetSchema,
   disposition: z.enum(["quarantined", "promoted"]),
-  sourceIssueId: z.string().uuid().nullable().optional(),
-  sourceRunId: z.string().uuid().nullable().optional(),
-  sourceAgentId: z.string().uuid().nullable().optional(),
+  sourceIssueId: z.uuid().nullable().optional(),
+  sourceRunId: z.uuid().nullable().optional(),
+  sourceAgentId: z.uuid().nullable().optional(),
   promotedFrom: z.object({
     artifactKind: sourceTrustArtifactKindSchema,
-    artifactId: z.string().uuid(),
-    issueId: z.string().uuid().nullable().optional(),
+    artifactId: z.uuid(),
+    issueId: z.uuid().nullable().optional(),
   }).strict().nullable().optional(),
   promotedByActorType: z.enum(["agent", "user", "system"]).nullable().optional(),
   promotedByActorId: z.string().trim().min(1).nullable().optional(),
-  promotedAt: z.string().datetime({ offset: true }).nullable().optional(),
+  promotedAt: datetimeString({ offset: true }).nullable().optional(),
 }).strict();
 
 export type TrustPresetInput = z.infer<typeof trustPresetSchema>;

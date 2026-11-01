@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { datetimeString, urlString, withoutFieldDefaults } from "./zod-compat.js";
 import { PERMISSION_KEYS } from "../constants.js";
 import { MAX_COMPANY_ATTACHMENT_MAX_BYTES } from "../constants.js";
 import {
@@ -47,7 +48,7 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   attachmentMaxBytes: z.number().int().min(1).max(MAX_COMPANY_ATTACHMENT_MAX_BYTES).nullable().default(null),
   requireBoardApprovalForNewAgents: z.boolean(),
   feedbackDataSharingEnabled: z.boolean().default(false),
-  feedbackDataSharingConsentAt: z.string().datetime().nullable().default(null),
+  feedbackDataSharingConsentAt: datetimeString().nullable().default(null),
   feedbackDataSharingConsentByUserId: z.string().nullable().default(null),
   feedbackDataSharingTermsVersion: z.string().nullable().default(null),
 });
@@ -148,7 +149,7 @@ export const portabilityIssueCommentManifestEntrySchema = z.object({
   authorUserId: z.string().nullable(),
   presentation: issueCommentPresentationSchema.nullable(),
   metadata: issueCommentMetadataSchema.nullable(),
-  createdAt: z.string().datetime().nullable(),
+  createdAt: datetimeString().nullable(),
 });
 
 export const portabilityIssueManifestEntrySchema = z.object({
@@ -175,10 +176,10 @@ export const portabilityIssueManifestEntrySchema = z.object({
 
 export const portabilityManifestSchema = z.object({
   schemaVersion: z.number().int().positive(),
-  generatedAt: z.string().datetime(),
+  generatedAt: datetimeString(),
   source: z
     .object({
-      companyId: z.string().uuid(),
+      companyId: z.uuid(),
       companyName: z.string().min(1),
     })
     .nullable(),
@@ -206,7 +207,7 @@ export const portabilitySourceSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("github"),
-    url: z.string().url(),
+    url: urlString(),
   }),
 ]);
 
@@ -217,7 +218,7 @@ export const portabilityTargetSchema = z.discriminatedUnion("mode", [
   }),
   z.object({
     mode: z.literal("existing_company"),
-    companyId: z.string().uuid(),
+    companyId: z.uuid(),
   }),
 ]);
 
@@ -237,7 +238,7 @@ export const companyPortabilityExportSchema = z.object({
   projectIssues: z.array(z.string().min(1)).optional(),
   selectedFiles: z.array(z.string().min(1)).optional(),
   expandReferencedSkills: z.boolean().optional(),
-  sidebarOrder: portabilitySidebarOrderSchema.partial().optional(),
+  sidebarOrder: withoutFieldDefaults(portabilitySidebarOrderSchema.partial()).optional(),
 });
 
 export type CompanyPortabilityExport = z.infer<typeof companyPortabilityExportSchema>;

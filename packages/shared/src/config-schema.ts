@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { urlString } from "./validators/zod-compat.js";
 import {
   AUTH_BASE_URL_MODES,
   BIND_MODES,
@@ -58,7 +59,7 @@ export const serverConfigSchema = z.object({
 
 export const authConfigSchema = z.object({
   baseUrlMode: z.enum(AUTH_BASE_URL_MODES).default("auto"),
-  publicBaseUrl: z.string().url().optional(),
+  publicBaseUrl: urlString().optional(),
   disableSignUp: z.boolean().default(false),
 });
 
@@ -101,7 +102,7 @@ export const secretsConfigSchema = z.object({
 
 export const telemetryConfigSchema = z.object({
   enabled: z.boolean().default(true),
-}).default({});
+}).prefault({});
 
 export const paperclipConfigSchema = z
   .object({

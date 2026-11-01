@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { datetimeString } from "./zod-compat.js";
 
 export const COMPANY_ARTIFACTS_DEFAULT_LIMIT = 30;
 export const COMPANY_ARTIFACTS_MAX_LIMIT = 100;
@@ -12,10 +13,10 @@ export const companyArtifactGroupBySchema = z.enum(["none", "task", "parent_task
 
 export const companyArtifactsQuerySchema = z.object({
   kind: z.enum(["image", "video", "text", "document", "file", "all"]).optional().default("all"),
-  projectId: z.string().uuid().optional(),
+  projectId: z.uuid().optional(),
   q: z.string().trim().max(COMPANY_ARTIFACTS_MAX_QUERY_LENGTH).optional(),
   groupBy: companyArtifactGroupBySchema.optional().default("none"),
-  groupIssueId: z.string().uuid().optional(),
+  groupIssueId: z.uuid().optional(),
   limit: z.coerce
     .number()
     .int()
@@ -37,19 +38,19 @@ export const companyArtifactSchema = z.object({
   openPath: z.string().nullable(),
   downloadPath: z.string().nullable(),
   issue: z.object({
-    id: z.string().uuid(),
+    id: z.uuid(),
     identifier: z.string(),
     title: z.string(),
   }),
   project: z.object({
-    id: z.string().uuid(),
+    id: z.uuid(),
     name: z.string(),
   }).nullable(),
   createdByAgent: z.object({
-    id: z.string().uuid(),
+    id: z.uuid(),
     name: z.string(),
   }).nullable(),
-  updatedAt: z.string().datetime(),
+  updatedAt: datetimeString(),
   href: z.string().min(1),
 });
 
@@ -57,7 +58,7 @@ export const companyArtifactGroupSchema = z.object({
   id: z.string().min(1),
   groupBy: companyArtifactGroupBySchema.exclude(["none"]),
   issue: z.object({
-    id: z.string().uuid(),
+    id: z.uuid(),
     identifier: z.string(),
     title: z.string(),
   }),
@@ -65,7 +66,7 @@ export const companyArtifactGroupSchema = z.object({
   count: z.number().int().min(0),
   mediaKinds: z.array(companyArtifactMediaKindSchema),
   previewArtifacts: z.array(companyArtifactSchema),
-  updatedAt: z.string().datetime(),
+  updatedAt: datetimeString(),
   href: z.string().min(1),
 });
 

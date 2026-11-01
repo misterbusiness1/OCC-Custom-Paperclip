@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { loadOrUpdateGolden, readZodVersion } from "./testing/zod-baseline-golden.js";
+import { datetimeString, urlString } from "./validators/zod-compat.js";
 
 /**
  * zod 3 -> zod 4 baseline for the string/number formats the codebase uses
@@ -134,16 +135,17 @@ const DATE_PROBES: unknown[] = [
 type Subject = { name: string; schema: () => z.ZodTypeAny; probes: unknown[] };
 
 /**
- * Subjects as the codebase writes them on zod 3. When a format moves to a
- * shared helper during the migration, swap the factory here for that helper.
+ * Subjects keyed by the zod 3 API the codebase used; each factory builds the
+ * schema the code uses for that format now (on zod 3 it was the plain zod
+ * call, on zod 4 the compat helper where one exists).
  */
 const SUBJECTS: Subject[] = [
-  { name: "string.datetime()", schema: () => z.string().datetime(), probes: DATETIME_PROBES },
-  { name: "string.datetime({offset:true})", schema: () => z.string().datetime({ offset: true }), probes: DATETIME_PROBES },
-  { name: "string.url()", schema: () => z.string().url(), probes: URL_PROBES },
-  { name: "string.trim().url()", schema: () => z.string().trim().url(), probes: URL_PROBES },
+  { name: "string.datetime()", schema: () => datetimeString(), probes: DATETIME_PROBES },
+  { name: "string.datetime({offset:true})", schema: () => datetimeString({ offset: true }), probes: DATETIME_PROBES },
+  { name: "string.url()", schema: () => urlString(), probes: URL_PROBES },
+  { name: "string.trim().url()", schema: () => urlString({ trim: true }), probes: URL_PROBES },
   { name: "string.email()", schema: () => z.string().email(), probes: EMAIL_PROBES },
-  { name: "string.uuid()", schema: () => z.string().uuid(), probes: UUID_PROBES },
+  { name: "string.uuid()", schema: () => z.uuid(), probes: UUID_PROBES },
   { name: "number()", schema: () => z.number(), probes: NUMBER_PROBES },
   { name: "number().int()", schema: () => z.number().int(), probes: NUMBER_PROBES },
   { name: "coerce.number()", schema: () => z.coerce.number(), probes: NUMBER_PROBES },
@@ -152,11 +154,37 @@ const SUBJECTS: Subject[] = [
   { name: "coerce.date()", schema: () => z.coerce.date(), probes: DATE_PROBES },
 ];
 
+const STRICT_UUID =
+  "Owner decision: IDs use zod 4's RFC 9562 z.uuid() (version 1-8 and variant 8/9/a/b, plus nil and max). " +
+  "zod 3's .uuid() accepted any 8-4-4-4-12 hex string. Every production ID is a random v4 UUID; test fixtures were updated.";
+const NON_FINITE =
+  "zod 4 rejects Infinity/-Infinity for z.number(). JSON request bodies cannot encode them, and every z.coerce.number() " +
+  "in the codebase also has .int(), which zod 3 already used to reject non-finite query values.";
+const UNSAFE_INTEGER =
+  "zod 4's .int() only accepts safe integers (|n| <= 2^53 - 1). Larger values cannot be represented exactly in " +
+  "JavaScript after JSON.parse, so zod 3 accepted an already-corrupted number.";
+
 /**
  * Probe outcomes that are allowed to differ from the zod 3 golden, keyed by
- * `${subject} ${JSON.stringify(probe)}`, with the reason. Empty on zod 3.
+ * `${subject} ${probe}`, with the reason. These are the only zod 3 -> zod 4
+ * format differences the migration accepts.
  */
-const INTENTIONAL_DIFFERENCES: Record<string, string> = {};
+const INTENTIONAL_DIFFERENCES: Record<string, string> = {
+  'string.uuid() "11111111-1111-1111-1111-111111111111"': STRICT_UUID,
+  'string.uuid() "00000000-0000-0000-0000-000000000001"': STRICT_UUID,
+  'string.uuid() "123e4567-e89b-92d3-a456-426614174000"': STRICT_UUID,
+  'string.uuid() "123e4567-e89b-42d3-c456-426614174000"': STRICT_UUID,
+  "number() Infinity": NON_FINITE,
+  "number() -Infinity": NON_FINITE,
+  "coerce.number() Infinity": NON_FINITE,
+  "coerce.number() -Infinity": NON_FINITE,
+  "number().int() 9007199254740992": UNSAFE_INTEGER,
+  "number().int() -9007199254740992": UNSAFE_INTEGER,
+  "number().int() 1e+21": UNSAFE_INTEGER,
+  "coerce.number().int() 9007199254740992": UNSAFE_INTEGER,
+  "coerce.number().int() -9007199254740992": UNSAFE_INTEGER,
+  "coerce.number().int() 1e+21": UNSAFE_INTEGER,
+};
 
 function describeProbe(value: unknown): string {
   if (typeof value === "number" && !Number.isFinite(value)) return String(value);
@@ -206,4 +234,14 @@ describe("zod format behaviour baseline", () => {
       expect(Object.keys(current[subject.name] ?? {}).sort()).toEqual(Object.keys(golden[subject.name] ?? {}).sort());
     });
   }
+
+  it("lists only intentional differences that really differ from zod 3", () => {
+    const stale = Object.keys(INTENTIONAL_DIFFERENCES).filter((key) => {
+      const subject = SUBJECTS.find((entry) => key.startsWith(`${entry.name} `));
+      if (!subject) return true;
+      const probe = key.slice(subject.name.length + 1);
+      return JSON.stringify(golden[subject.name]?.[probe]) === JSON.stringify(current[subject.name]?.[probe]);
+    });
+    expect(stale).toEqual([]);
+  });
 });

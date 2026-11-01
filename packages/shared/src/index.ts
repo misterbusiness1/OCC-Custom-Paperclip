@@ -2236,3 +2236,11 @@ export {
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./validators/environment-custom-images.js";
 export * from "./validators/skill-policy.js";
+export {
+  datetimeString,
+  urlString,
+  withoutFieldDefaults,
+  withoutOptionalDefault,
+  ZOD3_DATETIME_OFFSET_REGEX,
+  ZOD3_DATETIME_REGEX,
+} from "./validators/zod-compat.js";
