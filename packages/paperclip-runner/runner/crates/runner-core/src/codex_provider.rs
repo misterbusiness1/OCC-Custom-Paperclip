@@ -4510,6 +4510,17 @@ done
         fs::write(&command, b"qualified node").unwrap();
         fs::write(&proxy, b"module.exports = {};\n").unwrap();
         fs::write(&executable, b"qualified opencode").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // These are qualified synthetic artifacts, not a test of umask.
+            // An executor with umask 0002 must not make the fixture writable
+            // by its group and correctly trip the production permission guard.
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+            for path in [&command, &proxy, &executable] {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+            }
+        }
         let profile = OpenCodeLaunchProfile {
             command: qualified_artifact(&command),
             proxy_script: qualified_artifact(&proxy),
