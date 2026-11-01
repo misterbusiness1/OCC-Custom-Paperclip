@@ -914,7 +914,10 @@ describe("shared ACPX engine runtime behavior", () => {
     );
     expect(payloadEnv.PAPERCLIP_API_KEY).toBeTruthy();
     expect(payloadEnv.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
-  });
+    // Spawns real shell processes through the local sandbox runner and starts
+    // the API bridge: ~2s alone, but routinely past vitest's 5s default when
+    // the workspace lanes run in parallel on CI runners.
+  }, 30_000);
 
   it("routes child stderr in-process while keeping the unfiltered run log", async () => {
     const root = await makeTempRoot();
