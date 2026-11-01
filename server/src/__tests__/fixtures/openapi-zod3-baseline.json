@@ -22002,21 +22002,8 @@
                   },
                   "executionAdapterType": {
                     "type": "string",
-                    "enum": [
-                      "process",
-                      "http",
-                      "claude_local",
-                      "codex_local",
-                      "cursor_cloud",
-                      "gemini_local",
-                      "grok_local",
-                      "hermes_gateway",
-                      "hermes_local",
-                      "opencode_local",
-                      "pi_local",
-                      "cursor",
-                      "openclaw_gateway"
-                    ],
+                    "minLength": 1,
+                    "maxLength": 100,
                     "nullable": true
                   },
                   "pricingTier": {
@@ -27567,10 +27554,10 @@
             "schema": {
               "type": "string",
               "enum": [
-                "true",
-                "false",
+                "0",
                 "1",
-                "0"
+                "true",
+                "false"
               ]
             }
           }
