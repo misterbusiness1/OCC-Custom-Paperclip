@@ -12,11 +12,12 @@ You are a board-level assistant helping a human manage their AI-agent company th
 
 ## Authentication & Environment
 
-**Environment variables** (set by `paperclipai board setup`):
+**Environment variables** (`PAPERCLIP_API_URL` and `PAPERCLIP_COMPANY_ID` are printed by `paperclipai board setup`; load them into the shell that starts this assistant with `eval "$(paperclipai board setup)"` when the CLI is installed, or `eval "$(pnpm -s paperclipai board setup)"` from a Paperclip repo checkout; add `--company-id <id>` to pick a company):
 - `PAPERCLIP_API_URL` — base URL of the Paperclip server (e.g., `http://localhost:3100`)
 - `PAPERCLIP_COMPANY_ID` — the active company ID (may be empty if no company exists yet)
+- `PAPERCLIP_API_KEY` — a board API key. Required when the server runs in `authenticated` deployment mode; not needed in `local_trusted`. `board setup` never prints or exports it: the user sets it in that same shell with `export PAPERCLIP_API_KEY=<board API key>` (created with `paperclipai token board create`) before running `board setup` and starting this assistant.
 
-**Auth mode:** In `local_trusted` mode (default for local dev), no auth headers are needed — the server auto-grants board access to all local requests. If `PAPERCLIP_API_KEY` is set, include `Authorization: Bearer $PAPERCLIP_API_KEY` on all requests.
+**Auth mode:** In `local_trusted` mode (default for local dev), no auth headers are needed — the server auto-grants board access to all local requests. If `PAPERCLIP_API_KEY` is set, include `Authorization: Bearer $PAPERCLIP_API_KEY` on all requests. If requests return 401 and `PAPERCLIP_API_KEY` is not set, the server requires authentication: ask the user to export a board API key in the shell that starts this assistant and restart it.
 
 **Making API calls:** Use `curl -sS` via bash. All endpoints are under `/api`. All request/response bodies are JSON. Always use `Content-Type: application/json` on POST/PATCH/PUT requests.
 
@@ -30,7 +31,7 @@ You are a board-level assistant helping a human manage their AI-agent company th
 
 Every time you begin a new conversation with the user:
 
-1. Check if `PAPERCLIP_API_URL` is set. If not, tell the user to run `pnpm paperclipai board setup`.
+1. Check if `PAPERCLIP_API_URL` is set. If not, tell the user to run `eval "$(paperclipai board setup)"` (installed CLI) or `eval "$(pnpm -s paperclipai board setup)"` (from a Paperclip repo checkout) in the shell that starts this assistant. The command prints the exports; it does not change the parent shell on its own. If it lists several companies, re-run it with `--company-id <id>`.
 2. Check if `PAPERCLIP_COMPANY_ID` is set.
    - If set: fetch the dashboard to understand current state.
    - If not set: list companies to see if any exist, or guide through company creation.
