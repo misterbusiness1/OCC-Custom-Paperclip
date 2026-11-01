@@ -22,7 +22,9 @@ import {
  * was recorded by running this file with
  * `PAPERCLIP_UPDATE_ZOD_BASELINE=1 PAPERCLIP_ZOD3_MODULE=<zod@3.25.76>/index.js`
  * (zod 3 is no longer a workspace dependency, so the module is passed in);
- * the update refuses to write unless that module is zod 3.
+ * the update refuses to write unless that module is zod 3. This is a zod 3
+ * reference golden: `PAPERCLIP_UPDATE_ZOD_GOLDENS=1` leaves it untouched. To
+ * add a probe, add it to PROBES and re-record with the two variables above.
  *
  * Each probe builds its schema with the zod 3 API (`v3 === true`) or the
  * zod 4 API the codebase uses for the same rule (`z.uuid()`, `z.url()`,
@@ -171,6 +173,62 @@ const PROBES: Record<string, Probe> = {
     schema: (zod) => zod.string().transform((value) => value.length).pipe(zod.number().min(5)),
     input: "abc",
   },
+  // zod 4 also runs length checks on a wrong-typed value that has a length.
+  "string min, array input": { schema: (zod) => zod.object({ title: zod.string().min(1) }), input: { title: [] } },
+  "string min max, long array input": { schema: (zod) => zod.string().min(1).max(3), input: [1, 2, 3, 4, 5] },
+  "trimmed nullable string min, array input": { schema: (zod) => zod.string().trim().min(1).nullable(), input: [] },
+  "array max, long string input": { schema: (zod) => zod.array(zod.string()).max(20), input: "x".repeat(600) },
+  "array nonempty, empty string input": { schema: (zod) => zod.array(zod.string()).nonempty(), input: "" },
+  "array length, string input": { schema: (zod) => zod.array(zod.string()).length(2), input: "abc" },
+  "array of strings, array elements": { schema: (zod) => zod.array(zod.string().min(2)), input: [[], "x", [1, 2, 3]] },
+  "record value min, array input": { schema: (zod) => zod.record(zod.string(), zod.string().min(2)), input: { a: [] } },
+  "union option string min, array input": { schema: (zod) => zod.union([zod.string().min(1), zod.number()]), input: [] },
+  // zod 4 reports an array's size issue after its element issues.
+  "array min, element issues": { schema: (zod) => zod.array(zod.object({ id: zod.string() })).min(3), input: [{ id: 1 }, {}] },
+  "array min between sibling fields": {
+    schema: (zod) => zod.object({ before: zod.string(), list: zod.array(zod.string().min(2)).min(3), after: zod.number() }),
+    input: { before: 1, list: ["a", 2], after: "x" },
+  },
+  // zod 4 stops after a failed .int(); zod 3 still ran the later checks.
+  "int min, float below": { schema: (zod) => zod.number().int().min(30), input: 1.5 },
+  "int positive, negative float": { schema: (zod) => zod.number().int().positive(), input: -0.5 },
+  "int min max, float above": { schema: (zod) => zod.number().int().min(1).max(5), input: 7.5 },
+  "int multipleOf, float": { schema: (zod) => zod.number().int().multipleOf(5), input: 7.5 },
+  "int min with custom message, float": { schema: (zod) => zod.object({ n: zod.number().int().min(30, "At least 30") }), input: { n: 1.5 } },
+  "min before int, float": { schema: (zod) => zod.number().min(30).int(), input: 1.5 },
+  "coerce int min, float string": { schema: (zod) => zod.coerce.number().int().min(1), input: "0.5" },
+  // zod 3 returned the first union option that failed without aborting.
+  "union literal or int, float": { schema: (zod) => zod.union([zod.literal("latest"), zod.number().int().positive()]), input: 1.5 },
+  "union of int options, float": { schema: (zod) => zod.union([zod.number().int(), zod.number().int().min(10)]), input: 1.5 },
+  "union, two options fail on checks": { schema: (zod) => zod.union([zod.string().min(5), zod.string().regex(/^z/)]), input: "ab" },
+  "union, aborted option then two dirty options": {
+    schema: (zod) => zod.union([zod.number(), zod.string().min(5), zod.string().max(1)]),
+    input: "abc",
+  },
+  "union, two dirty object options": {
+    schema: (zod) => zod.union([zod.object({ a: zod.string().min(3) }), zod.object({ a: zod.string().max(1), b: zod.number().optional() })]),
+    input: { a: "ab" },
+  },
+  "union, aborted field option then dirty option": {
+    schema: (zod) => zod.union([zod.object({ a: zod.number() }), zod.object({ a: zod.string().min(5) })]),
+    input: { a: "ab" },
+  },
+  "union, two refinement options": {
+    schema: (zod) =>
+      zod.union([
+        zod.string().refine((value) => value.startsWith("x"), "Needs x"),
+        zod.string().refine((value) => value.endsWith("y"), "Needs y"),
+      ]),
+    input: "ab",
+  },
+  "union, two strict objects with unknown keys": {
+    schema: (zod) => zod.union([zod.object({ a: zod.string() }).strict(), zod.object({ b: zod.string() }).strict()]),
+    input: { a: "x", c: 1 },
+  },
+  "union of array options with sizes": {
+    schema: (zod) => zod.union([zod.array(zod.string()).min(2), zod.array(zod.number()).max(0)]),
+    input: ["a"],
+  },
 };
 
 /**
@@ -187,6 +245,27 @@ const KNOWN_DIFFERENCES: Record<string, { reason: string; schema: () => z.ZodTyp
     expected: [
       { code: "too_big", maximum: 1, type: "array", inclusive: true, exact: false, message: "Array must contain at most 1 element(s)", path: [] },
     ],
+  },
+  "earlier union option failing only .int() loses to a later dirty option": {
+    reason:
+      "zod 3 returned the first option that failed without aborting, here the .int() option. zod 4 aborts after .int(), " +
+      "so it resolves to the later option and reports its issues without an invalid_union to convert.",
+    schema: () => z.union([z.number().int(), z.number().min(10)]),
+    input: 1.5,
+    expected: [
+      { code: "too_small", minimum: 10, type: "number", inclusive: true, exact: false, message: "Number must be greater than or equal to 10", path: [] },
+    ],
+  },
+  "superRefine issue with path before message": {
+    reason:
+      "zod 3 kept the key order of the object passed to ctx.addIssue ({ code, path, message }); the converted issue lists " +
+      "message before path, as for .refine(). Same keys and values.",
+    schema: () =>
+      z.object({ a: z.string() }).superRefine((_value, ctx) => {
+        ctx.addIssue({ code: "custom", path: ["a"], message: "Nope" });
+      }),
+    input: { a: "x" },
+    expected: [{ code: "custom", message: "Nope", path: ["a"] }],
   },
 };
 

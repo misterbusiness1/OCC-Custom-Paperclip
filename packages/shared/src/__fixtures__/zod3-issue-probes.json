@@ -932,6 +932,442 @@
     "message": "Number must be greater than or equal to 5",
     "path": []
    }
+  ],
+  "string min, array input": [
+   {
+    "code": "invalid_type",
+    "expected": "string",
+    "received": "array",
+    "path": [
+     "title"
+    ],
+    "message": "Expected string, received array"
+   }
+  ],
+  "string min max, long array input": [
+   {
+    "code": "invalid_type",
+    "expected": "string",
+    "received": "array",
+    "path": [],
+    "message": "Expected string, received array"
+   }
+  ],
+  "trimmed nullable string min, array input": [
+   {
+    "code": "invalid_type",
+    "expected": "string",
+    "received": "array",
+    "path": [],
+    "message": "Expected string, received array"
+   }
+  ],
+  "array max, long string input": [
+   {
+    "code": "invalid_type",
+    "expected": "array",
+    "received": "string",
+    "path": [],
+    "message": "Expected array, received string"
+   }
+  ],
+  "array nonempty, empty string input": [
+   {
+    "code": "invalid_type",
+    "expected": "array",
+    "received": "string",
+    "path": [],
+    "message": "Expected array, received string"
+   }
+  ],
+  "array length, string input": [
+   {
+    "code": "invalid_type",
+    "expected": "array",
+    "received": "string",
+    "path": [],
+    "message": "Expected array, received string"
+   }
+  ],
+  "array of strings, array elements": [
+   {
+    "code": "invalid_type",
+    "expected": "string",
+    "received": "array",
+    "path": [
+     0
+    ],
+    "message": "Expected string, received array"
+   },
+   {
+    "code": "too_small",
+    "minimum": 2,
+    "type": "string",
+    "inclusive": true,
+    "exact": false,
+    "message": "String must contain at least 2 character(s)",
+    "path": [
+     1
+    ]
+   },
+   {
+    "code": "invalid_type",
+    "expected": "string",
+    "received": "array",
+    "path": [
+     2
+    ],
+    "message": "Expected string, received array"
+   }
+  ],
+  "record value min, array input": [
+   {
+    "code": "invalid_type",
+    "expected": "string",
+    "received": "array",
+    "path": [
+     "a"
+    ],
+    "message": "Expected string, received array"
+   }
+  ],
+  "union option string min, array input": [
+   {
+    "code": "invalid_union",
+    "unionErrors": [
+     {
+      "issues": [
+       {
+        "code": "invalid_type",
+        "expected": "string",
+        "received": "array",
+        "path": [],
+        "message": "Expected string, received array"
+       }
+      ],
+      "name": "ZodError"
+     },
+     {
+      "issues": [
+       {
+        "code": "invalid_type",
+        "expected": "number",
+        "received": "array",
+        "path": [],
+        "message": "Expected number, received array"
+       }
+      ],
+      "name": "ZodError"
+     }
+    ],
+    "path": [],
+    "message": "Invalid input"
+   }
+  ],
+  "array min, element issues": [
+   {
+    "code": "too_small",
+    "minimum": 3,
+    "type": "array",
+    "inclusive": true,
+    "exact": false,
+    "message": "Array must contain at least 3 element(s)",
+    "path": []
+   },
+   {
+    "code": "invalid_type",
+    "expected": "string",
+    "received": "number",
+    "path": [
+     0,
+     "id"
+    ],
+    "message": "Expected string, received number"
+   },
+   {
+    "code": "invalid_type",
+    "expected": "string",
+    "received": "undefined",
+    "path": [
+     1,
+     "id"
+    ],
+    "message": "Required"
+   }
+  ],
+  "array min between sibling fields": [
+   {
+    "code": "invalid_type",
+    "expected": "string",
+    "received": "number",
+    "path": [
+     "before"
+    ],
+    "message": "Expected string, received number"
+   },
+   {
+    "code": "too_small",
+    "minimum": 3,
+    "type": "array",
+    "inclusive": true,
+    "exact": false,
+    "message": "Array must contain at least 3 element(s)",
+    "path": [
+     "list"
+    ]
+   },
+   {
+    "code": "too_small",
+    "minimum": 2,
+    "type": "string",
+    "inclusive": true,
+    "exact": false,
+    "message": "String must contain at least 2 character(s)",
+    "path": [
+     "list",
+     0
+    ]
+   },
+   {
+    "code": "invalid_type",
+    "expected": "string",
+    "received": "number",
+    "path": [
+     "list",
+     1
+    ],
+    "message": "Expected string, received number"
+   },
+   {
+    "code": "invalid_type",
+    "expected": "number",
+    "received": "string",
+    "path": [
+     "after"
+    ],
+    "message": "Expected number, received string"
+   }
+  ],
+  "int min, float below": [
+   {
+    "code": "invalid_type",
+    "expected": "integer",
+    "received": "float",
+    "message": "Expected integer, received float",
+    "path": []
+   },
+   {
+    "code": "too_small",
+    "minimum": 30,
+    "type": "number",
+    "inclusive": true,
+    "exact": false,
+    "message": "Number must be greater than or equal to 30",
+    "path": []
+   }
+  ],
+  "int positive, negative float": [
+   {
+    "code": "invalid_type",
+    "expected": "integer",
+    "received": "float",
+    "message": "Expected integer, received float",
+    "path": []
+   },
+   {
+    "code": "too_small",
+    "minimum": 0,
+    "type": "number",
+    "inclusive": false,
+    "exact": false,
+    "message": "Number must be greater than 0",
+    "path": []
+   }
+  ],
+  "int min max, float above": [
+   {
+    "code": "invalid_type",
+    "expected": "integer",
+    "received": "float",
+    "message": "Expected integer, received float",
+    "path": []
+   },
+   {
+    "code": "too_big",
+    "maximum": 5,
+    "type": "number",
+    "inclusive": true,
+    "exact": false,
+    "message": "Number must be less than or equal to 5",
+    "path": []
+   }
+  ],
+  "int multipleOf, float": [
+   {
+    "code": "invalid_type",
+    "expected": "integer",
+    "received": "float",
+    "message": "Expected integer, received float",
+    "path": []
+   },
+   {
+    "code": "not_multiple_of",
+    "multipleOf": 5,
+    "message": "Number must be a multiple of 5",
+    "path": []
+   }
+  ],
+  "int min with custom message, float": [
+   {
+    "code": "invalid_type",
+    "expected": "integer",
+    "received": "float",
+    "message": "Expected integer, received float",
+    "path": [
+     "n"
+    ]
+   },
+   {
+    "code": "too_small",
+    "minimum": 30,
+    "type": "number",
+    "inclusive": true,
+    "exact": false,
+    "message": "At least 30",
+    "path": [
+     "n"
+    ]
+   }
+  ],
+  "min before int, float": [
+   {
+    "code": "too_small",
+    "minimum": 30,
+    "type": "number",
+    "inclusive": true,
+    "exact": false,
+    "message": "Number must be greater than or equal to 30",
+    "path": []
+   },
+   {
+    "code": "invalid_type",
+    "expected": "integer",
+    "received": "float",
+    "message": "Expected integer, received float",
+    "path": []
+   }
+  ],
+  "coerce int min, float string": [
+   {
+    "code": "invalid_type",
+    "expected": "integer",
+    "received": "float",
+    "message": "Expected integer, received float",
+    "path": []
+   },
+   {
+    "code": "too_small",
+    "minimum": 1,
+    "type": "number",
+    "inclusive": true,
+    "exact": false,
+    "message": "Number must be greater than or equal to 1",
+    "path": []
+   }
+  ],
+  "union literal or int, float": [
+   {
+    "code": "invalid_type",
+    "expected": "integer",
+    "received": "float",
+    "message": "Expected integer, received float",
+    "path": []
+   }
+  ],
+  "union of int options, float": [
+   {
+    "code": "invalid_type",
+    "expected": "integer",
+    "received": "float",
+    "message": "Expected integer, received float",
+    "path": []
+   }
+  ],
+  "union, two options fail on checks": [
+   {
+    "code": "too_small",
+    "minimum": 5,
+    "type": "string",
+    "inclusive": true,
+    "exact": false,
+    "message": "String must contain at least 5 character(s)",
+    "path": []
+   }
+  ],
+  "union, aborted option then two dirty options": [
+   {
+    "code": "too_small",
+    "minimum": 5,
+    "type": "string",
+    "inclusive": true,
+    "exact": false,
+    "message": "String must contain at least 5 character(s)",
+    "path": []
+   }
+  ],
+  "union, two dirty object options": [
+   {
+    "code": "too_small",
+    "minimum": 3,
+    "type": "string",
+    "inclusive": true,
+    "exact": false,
+    "message": "String must contain at least 3 character(s)",
+    "path": [
+     "a"
+    ]
+   }
+  ],
+  "union, aborted field option then dirty option": [
+   {
+    "code": "too_small",
+    "minimum": 5,
+    "type": "string",
+    "inclusive": true,
+    "exact": false,
+    "message": "String must contain at least 5 character(s)",
+    "path": [
+     "a"
+    ]
+   }
+  ],
+  "union, two refinement options": [
+   {
+    "code": "custom",
+    "message": "Needs x",
+    "path": []
+   }
+  ],
+  "union, two strict objects with unknown keys": [
+   {
+    "code": "unrecognized_keys",
+    "keys": [
+     "c"
+    ],
+    "path": [],
+    "message": "Unrecognized key(s) in object: 'c'"
+   }
+  ],
+  "union of array options with sizes": [
+   {
+    "code": "too_small",
+    "minimum": 2,
+    "type": "array",
+    "inclusive": true,
+    "exact": false,
+    "message": "Array must contain at least 2 element(s)",
+    "path": []
+   }
   ]
  }
 }

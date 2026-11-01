@@ -4,9 +4,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import * as sharedExports from "@paperclipai/shared";
 import {
   collectSchemaBaseline,
+  defaultedSchemaExports,
   diffFieldBehaviour,
+  findOptionalOverDefaults,
   findUnexportedSchemaDefaults,
   zodExports,
 } from "@paperclipai/shared/testing/zod-schema-baseline";
@@ -22,6 +25,12 @@ import { loadOrUpdateGolden, readZodVersion, type BaselineGolden } from "@paperc
  *
  * routes/openapi.ts is skipped: its schemas only feed the generated OpenAPI
  * document, which openapi-zod-baseline.test.ts pins byte for byte.
+ *
+ * Record an intended schema change with
+ *
+ *   PAPERCLIP_UPDATE_ZOD_GOLDENS=1 pnpm exec vitest run --project @paperclipai/server src/__tests__/zod-schema-baseline.test.ts
+ *
+ * and review the diff (see packages/shared/src/testing/zod-baseline-golden.ts).
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -52,9 +61,12 @@ const sourceModules = listZodSourceModules(SRC);
 
 describe("zod schema behaviour baseline (server)", async () => {
   const roots: Record<string, unknown> = {};
+  // Schemas ending in .default()/.prefault() that server modules may import.
+  const defaultedImports = new Set(defaultedSchemaExports(sharedExports as unknown as Record<string, unknown>));
   for (const file of sourceModules) {
     const moduleExports = (await import(file)) as Record<string, unknown>;
     Object.assign(roots, zodExports(moduleExports, `${path.relative(SRC, file).split(path.sep).join("/")}#`));
+    for (const name of defaultedSchemaExports(moduleExports)) defaultedImports.add(name);
   }
   const current = collectSchemaBaseline(z, roots, { includeRequired: false });
   const golden = loadOrUpdateGolden<BaselineGolden>(GOLDEN_FILE, current, {
@@ -62,7 +74,7 @@ describe("zod schema behaviour baseline (server)", async () => {
     note:
       "Behaviour of the server's locally defined zod schemas captured before the zod 4 migration. " +
       "fields: omitted-key behaviour per object field (absent entry = required). " +
-      "Do not regenerate on zod 4; see packages/shared/src/testing/zod-baseline-golden.ts.",
+      "First captured on zod 3.25.76 before the zod 4 migration. Re-record an intended change with PAPERCLIP_UPDATE_ZOD_GOLDENS=1; see packages/shared/src/testing/zod-baseline-golden.ts.",
   }).data;
 
   it("discovers the server's schemas", () => {
@@ -89,6 +101,19 @@ describe("zod schema behaviour baseline (server)", async () => {
   it("only uses defaults, prefaults and partials inside exported consts (so the analyzer reaches them)", () => {
     const offenders = sourceModules.flatMap((file) =>
       findUnexportedSchemaDefaults(fs.readFileSync(file, "utf8")).map((line) => `${path.relative(SRC, file)}:${line}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("never wraps a defaulted schema in .optional()/.nullish() without withoutOptionalDefault", () => {
+    // The runtime checks above only see exported schemas. A defaulted const
+    // reused as `x.optional()` inside an unexported route body schema (the
+    // pipeline stage PATCH `config` case) would fill the default on zod 4.
+    expect(defaultedImports.has("stageConfigSchema")).toBe(true);
+    const offenders = sourceModules.flatMap((file) =>
+      findOptionalOverDefaults(fs.readFileSync(file, "utf8"), [...defaultedImports]).map(
+        (line) => `${path.relative(SRC, file)}:${line}`,
+      ),
     );
     expect(offenders).toEqual([]);
   });

@@ -9,10 +9,16 @@ import { z } from "zod";
 import {
   collectSchemaBaseline,
   diffFieldBehaviour,
+  findOptionalOverDefaults,
   findUnexportedSchemaDefaults,
   zodExports,
 } from "@paperclipai/shared/testing/zod-schema-baseline";
-import { loadOrUpdateGolden, readZodVersion, type BaselineGolden } from "@paperclipai/shared/testing/zod-baseline-golden";
+import {
+  isZod3Capture,
+  loadOrUpdateGolden,
+  readZodVersion,
+  type BaselineGolden,
+} from "@paperclipai/shared/testing/zod-baseline-golden";
 import { classifyToolsListDifferences, diffToolsList } from "@paperclipai/shared/testing/mcp-tools-list-baseline";
 import type { GoogleSheetsMcpConfig } from "./config.js";
 import type { GoogleSheetsClient } from "./google-client.js";
@@ -25,7 +31,9 @@ import * as toolsModule from "./tools.js";
  * zod 3.25.76: the `tools/list` result and the omitted-key behaviour of every
  * tool input schema and config schema. Differences after the migration must be
  * explained by a documented rule in @paperclipai/shared/testing/mcp-tools-list-baseline
- * or listed in TOOLS_LIST_DIFFERENCES with a reason, never re-recorded.
+ * or listed in TOOLS_LIST_DIFFERENCES with a reason. Once a golden is
+ * re-recorded after the migration (PAPERCLIP_UPDATE_ZOD_GOLDENS=1 npx vitest run
+ * in this package, for an intended tool change), the comparison is exact.
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -67,10 +75,16 @@ async function listTools() {
 describe("MCP tools/list baseline (google sheets)", () => {
   it("keeps every tool's name, description, annotations and input JSON Schema", async () => {
     const tools = await listTools();
-    const golden = loadOrUpdateGolden(TOOLS_LIST_GOLDEN, tools, {
+    const goldenFile = loadOrUpdateGolden(TOOLS_LIST_GOLDEN, tools, {
       zodVersion,
-      note: "tools/list result of the Google Sheets MCP server captured before the zod 4 migration. Do not regenerate on zod 4.",
-    }).data;
+      note: "tools/list result of the Google Sheets MCP server (first captured on zod 3.25.76 before the zod 4 migration). Re-record an intended change with PAPERCLIP_UPDATE_ZOD_GOLDENS=1.",
+    });
+    if (!isZod3Capture(goldenFile.capturedWith)) {
+      // Re-recorded after the migration: the zod 3 -> zod 4 rules no longer apply.
+      expect(tools).toEqual(goldenFile.data);
+      return;
+    }
+    const golden = goldenFile.data;
     expect(tools.map((tool) => tool.name)).toEqual(golden.map((tool) => tool.name));
     const { unexplained, staleDocumented } = classifyToolsListDifferences(
       diffToolsList(golden, tools),
@@ -91,7 +105,7 @@ describe("zod schema behaviour baseline (google sheets MCP tools)", () => {
   const current = collectSchemaBaseline(z, roots, { includeRequired: false });
   const golden = loadOrUpdateGolden<BaselineGolden>(SCHEMA_GOLDEN, current, {
     zodVersion,
-    note: "Omitted-key behaviour of every Google Sheets MCP tool input schema captured before the zod 4 migration (absent entry = required).",
+    note: "Omitted-key behaviour of every Google Sheets MCP tool input schema first captured on zod 3.25.76 before the zod 4 migration (absent entry = required). Re-record an intended change with PAPERCLIP_UPDATE_ZOD_GOLDENS=1.",
   }).data;
 
   it("keeps every field's omitted-key behaviour, object policy and root results", () => {
@@ -104,6 +118,7 @@ describe("zod schema behaviour baseline (google sheets MCP tools)", () => {
   it("only uses defaults, prefaults and partials inside exported consts", () => {
     for (const file of ["tools.ts", "config.ts"]) {
       expect(findUnexportedSchemaDefaults(fs.readFileSync(path.join(here, file), "utf8"))).toEqual([]);
+      expect(findOptionalOverDefaults(fs.readFileSync(path.join(here, file), "utf8"))).toEqual([]);
     }
   });
 });

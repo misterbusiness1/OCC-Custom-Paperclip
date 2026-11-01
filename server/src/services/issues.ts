@@ -62,6 +62,7 @@ import {
   issueCommentPresentationSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  safeParseStoredUuids,
   zod3IssueParams,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
@@ -3986,8 +3987,10 @@ export function issueService(db: Db) {
       ...comment,
       authorType: deriveIssueCommentAuthorType(comment),
       body: redactCurrentUserText(comment.body, { enabled: censorUsernameInLogs }),
-      presentation: issueCommentPresentationSchema.nullable().catch(null).parse(comment.presentation ?? null),
-      metadata: issueCommentMetadataSchema.nullable().catch(null).parse(comment.metadata ?? null),
+      // Stored values may hold IDs zod 3's lax .uuid() accepted; anything else
+      // invalid still reads as null, as before.
+      presentation: safeParseStoredUuids(issueCommentPresentationSchema.nullable(), comment.presentation ?? null).data ?? null,
+      metadata: safeParseStoredUuids(issueCommentMetadataSchema.nullable(), comment.metadata ?? null).data ?? null,
     };
   }
 

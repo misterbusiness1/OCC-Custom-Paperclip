@@ -3,24 +3,40 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { ZOD_BASELINE_UPDATE_ENV, readZodVersion } from "@paperclipai/shared/testing/zod-baseline-golden";
+import {
+  ZOD_GOLDEN_RERECORD_ENV,
+  isZod3Capture,
+  readZodVersion,
+  shouldWriteGolden,
+} from "@paperclipai/shared/testing/zod-baseline-golden";
 import { buildOpenApiDocument } from "../routes/openapi.js";
 
 /**
- * The generated OpenAPI document must stay byte-identical to the document the
- * zod 3 converter produced (captured on zod 3.25.76 before the zod 4
- * migration). The converter in routes/openapi.ts reads zod internals, so a zod
- * upgrade can silently change or erase documented request bodies.
+ * The generated OpenAPI document must stay byte-identical to the golden. The
+ * golden was first captured on zod 3.25.76 before the zod 4 migration; the
+ * converter in routes/openapi.ts reads zod internals, so a zod upgrade can
+ * silently change or erase documented request bodies.
  *
- * Intentional differences go in INTENTIONAL_DIFFERENCES (JSON pointer ->
- * reason) and must be listed in the pull request. Regenerate the fixture only
- * on zod 3 with PAPERCLIP_UPDATE_ZOD_BASELINE=1.
+ * While the golden is still the zod 3 capture (see the .meta.json sidecar),
+ * the zod 3 -> zod 4 differences in INTENTIONAL_DIFFERENCES (JSON pointer ->
+ * reason) are accepted. After an intended API change, re-record the document
+ * on the current zod with
+ *
+ *   PAPERCLIP_UPDATE_ZOD_GOLDENS=1 pnpm exec vitest run --project @paperclipai/server src/__tests__/openapi-zod-baseline.test.ts
+ *
+ * which also stamps the sidecar; from then on the comparison is exact. See
+ * packages/shared/src/testing/zod-baseline-golden.ts.
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const zodVersion = readZodVersion(require.resolve("zod/package.json"));
 const GOLDEN_FILE = path.join(here, "fixtures", "openapi-zod3-baseline.json");
+const GOLDEN_META_FILE = path.join(here, "fixtures", "openapi-zod3-baseline.meta.json");
+
+function goldenCapturedWith(): string {
+  return (JSON.parse(fs.readFileSync(GOLDEN_META_FILE, "utf8")) as { capturedWith: string }).capturedWith;
+}
 
 const HEARTBEAT_RUNS_SUMMARY_ENUM =
   "/paths/~1api~1companies~1{companyId}~1heartbeat-runs/get/parameters/4/schema/enum";
@@ -89,22 +105,21 @@ function isCoveredByIntentionalDifference(pointer: string) {
   );
 }
 
-describe("OpenAPI document zod 3 baseline", () => {
-  it("is byte-identical to the document generated on zod 3", () => {
+describe("OpenAPI document baseline", () => {
+  it("is byte-identical to the golden document", () => {
     const actual = serialize(buildOpenApiDocument());
-    if (process.env[ZOD_BASELINE_UPDATE_ENV] === "1") {
-      if (!zodVersion.startsWith("3.")) {
-        throw new Error(`${ZOD_BASELINE_UPDATE_ENV}=1 refused: the OpenAPI golden is a zod 3 baseline (running zod ${zodVersion}).`);
-      }
+    if (shouldWriteGolden("contract", zodVersion, "the OpenAPI golden")) {
       fs.mkdirSync(path.dirname(GOLDEN_FILE), { recursive: true });
       fs.writeFileSync(GOLDEN_FILE, actual);
+      fs.writeFileSync(GOLDEN_META_FILE, `${JSON.stringify({ capturedWith: `zod@${zodVersion}` }, null, 1)}\n`);
     }
     const expected = fs.readFileSync(GOLDEN_FILE, "utf8");
     if (actual === expected) return;
+    const zod3Capture = isZod3Capture(goldenCapturedWith());
     const differences = diffPointers(JSON.parse(expected), JSON.parse(actual)).filter(
-      (pointer) => !isCoveredByIntentionalDifference(pointer),
+      (pointer) => !(zod3Capture && isCoveredByIntentionalDifference(pointer)),
     );
-    expect(differences).toEqual([]);
+    expect(differences, `re-record an intended change with ${ZOD_GOLDEN_RERECORD_ENV}=1`).toEqual([]);
     // Every remaining difference is intentional: with the golden's values put
     // back at the listed pointers, the document must be byte-identical (this
     // also catches key-order changes the pointer diff stops reporting once it
@@ -120,7 +135,17 @@ describe("OpenAPI document zod 3 baseline", () => {
   it("keeps the members of enums whose order zod 4 changes", () => {
     const expected = readPointer(JSON.parse(fs.readFileSync(GOLDEN_FILE, "utf8")), HEARTBEAT_RUNS_SUMMARY_ENUM) as string[];
     const actual = readPointer(buildOpenApiDocument(), HEARTBEAT_RUNS_SUMMARY_ENUM) as string[];
-    expect(expected).toEqual(["true", "false", "1", "0"]);
+    if (isZod3Capture(goldenCapturedWith())) expect(expected).toEqual(["true", "false", "1", "0"]);
     expect([...actual].sort()).toEqual([...expected].sort());
+  });
+
+  it("only lists intentional differences that still differ from a zod 3 golden", () => {
+    if (!isZod3Capture(goldenCapturedWith())) return;
+    const golden = JSON.parse(fs.readFileSync(GOLDEN_FILE, "utf8")) as unknown;
+    const document = JSON.parse(serialize(buildOpenApiDocument())) as unknown;
+    const stale = Object.keys(INTENTIONAL_DIFFERENCES).filter(
+      (pointer) => JSON.stringify(readPointer(golden, pointer)) === JSON.stringify(readPointer(document, pointer)),
+    );
+    expect(stale).toEqual([]);
   });
 });

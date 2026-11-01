@@ -2,6 +2,12 @@
  * Version-agnostic zod schema introspection for the zod 3 -> zod 4 migration
  * baseline tests.
  *
+ * Test-only module (like everything in src/testing): imported by test files
+ * here, in the server, the MCP servers and plugin-workspace-diff, and by
+ * relative path from the standalone kubernetes provider's tests, which
+ * therefore only run inside this repository. It is compiled into dist with
+ * the rest of src (as the package's tests are) but is not runtime API.
+ *
  * This module deliberately imports nothing from "zod". It reads either zod 3
  * internals (`_def.typeName`) or zod 4 internals (`_zod.def.type`) so the same
  * analyzer runs before and after the migration, and callers pass in their own
@@ -503,6 +509,141 @@ export function findUnexportedSchemaDefaults(source: string, allowedConsts: read
     if (current && /^export\s+const\b/.test(current)) return;
     const constName = current?.match(/^(?:export\s+)?(?:const|let|var)\s+(\w+)/)?.[1];
     if (constName && allowedConsts.includes(constName)) return;
+    offenders.push(`${index + 1}: ${trimmed}`);
+  });
+  return offenders;
+}
+
+const DEFAULT_PASS_THROUGH_METHODS = new Set(["nullable", "readonly", "describe", "meta", "brand"]);
+
+/**
+ * The method names of an expression's outermost call chain, outermost first:
+ * `z.record(a, b).default({}).describe("x")` -> ["describe", "default", "record"].
+ * Brackets are matched textually; good enough for schema declarations.
+ */
+function outerMethodChain(expression: string): string[] {
+  let rest = expression.trim().replace(/;\s*$/, "").trim();
+  const methods: string[] = [];
+  while (rest.endsWith(")")) {
+    let depth = 0;
+    let index = rest.length - 1;
+    for (; index >= 0; index -= 1) {
+      const char = rest[index];
+      if (char === ")" || char === "]" || char === "}") depth += 1;
+      else if (char === "(" || char === "[" || char === "{") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    if (index < 0) break;
+    const before = rest.slice(0, index);
+    const match = before.match(/\.\s*(\w+)\s*$/);
+    if (!match) break;
+    methods.push(match[1]!);
+    rest = before.slice(0, before.length - match[0].length).trimEnd();
+  }
+  return methods;
+}
+
+function endsInDefault(expression: string): boolean {
+  for (const method of outerMethodChain(expression)) {
+    if (method === "default" || method === "prefault") return true;
+    if (!DEFAULT_PASS_THROUGH_METHODS.has(method)) return false;
+  }
+  return false;
+}
+
+function stripComments(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+}
+
+const TOP_LEVEL_HEADER = /^(export\s+)?(const|let|var|function|async\s+function|class|interface|type|enum)\b|^export\s+(default|\{)/;
+
+/**
+ * Names of a module's top-level consts whose schema ends in `.default()` or
+ * `.prefault()` (also behind `.nullable()`/`.readonly()`/`.describe()`/`.meta()`).
+ */
+export function findDefaultedConsts(source: string): string[] {
+  const names: string[] = [];
+  const lines = stripComments(source).split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index]!.match(/^(?:export\s+)?const\s+(\w+)\s*(?::[^=]+)?=(.*)$/);
+    if (!match) continue;
+    const body = [match[2]!];
+    for (let next = index + 1; next < lines.length && !TOP_LEVEL_HEADER.test(lines[next]!); next += 1) body.push(lines[next]!);
+    if (endsInDefault(body.join("\n"))) names.push(match[1]!);
+  }
+  return names;
+}
+
+/**
+ * Names of exported schemas whose outermost wrapper (through
+ * nullable/readonly) is a `.default()` or `.prefault()`. Pass them to
+ * `findOptionalOverDefaults` for modules that import them.
+ */
+export function defaultedSchemaExports(moduleExports: Record<string, unknown>): string[] {
+  const names: string[] = [];
+  for (const [name, value] of Object.entries(moduleExports)) {
+    if (!isZodSchema(value)) continue;
+    let current: AnySchema = value;
+    for (let depth = 0; depth < 8 && current; depth += 1) {
+      const kind = schemaKind(current);
+      if (kind === "default" || kind === "prefault") {
+        names.push(name);
+        break;
+      }
+      if (kind !== "nullable" && kind !== "readonly" && kind !== "branded") break;
+      current = innerOf(current);
+    }
+  }
+  return names.sort();
+}
+
+/**
+ * Static guard for the case the runtime analyzer cannot see: a schema that
+ * ends in `.default()`/`.prefault()` is defined in one const (exported, so the
+ * analyzer is satisfied) and wrapped in `.optional()`/`.nullish()` somewhere
+ * else, for example in an unexported route body schema. zod 4 applies that
+ * default for an omitted key; zod 3 did not. Flags every
+ * `NAME.optional()`, `NAME.nullish()`, `NAME.nullable().optional()` and
+ * `z.optional(NAME)` where NAME is a same-file const found by
+ * `findDefaultedConsts` or listed in `knownDefaulted` (imported schemas, see
+ * `defaultedSchemaExports`). A use is accepted when its line also calls
+ * `withoutOptionalDefault(`, or its top-level declaration calls
+ * `withoutFieldDefaults(`. Returns `line: text` entries.
+ */
+export function findOptionalOverDefaults(source: string, knownDefaulted: readonly string[] = []): string[] {
+  const names = [...new Set([...findDefaultedConsts(source), ...knownDefaulted])];
+  if (names.length === 0) return [];
+  const alternatives = names.map((name) => name.replace(/[$]/g, "\\$")).join("|");
+  const usage = new RegExp(
+    `\\b(?:${alternatives})\\s*(?:\\.\\s*nullable\\(\\s*\\))?\\s*\\.\\s*(?:optional|nullish)\\s*\\(|\\bz\\s*\\.\\s*(?:optional|nullish)\\(\\s*(?:${alternatives})\\b`,
+  );
+  const offenders: string[] = [];
+  const lines = source.split("\n");
+  let declarationStart = 0;
+  let inBlockComment = false;
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+    if (inBlockComment) {
+      if (trimmed.includes("*/")) inBlockComment = false;
+      return;
+    }
+    if (trimmed.startsWith("/*")) {
+      if (!trimmed.includes("*/")) inBlockComment = true;
+      return;
+    }
+    if (trimmed.startsWith("//")) return;
+    if (TOP_LEVEL_HEADER.test(line)) declarationStart = index;
+    if (!usage.test(line)) return;
+    if (line.includes("withoutOptionalDefault(")) return;
+    let declarationEnd = index + 1;
+    while (declarationEnd < lines.length && !TOP_LEVEL_HEADER.test(lines[declarationEnd]!)) declarationEnd += 1;
+    if (lines.slice(declarationStart, declarationEnd).join("\n").includes("withoutFieldDefaults(")) return;
     offenders.push(`${index + 1}: ${trimmed}`);
   });
   return offenders;

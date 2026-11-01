@@ -24,7 +24,14 @@ import {
 } from "./tool-access.js";
 import { updateIssueWorkProductSchema } from "./work-product.js";
 import { workspaceFileListQuerySchema, workspaceFileResourceQuerySchema } from "./workspace-file-resource.js";
-import { datetimeString, urlString, withoutFieldDefaults, withoutOptionalDefault } from "./zod-compat.js";
+import { suggestTasksPayloadSchema } from "./issue.js";
+import {
+  datetimeString,
+  safeParseStoredUuids,
+  urlString,
+  withoutFieldDefaults,
+  withoutOptionalDefault,
+} from "./zod-compat.js";
 
 const uuid = "11111111-1111-4111-8111-111111111111";
 
@@ -223,5 +230,54 @@ describe("strict UUIDs", () => {
     expect(z.uuid().safeParse(uuid).success).toBe(true);
     expect(z.uuid().safeParse("00000000-0000-0000-0000-000000000000").success).toBe(true);
     expect(z.uuid().safeParse("11111111-1111-1111-1111-111111111111").success).toBe(false);
+  });
+});
+
+describe("safeParseStoredUuids", () => {
+  const legacyA = "11111111-1111-1111-1111-111111111111";
+  const legacyB = "22222222-2222-2222-2222-222222222222";
+  const schema = z.object({
+    id: z.uuid(),
+    parentId: z.uuid().nullable().optional(),
+    ids: z.array(z.uuid()),
+    note: z.string().default("none"),
+  }).strict();
+
+  it("accepts the 8-4-4-4-12 IDs zod 3's .uuid() accepted, returns them unchanged and keeps the rest of the parse", () => {
+    expect(schema.safeParse({ id: legacyA, ids: [legacyB, legacyA] }).success).toBe(false);
+    const result = safeParseStoredUuids(schema, { id: legacyA, parentId: legacyA, ids: [legacyB, legacyA] });
+    expect(result).toEqual({ success: true, data: { id: legacyA, parentId: legacyA, ids: [legacyB, legacyA], note: "none" } });
+  });
+
+  it("returns the strict result for any other failure", () => {
+    const notHex = safeParseStoredUuids(schema, { id: "not-a-uuid", ids: [] });
+    expect(notHex.success).toBe(false);
+    expect(notHex.error!.issues.map((issue) => issue.path)).toEqual([["id"]]);
+    const mixed = safeParseStoredUuids(schema, { id: legacyA, ids: [], extra: 1 });
+    expect(mixed.success).toBe(false);
+    expect(mixed.error!.issues.map((issue) => issue.code).sort()).toEqual(["invalid_format", "unrecognized_keys"]);
+  });
+
+  it("keeps refinements that compare IDs working on the original values", () => {
+    const distinct = z.object({ a: z.uuid(), b: z.uuid() }).refine((value) => value.a !== value.b, "must differ");
+    expect(safeParseStoredUuids(distinct, { a: legacyA, b: legacyB }).success).toBe(true);
+    expect(safeParseStoredUuids(distinct, { a: legacyA, b: legacyA }).success).toBe(false);
+  });
+
+  it("hydrates a stored suggest_tasks payload with a legacy assignee ID", () => {
+    const payload = {
+      version: 1,
+      tasks: [{ clientKey: "a", title: "Do it", assigneeAgentId: legacyA }],
+    };
+    expect(suggestTasksPayloadSchema.safeParse(payload).success).toBe(false);
+    const result = safeParseStoredUuids(suggestTasksPayloadSchema, payload);
+    expect(result.success).toBe(true);
+    expect(result.data!.tasks[0]!.assigneeAgentId).toBe(legacyA);
+  });
+
+  it("does not modify the input", () => {
+    const input = { id: legacyA, ids: [legacyB] };
+    safeParseStoredUuids(schema, input);
+    expect(input).toEqual({ id: legacyA, ids: [legacyB] });
   });
 });

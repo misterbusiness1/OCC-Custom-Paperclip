@@ -1476,6 +1476,135 @@
      }
     ]
    }
+  },
+  "route POST /api/companies/:companyId/issues title is an array (validate createIssueSchema)": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "array",
+      "path": [
+       "title"
+      ],
+      "message": "Expected string, received array"
+     }
+    ]
+   }
+  },
+  "validate updateIssueSchema wrong-typed title": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "string",
+      "received": "array",
+      "path": [
+       "title"
+      ],
+      "message": "Expected string, received array"
+     }
+    ]
+   }
+  },
+  "validate createChildIssueSchema acceptanceCriteria is a long string": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "array",
+      "received": "string",
+      "path": [
+       "acceptanceCriteria"
+      ],
+      "message": "Expected array, received string"
+     }
+    ]
+   }
+  },
+  "validate updateRoutineTriggerSchema replayWindowSec float": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "integer",
+      "received": "float",
+      "message": "Expected integer, received float",
+      "path": [
+       "replayWindowSec"
+      ]
+     },
+     {
+      "code": "too_small",
+      "minimum": 30,
+      "type": "number",
+      "inclusive": true,
+      "exact": false,
+      "message": "Number must be greater than or equal to 30",
+      "path": [
+       "replayWindowSec"
+      ]
+     }
+    ]
+   }
+  },
+  "validate createSecretBindingSchema versionSelector float": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "invalid_type",
+      "expected": "integer",
+      "received": "float",
+      "message": "Expected integer, received float",
+      "path": [
+       "versionSelector"
+      ]
+     }
+    ]
+   }
+  },
+  "validate requestItemVerdictsPayloadSchema short verdicts with an invalid element": {
+   "status": 400,
+   "body": {
+    "error": "Validation error",
+    "details": [
+     {
+      "code": "too_small",
+      "minimum": 2,
+      "type": "array",
+      "inclusive": true,
+      "exact": false,
+      "message": "Array must contain at least 2 element(s)",
+      "path": [
+       "verdicts"
+      ]
+     },
+     {
+      "received": "nope",
+      "code": "invalid_enum_value",
+      "options": [
+       "approve",
+       "reject",
+       "defer"
+      ],
+      "path": [
+       "verdicts",
+       0
+      ],
+      "message": "Invalid enum value. Expected 'approve' | 'reject' | 'defer', received 'nope'"
+     }
+    ]
+   }
   }
  }
 }

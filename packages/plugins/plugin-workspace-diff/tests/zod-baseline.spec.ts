@@ -31,7 +31,7 @@ describe("zod schema behaviour baseline (workspace-diff contracts)", () => {
   const current = collectSchemaBaseline(z, roots, { includeRequired: false });
   const golden = loadOrUpdateGolden<BaselineGolden>(SCHEMA_GOLDEN, current, {
     zodVersion,
-    note: "Behaviour of the workspace-diff plugin contracts captured before the zod 4 migration (absent field entry = required). Do not regenerate on zod 4.",
+    note: "Behaviour of the workspace-diff plugin contracts captured before the zod 4 migration (absent field entry = required). Re-record an intended change with PAPERCLIP_UPDATE_ZOD_GOLDENS=1.",
   }).data;
 
   it("keeps every field's omitted-key behaviour, object policy and root results", () => {

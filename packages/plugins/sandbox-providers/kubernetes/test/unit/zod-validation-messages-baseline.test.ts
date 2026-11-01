@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 // This standalone package cannot depend on workspace packages, so the
 // dependency-free golden plumbing is imported from the monorepo source by path.
-import { loadOrUpdateGolden, readZodVersion } from "../../../../../shared/src/testing/zod-baseline-golden.js";
+import { isZod3Capture, loadOrUpdateGolden, readZodVersion } from "../../../../../shared/src/testing/zod-baseline-golden.js";
 import plugin from "../../src/plugin.js";
 import { kubernetesProviderConfigSchema } from "../../src/types.js";
 import { zod3ParseParams } from "../../src/zod3-compat.js";
@@ -12,9 +12,13 @@ import { zod3ParseParams } from "../../src/zod3-compat.js";
 /**
  * zod 3 -> zod 4 baseline for what operators see when a Kubernetes provider
  * config is validated: the parse result (normalized config) or the issue
- * messages and paths, for a fixed set of probe configs. Recorded on zod 3.25.76
- * with the pre-migration source; never re-record it on zod 4. Intentional
- * differences are listed in KNOWN_DIFFERENCES with a reason.
+ * messages and paths, for a fixed set of probe configs. First recorded on zod
+ * 3.25.76 with the pre-migration source; while the golden is that capture,
+ * the intentional zod 4 differences are listed in KNOWN_DIFFERENCES with a
+ * reason. Record an intended config-schema change with
+ * `PAPERCLIP_UPDATE_ZOD_GOLDENS=1 pnpm test` in this package (in-repo only:
+ * the golden plumbing is imported from packages/shared by path); the
+ * comparison is exact from then on.
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -111,12 +115,14 @@ function runProbe(input: unknown): ProbeResult {
 
 describe("kubernetes provider config validation messages (zod 3 baseline)", () => {
   const current = Object.fromEntries(Object.entries(PROBES).map(([name, input]) => [name, runProbe(input)]));
-  const golden = loadOrUpdateGolden(GOLDEN, current, {
+  const goldenFile = loadOrUpdateGolden(GOLDEN, current, {
     zodVersion,
     note:
       "kubernetesProviderConfigSchema.safeParse results (data, or issue paths and messages) for fixed probe configs, " +
-      "captured before the zod 4 migration. Do not regenerate on zod 4.",
-  }).data;
+      "first captured on zod 3.25.76 before the zod 4 migration. Re-record an intended change with PAPERCLIP_UPDATE_ZOD_GOLDENS=1.",
+  });
+  const golden = goldenFile.data;
+  const knownDifferences: typeof KNOWN_DIFFERENCES = isZod3Capture(goldenFile.capturedWith) ? KNOWN_DIFFERENCES : {};
 
   it("covers the same probes as the golden", () => {
     expect(Object.keys(current).sort()).toEqual(Object.keys(golden).sort());
@@ -124,7 +130,7 @@ describe("kubernetes provider config validation messages (zod 3 baseline)", () =
 
   for (const name of Object.keys(PROBES)) {
     it(`keeps the zod 3 result for ${name}`, () => {
-      const known = KNOWN_DIFFERENCES[name];
+      const known = knownDifferences[name];
       if (known) {
         expect(current[name]).not.toEqual(golden[name]);
         expect(current[name]).toEqual(known.result);

@@ -6,7 +6,7 @@ import express, { type NextFunction, type Request, type RequestHandler, type Res
 import request from "supertest";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { z } from "zod";
-import { ZOD_BASELINE_UPDATE_ENV, readZodVersion } from "@paperclipai/shared/testing/zod-baseline-golden";
+import { ZOD_GOLDEN_RERECORD_ENV, readZodVersion, shouldWriteGolden } from "@paperclipai/shared/testing/zod-baseline-golden";
 
 /**
  * Validation-error response goldens captured on zod 3.25.76 before the zod 4
@@ -33,8 +33,16 @@ import { ZOD_BASELINE_UPDATE_ENV, readZodVersion } from "@paperclipai/shared/tes
  * The harness entries for those sites repeat the site's own parse and
  * serialization (`zod3IssueParams` + `toZod3Issues` / `flattenZod3Issues`
  * since the zod 4 migration); keep them in step with the site when it
- * changes. On zod 4 the full bodies still equal the zod 3 goldens; the
- * contract view is what the test requires.
+ * changes. On zod 4 every full body still serializes to the same JSON as the
+ * zod 3 golden, and the test requires that as well as the contract view.
+ *
+ * To add a case or record an intended change to an error body after the
+ * migration:
+ *
+ *   PAPERCLIP_UPDATE_ZOD_GOLDENS=1 pnpm exec vitest run --project @paperclipai/server src/__tests__/zod-validation-error-goldens.test.ts
+ *
+ * (see packages/shared/src/testing/zod-baseline-golden.ts) and review the
+ * golden diff.
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -549,10 +557,35 @@ beforeAll(async () => {
     validator.parseOrThrow({ ...baseManifest, version: "", entrypoints: {} }),
   );
 
-  if (process.env[ZOD_BASELINE_UPDATE_ENV] === "1") {
-    if (!zodVersion.startsWith("3.")) {
-      throw new Error(`${ZOD_BASELINE_UPDATE_ENV}=1 refused: validation-error goldens are zod 3 baselines (running zod ${zodVersion}).`);
-    }
+  // Wrong-typed input to length-constrained fields, size issues next to
+  // element issues, and .int() followed by bounds (zod 4 parses these
+  // differently; toZod3Issues restores zod 3's issue set and order).
+  await record(
+    "route POST /api/companies/:companyId/issues title is an array (validate createIssueSchema)",
+    await request(issuesApp).post(`/api/companies/${companyId}/issues`).send({ title: [] }),
+  );
+  await recordValidate("validate updateIssueSchema wrong-typed title", shared.updateIssueSchema, { title: [] });
+  await recordValidate("validate createChildIssueSchema acceptanceCriteria is a long string", shared.createChildIssueSchema, {
+    title: "Child",
+    acceptanceCriteria: "x".repeat(600),
+  });
+  await recordValidate("validate updateRoutineTriggerSchema replayWindowSec float", shared.updateRoutineTriggerSchema, {
+    replayWindowSec: 1.5,
+  });
+  await recordValidate("validate createSecretBindingSchema versionSelector float", shared.createSecretBindingSchema, {
+    targetType: "agent",
+    targetId: "agent-1",
+    configPath: "env.API_KEY",
+    secretId: issueId,
+    versionSelector: 1.5,
+  });
+  await recordValidate(
+    "validate requestItemVerdictsPayloadSchema short verdicts with an invalid element",
+    shared.requestItemVerdictsPayloadSchema,
+    { version: 1, prompt: "Pick", items: [{ id: "a", label: "A" }], verdicts: ["nope"] },
+  );
+
+  if (shouldWriteGolden("contract", zodVersion, "the validation-error golden")) {
     fs.mkdirSync(path.dirname(GOLDEN_FILE), { recursive: true });
     fs.writeFileSync(
       GOLDEN_FILE,
@@ -560,8 +593,8 @@ beforeAll(async () => {
         {
           capturedWith: `zod@${zodVersion}`,
           note:
-            "Full 4xx bodies captured before the zod 4 migration. The contract compared after the migration is the " +
-            "status, the envelope, and code/path/message/expected/received of every zod issue (see contractView).",
+            "Full 4xx bodies (first captured on zod 3.25.76 before the zod 4 migration). Every body must serialize " +
+            "to the same JSON; re-record an intended change with PAPERCLIP_UPDATE_ZOD_GOLDENS=1.",
           data: results,
         },
         null,
@@ -599,4 +632,12 @@ describe("validation error goldens (zod 3 baseline)", () => {
       if (zodVersion.startsWith("3.")) expect(current?.body).toEqual(expected.body);
     });
   }
+
+  it("serializes every captured body to the same JSON as the golden", () => {
+    // Stronger than the contract view: every issue field and the key order.
+    const differing = Object.keys(golden.data).filter(
+      (name) => JSON.stringify(results[name]?.body) !== JSON.stringify(golden.data[name]!.body),
+    );
+    expect(differing, `re-record an intended change with ${ZOD_GOLDEN_RERECORD_ENV}=1`).toEqual([]);
+  });
 });

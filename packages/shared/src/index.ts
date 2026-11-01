@@ -2238,11 +2238,13 @@ export {
 export * from "./validators/skill-policy.js";
 export {
   datetimeString,
+  safeParseStoredUuids,
   urlString,
   withoutFieldDefaults,
   withoutOptionalDefault,
   ZOD3_DATETIME_OFFSET_REGEX,
   ZOD3_DATETIME_REGEX,
+  ZOD3_UUID_REGEX,
 } from "./validators/zod-compat.js";
 export {
   flattenZod3Issues,

@@ -69,6 +69,7 @@ import {
   type PipelineHealthFailedAutomationInput,
   type PipelineHealthStageInput,
   toZod3Issues,
+  withoutOptionalDefault,
   zod3IssueParams,
 } from "@paperclipai/shared";
 import { documentAnnotationService } from "../services/document-annotations.js";
@@ -91,6 +92,12 @@ type PipelineRouteDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 const stageKindSchema = z.enum(["open", "working", "review", "done", "cancelled"]);
 const jsonObjectSchema = z.record(z.string(), z.unknown());
 export const stageConfigSchema = z.record(z.string(), z.unknown()).default({});
+// zod 3 never applied stageConfigSchema's default here: it sits under
+// `.optional()`. zod 4 would, so a PATCH that omits `config` (for example only
+// `{ name }`) would arrive with `config: {}` and replace the stored stage
+// config (onEnter/automation, review targets, variables). Strip it so an
+// omitted `config` stays omitted, as before.
+const optionalStageConfigSchema = withoutOptionalDefault(stageConfigSchema.optional());
 const casePatchSchema = z.object({
   title: z.string().trim().min(1).max(500).optional(),
   summary: z.string().max(8_000).nullable().optional(),
@@ -123,7 +130,7 @@ const createPipelineSchema = z.object({
     name: z.string().trim().min(1).max(200),
     kind: stageKindSchema,
     position: z.number().int().optional(),
-    config: stageConfigSchema.optional(),
+    config: optionalStageConfigSchema,
   })).optional(),
 });
 const updatePipelineSchema = z.object({
@@ -137,14 +144,14 @@ const createStageSchema = z.object({
   name: z.string().trim().min(1).max(200),
   kind: stageKindSchema,
   position: z.number().int(),
-  config: stageConfigSchema.optional(),
+  config: optionalStageConfigSchema,
 });
 const updateStageSchema = z.object({
   key: z.string().trim().min(1).max(120).optional(),
   name: z.string().trim().min(1).max(200).optional(),
   kind: stageKindSchema.optional(),
   position: z.number().int().optional(),
-  config: stageConfigSchema.optional(),
+  config: optionalStageConfigSchema,
 });
 const updateStageAutomationEnvSchema = z.object({
   env: envConfigSchema.nullable(),

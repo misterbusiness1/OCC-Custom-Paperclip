@@ -216,6 +216,8 @@ describe("zod format behaviour baseline", () => {
   const current = runSubjects();
   const golden = loadOrUpdateGolden(GOLDEN_FILE, current, {
     zodVersion,
+    // zod 3's own output for fixed probes: never re-recorded on zod 4.
+    kind: "zod3-reference",
     note:
       "Accept/reject and output of each string/number format probe, captured before the zod 4 migration. " +
       "Do not regenerate on zod 4; see packages/shared/src/testing/zod-baseline-golden.ts.",

@@ -2,7 +2,8 @@ import { z } from "zod";
 import { ZOD3_DATETIME_OFFSET_REGEX, ZOD3_DATETIME_REGEX } from "../validators/zod-compat.js";
 
 /**
- * Compares an MCP `tools/list` result with its zod 3 golden.
+ * Compares an MCP `tools/list` result with its zod 3 golden. Test-only module
+ * (see zod-schema-baseline.ts).
  *
  * The goldens were produced by @modelcontextprotocol/sdk with zod 3, which
  * converts tool input schemas with zod-to-json-schema. With zod 4 the SDK uses

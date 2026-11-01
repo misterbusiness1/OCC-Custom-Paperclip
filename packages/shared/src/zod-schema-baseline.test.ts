@@ -6,8 +6,10 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   collectSchemaBaseline,
+  defaultedSchemaExports,
   diffFieldBehaviour,
   findDefaultUnderOptional,
+  findOptionalOverDefaults,
   findUnexportedSchemaDefaults,
   missingKeyBehaviour,
   zodExports,
@@ -25,6 +27,16 @@ import { loadOrUpdateGolden, readZodVersion, type BaselineGolden } from "./testi
  * values that sit inside `.optional()`/`.partial()`/`.nullable()` wrappers, so
  * PATCH schemas would start overwriting stored values the caller never sent;
  * this test fails if any field's omitted-key behaviour changes.
+ *
+ * Adding or changing an exported schema changes the golden. Record the
+ * intended change with
+ *
+ *   PAPERCLIP_UPDATE_ZOD_GOLDENS=1 pnpm exec vitest run --project @paperclipai/shared src/zod-schema-baseline.test.ts
+ *
+ * and review the diff: a new `{ "filled": ... }` entry for a field of an
+ * update/patch schema means an omitted key now gets a default. The rule-based
+ * tests below (no default under .optional() fills an omitted key, update
+ * schemas parse {} to {}) do not depend on the golden.
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -49,11 +61,14 @@ function listZodSourceModules(dir: string): string[] {
 
 const sourceModules = listZodSourceModules(here);
 
+const defaultedExportNames = new Set<string>();
+
 async function collectRoots() {
   const roots: Record<string, unknown> = {};
   for (const file of sourceModules) {
     const moduleExports = (await import(file)) as Record<string, unknown>;
     Object.assign(roots, zodExports(moduleExports, `${path.relative(here, file).split(path.sep).join("/")}#`));
+    for (const name of defaultedSchemaExports(moduleExports)) defaultedExportNames.add(name);
   }
   return roots;
 }
@@ -66,7 +81,7 @@ describe("zod schema behaviour baseline (@paperclipai/shared)", async () => {
     note:
       "Behaviour of every exported @paperclipai/shared zod schema captured before the zod 4 migration. " +
       "fields: omitted-key behaviour per object field (absent entry = required). " +
-      "Do not regenerate on zod 4; see packages/shared/src/testing/zod-baseline-golden.ts.",
+      "First captured on zod 3.25.76 before the zod 4 migration. Re-record an intended change with PAPERCLIP_UPDATE_ZOD_GOLDENS=1; see packages/shared/src/testing/zod-baseline-golden.ts.",
   }).data;
 
   it("discovers the exported schemas", () => {
@@ -117,6 +132,16 @@ describe("zod schema behaviour baseline (@paperclipai/shared)", async () => {
     );
     expect(offenders).toEqual([]);
   });
+
+  it("never wraps a defaulted schema in .optional()/.nullish() without withoutOptionalDefault", () => {
+    expect(defaultedExportNames.has("agentAdapterTypeSchema")).toBe(true);
+    const offenders = sourceModules.flatMap((file) =>
+      findOptionalOverDefaults(fs.readFileSync(file, "utf8"), [...defaultedExportNames]).map(
+        (line) => `${path.relative(here, file)}:${line}`,
+      ),
+    );
+    expect(offenders).toEqual([]);
+  });
 });
 
 describe("zod schema baseline analyzer self-check", () => {
@@ -145,5 +170,49 @@ describe("zod schema baseline analyzer self-check", () => {
     };
     if (typeof base.prefault !== "function") return;
     expect(findDefaultUnderOptional(base.prefault({}).optional())).toEqual({ value: {} });
+  });
+
+  it("flags a defaulted const wrapped in .optional() elsewhere, unless the default is stripped", () => {
+    const source = [
+      "export const stageConfigSchema = z.record(z.string(), z.unknown()).default({});",
+      "const kindSchema = z",
+      "  .enum([\"a\", \"b\"])",
+      "  .default(\"a\")",
+      "  .describe(\"kind\");",
+      "const plainSchema = z.string().default(\"x\").transform((value) => value.trim());",
+      "const updateSchema = z.object({",
+      "  config: stageConfigSchema.optional(),",
+      "  kind: kindSchema.nullish(),",
+      "  wrapped: z.optional(stageConfigSchema),",
+      "  nullableOptional: stageConfigSchema.nullable().optional(),",
+      "  plain: plainSchema.optional(),",
+      "  imported: agentAdapterTypeSchema.optional(),",
+      "  guarded: withoutOptionalDefault(stageConfigSchema.optional()),",
+      "});",
+      "// config: stageConfigSchema.optional() in a comment is ignored",
+      "export const provisionSchema = withoutFieldDefaults(z.object({",
+      "  config: stageConfigSchema.optional(),",
+      "}));",
+    ].join("\n");
+    expect(findOptionalOverDefaults(source, ["agentAdapterTypeSchema"])).toEqual([
+      "8: config: stageConfigSchema.optional(),",
+      "9: kind: kindSchema.nullish(),",
+      "10: wrapped: z.optional(stageConfigSchema),",
+      "11: nullableOptional: stageConfigSchema.nullable().optional(),",
+      "13: imported: agentAdapterTypeSchema.optional(),",
+    ]);
+  });
+
+  it("lists exported schemas whose outermost wrapper is a default", () => {
+    expect(
+      defaultedSchemaExports({
+        defaulted: z.string().default("x"),
+        nullableDefaulted: z.string().default("x").nullable(),
+        prefaulted: z.object({ a: z.string().default("x") }).prefault({}),
+        optionalDefaulted: z.string().default("x").optional(),
+        plain: z.string(),
+        notSchema: 1,
+      }),
+    ).toEqual(["defaulted", "nullableDefaulted", "prefaulted"]);
   });
 });

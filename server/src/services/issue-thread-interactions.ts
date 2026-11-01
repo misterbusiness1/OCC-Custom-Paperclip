@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import type { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -44,6 +45,7 @@ import {
   requestItemVerdictsPayloadSchema,
   requestItemVerdictsResultSchema,
   suggestTasksPayloadSchema,
+  safeParseStoredUuids,
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
   zod3IssueParams,
@@ -149,6 +151,16 @@ function isEquivalentCreateRequest(
   );
 }
 
+// Stored payloads/results may hold IDs that zod 3's lax `.uuid()` accepted
+// when they were written; re-validating them with strict z.uuid() would make
+// the whole interaction list (and accept/reject) fail. zod3IssueParams keeps
+// the 400 body of a genuinely invalid row in zod 3's wording, as before.
+function parseStoredPayload<T extends z.ZodType>(schema: T, value: unknown): z.output<T> {
+  const result = safeParseStoredUuids(schema, value, zod3IssueParams);
+  if (!result.success) throw result.error;
+  return result.data;
+}
+
 function hydrateInteraction(
   row: IssueThreadInteractionRow,
 ): IssueThreadInteraction {
@@ -164,36 +176,36 @@ function hydrateInteraction(
       return {
         ...base,
         kind: "suggest_tasks",
-        payload: suggestTasksPayloadSchema.parse(row.payload),
-        result: row.result ? suggestTasksResultSchema.parse(row.result) : null,
+        payload: parseStoredPayload(suggestTasksPayloadSchema, row.payload),
+        result: row.result ? parseStoredPayload(suggestTasksResultSchema, row.result) : null,
       } satisfies SuggestTasksInteraction;
     case "ask_user_questions":
       return {
         ...base,
         kind: "ask_user_questions",
-        payload: askUserQuestionsPayloadSchema.parse(row.payload),
-        result: row.result ? askUserQuestionsResultSchema.parse(row.result) : null,
+        payload: parseStoredPayload(askUserQuestionsPayloadSchema, row.payload),
+        result: row.result ? parseStoredPayload(askUserQuestionsResultSchema, row.result) : null,
       } satisfies AskUserQuestionsInteraction;
     case "request_confirmation":
       return {
         ...base,
         kind: "request_confirmation",
-        payload: requestConfirmationPayloadSchema.parse(row.payload),
-        result: row.result ? requestConfirmationResultSchema.parse(row.result) : null,
+        payload: parseStoredPayload(requestConfirmationPayloadSchema, row.payload),
+        result: row.result ? parseStoredPayload(requestConfirmationResultSchema, row.result) : null,
       } satisfies RequestConfirmationInteraction;
     case "request_checkbox_confirmation":
       return {
         ...base,
         kind: "request_checkbox_confirmation",
-        payload: requestCheckboxConfirmationPayloadSchema.parse(row.payload),
-        result: row.result ? requestCheckboxConfirmationResultSchema.parse(row.result) : null,
+        payload: parseStoredPayload(requestCheckboxConfirmationPayloadSchema, row.payload),
+        result: row.result ? parseStoredPayload(requestCheckboxConfirmationResultSchema, row.result) : null,
       } satisfies RequestCheckboxConfirmationInteraction;
     case "request_item_verdicts":
       return {
         ...base,
         kind: "request_item_verdicts",
-        payload: requestItemVerdictsPayloadSchema.parse(row.payload),
-        result: row.result ? requestItemVerdictsResultSchema.parse(row.result) : null,
+        payload: parseStoredPayload(requestItemVerdictsPayloadSchema, row.payload),
+        result: row.result ? parseStoredPayload(requestItemVerdictsResultSchema, row.result) : null,
       } satisfies RequestItemVerdictsInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);

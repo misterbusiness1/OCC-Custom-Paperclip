@@ -13,3 +13,6 @@
   `z.record()`, defaults under `.optional()`/`.partial()`, `.prefault()`,
   required bare `z.unknown()` keys, strict `z.uuid()`, `.datetime()` seconds).
 - `PLUGIN_API_VERSION` is unchanged.
+- Versioning: the exported `z` changes its major version, so the next
+  published release of this package must be a semver-major bump (2.0.0; the
+  manifest still says 1.0.0 because this fork does not publish it).

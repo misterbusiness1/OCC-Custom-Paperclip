@@ -32,7 +32,7 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
     email: user.email ?? null,
     name: user.name ?? null,
     image: user.image ?? null,
-  });
+  }, zod3IssueParams);
 }
 
 export function authRoutes(db: Db) {
@@ -50,7 +50,7 @@ export function authRoutes(db: Db) {
         userId: req.actor.userId,
       },
       user,
-    }));
+    }, zod3IssueParams));
   });
 
   router.get("/profile", async (req, res) => {
@@ -94,7 +94,7 @@ export function authRoutes(db: Db) {
       email: updated.email ?? null,
       name: updated.name ?? null,
       image: updated.image ?? null,
-    }));
+    }, zod3IssueParams));
   });
 
   return router;

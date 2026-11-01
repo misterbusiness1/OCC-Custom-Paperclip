@@ -132,3 +132,94 @@ export function urlString(options: { trim?: boolean } = {}) {
   const base = options.trim ? z.string().trim() : z.string();
   return base.check(z.stringFormat("url", isParseableUrl, { error: "Invalid url" }));
 }
+
+// zod 3.25.76's `.uuid()` pattern: any 8-4-4-4-12 hex string, whatever its
+// version and variant digits.
+export const ZOD3_UUID_REGEX = /^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/i;
+
+type IssuePath = readonly PropertyKey[];
+
+function readAt(value: unknown, path: IssuePath): unknown {
+  let current = value;
+  for (const segment of path) {
+    if (current === null || typeof current !== "object") return undefined;
+    current = (current as Record<PropertyKey, unknown>)[segment];
+  }
+  return current;
+}
+
+function writeAt(value: unknown, path: IssuePath, next: unknown): boolean {
+  if (path.length === 0) return false;
+  const parent = readAt(value, path.slice(0, -1));
+  if (parent === null || typeof parent !== "object") return false;
+  (parent as Record<PropertyKey, unknown>)[path[path.length - 1]!] = next;
+  return true;
+}
+
+function collectStrings(value: unknown, out: Set<string>, depth = 0) {
+  if (typeof value === "string") out.add(value);
+  else if (value && typeof value === "object" && depth < 64) {
+    for (const entry of Object.values(value as Record<string, unknown>)) collectStrings(entry, out, depth + 1);
+  }
+  return out;
+}
+
+function replaceStrings<T>(value: T, replacements: ReadonlyMap<string, string>, depth = 0): T {
+  if (typeof value === "string") return (replacements.get(value) ?? value) as T;
+  if (Array.isArray(value)) return value.map((entry) => replaceStrings(entry, replacements, depth + 1)) as T;
+  if (value && typeof value === "object" && depth < 64 && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, replaceStrings(entry, replacements, depth + 1)]),
+    ) as T;
+  }
+  return value;
+}
+
+/**
+ * `schema.safeParse(value, params)` for data that was stored while the
+ * schema still used zod 3's `.uuid()`, which accepted any 8-4-4-4-12 hex
+ * string (for example `11111111-1111-1111-1111-111111111111`). Request input
+ * is validated with strict RFC 9562 `z.uuid()`; rows written before the zod 4
+ * migration may still hold such IDs, and re-validating them strictly on read
+ * would turn a stored row into a 400/422 or silently drop it.
+ *
+ * When every issue of the strict parse is a UUID format failure on a value
+ * zod 3 accepted, each such value is swapped for a unique RFC placeholder,
+ * the value is parsed again, and the original strings are put back in the
+ * output. Any other failure returns the strict result unchanged. Use it only
+ * where stored rows are parsed, never for request input.
+ */
+export function safeParseStoredUuids<T extends z.ZodType>(
+  schema: T,
+  value: unknown,
+  params?: z.core.ParseContext<z.core.$ZodIssue>,
+): z.ZodSafeParseResult<z.output<T>> {
+  const strict = schema.safeParse(value, params) as z.ZodSafeParseResult<z.output<T>>;
+  if (strict.success) return strict;
+  const issues = strict.error.issues;
+  if (issues.length === 0 || !issues.every((issue) => issue.code === "invalid_format" && issue.format === "uuid")) {
+    return strict;
+  }
+  const taken = collectStrings(value, new Set());
+  const placeholders = new Map<string, string>();
+  let counter = 0;
+  const patched = structuredClone(value);
+  for (const issue of issues) {
+    const original = readAt(value, issue.path);
+    if (typeof original !== "string" || !ZOD3_UUID_REGEX.test(original)) return strict;
+    let placeholder = placeholders.get(original);
+    if (!placeholder) {
+      do {
+        counter += 1;
+        placeholder = `ffffffff-ffff-4fff-bfff-${counter.toString(16).padStart(12, "0")}`;
+      } while (taken.has(placeholder));
+      placeholders.set(original, placeholder);
+      taken.add(placeholder);
+    }
+    if (!writeAt(patched, issue.path, placeholder)) return strict;
+  }
+  const lenient = schema.safeParse(patched, params) as z.ZodSafeParseResult<z.output<T>>;
+  if (!lenient.success) return strict;
+  const originals = new Map([...placeholders].map(([original, placeholder]) => [placeholder, original]));
+  return { success: true, data: replaceStrings(lenient.data, originals) } as z.ZodSafeParseResult<z.output<T>>;
+}

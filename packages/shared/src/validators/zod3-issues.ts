@@ -30,20 +30,49 @@ import { z } from "zod";
  *   recorded form when present, otherwise from the zod 4 fields alone (issues
  *   with a custom message, or from a parse without `zod3IssueParams`; those
  *   keep their message and cannot report `received`).
+ * - It also restores zod 3's issue set and order where zod 4 parses
+ *   differently:
+ *   - zod 4 runs length/size checks on any value with a `length`/`size`, even
+ *     after the type check failed (`[]` sent to `z.string().min(1)` also got
+ *     "Array must contain at least 1 element(s)"); zod 3 stopped at the type
+ *     error, so those issues are dropped (`inZod3Order`).
+ *   - zod 4 runs an array's size checks after its elements; zod 3 reported
+ *     the size issue first, so it is moved ahead of the element issues.
+ *   - zod 4 aborts a number after a failed `.int()`; zod 3 still ran the
+ *     later bound checks (`.int().min(30)` reported both for 1.5). The error
+ *     map runs those checks and records their issues
+ *     (`laterNumberCheckIssues`, `ZOD3_FOLLOWING_ISSUES_KEY`).
+ *   - zod 3 returned the issues of the first union option that failed without
+ *     aborting (right type, failing checks or refinements, or a float failing
+ *     `.int()`); zod 4 reports `invalid_union` when two or more options did,
+ *     and treats `.int()` as aborting. `convertIssue` picks that option.
  *
- * Known differences from zod 3 (zod 4 parsing behaviour, not conversion):
- * - When two or more union options fail only on checks (e.g. both are
- *   strings with failing refinements), zod 4 reports `invalid_union` where
- *   zod 3 reported the first such option's issues.
+ * Known differences from zod 3 (zod 4 parsing behaviour that the conversion
+ * cannot undo):
  * - An array, set or map over its `.max()` fails before its elements are
  *   parsed (zod 4.6.6's fix for GHSA-mrhx-c7xc-m3w5), so element issues are
  *   not reported alongside the size issue.
  * - `z.enum()` values that look like array indices ("0", "1") are listed
  *   first in `options` and in the message: zod 4 stores enum values as object
  *   keys.
+ * - Custom issues added by `superRefine`/`ctx.addIssue` with `path` written
+ *   before `message` list `message` before `path` (key order only): zod 4's
+ *   final issue no longer shows whether it came from `.refine()` or from the
+ *   caller's own object.
+ * - When an earlier union option fails only `.int()` (dirty in zod 3) and a
+ *   later option has the right type and fails only checks, zod 4 resolves to
+ *   the later option without reporting the union, so zod 3's choice of the
+ *   earlier option cannot be restored.
+ * - zod 4 does not run size checks on a `z.set()` whose elements failed and
+ *   reports set element issues without an index. JSON request bodies cannot
+ *   carry sets.
+ * - A custom message on `.int()` itself skips the error map, so the later
+ *   bound checks of that number are not reported (zod 3 reported them).
  */
 
 export const ZOD3_ISSUE_KEY = "zod3" as const;
+/** Raw-issue key for zod 3 issues that zod 4 skipped after this one (see `laterNumberCheckIssues`). */
+export const ZOD3_FOLLOWING_ISSUES_KEY = "zod3Following" as const;
 
 export type Zod3IssuePath = (string | number)[];
 
@@ -327,6 +356,46 @@ function recordTemplate(rawIssue: AnyIssue, template: Zod3Template) {
   (rawIssue as Record<string, unknown>)[ZOD3_ISSUE_KEY] = template;
 }
 
+type CheckInternals = { def?: { check?: string; error?: (issue: unknown) => unknown }; check?: (payload: unknown) => unknown };
+
+function unwrapMessage(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  const message = (value as { message?: unknown } | null | undefined)?.message;
+  return typeof message === "string" ? message : undefined;
+}
+
+// zod 4 number checks that zod 3 still evaluated after a failed `.int()`.
+const NUMBER_BOUND_CHECKS = new Set(["greater_than", "less_than", "multiple_of"]);
+
+/**
+ * zod 3's `.int()` was one check among the number's checks: a float failed it
+ * and the later checks (`.min()`, `.max()`, `.multipleOf()`, ...) still ran, so
+ * `z.number().int().min(30)` reported both issues for 1.5. zod 4 aborts after
+ * the integer check. For an integer failure this runs the owning schema's
+ * later bound checks on the input and returns their zod 3 issues (template
+ * plus message, honouring a check's own custom message).
+ */
+function laterNumberCheckIssues(issue: AnyIssue, input: InputValue): Array<{ template: Zod3Template; message: string }> {
+  if (issue.code !== "invalid_type" || issue.expected !== "int" || typeof input !== "number") return [];
+  const checks = schemaDef(issue.schema)?.checks;
+  if (!Array.isArray(checks)) return [];
+  const start = checks.indexOf(issue.inst);
+  if (start < 0) return [];
+  const out: Array<{ template: Zod3Template; message: string }> = [];
+  for (const check of checks.slice(start + 1)) {
+    const internals = (check as { _zod?: CheckInternals } | null)?._zod;
+    if (!internals || typeof internals.check !== "function" || !NUMBER_BOUND_CHECKS.has(String(internals.def?.check))) continue;
+    const payload = { value: input, issues: [] as AnyIssue[] };
+    internals.check(payload);
+    for (const raw of payload.issues) {
+      const template = zod3Template(raw, input, check);
+      if (!template) continue;
+      out.push({ template, message: unwrapMessage(internals.def?.error?.(raw)) ?? zod3DefaultMessage(template) });
+    }
+  }
+  return out;
+}
+
 /**
  * Per-parse zod 4 error map that produces zod 3's English messages and records
  * each issue's zod 3 form (see the module comment). Pass it as
@@ -338,6 +407,8 @@ export const zod3ErrorMap: z.core.$ZodErrorMap = (rawIssue) => {
   const template = zod3Template(issue, input, issue.inst);
   if (!template) return undefined;
   recordTemplate(issue, template);
+  const following = laterNumberCheckIssues(issue, input);
+  if (following.length > 0) (issue as Record<string, unknown>)[ZOD3_FOLLOWING_ISSUES_KEY] = following;
   return zod3DefaultMessage(template);
 };
 
@@ -381,7 +452,7 @@ function convertIssue(issue: AnyIssue, parentPath: readonly PropertyKey[]): Zod3
   if (issue.code === "invalid_key" || issue.code === "invalid_element") {
     // zod 3 reported record/map key and element failures as the inner issues.
     const nested = Array.isArray(issue.issues) ? (issue.issues as AnyIssue[]) : [];
-    return nested.flatMap((inner) => convertIssue(inner, path));
+    return inZod3Order(nested).flatMap((inner) => convertIssue(inner, path));
   }
 
   const recorded = issue[ZOD3_ISSUE_KEY];
@@ -392,20 +463,107 @@ function convertIssue(issue: AnyIssue, parentPath: readonly PropertyKey[]): Zod3
     // custom (refine/superRefine/addIssue) and unknown codes: zod 3 and zod 4
     // share the shape; drop zod 4-only bookkeeping.
     // zod 3 refinements built `{ code, message, ...params }` and appended `path`.
-    const { [ZOD3_ISSUE_KEY]: _recorded, input: _input, path: _path, message: _message, code, ...rest } = issue;
+    const {
+      [ZOD3_ISSUE_KEY]: _recorded,
+      [ZOD3_FOLLOWING_ISSUES_KEY]: _following,
+      input: _input,
+      path: _path,
+      message: _message,
+      code,
+      ...rest
+    } = issue;
     return [{ code: String(code ?? "custom"), message, ...rest, path } as Zod3Issue];
   }
 
   const converted = fillTemplate(template, path, message);
   if (converted.code === "invalid_union") {
     const branches = Array.isArray(issue.errors) ? (issue.errors as AnyIssue[][]) : [];
-    const unionErrors: Zod3SerializedError[] = branches.map((branch) => ({
-      issues: branch.flatMap((inner) => convertIssue(inner, path)),
-      name: "ZodError",
-    }));
+    const branchIssues = branches.map((branch) => inZod3Order(branch).flatMap((inner) => convertIssue(inner, path)));
+    // zod 3 returned the issues of the first option that failed without
+    // aborting ("dirty": it had the right type and failed only checks or
+    // refinements); zod 4 treats some of those failures as aborting (`.int()`)
+    // or reports invalid_union when two or more options are dirty.
+    const dirty = branchIssues.find((issues) => issues.length > 0 && !issues.some(zod3IssueAborts));
+    if (dirty) return dirty;
+    const unionErrors: Zod3SerializedError[] = branchIssues
+      .filter((issues) => issues.length > 0)
+      .map((issues) => ({ issues, name: "ZodError" }));
     return [{ code: "invalid_union", unionErrors, path, message }];
   }
-  return [converted];
+  const following = Array.isArray(issue[ZOD3_FOLLOWING_ISSUES_KEY])
+    ? (issue[ZOD3_FOLLOWING_ISSUES_KEY] as Array<{ template: Zod3Template; message: string }>)
+    : [];
+  return [converted, ...following.map((entry) => fillTemplate(entry.template, path, entry.message))];
+}
+
+// zod 3 issue codes whose schema returned INVALID (aborted) instead of a
+// "dirty" result; an aborted field also aborts its object, array or union.
+const ZOD3_ABORTING_CODES = new Set([
+  "invalid_type",
+  "invalid_literal",
+  "invalid_enum_value",
+  "invalid_union",
+  "invalid_union_discriminator",
+  "invalid_date",
+  "invalid_arguments",
+  "invalid_return_type",
+  "invalid_intersection_types",
+]);
+
+function zod3IssueAborts(issue: Zod3Issue) {
+  // zod 3's `.int()` was a check: a float failed it without aborting.
+  if (issue.code === "invalid_type") return !(issue.expected === "integer" && issue.received === "float");
+  return ZOD3_ABORTING_CODES.has(issue.code);
+}
+
+// zod 4 `origin` of a length (`.min()`/`.max()`/`.length()`/`.nonempty()`) or
+// size check; number and date bounds use other origins.
+const LENGTH_OR_SIZE_ORIGINS = new Set(["string", "array", "set", "map", "file", "unknown"]);
+
+function isLengthOrSizeIssue(issue: AnyIssue) {
+  return (issue.code === "too_small" || issue.code === "too_big") && LENGTH_OR_SIZE_ORIGINS.has(String(issue.origin ?? ""));
+}
+
+function samePath(a: readonly PropertyKey[] | undefined, b: readonly PropertyKey[] | undefined) {
+  const left = a ?? [];
+  const right = b ?? [];
+  return left.length === right.length && left.every((segment, index) => segment === right[index]);
+}
+
+function extendsPath(prefix: readonly PropertyKey[] | undefined, path: readonly PropertyKey[] | undefined) {
+  const head = prefix ?? [];
+  const full = path ?? [];
+  return full.length > head.length && head.every((segment, index) => segment === full[index]);
+}
+
+/**
+ * Puts one list of sibling zod 4 issues (a parse result or one union branch)
+ * into the set and order zod 3 reported:
+ * - zod 4 runs length/size checks (they carry a `when` guard) on any value
+ *   with a `length`/`size`, even after the type check failed, so `[]` sent to
+ *   `z.string().min(1)` also gets "Array must contain at least 1
+ *   element(s)". zod 3 stopped at the type error, so a length/size issue that
+ *   follows an `invalid_type` issue at the same path is dropped.
+ * - zod 4 runs an array's size checks after parsing its elements; zod 3 ran
+ *   them first. The size issue is moved ahead of the element issues directly
+ *   before it.
+ */
+function inZod3Order(issues: readonly AnyIssue[]): AnyIssue[] {
+  const kept = issues.filter(
+    (issue, index) =>
+      !isLengthOrSizeIssue(issue)
+      || !issues.slice(0, index).some((earlier) => earlier.code === "invalid_type" && samePath(earlier.path, issue.path)),
+  );
+  for (let index = 0; index < kept.length; index += 1) {
+    const issue = kept[index]!;
+    if (!isLengthOrSizeIssue(issue) || issue.origin !== "array") continue;
+    let target = index;
+    while (target > 0 && extendsPath(issue.path, kept[target - 1]!.path)) target -= 1;
+    if (target === index) continue;
+    kept.splice(index, 1);
+    kept.splice(target, 0, issue);
+  }
+  return kept;
 }
 
 /**
@@ -413,7 +571,7 @@ function convertIssue(issue: AnyIssue, parentPath: readonly PropertyKey[]): Zod3
  * API has always returned.
  */
 export function toZod3Issues(issues: readonly z.core.$ZodIssue[] | readonly unknown[]): Zod3Issue[] {
-  return (issues as readonly AnyIssue[]).flatMap((issue) => convertIssue(issue, []));
+  return inZod3Order(issues as readonly AnyIssue[]).flatMap((issue) => convertIssue(issue, []));
 }
 
 /** zod 3's `error.flatten()` result. */
