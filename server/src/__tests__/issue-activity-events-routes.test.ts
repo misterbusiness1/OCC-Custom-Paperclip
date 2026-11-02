@@ -136,11 +136,15 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(db: unknown = {}) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+function loadRouteModules() {
+  return Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
+}
+
+async function createApp(db: unknown = {}) {
+  const [{ issueRoutes }, { errorHandler }] = await loadRouteModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -197,7 +201,7 @@ function issueUpdateWithReceipt(issue: ReturnType<typeof makeIssue>, patch: Reco
 }
 
 describe("issue activity event routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
@@ -240,6 +244,8 @@ describe("issue activity event routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+    // Load the cold route graph during fixture setup; request deadlines stay unchanged.
+    await loadRouteModules();
   });
 
   it("returns a field-change receipt and omits a requested no-op field", async () => {

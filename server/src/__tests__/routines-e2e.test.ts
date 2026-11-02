@@ -138,7 +138,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     await tempDb?.cleanup();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
@@ -158,13 +158,19 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     registerRoutineServiceMock();
     vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
     vi.clearAllMocks();
+    // Import after database/mock setup; construct each actor-specific router in its test.
+    await loadRouteModules();
   });
 
-  async function createApp(actor: Record<string, unknown>) {
-    const [{ routineRoutes }, { errorHandler }] = await Promise.all([
+  function loadRouteModules() {
+    return Promise.all([
       import("../routes/routines.js"),
       import("../middleware/index.js"),
     ]);
+  }
+
+  async function createApp(actor: Record<string, unknown>) {
+    const [{ routineRoutes }, { errorHandler }] = await loadRouteModules();
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {

@@ -151,11 +151,15 @@ function registerRouteMocks() {
   }));
 }
 
-async function createApp(actor: Record<string, unknown>) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
+function loadRouteModules() {
+  return Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
+}
+
+async function createApp(actor: Record<string, unknown>) {
+  const [{ errorHandler }, { issueRoutes }] = await loadRouteModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -190,7 +194,7 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
 }
 
 describe("issue workspace command authorization", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
@@ -261,6 +265,8 @@ describe("issue workspace command authorization", () => {
           onRejected,
         ),
     }));
+    // Load the cold route graph during fixture setup; request deadlines stay unchanged.
+    await loadRouteModules();
   });
 
   it("rejects agent callers that create issue workspace runtime provision commands", async () => {

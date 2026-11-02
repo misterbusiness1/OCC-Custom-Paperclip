@@ -77,10 +77,16 @@ function registerModuleMocks() {
   }));
 }
 
+function loadRouteModules() {
+  return Promise.all([
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js"),
+    vi.importActual<typeof import("../routes/goals.js")>("../routes/goals.js"),
+  ]);
+}
+
 async function createApp(routeType: "project" | "goal") {
-  const { errorHandler } = await vi.importActual<typeof import("../middleware/index.js")>(
-    "../middleware/index.js",
-  );
+  const [{ errorHandler }, { projectRoutes }, { goalRoutes }] = await loadRouteModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -94,14 +100,8 @@ async function createApp(routeType: "project" | "goal") {
     next();
   });
   if (routeType === "project") {
-    const { projectRoutes } = await vi.importActual<typeof import("../routes/projects.js")>(
-      "../routes/projects.js",
-    );
     app.use("/api", projectRoutes({ transaction: async (effect: (tx: unknown) => unknown) => effect({}) } as any));
   } else {
-    const { goalRoutes } = await vi.importActual<typeof import("../routes/goals.js")>(
-      "../routes/goals.js",
-    );
     app.use("/api", goalRoutes({} as any));
   }
   app.use(errorHandler);
@@ -109,7 +109,7 @@ async function createApp(routeType: "project" | "goal") {
 }
 
 describe("project and goal telemetry routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/index.js");
@@ -146,6 +146,8 @@ describe("project and goal telemetry routes", () => {
       status: "planned",
     });
     mockLogActivity.mockResolvedValue(undefined);
+    // Load both cold route graphs during setup; keep per-case router construction below.
+    await loadRouteModules();
   });
 
   it("emits telemetry when a project is created", async () => {

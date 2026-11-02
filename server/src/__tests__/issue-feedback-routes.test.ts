@@ -127,11 +127,15 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
-async function createApp(actor: Record<string, unknown>) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+function loadRouteModules() {
+  return Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
   ]);
+}
+
+async function createApp(actor: Record<string, unknown>) {
+  const [{ issueRoutes }, { errorHandler }] = await loadRouteModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -150,7 +154,7 @@ async function createApp(actor: Record<string, unknown>) {
 }
 
 describe("issue feedback trace routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     mockFeedbackExportService.flushPendingFeedbackTraces.mockResolvedValue({
       attempted: 1,
@@ -172,6 +176,8 @@ describe("issue feedback trace routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
+    // Load the cold route graph during fixture setup; request deadlines stay unchanged.
+    await loadRouteModules();
   });
 
   it("flushes a newly shared feedback trace immediately after saving the vote", async () => {

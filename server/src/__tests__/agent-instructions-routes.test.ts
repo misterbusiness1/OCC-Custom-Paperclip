@@ -133,11 +133,15 @@ function boardActor() {
   };
 }
 
-async function createApp(actor: Record<string, unknown> = boardActor(), db: Record<string, unknown> = {}) {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+function loadRouteModules() {
+  return Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
+}
+
+async function createApp(actor: Record<string, unknown> = boardActor(), db: Record<string, unknown> = {}) {
+  const [{ agentRoutes }, { errorHandler }] = await loadRouteModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -211,7 +215,7 @@ function makeReflectionCoachAgent(overrides: Record<string, unknown> = {}) {
 }
 
 describe("agent instructions bundle routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
@@ -288,6 +292,8 @@ describe("agent instructions bundle routes", () => {
         instructionsFilePath: "/tmp/agent-1/AGENTS.md",
       },
     });
+    // Load the cold route graph during fixture setup; keep request deadlines unchanged.
+    await loadRouteModules();
   });
 
   it("returns bundle metadata", async () => {
