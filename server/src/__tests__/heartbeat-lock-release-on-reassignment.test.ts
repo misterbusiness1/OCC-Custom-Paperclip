@@ -360,7 +360,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
     });
   });
 
-  it("matches linked-pointer admission when a queued former holder has no execution pointer", async () => {
+  it.each(["automatic", "manual"] as const)("matches linked-pointer admission when a queued former holder has no execution pointer (%s)", async (wakeKind) => {
     const { companyId, coderAgentId, reviewerAgentId, issueId, holderRunId, wakeupRequestId } =
       await seedCrossAgentScenario({ holderStatus: "queued" });
 
@@ -391,8 +391,9 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
 
     const heartbeat = heartbeatService(db);
     const newAssigneeRun = await heartbeat.wakeup(reviewerAgentId, {
-      source: "automation",
-      triggerDetail: "system",
+      source: wakeKind === "manual" ? "on_demand" : "automation",
+      triggerDetail: wakeKind === "manual" ? "manual" : "system",
+      ...(wakeKind === "manual" ? { manualUserWake: true } : {}),
       reason: "issue_assigned",
       payload: { issueId },
       contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
