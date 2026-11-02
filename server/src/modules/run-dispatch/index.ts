@@ -4,10 +4,11 @@ import {
   createCancelStaleQueuedRun,
   createDispatchResolvedInteractionIfCurrent,
   createEvaluateScheduledRetryGate,
+  createEvaluateQueuedRunStaleness,
   createPromoteDueScheduledRetries,
   createPromoteScheduledRetry,
 } from "./application/use-cases.js";
-import type { RunDispatchWriter, ScheduledRetryReader } from "./application/ports.js";
+import type { QueuedRunStalenessReader, RunDispatchWriter, ScheduledRetryReader } from "./application/ports.js";
 
 export {
   MAX_TURN_CONTINUATION_RETRY_REASON,
@@ -46,7 +47,7 @@ export { RunDispatchApplicationError } from "./application/types.js";
 
 export type RunDispatchDeps = {
   /** Overrides the Postgres adapter; a test builds its module against a fake instead. */
-  adapter?: ScheduledRetryReader & RunDispatchWriter;
+  adapter?: ScheduledRetryReader & RunDispatchWriter & QueuedRunStalenessReader;
 };
 
 /**
@@ -64,6 +65,7 @@ export function createRunDispatch(db: Db, deps: RunDispatchDeps = {}) {
 
   return {
     evaluateScheduledRetryGate: createEvaluateScheduledRetryGate({ reader: adapter }),
+    evaluateQueuedRunStaleness: createEvaluateQueuedRunStaleness({ reader: adapter }),
     promoteScheduledRetry,
     promoteDueScheduledRetries: createPromoteDueScheduledRetries({
       reader: adapter,

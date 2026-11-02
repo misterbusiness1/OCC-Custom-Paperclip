@@ -29904,34 +29904,23 @@ export function heartbeatService(
             }
           }
 
-          if (
-            activeExecutionRun &&
-            (await cancelStaleScheduledRetry(activeExecutionRun))
-          ) {
-            activeExecutionRun = null;
-          }
-
-          // A queued/scheduled run holding the lock for an agent that is
-          // no longer the issue's assignee is stale by design — the issue
-          // has been re-routed (e.g. blocked → in_review with a different
-          // assignee). Cancel it and release the lock; otherwise the new
-          // assignee's wake gets parked in `deferred_issue_execution`
-          // forever, because the original queued holder will never run
-          // (the issue's status / target now belongs to someone else).
-          //
-          // Race guard: pin the cancel UPDATE to the exact non-running
-          // status we read above. A worker could transition the holder
-          // from `queued` → `running` between the SELECT and this UPDATE;
-          // the status predicate ensures we never clobber a freshly-
-          // claimed running run. If zero rows matched, leave
-          // `activeExecutionRun` populated so the defer path runs
-          // normally against the now-running holder.
-          if (
-            activeExecutionRun &&
-            activeExecutionRun.status !== "running" &&
-            issue.assigneeAgentId &&
-            activeExecutionRun.agentId !== issue.assigneeAgentId
-          ) {
+          // Reuse dispatch's verified ownership policy, including legitimate
+          // native review and pending-interaction recipients. Bind its reader
+          // to this same transaction; using the outer connection could wait on
+          // the issue lock already held by this admission.
+          const admissionRunDispatch = createRunDispatch(tx as unknown as Db);
+          const cancelStaleHolder = async (candidate: typeof heartbeatRuns.$inferSelect): Promise<"removed" | "retain" | "defer"> => {
+            if (await cancelStaleScheduledRetry(candidate)) return "removed";
+            if (candidate.status !== "queued" || !issue.assigneeAgentId ||
+                candidate.agentId === issue.assigneeAgentId) return "retain";
+            const evaluated = await admissionRunDispatch.evaluateQueuedRunStaleness({
+              runId: candidate.id, companyId: issue.companyId,
+            });
+            if (evaluated.kind !== "evaluated") return "defer";
+            if (!evaluated.decision.stale ||
+                evaluated.decision.errorCode !== "issue_assignee_changed") return "retain";
+            // Preserve the observed-status CAS. Losing a concurrent claim must
+            // retain/defer behind the holder rather than erase running work.
             const cancelled = await tx
               .update(heartbeatRuns)
               .set({
@@ -29944,14 +29933,14 @@ export function heartbeatService(
               })
               .where(
                 and(
-                  eq(heartbeatRuns.id, activeExecutionRun.id),
-                  eq(heartbeatRuns.status, activeExecutionRun.status),
+                  eq(heartbeatRuns.id, candidate.id),
+                  eq(heartbeatRuns.status, candidate.status),
                 ),
               )
               .returning();
             if (cancelled.length > 0) {
               cancelledRunsToEmit.push(cancelled[0]);
-              if (activeExecutionRun.wakeupRequestId) {
+              if (candidate.wakeupRequestId) {
                 await tx
                   .update(agentWakeupRequests)
                   .set({
@@ -29964,69 +29953,48 @@ export function heartbeatService(
                   .where(
                     eq(
                       agentWakeupRequests.id,
-                      activeExecutionRun.wakeupRequestId,
+                      candidate.wakeupRequestId,
                     ),
                   );
               }
-              activeExecutionRun = null;
+              return "removed";
             }
-          }
+            return "defer";
+          };
 
+          if (activeExecutionRun && await cancelStaleHolder(activeExecutionRun) === "removed") {
+            activeExecutionRun = null;
+          }
           if (!activeExecutionRun && issue.executionRunId) {
-            await tx
-              .update(issues)
-              .set({
-                executionRunId: null,
-                executionAgentNameKey: null,
-                executionLockedAt: null,
-                updatedAt: new Date(),
-              })
-              .where(eq(issues.id, issue.id));
+            await tx.update(issues).set({ executionRunId: null,
+              executionAgentNameKey: null, executionLockedAt: null, updatedAt: new Date(),
+            }).where(eq(issues.id, issue.id));
           }
 
-          if (!activeExecutionRun) {
-            const legacyRun = await tx
-              .select()
-              .from(heartbeatRuns)
-              .where(
-                and(
-                  eq(heartbeatRuns.companyId, issue.companyId),
-                  inArray(heartbeatRuns.status, [
-                    ...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES,
-                  ]),
-                  sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-                ),
-              )
-              .orderBy(
-                sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
-                asc(heartbeatRuns.createdAt),
-              )
-              .limit(1)
-              .then((rows) => rows[0] ?? null);
-
-            if (legacyRun) {
-              if (await cancelStaleScheduledRetry(legacyRun)) {
-                activeExecutionRun = null;
-              } else {
-                activeExecutionRun = legacyRun;
-                const legacyAgent = await tx
-                  .select({ name: agents.name })
-                  .from(agents)
-                  .where(eq(agents.id, legacyRun.agentId))
-                  .then((rows) => rows[0] ?? null);
-                await tx
-                  .update(issues)
-                  .set({
-                    executionRunId: legacyRun.id,
-                    executionAgentNameKey: normalizeAgentNameKey(
-                      legacyAgent?.name,
-                    ),
-                    executionLockedAt: new Date(),
-                    updatedAt: new Date(),
-                  })
-                  .where(eq(issues.id, issue.id));
-              }
-            }
+          // A removed queued holder can hide another queued or running run.
+          // Rescan under the issue lock, preferring running ownership each time.
+          while (!activeExecutionRun) {
+            const legacyRun = await tx.select().from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+            )).orderBy(
+              sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
+              asc(heartbeatRuns.createdAt),
+            ).limit(1).then(rows => rows[0] ?? null);
+            if (!legacyRun) break;
+            const disposition = await cancelStaleHolder(legacyRun);
+            if (disposition === "removed") continue;
+            activeExecutionRun = legacyRun;
+            // A changed/missing read or lost CAS cannot authorize a fresh run
+            // or restore an unchecked pointer. Keep the wake deferred instead.
+            if (disposition === "defer") break;
+            const legacyAgent = await tx.select({ name: agents.name }).from(agents)
+              .where(eq(agents.id, legacyRun.agentId)).then(rows => rows[0] ?? null);
+            await tx.update(issues).set({ executionRunId: legacyRun.id,
+              executionAgentNameKey: normalizeAgentNameKey(legacyAgent?.name),
+              executionLockedAt: new Date(), updatedAt: new Date(),
+            }).where(eq(issues.id, issue.id));
           }
 
           const dependencyReadiness = await issuesSvc

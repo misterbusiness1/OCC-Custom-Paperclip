@@ -1,4 +1,4 @@
-import type { RunDispatchWriter, ScheduledRetryReader } from "./ports.js";
+import type { QueuedRunStalenessReader, RunDispatchWriter, ScheduledRetryReader } from "./ports.js";
 import type { PostCommitEffect, PromoteScheduledRetryOutcome } from "./types.js";
 
 export function createEvaluateScheduledRetryGate(deps: { reader: ScheduledRetryReader }) {
@@ -68,4 +68,9 @@ export function createDispatchResolvedInteractionIfCurrent(deps: { writer: RunDi
     ...input,
     now: input.now ?? new Date(),
   });
+}
+
+export function createEvaluateQueuedRunStaleness(deps: { reader: QueuedRunStalenessReader }) {
+  return (input: { runId: string; companyId: string; now?: Date }) =>
+    deps.reader.evaluateQueuedRunStaleness({ ...input, now: input.now ?? new Date() });
 }
