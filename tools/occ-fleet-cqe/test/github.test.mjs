@@ -32,3 +32,13 @@ test("GitHub CLI receives only the value-free OneCLI auth placeholder", () => {
   assert.equal(invoked.options.env.GH_TOKEN, "onecli-managed");
   assert.ok(invoked.args.includes(ONECLI_CONNECTION_HEADER));
 });
+
+
+test("retains archived installation repositories in the pinned audit scope", () => {
+  const repository = "misterbusiness1/onecli-public-history-20261028";
+  const exec = () => JSON.stringify({ repositories: [{
+    full_name: repository, owner: { login: "misterbusiness1" }, archived: true,
+    default_branch: "main", html_url: `https://github.com/${repository}`,
+  }] });
+  assert.deepEqual(listInstalledRepositories({ exec }).map((entry) => entry.repository), [repository]);
+});
