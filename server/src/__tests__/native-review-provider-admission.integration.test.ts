@@ -223,7 +223,9 @@ suite("native review provider admission", () => {
     };
     await expect(nativeCompletionFeedback(db, sourceRunId, result)).resolves.toContain("Completion report accepted");
     await port.completeRun({ result, terminal: { ...CONTROL_PLANE_CONFORMANCE_TERMINAL, reportedWorkDisposition: "needs_review" }, callerResultId: "native-review-admission-result" });
-    await finalizeNativeRun({ db, runId: sourceRunId, workspaceFinalizeStatus: "succeeded" });
+    await finalizeNativeRun({ db, runId: sourceRunId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const completedSource = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRunId)).then(rows => rows[0]!);
+    expect(completedSource).toMatchObject({ status: "succeeded" });
     const [interaction] = await db.select().from(issueThreadInteractions).where(and(eq(issueThreadInteractions.issueId, issueId), eq(issueThreadInteractions.addresseeAgentId, reviewerId)));
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, reviewerId));
     expect(interaction).toMatchObject({ status: "pending", kind: "request_confirmation", sourceRunId });
