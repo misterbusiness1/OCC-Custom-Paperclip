@@ -795,9 +795,18 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     }).returning();
 
     await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId, { retryCleanup: true });
-    if (owner === "other" && status !== "scheduled_retry") {
-      // Another agent is not this queue's successor, but ordinary admission
-      // must still preserve the task execution lock until its work stops.
+    if (owner === "other" && status === "queued") {
+      // A queued former assignee has no dispatch authority. Admission cancels
+      // it before creating this queue's separate, correctly attributed run.
+      const [stale] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, existingRun.id));
+      expect(stale).toMatchObject({ status: "cancelled", errorCode: "lock_released_on_reassignment",
+        startedAt: null, processPid: null });
+      const [delivered] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect(delivered.runId).not.toBe(existingRun.id);
+    }
+    if (owner === "other" && status === "running") {
+      // A running foreign holder must still retain the execution lock until
+      // its work stops; it is not this queue's successor.
       const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
       const [task] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
       expect(waiting.status).toBe("deferred_issue_execution");
