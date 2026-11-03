@@ -18,14 +18,14 @@ it("forwards the current allowlisted terminal environment in fresh and warm ACP 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runner-acpx-terminal-env-"));
   tempRoots.push(root);
   const agentCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(fixturePath)}`;
-  let currentRunId = "run-one";
+  let terminalEnvironment: Record<string, string> = { PAPERCLIP_RUN_ID: "run-one" };
   const runtime = createAcpRuntime({
     cwd: root,
     sessionStore: createRuntimeStore({ stateDir: path.join(root, "state") }),
     agentRegistry: createAgentRegistry({ overrides: { terminal_env_fixture: agentCommand } }),
     permissionMode: "approve-all",
     nonInteractivePermissions: "deny",
-    terminalEnvironment: () => ({ PAPERCLIP_RUN_ID: currentRunId }),
+    terminalEnvironment: () => ({ ...terminalEnvironment }),
     verbose: true,
     timeoutMs: 10_000,
   });
@@ -37,11 +37,11 @@ it("forwards the current allowlisted terminal environment in fresh and warm ACP 
     cwd: root,
     sessionOptions: { env: {} },
   });
-  const runTurn = async (requestId: string): Promise<string> => {
+  const runTurn = async (requestId: string, text = "Print PAPERCLIP_RUN_ID from a terminal."): Promise<string> => {
     let output = "";
     for await (const event of runtime.runTurn({
       handle,
-      text: "Print PAPERCLIP_RUN_ID from a terminal.",
+      text,
       mode: "prompt",
       sessionMode: "persistent",
       requestId,
@@ -53,9 +53,15 @@ it("forwards the current allowlisted terminal environment in fresh and warm ACP 
 
   try {
     expect(await runTurn("terminal-env-run-one")).toBe("run-one");
-    currentRunId = "run-two";
+    terminalEnvironment = { PAPERCLIP_RUN_ID: "run-two" };
     expect(await runTurn("terminal-env-run-two")).toBe("run-two");
+    // ACPX 0.21.1: an env var the agent requests in terminal/create wins over
+    // the host's, except PAPERCLIP_* names, where the host run identity wins.
+    terminalEnvironment = { PAPERCLIP_RUN_ID: "run-three", TERMINAL_ENV_PROBE: "host" };
+    expect(await runTurn("terminal-env-run-three", "Check env precedence in a terminal.")).toBe("run-three agent");
   } finally {
     await runtime.close({ handle, discardPersistentState: true });
   }
-});
+  // ACPX 0.21.1 snapshots the host process table around agent and terminal
+  // lifecycle steps (about 0.8 s each on a busy host).
+}, 30_000);

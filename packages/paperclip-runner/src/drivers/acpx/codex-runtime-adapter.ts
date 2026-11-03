@@ -60,6 +60,25 @@ const activeCodexRuntimeCleanupOwners = new Set<Promise<unknown>>();
 // minimally provisioned runner. Keep admission finite while allowing the
 // qualified runtime enough time to complete that local handshake.
 const SESSION_HANDSHAKE_TIMEOUT_MS = 30_000;
+// codex-acp 2.5.0 launch settings the runner owns for its Codex lane. They are
+// applied after the launch environment so an inherited value cannot override
+// them.
+// - INITIAL_AGENT_MODE: 2.5.0's default "agent" mode ("Auto review") sends
+//   `approvalsReviewer: "auto_review"` on every turn, so Codex's own guardian
+//   subagent answers sandbox escalations and they never reach the runner's
+//   permission policy. "workspace-write" is the 1.6.2 default behaviour
+//   (on-request approvals, workspace-write sandbox, reviewer "user"), so every
+//   escalation arrives as session/request_permission.
+// - PAPERCLIP_CODEX_ACP_GOAL_META: 2.5.0 advertises the session-goal extension
+//   only to AIR clients under `_meta.jetbrains.air.goal`. The runner never
+//   declares AIR for Codex (it switches codex-acp into IDE mode), so the
+//   Paperclip codex-acp patch restores the 1.6.2 top-level `_meta.goal`
+//   capability and goal snapshots when this flag is set. Production adapters
+//   leave it unset.
+export const CODEX_ACPX_RUNNER_SPAWN_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
+  INITIAL_AGENT_MODE: "workspace-write",
+  PAPERCLIP_CODEX_ACP_GOAL_META: "1",
+});
 
 interface GoalAwareAcpRuntime extends AcpRuntime {
   requestExtension?(input: {
@@ -71,7 +90,7 @@ interface GoalAwareAcpRuntime extends AcpRuntime {
 }
 
 type GoalAwareAcpRuntimeOptions = AcpRuntimeOptions & {
-  onAgentInitialize?: (result: unknown) => void;
+  onAgentInitialize?: (result: Record<string, unknown>) => void;
   onSessionNotification?: (notification: unknown) => void;
 };
 
@@ -405,9 +424,14 @@ export async function openQualifiedAcpxRuntime(
     onSessionNotification: acceptGoalNotification,
     spawnEnvironment: () => ({
       ...definedEnvironment(options.launchEnvironment),
+      ...(options.profile.agent === "codex" ? CODEX_ACPX_RUNNER_SPAWN_ENVIRONMENT : {}),
       ...(options.profile.agent === "claude"
         ? {
             PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+            // claude-agent-acp 0.100.0 advertises the session-goal extension only to
+            // AIR clients. The Paperclip patch restores the 0.73.0 top-level
+            // `_meta.goal` capability and snapshots when this flag is set (runner only).
+            PAPERCLIP_CLAUDE_ACP_GOAL_META: "1",
             // This URL comes from the runner-owned authenticated tool bridge,
             // never provider-supplied permission-request metadata.
             PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: options.mcpServers.find(

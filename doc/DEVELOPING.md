@@ -1235,8 +1235,11 @@ payloads, drops the provider sentence from the turn output and starts an extra
 prompt-suggestion model turn; claude and the other agents still receive it.
 codex-acp's own title generation (an extra model turn after a session's first
 turn) stays off unless `PAPERCLIP_CODEX_ACP_TITLE_GENERATION=true`.
-Paperclip Runner keeps its separately qualified codex-acp `1.6.2`,
-claude-agent-acp `0.73.0` and acpx `0.13.1` copies.
+Paperclip Runner uses the same codex-acp `2.5.0`, claude-agent-acp `0.100.0`
+and acpx `0.21.1` lanes (Codex `0.166.0`, Claude Agent SDK `0.3.317`). It
+advertises the AIR `sessionFailure` declaration to every agent except codex,
+and its isolated context (`PAPERCLIP_ACPX_ISOLATED_CONTEXT=1`) lists Codex
+skills from `CODEX_HOME` only.
 
 ### Preinstalled remote runner runtime
 

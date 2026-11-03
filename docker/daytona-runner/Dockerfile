@@ -28,7 +28,7 @@ COPY cli/package.json ./cli/package.json
 # The complete resolved lock (including transitive integrity hashes) is reviewed.
 # Reject registry-time drift BEFORE installing packages or running lifecycle code.
 # Refresh this digest together with source/provider dependency changes.
-ARG PAPERCLIP_RUNNER_LOCK_SHA256=2c46a68811ba1d504a41b6f4d3f642bc93f4a1c615097754c9c6486881dba8e6
+ARG PAPERCLIP_RUNNER_LOCK_SHA256=5b492ec39a73831301eee3b1f13c6f908934cef5fb6b0cf73fd106ce69fafe7a
 RUN printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
     && sha256sum -c /tmp/provider-lock.sha256 \
     && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
@@ -139,12 +139,12 @@ RUN /bin/sh -lc 'set -eu; \
     for command_name in acpx claude-agent-acp codex-acp; do \
       command -v "$command_name" >/dev/null || { echo "FATAL: $command_name not on PATH for daytona user" >&2; exit 1; }; \
     done; \
-    test "$(codex --version)" = "codex-cli 0.156.0"; \
+    test "$(codex --version)" = "codex-cli 0.166.0"; \
     test "$(claude --version)" = "2.1.317 (Claude Code)"; \
     test "$(opencode --version)" = "1.18.32"; \
-    test "$(acpx --version)" = "0.13.1"; \
-    test "$(claude-agent-acp --version)" = "0.73.0"; \
-    test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 1.6.2"'
+    test "$(acpx --version)" = "0.21.1"; \
+    test "$(claude-agent-acp --version)" = "0.100.0"; \
+    test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 2.5.0"'
 
 LABEL io.paperclip.runner.content-id="${PAPERCLIP_RUNNER_CONTENT_ID}" \
       org.opencontainers.image.revision="${PAPERCLIP_RUNNER_SOURCE_REVISION}"

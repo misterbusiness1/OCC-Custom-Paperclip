@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 const runnerPackage = JSON.parse(
@@ -16,19 +18,19 @@ const workspace = await readFile(
   "utf8",
 );
 const acpxPatch = await readFile(
-  new URL("../../../patches/acpx@0.13.1.patch", import.meta.url),
+  new URL("../../../patches/acpx@0.21.1.patch", import.meta.url),
   "utf8",
 );
 const codexPatch = await readFile(
   new URL(
-    "../../../patches/@agentclientprotocol__codex-acp@1.6.2.patch",
+    "../../../patches/@agentclientprotocol__codex-acp@2.5.0.patch",
     import.meta.url,
   ),
   "utf8",
 );
 const claudePatch = await readFile(
   new URL(
-    "../../../patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
+    "../../../patches/@agentclientprotocol__claude-agent-acp@0.100.0.patch",
     import.meta.url,
   ),
   "utf8",
@@ -48,6 +50,10 @@ const providerPackBuilder = await readFile(
   new URL("../scripts/build-provider-pack.mjs", import.meta.url),
   "utf8",
 );
+const codexRuntimeAdapter = await readFile(
+  new URL("../src/drivers/acpx/codex-runtime-adapter.ts", import.meta.url),
+  "utf8",
+);
 const nativeSessionExecutor = await readFile(
   new URL(
     "../../../server/src/services/native-runtime/native-session-executor.ts",
@@ -57,20 +63,22 @@ const nativeSessionExecutor = await readFile(
 );
 
 test("the runner pins every qualified ACPX production dependency", () => {
-  assert.equal(runnerPackage.dependencies["@openai/codex"], "0.156.0");
+  assert.equal(runnerPackage.dependencies["@openai/codex"], "0.166.0");
   assert.equal(runnerPackage.dependencies["@anthropic-ai/claude-agent-sdk"], undefined);
-  assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/codex-acp@1.6.2>@openai/codex"], runnerPackage.dependencies["@openai/codex"]);
-  assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk"], "0.3.317");
+  assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/codex-acp@2.5.0>@openai/codex"], runnerPackage.dependencies["@openai/codex"]);
+  assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/claude-agent-acp@0.100.0>@anthropic-ai/claude-agent-sdk"], "0.3.317");
+  assert.match(workspace, /"@agentclientprotocol\/codex-acp@2\.5\.0>@openai\/codex": "0\.166\.0"/);
+  assert.match(workspace, /"@agentclientprotocol\/claude-agent-acp@0\.100\.0>@anthropic-ai\/claude-agent-sdk": "0\.3\.317"/);
   assert.equal(runnerPackage.optionalDependencies, undefined);
   assert.equal(runnerPackage.dependencies.node, undefined);
-  assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
+  assert.equal(runnerPackage.dependencies.acpx, "0.21.1");
   assert.equal(
     runnerPackage.dependencies["@agentclientprotocol/codex-acp"],
-    "1.6.2",
+    "2.5.0",
   );
   assert.equal(
     runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"],
-    "0.73.0",
+    "0.100.0",
   );
 });
 
@@ -112,29 +120,29 @@ test("the package exposes only the reviewed runner CLI binaries", () => {
 
 test("old and new pnpm configuration both apply the exact runtime patches", () => {
   assert.equal(
-    rootPackage.pnpm.patchedDependencies["acpx@0.13.1"],
-    "patches/acpx@0.13.1.patch",
+    rootPackage.pnpm.patchedDependencies["acpx@0.21.1"],
+    "patches/acpx@0.21.1.patch",
   );
   assert.equal(
     rootPackage.pnpm.patchedDependencies[
-      "@agentclientprotocol/claude-agent-acp@0.73.0"
+      "@agentclientprotocol/claude-agent-acp@0.100.0"
     ],
-    "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
+    "patches/@agentclientprotocol__claude-agent-acp@0.100.0.patch",
   );
   assert.equal(
     rootPackage.pnpm.patchedDependencies[
-      "@agentclientprotocol/codex-acp@1.6.2"
+      "@agentclientprotocol/codex-acp@2.5.0"
     ],
-    "patches/@agentclientprotocol__codex-acp@1.6.2.patch",
+    "patches/@agentclientprotocol__codex-acp@2.5.0.patch",
   );
-  assert.match(workspace, /acpx@0\.13\.1: patches\/acpx@0\.13\.1\.patch/);
+  assert.match(workspace, /acpx@0\.21\.1: patches\/acpx@0\.21\.1\.patch/);
   assert.match(
     workspace,
-    /codex-acp@1\.6\.2["']: patches\/@agentclientprotocol__codex-acp@1\.6\.2\.patch/,
+    /codex-acp@2\.5\.0["']: patches\/@agentclientprotocol__codex-acp@2\.5\.0\.patch/,
   );
   assert.match(
     workspace,
-    /claude-agent-acp@0\.73\.0["']: patches\/@agentclientprotocol__claude-agent-acp@0\.73\.0\.patch/,
+    /claude-agent-acp@0\.100\.0["']: patches\/@agentclientprotocol__claude-agent-acp@0\.100\.0\.patch/,
   );
   assert.equal(rootPackage.pnpm.patchedDependencies["node@24.11.0"], undefined);
   assert.doesNotMatch(workspace, /node@24\.11\.0:/);
@@ -142,7 +150,14 @@ test("old and new pnpm configuration both apply the exact runtime patches", () =
     providerPackBuilder,
     /copyFileSync\(process\.execPath, stableNodeCommand\)/,
   );
-  assert.match(codexPatch, /\+    "@openai\/codex": "0\.156\.0"/);
+  // The runner shares one ACPX / ACP-server lane with the production adapters;
+  // the previously separate runner copies must not come back.
+  for (const retired of ["acpx@0.13.1", "@agentclientprotocol/codex-acp@1.6.2", "@agentclientprotocol/claude-agent-acp@0.73.0"]) {
+    assert.equal(rootPackage.pnpm.patchedDependencies[retired], undefined);
+    assert.doesNotMatch(workspace, new RegExp(retired.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  // The pinned Codex runtime comes from the override, not a patched manifest.
+  assert.doesNotMatch(codexPatch, /"@openai\/codex":/);
 });
 
 test("the ACPX patch preserves launch-only state and verified spawning", () => {
@@ -204,7 +219,7 @@ test("the Codex patch enforces isolated instructions, tools, and skills", () => 
   for (const token of [
     "PAPERCLIP_ACPX_ISOLATED_CONTEXT",
     "baseInstructions",
-    "rawInput: { serverName: params.serverName }",
+    "rawInput: { ...toolCall.rawInput, serverName: params.serverName }",
     '"features.apps": false',
     "process.env.CODEX_HOME",
   ]) {
@@ -233,4 +248,137 @@ test("the Claude patch removes ambient project and local configuration", () => {
       new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
     );
   }
+});
+
+async function installedCodexAcpEntrypoint() {
+  const packagePath = createRequire(import.meta.url).resolve(
+    "@agentclientprotocol/codex-acp/package.json",
+  );
+  const installed = JSON.parse(await readFile(packagePath, "utf8"));
+  return resolve(dirname(packagePath), installed.bin["codex-acp"]);
+}
+
+// Initialize the installed codex-acp bundle over stdio and return the result.
+// Initialize does not need credentials or a model turn.
+async function initializeInstalledCodexAcp(environment, clientCapabilities = {}) {
+  const entrypoint = await installedCodexAcpEntrypoint();
+  const home = await mkdtemp(join(tmpdir(), "paperclip-codex-acp-goal-"));
+  const child = spawn(process.execPath, [entrypoint], {
+    env: { PATH: process.env.PATH ?? "", HOME: home, CODEX_HOME: home, ...environment },
+    stdio: ["pipe", "pipe", "ignore"],
+  });
+  try {
+    return await new Promise((resolveResult, reject) => {
+      const timer = setTimeout(() => reject(new Error("codex-acp initialize timed out")), 20_000);
+      let buffered = "";
+      child.once("error", reject);
+      child.once("exit", (code) => reject(new Error(`codex-acp exited (${code}) before initialize`)));
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        buffered += chunk;
+        let newline;
+        while ((newline = buffered.indexOf("\n")) >= 0) {
+          const line = buffered.slice(0, newline);
+          buffered = buffered.slice(newline + 1);
+          let message;
+          try { message = JSON.parse(line); } catch { continue; }
+          if (message.id === 1) {
+            clearTimeout(timer);
+            if (message.error) reject(new Error(JSON.stringify(message.error)));
+            else resolveResult(message.result);
+          }
+        }
+      });
+      child.stdin.write(`${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: 1, clientCapabilities },
+      })}\n`);
+    });
+  } finally {
+    child.kill("SIGKILL");
+    await rm(home, { recursive: true, force: true });
+  }
+}
+
+const EXPECTED_GOAL_CAPABILITY = {
+  version: 1,
+  controlMethod: "_session/goal",
+  actions: ["set", "pause", "resume", "clear"],
+};
+
+test("the patched Codex ACP advertises the top-level goal extension to the runner's plain client", { timeout: 60_000 }, async () => {
+  // codex-acp 2.5.0 moved goal behind AIR (`_meta.jetbrains.air.goal`). The
+  // runner never declares AIR for Codex, and reads `_meta.goal` (as acpx's
+  // persistedGoalCapability does), so the runner lane opts back in.
+  const runner = await initializeInstalledCodexAcp({ PAPERCLIP_CODEX_ACP_GOAL_META: "1" });
+  assert.deepEqual(runner._meta.goal, EXPECTED_GOAL_CAPABILITY);
+  assert.equal(runner._meta.jetbrains, undefined);
+
+  // Production adapters leave the flag unset and keep upstream 2.5.0 output.
+  const production = await initializeInstalledCodexAcp({});
+  assert.equal(production._meta.goal, undefined);
+  assert.equal(production._meta.jetbrains, undefined);
+
+  // An AIR client keeps the upstream AIR form only, never a duplicate.
+  const air = await initializeInstalledCodexAcp(
+    { PAPERCLIP_CODEX_ACP_GOAL_META: "1" },
+    { _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } } } },
+  );
+  assert.equal(air._meta.goal, undefined);
+  assert.deepEqual(air._meta.jetbrains.air.goal, EXPECTED_GOAL_CAPABILITY);
+});
+
+test("the patched Codex ACP publishes top-level goal snapshots to the runner's plain client", async () => {
+  const source = await readFile(await installedCodexAcpEntrypoint(), "utf8");
+  const start = source.indexOf("function goalSessionInfoUpdate(goal, airClient) {");
+  assert.ok(start >= 0, "installed bundle defines goalSessionInfoUpdate");
+  const end = source.indexOf("\n}\n", start);
+  const goalSessionInfoUpdate = (env) => new Function(
+    "process", "withAirMeta", "AIR_GOAL_KEY",
+    `${source.slice(start, end + 2)}; return goalSessionInfoUpdate;`,
+  )({ env }, (_meta, key, value) => ({ jetbrains: { air: { version: 1, [key]: value } } }), "goal");
+  const snapshot = { objective: "Ship", status: "active", controlMethod: "_session/goal" };
+
+  assert.deepEqual(goalSessionInfoUpdate({ PAPERCLIP_CODEX_ACP_GOAL_META: "1" })(snapshot, false), {
+    sessionUpdate: "session_info_update",
+    _meta: { goal: snapshot },
+  });
+  assert.deepEqual(goalSessionInfoUpdate({ PAPERCLIP_CODEX_ACP_GOAL_META: "1" })(null, false), {
+    sessionUpdate: "session_info_update",
+    _meta: { goal: null },
+  });
+  assert.equal(goalSessionInfoUpdate({})(snapshot, false), null);
+  assert.deepEqual(goalSessionInfoUpdate({ PAPERCLIP_CODEX_ACP_GOAL_META: "1" })(snapshot, true), {
+    sessionUpdate: "session_info_update",
+    _meta: { jetbrains: { air: { version: 1, goal: snapshot } } },
+  });
+});
+
+test("the runner's Codex mode keeps sandbox escalations on the client permission channel", async () => {
+  // codex-acp 2.5.0 defaults to the "agent" (Auto review) mode, whose
+  // approvalsReviewer "auto_review" lets Codex's guardian subagent answer
+  // escalations instead of session/request_permission.
+  const source = await readFile(await installedCodexAcpEntrypoint(), "utf8");
+  const start = source.indexOf("var AgentMode = class _AgentMode {");
+  assert.ok(start >= 0, "installed bundle defines AgentMode");
+  const end = source.indexOf("\n};\n", start);
+  const agentMode = (env) => new Function(
+    "process", "airOnlyMeta", "AIR_KIND_KEY", "MODE_CONFIG_ID",
+    `${source.slice(start, end + 3)}; return AgentMode;`,
+  )({ env }, () => undefined, "kind", "mode");
+
+  const upstreamDefault = agentMode({}).getInitialAgentMode();
+  assert.equal(upstreamDefault.id, "agent");
+  assert.equal(upstreamDefault.approvalsReviewer, "auto_review");
+
+  const runnerMode = /INITIAL_AGENT_MODE: "([a-z-]+)"/.exec(codexRuntimeAdapter)?.[1];
+  assert.equal(runnerMode, "workspace-write");
+  const selected = agentMode({ INITIAL_AGENT_MODE: runnerMode }).getInitialAgentMode();
+  assert.equal(selected.id, runnerMode);
+  assert.equal(selected.approvalPolicy, "on-request");
+  assert.equal(selected.approvalsReviewer, "user");
+  assert.equal(selected.sandboxPolicy.type, "workspaceWrite");
+  assert.match(codexRuntimeAdapter, /PAPERCLIP_CODEX_ACP_GOAL_META: "1"/);
 });

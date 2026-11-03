@@ -41,15 +41,15 @@ const releaseScript = await readFile(new URL("./release.sh", import.meta.url), "
 const releaseLib = await readFile(new URL("./release-lib.sh", import.meta.url), "utf8");
 const buildNpmScript = await readFile(new URL("./build-npm.sh", import.meta.url), "utf8");
 const acpxRuntimePatch = await readFile(
-  new URL("../patches/acpx@0.13.1.patch", import.meta.url),
+  new URL("../patches/acpx@0.21.1.patch", import.meta.url),
   "utf8",
 );
 const claudeAcpPatch = await readFile(
-  new URL("../patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch", import.meta.url),
+  new URL("../patches/@agentclientprotocol__claude-agent-acp@0.100.0.patch", import.meta.url),
   "utf8",
 );
 
-for (const version of ["0.21.1", "0.13.1"]) {
+for (const version of ["0.21.1"]) {
   test(`ACPX ${version} release patch uses portable generated unified hunks`, async () => {
     const patch = await readFile(
       new URL(`../patches/acpx@${version}.patch`, import.meta.url),
@@ -108,17 +108,14 @@ for (const version of ["0.21.1", "0.13.1"]) {
 }
 
 test("published packages preserve the patched ACPX runtime", () => {
-  // Production lanes (adapter-utils engine and the server bundle) moved from
-  // acpx 0.12.0 / 0.13.1 to the ported 0.21.1 patch; the runner keeps 0.13.1.
+  // Every lane (adapter-utils engine, the server bundle and the Paperclip
+  // Runner) moved from acpx 0.12.0 / 0.13.1 to the ported 0.21.1 patch.
   assert.equal(
     rootPackage.pnpm.patchedDependencies["acpx@0.21.1"],
     "patches/acpx@0.21.1.patch",
   );
   assert.equal(rootPackage.pnpm.patchedDependencies["acpx@0.12.0"], undefined);
-  assert.equal(
-    rootPackage.pnpm.patchedDependencies["acpx@0.13.1"],
-    "patches/acpx@0.13.1.patch",
-  );
+  assert.equal(rootPackage.pnpm.patchedDependencies["acpx@0.13.1"], undefined);
   assert.equal(adapterUtilsPackage.dependencies.acpx, "0.21.1");
   assert.deepEqual(adapterUtilsPackage.bundleDependencies, ["acpx"]);
   assert.equal(serverPackage.dependencies.acpx, "0.21.1");
@@ -128,14 +125,16 @@ test("published packages preserve the patched ACPX runtime", () => {
 });
 
 test("Paperclip Runner pins the qualified ACPX host callbacks", () => {
-  assert.equal(rootPackage.pnpm.patchedDependencies["acpx@0.13.1"], "patches/acpx@0.13.1.patch");
+  assert.equal(rootPackage.pnpm.patchedDependencies["acpx@0.21.1"], "patches/acpx@0.21.1.patch");
   assert.equal(
-    rootPackage.pnpm.patchedDependencies["@agentclientprotocol/claude-agent-acp@0.73.0"],
-    "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
+    rootPackage.pnpm.patchedDependencies["@agentclientprotocol/claude-agent-acp@0.100.0"],
+    "patches/@agentclientprotocol__claude-agent-acp@0.100.0.patch",
   );
-  assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
-  assert.equal(runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"], "0.73.0");
-  assert.equal(runnerPackage.dependencies["@agentclientprotocol/codex-acp"], "1.6.2");
+  assert.equal(rootPackage.pnpm.patchedDependencies["@agentclientprotocol/claude-agent-acp@0.73.0"], undefined);
+  assert.equal(rootPackage.pnpm.patchedDependencies["@agentclientprotocol/codex-acp@1.6.2"], undefined);
+  assert.equal(runnerPackage.dependencies.acpx, "0.21.1");
+  assert.equal(runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"], "0.100.0");
+  assert.equal(runnerPackage.dependencies["@agentclientprotocol/codex-acp"], "2.5.0");
   for (const callback of [
     "spawnEnvironment", "spawnCwd", "spawnAgent", "isPlainStringEnvironment",
     "onAgentSpawn", "onAgentStderr", "onAgentExit",
@@ -493,8 +492,9 @@ test("installed ACPX runtime persists and restores optional goal capabilities", 
   const requireRunner = createRequire(new URL("../packages/paperclip-runner/package.json", import.meta.url));
   const runtimeSource = readFileSync(requireRunner.resolve("acpx/runtime"), "utf8");
   const start = runtimeSource.indexOf("function persistedGoalCapability(");
-  const end = runtimeSource.indexOf("function planUpdateEvent(", start);
-  assert.ok(start >= 0 && end > start, "the installed patch must define both goal helpers");
+  const restored = runtimeSource.indexOf("function restoredGoalCapability(", start);
+  const end = restored < 0 ? -1 : runtimeSource.indexOf("\n}\n", restored) + 3;
+  assert.ok(start >= 0 && restored > start && end > restored, "the installed patch must define both goal helpers");
   const helpers = runInNewContext(runtimeSource.slice(start, end) + ";({ persistedGoalCapability, restoredGoalCapability })", {
     isRecord: (value) => value !== null && typeof value === "object" && !Array.isArray(value),
   });

@@ -239,6 +239,54 @@ fn does_not_promote_partial_text_to_a_final_reply_after_failure_or_cancellation(
     }
 }
 
+// codex-acp 2.5.0 without the AIR typed sessionFailure declaration (the
+// runner, like production, never declares AIR for Codex) streams the provider
+// failure sentence as an agent text chunk before rejecting the prompt. That
+// sentence is durable progress only: a failed turn never promotes it to the
+// final assistant reply.
+#[test]
+fn codex_provider_failure_sentence_stays_progress_and_never_becomes_the_reply() {
+    let sentence = "You've hit your usage limit. Try again at 6:00 PM.";
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    let progress = state
+        .accept_event(&event(
+            1,
+            GeneratedAcpxSidecarEventType::RuntimeEvent,
+            Some("turn-1"),
+            json!({"type":"text_delta","text":sentence}),
+        ))
+        .unwrap();
+    assert!(progress.iter().any(|event| matches!(
+        event,
+        AcpxProviderStateEvent::Activity(activity)
+            if activity.event_type == "item.delta"
+                && activity.payload["kind"] == "agentMessage"
+                && activity.payload["channel"] == "progress"
+                && activity.payload["text"] == sentence
+    )));
+    let terminal = state
+        .accept_event(&event(
+            2,
+            GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+            Some("turn-1"),
+            json!({"status":"failed","error":{"message":sentence}}),
+        ))
+        .unwrap();
+    assert_eq!(terminal.len(), 1);
+    assert!(matches!(
+        &terminal[0],
+        AcpxProviderStateEvent::TurnTerminal {
+            turn_id,
+            status: AcpxTurnStatus::Failed,
+            ..
+        } if turn_id == "turn-1"
+    ));
+    assert!(!terminal
+        .iter()
+        .any(|event| matches!(event, AcpxProviderStateEvent::AssistantMessage { .. })));
+}
+
 #[test]
 fn correlates_semantic_tool_calls_until_the_sidecar_resolution_commits() {
     let mut state = AcpxProviderState::new("run-1").unwrap();

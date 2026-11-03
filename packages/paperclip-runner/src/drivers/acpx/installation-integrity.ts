@@ -73,40 +73,47 @@ const QUALIFIED_CLAUDE_DARWIN_RUNTIMES = {
 
 const QUALIFIED_CODEX_LINUX_X64_RUNTIME = Object.freeze({
   runtimePackageName: "@openai/codex",
-  runtimePackageVersion: "0.156.0",
+  runtimePackageVersion: "0.166.0",
   packageName: "@openai/codex-linux-x64",
-  packageVersion: "0.156.0-linux-x64",
-  dependencyDeclaration: "npm:@openai/codex@0.156.0-linux-x64",
+  packageVersion: "0.166.0-linux-x64",
+  dependencyDeclaration: "npm:@openai/codex@0.166.0-linux-x64",
   relativeExecutable: "vendor/x86_64-unknown-linux-musl/bin/codex",
   executableDigest:
-    "sha256:78a11f06e0a2dda42d13fba1d50dc62e8cbdb2d5f69789722f4d4d99b5cdbe30",
+    "sha256:b8a11fedf24b2dfb59a70c9e52b030f9a508dcd49cd2dd0d41956f4c785156b8",
   environmentVariable: "CODEX_PATH",
 });
 
 // Claude's ACP server is not a self-contained bundle: its entrypoint imports
-// these three packages directly from pnpm's real store paths. Keep that exact
+// these four packages directly from pnpm's real store paths. Keep that exact
 // package graph version-bound and descriptor-pinned instead of granting the
 // provider ambient access to the workspace's complete node_modules ancestry.
 const QUALIFIED_CLAUDE_PROVIDER_DEPENDENCIES = Object.freeze([
   Object.freeze({
     packageName: "@agentclientprotocol/sdk",
-    packageVersion: "1.4.0",
-    dependencyDeclaration: "1.4.0",
+    packageVersion: "2.4.0",
+    dependencyDeclaration: "2.4.0",
   }),
   Object.freeze({
     packageName: "@anthropic-ai/claude-agent-sdk",
     packageVersion: "0.3.317",
-    // The package's own package.json still declares 0.3.257 — 0.3.317 is
+    // The package's own package.json still declares 0.3.316 — 0.3.317 is
     // only what pnpm resolves, forced by the
-    // "claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk" override in
+    // "claude-agent-acp@0.100.0>@anthropic-ai/claude-agent-sdk" override in
     // the workspace root. This field binds the declared string, not the
     // resolved one; packageVersion above binds the resolved install.
-    dependencyDeclaration: "0.3.257",
+    dependencyDeclaration: "0.3.316",
   }),
   Object.freeze({
     packageName: "zod",
     packageVersion: "4.6.7",
-    dependencyDeclaration: "^4.0.0",
+    dependencyDeclaration: "4.6.7",
+  }),
+  // claude-agent-acp 0.100.0 renders file edits through dist/diff.js, which
+  // imports "diff"; without it the guarded launch rejects the module.
+  Object.freeze({
+    packageName: "diff",
+    packageVersion: "9.0.0",
+    dependencyDeclaration: "9.0.0",
   }),
 ]);
 

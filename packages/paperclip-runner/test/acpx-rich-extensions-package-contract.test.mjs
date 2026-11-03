@@ -9,7 +9,9 @@ import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const acpxRoot = dirname(require.resolve("acpx/package.json"));
-const { k: AcpClient } = await import(pathToFileURL(join(acpxRoot, "dist/live-checkpoint-BSIrfgVo.js")));
+// ACPX 0.21.1's AcpClient lives in a hashed chunk under a minified alias.
+const { Y: AcpClient } = await import(pathToFileURL(join(acpxRoot, "dist/queue-owner-runtime-B0mPqOu4.js")));
+assert.equal(AcpClient.name, "AcpClient");
 const fixture = String.raw`
 const readline = require('node:readline');
 const send = (value) => process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+'\n');
@@ -67,13 +69,23 @@ test("real ACP stream delivers request ID zero and only allowlisted, session-bou
 });
 
 test("initialize retains mandatory capabilities while merging provider metadata", { timeout: 10000 }, async () => {
-  await withClient({ clientCapabilities: { fs: { readTextFile: true }, terminal: true, elicitation: { url: {} }, _meta: { "github.com/copilot": { events: ["session.idle"] }, jetbrains: { removed: true } } } }, async (client) => {
+  // ACPX 0.21.1 no longer hard-codes the AIR typed-failure declaration; the
+  // runner passes it per profile (never to Codex) and it must arrive intact.
+  const air = { version: 1, capabilities: ["sessionFailure"] };
+  await withClient({ clientCapabilities: { fs: { readTextFile: true }, terminal: true, elicitation: { url: {} }, _meta: { "github.com/copilot": { events: ["session.idle"] }, jetbrains: { air } } } }, async (client) => {
     const actual = client.initializeResult._meta.receivedCapabilities;
     assert.deepEqual(actual.fs, { readTextFile: false, writeTextFile: false });
     assert.equal(actual.terminal, false);
     assert.deepEqual(actual.elicitation, { form: {} });
     assert.deepEqual(actual._meta["github.com/copilot"], { events: ["session.idle"] });
-    assert.deepEqual(actual._meta.jetbrains.air.capabilities, ["sessionFailure"]);
+    assert.deepEqual(actual._meta.jetbrains, { air });
+  });
+});
+
+test("initialize advertises no AIR declaration unless the host supplies one", { timeout: 10000 }, async () => {
+  await withClient({}, async (client) => {
+    const actual = client.initializeResult._meta.receivedCapabilities;
+    assert.equal(actual._meta?.jetbrains, undefined);
   });
 });
 
@@ -113,7 +125,8 @@ test("runtime forwards extension hooks through ephemeral client options", async 
   for (const field of ["clientCapabilities", "extensionMethods", "onExtensionRequest", "onExtensionNotification"]) {
     assert.ok(runtime.includes(`${field}: this.options.${field}`));
   }
-  const implementation = await readFile(join(acpxRoot, "dist/live-checkpoint-BSIrfgVo.js"), "utf8");
+  const implementation = await readFile(join(acpxRoot, "dist/ipc-BbYFsKOj.js"), "utf8");
+  assert.ok(implementation.includes("function serializeSessionRecordForDisk"));
   const serialization = implementation.slice(implementation.indexOf("function serializeSessionRecordForDisk"), implementation.indexOf("function serializeSessionRecordForDisk") + 6000);
   assert.doesNotMatch(serialization, /onExtensionRequest|onExtensionNotification|clientCapabilities|extensionMethods/);
 });
