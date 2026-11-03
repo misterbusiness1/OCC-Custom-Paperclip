@@ -372,7 +372,7 @@ describe("kimi_local execute", () => {
     expect(seenEnv.TERM).toBe("xterm-256color");
   });
 
-  it.each(["kimi-code/k3", "kimi-code/k3-256k", "kimi-code/kimi-for-coding"])("forwards configured effort for %s", async (model) => {
+  it.each(["kimi-code/k3", "kimi-code/k3-256k", "kimi-code/k3.1-pro", "kimi-code/k3.1-pro-highspeed", "kimi-code/kimi-for-coding"])("forwards configured effort for %s", async (model) => {
     const root = await makeTempRoot();
     let seenEnv: Record<string, string> = {};
     runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
