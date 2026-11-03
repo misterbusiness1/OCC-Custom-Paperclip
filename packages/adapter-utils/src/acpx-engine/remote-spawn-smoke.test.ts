@@ -60,6 +60,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 async function ensureRealAcpSession(input: {
   cwd: string;
   spawnCwd?: string;
+  verbose?: boolean;
   onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
 }) {
   const stateRoot = await makeTempDir("paperclip-acpx-remote-spawn-state-");
@@ -67,8 +68,9 @@ async function ensureRealAcpSession(input: {
   const agentCommand = `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(fixturePath.replaceAll("\\", "/"))}`;
   const runtimeOptions: PatchedAcpRuntimeOptions = {
     cwd: input.cwd,
-    // `spawnCwd` is the host-only knob added by patches/acpx@0.12.0.patch; when
-    // unset acpx falls back to `cwd`, so every non-proxy lane is byte-identical.
+    // `spawnCwd` is the host-only knob added by patches/acpx@0.21.1.patch (it
+    // was in patches/acpx@0.12.0.patch before); when unset acpx falls back to
+    // `cwd`, so every non-proxy lane is byte-identical.
     ...(input.spawnCwd ? { spawnCwd: input.spawnCwd } : {}),
     sessionStore: createRuntimeStore({ stateDir: path.join(stateRoot, "state") }),
     agentRegistry: createAgentRegistry({ overrides: { custom: agentCommand } }),
@@ -76,6 +78,7 @@ async function ensureRealAcpSession(input: {
     nonInteractivePermissions: "deny",
     onAgentStderr: (chunk: string) => stderrChunks.push(chunk),
     onAgentSpawn: input.onAgentSpawn,
+    ...(input.verbose ? { verbose: true } : {}),
   };
   const runtime = createAcpRuntime(runtimeOptions);
 
@@ -171,3 +174,26 @@ it("kills the ACP agent when process identity persistence rejects", async () => 
     if (isProcessAlive(spawnedPid!)) process.kill(spawnedPid!, "SIGKILL");
   }
 });
+
+it("routes agent stderr only to onAgentStderr, even with verbose logging on", async () => {
+  // The engine runs the claude lane with `verbose: true` and routes child
+  // stderr through onAgentStderr (per-run log + benign-noise filter). acpx
+  // 0.12.0's patch made the callback replace the verbose passthrough; the
+  // 0.21.1 patch keeps that, so raw provider stderr never reaches the server log.
+  const hostCwd = await makeTempDir("paperclip-acpx-stderr-routing-");
+  const written: string[] = [];
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+    written.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return (originalWrite as (...args: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof process.stderr.write;
+  let outcome: Awaited<ReturnType<typeof ensureRealAcpSession>>;
+  try {
+    outcome = await ensureRealAcpSession({ cwd: hostCwd, verbose: true });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  expect(outcome.resolved, JSON.stringify(outcome)).toBe(true);
+  expect(outcome.stderr).toContain("SPAWN_CWD=");
+  expect(written.join("")).not.toContain("SPAWN_CWD=");
+}, 30_000);

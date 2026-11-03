@@ -40,6 +40,16 @@ export type AcpxProcessIdentitySink = {
   localProcess?: ChildProcess;
 };
 
+/**
+ * The host-owned environment ACP `terminal/create` children receive. A warm
+ * runtime outlives the run that created it, and acpx evaluates its
+ * `terminalEnvironment` factory at every `terminal/create`, so each run swaps
+ * `env` in place before its turn and the factory always reads the current run.
+ */
+export interface TerminalEnvState {
+  env: Record<string, string>;
+}
+
 /** The live-line buffer and log path a warm runtime's child stderr carries. */
 export interface ChildStderrState {
   logPath: string | null;
@@ -56,6 +66,7 @@ export interface RuntimeCacheEntry {
   handle: AcpRuntimeHandle;
   childStderrState: ChildStderrState;
   processIdentitySink: AcpxProcessIdentitySink;
+  terminalEnvState: TerminalEnvState;
   fingerprint: string;
   lastUsedAt: number;
   cleanupTimer?: ReturnType<typeof setTimeout>;

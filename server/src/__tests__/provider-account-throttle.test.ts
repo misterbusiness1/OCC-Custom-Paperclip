@@ -37,7 +37,7 @@ describeEmbedded("shared Codex account HTTP429 admission", () => {
     services.push(heartbeat);
     root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-account-throttle-"));
     const runtimeOptions: NonNullable<Parameters<typeof createCodexAcpExecutor>[0]> = {
-      createRuntime: (options) => { const agentId = String(options.terminalEnv?.PAPERCLIP_AGENT_ID); runtimeCreations++; return ({
+      createRuntime: (options) => { const agentId = String(options.terminalEnvironment?.().PAPERCLIP_AGENT_ID); runtimeCreations++; return ({
         ensureSession: async () => ({ backendSessionId: randomUUID(), agentSessionId: randomUUID(), runtimeSessionName: randomUUID() }),
         startTurn: () => {
           providerTurns++;

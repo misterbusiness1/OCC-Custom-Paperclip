@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // ACP fixture that deliberately creates a terminal without forwarding any
-// environment entries. The host runtime's terminalEnv option must supply the
-// active Paperclip run variables to this host-side child shell.
+// environment entries. The host runtime's terminalEnvironment factory must
+// supply the active Paperclip run variables to this host-side child shell.
 import { createInterface } from "node:readline";
 
 let nextRequestId = 100;

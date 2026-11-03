@@ -144,6 +144,7 @@ import {
   type AcpxAgentProcessIdentity,
   type AcpxProcessIdentitySink,
   type ChildStderrState,
+  type TerminalEnvState,
   type RuntimeCacheEntry,
 } from "./run-site-host.js";
 import { createSandboxRunSite, type SandboxRunSite } from "./run-site-sandbox.js";
@@ -194,6 +195,25 @@ function flushChildStderr(state: ChildStderrState) {
     process.stderr.write(state.pendingLiveLine);
   }
   state.pendingLiveLine = "";
+}
+
+// Advertise typed AIR session failures in `initialize` so an agent that
+// supports them (claude-agent-acp) resolves a provider failure as a typed
+// `_meta.jetbrains.air.sessionFailure` the runtime hands to
+// `onTerminalSessionFailure`. The acpx 0.12.0 patch hard-coded this for every
+// agent; acpx 0.21.1 takes it per runtime through `clientCapabilities`.
+// codex-acp 2.5.0 treats ANY `_meta.jetbrains.air` as an AIR client: it then
+// changes tool-call payloads, stops streaming the provider's error sentence as
+// output, and runs an extra billable prompt-suggestion turn after every turn.
+// Codex reports provider failures as a JSON-RPC error carrying
+// `codexErrorInfo` instead, so it does not need (and must not get) the flag.
+const AIR_TYPED_SESSION_FAILURE_CLIENT_CAPABILITIES: Readonly<Record<string, unknown>> = Object.freeze({
+  _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } } },
+});
+
+export function acpClientCapabilitiesForAgent(acpxAgent: string): Record<string, unknown> | undefined {
+  if (acpxAgent === "codex") return undefined;
+  return structuredClone(AIR_TYPED_SESSION_FAILURE_CLIENT_CAPABILITIES) as Record<string, unknown>;
 }
 
 type PaperclipAcpRuntimeOptions = AcpRuntimeOptions & {
@@ -4149,6 +4169,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let sessionHandle!: AcpRuntimeHandle;
       let childStderrState!: ChildStderrState;
       let processIdentitySink!: AcpxProcessIdentitySink;
+      let terminalEnvState!: TerminalEnvState;
       let resumedSession = false;
       let clearSession = false;
       let referencedProjectStagingFailuresField:
@@ -4337,6 +4358,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // target mutable so a later agent respawn records identity on the current
         // heartbeat instead of the run that originally created the runtime.
         processIdentitySink.current = ctx.onSpawn;
+        // The terminal environment holder travels with the warm runtime, because
+        // the runtime's `terminalEnvironment` factory closes over it. A cold start
+        // gets a fresh holder; either way it is refreshed below before the turn.
+        terminalEnvState = cached?.terminalEnvState ?? { env: { ...prepared.env } };
         flushChildStderr(childStderrState);
         childStderrState.logPath = prepared.childStderrLogPath;
         const persistedRuntimeStore = createRuntimeStore({ stateDir: prepared.stateDir });
@@ -4380,8 +4405,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           verbose: prepared.acpxAgent === "claude",
           // The engine passes a complete, sanitized launch environment. ACPX
           // must not merge the Paperclip server's ambient environment back in
-          // when it spawns the provider child.
-          inheritProcessEnv: false,
+          // when it spawns the provider child: start the child environment from
+          // an empty record (the session options `env` and `agentProcessEnv`
+          // still overlay it). This replaces the acpx 0.12.0 patch's
+          // `inheritProcessEnv: false`. Do not use `agentProcessEnvAllow: []`
+          // instead: its essential names (`XDG_*`, `LC_*`, `HOME`, ...) would
+          // re-admit ambient host configuration.
+          spawnEnvironment: () => ({}),
+          clientCapabilities: acpClientCapabilitiesForAgent(prepared.acpxAgent),
           onAgentStderr: prepared.childStderrLogPath
             ? (chunk) => routeChildStderr(childStderrState, chunk)
             : undefined,
@@ -4396,8 +4427,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           },
           // ACP agents may create host-side terminal processes without
           // forwarding their launch environment. Give terminal/create the
-          // same sanitized run environment as the ACP child.
-          terminalEnv: { ...prepared.env },
+          // same sanitized run environment as the ACP child. acpx evaluates the
+          // factory at every terminal/create and applies it last, so this run's
+          // PAPERCLIP_* identity wins over any agent-supplied terminal env.
+          terminalEnvironment: () => ({ ...terminalEnvState.env }),
           getRuntimeParentContext,
         };
         // Open Q2: split the ~7s `acp.handshake` into the two in-repo-observable
@@ -4424,7 +4457,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // Warm ACP runtimes outlive a single heartbeat. Refresh the environment
         // before each turn so host-side terminal/create receives this run's JWT,
         // run id, task id, and scratch paths rather than the prior run's values.
-        await runtime.setTerminalEnv?.({ env: { ...prepared.env } });
+        terminalEnvState.env = { ...prepared.env };
         // Register the runtime composite in the ledger now that it exists. The
         // settlement `endSession` step closes it on every path the reuse decision
         // does not transfer. Registration here (before `ensureSession`) closes the

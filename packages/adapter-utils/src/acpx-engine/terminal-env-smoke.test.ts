@@ -18,13 +18,16 @@ it("uses the current terminal environment for fresh and warm ACP sessions", asyn
   tempRoots.push(root);
   const agentCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(fixturePath)}`;
   const stderrChunks: string[] = [];
+  // The host owns this holder and swaps it between runs; acpx evaluates the
+  // factory at every terminal/create, including on the warm session below.
+  const terminalEnvState: { env: Record<string, string> } = { env: { PAPERCLIP_RUN_ID: "run-one" } };
   const runtime = createAcpRuntime({
     cwd: root,
     sessionStore: createRuntimeStore({ stateDir: path.join(root, "state") }),
     agentRegistry: createAgentRegistry({ overrides: { terminal_env_fixture: agentCommand } }),
     permissionMode: "approve-all",
     nonInteractivePermissions: "deny",
-    terminalEnv: { PAPERCLIP_RUN_ID: "run-one" },
+    terminalEnvironment: () => ({ ...terminalEnvState.env }),
     verbose: true,
     timeoutMs: 10_000,
   });
@@ -49,9 +52,11 @@ it("uses the current terminal environment for fresh and warm ACP sessions", asyn
 
   try {
     expect(await runTurn("terminal-env-run-one")).toBe("run-one");
-    await runtime.setTerminalEnv?.({ env: { PAPERCLIP_RUN_ID: "run-two" } });
+    terminalEnvState.env = { PAPERCLIP_RUN_ID: "run-two" };
     expect(await runTurn("terminal-env-run-two")).toBe("run-two");
   } finally {
     await runtime.close({ handle, reason: "terminal environment smoke complete", discardPersistentState: true });
   }
-});
+  // acpx 0.21.1 snapshots the host process table around each terminal/create
+  // and terminal/release (about 0.8 s each on a busy host).
+}, 30_000);
