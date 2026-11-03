@@ -8,10 +8,21 @@ function writeMessage(message) {
 }
 
 let supportsTypedSessionFailure = false;
+let airClient = false;
+
+// A JSON-RPC error carrying its own `data`, as codex-acp's RequestError does.
+class AcpRpcError extends Error {
+  constructor(code, message, data) {
+    super(message);
+    this.rpc = { code, message, ...(data === undefined ? {} : { data }) };
+  }
+}
 
 async function handleRequest(request) {
   if (request.method === "initialize") {
     const air = request.params?.clientCapabilities?._meta?.jetbrains?.air;
+    // codex-acp 2.5.0 treats any `_meta.jetbrains.air` object as an AIR client.
+    airClient = air !== null && typeof air === "object" && !Array.isArray(air);
     supportsTypedSessionFailure =
       Number.isInteger(air?.version) &&
       air.version >= 1 &&
@@ -32,6 +43,33 @@ async function handleRequest(request) {
   }
   if (request.method === "session/new") return { sessionId: randomUUID() };
   if (request.method === "session/prompt") {
+    // Mirrors the patched codex-acp 2.5.0 provider-error path for a client that
+    // is not an AIR client: the provider sentence streams as the turn's output
+    // and the prompt rejects with a JSON-RPC internal error whose data carries
+    // `codexErrorInfo`. An AIR client gets no output text (codex records a
+    // typed failure instead), which is why the codex lane must not advertise AIR.
+    const codexError = process.env.PAPERCLIP_ACPX_CODEX_ERROR_FILE
+      ? JSON.parse(await readFile(process.env.PAPERCLIP_ACPX_CODEX_ERROR_FILE, "utf8"))
+      : null;
+    if (codexError) {
+      if (!airClient) {
+        writeMessage({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: request.params.sessionId,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: `${codexError.message}\n\n` },
+            },
+          },
+        });
+      }
+      throw new AcpRpcError(-32603, "Internal error", {
+        message: codexError.message,
+        ...(codexError.codexErrorInfo === undefined ? {} : { codexErrorInfo: codexError.codexErrorInfo }),
+      });
+    }
     const typedFailure = process.env.PAPERCLIP_ACPX_TYPED_FAILURE_FILE
       ? JSON.parse(await readFile(process.env.PAPERCLIP_ACPX_TYPED_FAILURE_FILE, "utf8"))
       : {};
@@ -141,7 +179,7 @@ lines.on("line", async (line) => {
       writeMessage({
         jsonrpc: "2.0",
         id: request.id,
-        error: { code: -32603, message: String(error?.message ?? error) },
+        error: error instanceof AcpRpcError ? error.rpc : { code: -32603, message: String(error?.message ?? error) },
       });
     }
   }

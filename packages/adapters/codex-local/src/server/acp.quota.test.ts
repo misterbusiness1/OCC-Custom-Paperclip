@@ -24,9 +24,12 @@ async function executeFailure(
   category = "limit",
   mode = "oneshot",
   createRuntime?: AcpxEngineExecutorOptions["createRuntime"],
+  codexError?: { message: string; codexErrorInfo?: unknown },
 ) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-acp-quota-"));
   roots.push(root);
+  const codexErrorFile = path.join(root, "codex-error.json");
+  if (codexError) await fs.writeFile(codexErrorFile, JSON.stringify(codexError));
   const logs: string[] = [];
   const execute = createCodexAcpExecutor({ now: () => now.getTime(), createRuntime });
   const result = await execute({
@@ -41,8 +44,12 @@ async function executeFailure(
       stateDir: path.join(root, "state"),
       env: {
         CODEX_HOME: path.join(root, "codex-home"),
-        PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: title,
-        PAPERCLIP_ACPX_TYPED_FAILURE_CATEGORY: category,
+        ...(codexError
+          ? { PAPERCLIP_ACPX_CODEX_ERROR_FILE: codexErrorFile }
+          : {
+              PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: title,
+              PAPERCLIP_ACPX_TYPED_FAILURE_CATEGORY: category,
+            }),
       },
     },
     context: {},
@@ -52,15 +59,17 @@ async function executeFailure(
   return { result, logs: logs.join("\n") };
 }
 
+// Typed AIR session failures reach the codex classifier only on the runner's
+// ACPX 0.13.1 lane, which advertises AIR to every agent. The production engine
+// (ACPX 0.21.1) deliberately does not advertise AIR to codex-acp 2.5.0; its
+// provider failures are covered by the JSON-RPC rows below.
 it.each([
-  ["0.12.0", "oneshot"],
-  ["0.12.0", "persistent"],
   ["0.13.1", "oneshot"],
   ["0.13.1", "persistent"],
-])("waits for a typed Codex quota reset with ACPX %s in %s mode without exposing provider text", async (version, mode) => {
+])("waits for a typed Codex quota reset with ACPX %s in %s mode without exposing provider text", async (_version, mode) => {
   const title = "You've hit your usage limit for GPT-5. Switch to another model now, or try again at 4:30 PM (America/Chicago).";
   const { result, logs } = await executeFailure(
-    title, "limit", mode, version === "0.13.1" ? runnerAcpx.createAcpRuntime : undefined,
+    title, "limit", mode, runnerAcpx.createAcpRuntime,
   );
   expect(result).toMatchObject({
     exitCode: 1,
@@ -79,7 +88,7 @@ it.each([
 
 it("classifies quota without a reset time for the existing recovery backoff", async () => {
   const title = "You've hit your usage limit. Visit https://example.invalid/usage for account details.";
-  const { result, logs } = await executeFailure(title);
+  const { result, logs } = await executeFailure(title, "limit", "oneshot", runnerAcpx.createAcpRuntime);
   expect(result).toMatchObject({ errorCode: "provider_quota", errorFamily: "provider_quota" });
   expect(result.retryNotBefore).toBeUndefined();
   expect(JSON.stringify(result)).not.toContain(title);
@@ -97,12 +106,75 @@ it.each([
   ["The account has available quota", "limit"],
   ["The worker connection closed", "connection"],
 ])("keeps a non-quota typed failure out of quota recovery: %s", async (title, category) => {
-  const { result, logs } = await executeFailure(title, category);
+  const { result, logs } = await executeFailure(title, category, "oneshot", runnerAcpx.createAcpRuntime);
   expect(result).toMatchObject({ exitCode: 1, errorCode: "acpx_turn_failed" });
   expect(result.errorFamily).not.toBe("provider_quota");
   expect(result.retryNotBefore).toBeUndefined();
   expect(JSON.stringify(result)).not.toContain(title);
   expect(logs).not.toContain(title);
+});
+
+// The production codex lane: ACPX 0.21.1 with a fixture that answers exactly
+// as patched codex-acp 2.5.0 does for a non-AIR client (provider sentence as
+// output, then a JSON-RPC internal error with `codexErrorInfo`).
+it.each(["oneshot", "persistent"])(
+  "classifies a codex-acp 2.5.0 usage-limit error as provider quota with its reset on ACPX 0.21.1 (%s)",
+  async (mode) => {
+    const message = "You've hit your usage limit for GPT-5. Switch to another model now, or try again at 4:30 PM (America/Chicago).";
+    const { result } = await executeFailure(message, "limit", mode, undefined, {
+      message,
+      codexErrorInfo: "usageLimitExceeded",
+    });
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "provider_quota",
+      errorFamily: "provider_quota",
+      resultJson: { errorFamily: "provider_quota" },
+    });
+    // The whole-output provider sentence path reads Codex's local reset clock
+    // against the real clock (not the injected test clock): 4:30 PM Chicago is
+    // 21:30Z in daylight time and 22:30Z in standard time.
+    expect(result.retryNotBefore).toMatch(/T2[12]:30:00\.000Z$/);
+    expect(Date.parse(result.retryNotBefore ?? "")).toBeGreaterThan(Date.now());
+    expect((result.resultJson as Record<string, unknown>).providerQuotaRetryNotBefore).toBe(result.retryNotBefore);
+  },
+);
+
+it.each([
+  [
+    "a 429 retry exhaustion",
+    { message: "exceeded retry limit, last status: 429 Too Many Requests", codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 429 } } },
+    { errorCode: "acpx_transient_upstream", errorFamily: "transient_upstream", providerHttpStatus: 429 },
+  ],
+  [
+    "a 502 stream disconnect",
+    { message: "stream disconnected before completion: 502 Bad Gateway", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 502 } } },
+    { errorCode: "acpx_transient_upstream", errorFamily: "transient_upstream", providerHttpStatus: 502 },
+  ],
+  [
+    "a 503 connection failure",
+    { message: "exceeded retry limit, last status: 503 Service Unavailable", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } },
+    { errorCode: "acpx_transient_upstream", errorFamily: "transient_upstream", providerHttpStatus: 503 },
+  ],
+  [
+    "an overloaded model without a status",
+    { message: "Selected model is at capacity. Please try a different model.", codexErrorInfo: "serverOverloaded" },
+    { errorCode: "codex_transient_upstream", errorFamily: "transient_upstream" },
+  ],
+  [
+    "a configured-auth 401",
+    { message: "unexpected status 401 Unauthorized", codexErrorInfo: { responseStreamConnectionFailed: { httpStatusCode: 401 } } },
+    { errorCode: "acpx_auth_required", providerHttpStatus: 401 },
+  ],
+])("classifies %s from codex-acp 2.5.0 on ACPX 0.21.1 and never as quota", async (_label, codexError, expected) => {
+  const { result } = await executeFailure(codexError.message, "limit", "oneshot", undefined, codexError);
+  const { providerHttpStatus, ...fields } = expected as Record<string, unknown>;
+  expect(result).toMatchObject({ exitCode: 1, ...fields });
+  expect(result.errorFamily).not.toBe("provider_quota");
+  expect(result.errorCode).not.toBe("provider_quota");
+  const resultJson = result.resultJson as Record<string, unknown>;
+  if (providerHttpStatus !== undefined) expect(resultJson.providerHttpStatus).toBe(providerHttpStatus);
+  else expect(resultJson.providerHttpStatus).toBeUndefined();
 });
 
 it("does not infer quota from the historical generic terminal-limit error", () => {
