@@ -332,7 +332,7 @@ describeEmbedded("generic adapter provider quota failures", () => {
   );
 
   it.each(["codex", "claude"] as const)(
-    "holds new work after the %s adapter receives a typed limit from a real ACP process",
+    "holds new work after the %s adapter receives a provider limit from a real ACP process",
     async (lane) => {
       const root = path.join(acpxStateRoot, lane);
       const cwd = path.join(root, "workspace");
@@ -346,6 +346,18 @@ describeEmbedded("generic adapter provider quota failures", () => {
       const canary = lane === "codex"
         ? `You've hit your usage limit for GPT-5. Switch to another model now, or try again at ${resetClock} (UTC).`
         : `You've hit your session limit · resets ${resetClock.toLowerCase().replace(" ", "")} (UTC)`;
+      // codex-acp 2.5.0 is deliberately not offered AIR typed failures by the
+      // production engine (ACPX 0.21.1): it fails the prompt with a JSON-RPC
+      // internal error carrying codexErrorInfo and streams the provider
+      // sentence as the turn's output, which codex-local classifies. Claude
+      // keeps the typed AIR session-failure path.
+      const codexErrorFile = path.join(root, "codex-error.json");
+      if (lane === "codex") {
+        await fs.writeFile(codexErrorFile, JSON.stringify({ message: canary, codexErrorInfo: "usageLimitExceeded" }));
+      }
+      const failureEnv = lane === "codex"
+        ? { PAPERCLIP_ACPX_CODEX_ERROR_FILE: codexErrorFile }
+        : { PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: canary, PAPERCLIP_ACPX_TYPED_FAILURE_CATEGORY: "limit" };
       const { companyId, agentId, issueId } = await seedAssignedIssue(processAdapterTypes[lane], {
         agentCommand: `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(fixturePath.replaceAll("\\", "/"))}`,
         mode: "oneshot", stateDir, cwd, timeoutSec: 15,
@@ -355,20 +367,26 @@ describeEmbedded("generic adapter provider quota failures", () => {
           CLAUDE_CONFIG_DIR: path.join(root, "claude-home"),
           XDG_CONFIG_HOME: path.join(root, "config"),
           OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "",
-          PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: canary,
-          PAPERCLIP_ACPX_TYPED_FAILURE_CATEGORY: "limit",
+          ...failureEnv,
         },
       });
       const runId = await runUntilFailed(agentId, issueId);
       await heartbeat.drainActiveRunExecutions();
       const failed = await heartbeat.getRun(runId);
-      expect(failed?.error).toContain("ACP agent reported a terminal limit failure.");
       expect(failed?.errorCode).toBe("provider_quota");
-      expect(failed?.resultJson).toMatchObject({
-        errorFamily: "provider_quota", terminalSessionFailure: { category: "limit" }, terminalSessionFailureClassified: true,
-      });
+      expect(failed?.resultJson).toMatchObject({ errorFamily: "provider_quota" });
       expect(new Date(String(failed?.resultJson?.providerQuotaRetryNotBefore)).getTime()).toBeGreaterThan(Date.now());
-      expect(JSON.stringify({ error: failed?.error, result: failed?.resultJson })).not.toContain(canary);
+      if (lane === "claude") {
+        expect(failed?.error).toContain("ACP agent reported a terminal limit failure.");
+        expect(failed?.resultJson).toMatchObject({
+          terminalSessionFailure: { category: "limit" }, terminalSessionFailureClassified: true,
+        });
+        expect(JSON.stringify({ error: failed?.error, result: failed?.resultJson })).not.toContain(canary);
+      } else {
+        // The codex provider sentence is a trusted whole-output diagnostic,
+        // exactly as on the codex-acp 1.1.7 lane; it is not a typed failure.
+        expect(failed?.resultJson?.terminalSessionFailure).toBeUndefined();
+      }
       const stderr = await fs.readFile(path.join(stateDir, "run-stderr", `${runId}.log`), "utf8");
       expect(stderr).toContain("paperclip-acp-echo-agent started");
 

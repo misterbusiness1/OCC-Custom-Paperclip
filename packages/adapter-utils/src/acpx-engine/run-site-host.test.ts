@@ -15,6 +15,7 @@ function makeEntry(id: string, lastUsedAt: number): RuntimeCacheEntry {
     handle: { sessionKey: id } as never,
     childStderrState: { logPath: null, pendingLiveLine: "" },
     processIdentitySink: { current: undefined, latest: null },
+    terminalEnvState: { env: {} },
     fingerprint: `fp-${id}`,
     lastUsedAt,
   };

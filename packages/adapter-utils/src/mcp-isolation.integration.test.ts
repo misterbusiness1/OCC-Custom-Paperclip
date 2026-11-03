@@ -27,7 +27,8 @@ interface McpObservation {
   tools: string[];
 }
 
-type McpServer = NonNullable<AcpRuntimeOptions["mcpServers"]>[number];
+// acpx 0.21.1 accepts either a list or a per-session factory; the fixture uses the list form.
+type McpServer = Extract<NonNullable<AcpRuntimeOptions["mcpServers"]>, readonly unknown[]>[number];
 
 afterEach(async () => {
   await Promise.all(
