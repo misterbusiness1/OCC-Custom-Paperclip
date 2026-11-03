@@ -29,11 +29,13 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
 }));
 
+let routeModules: [
+  typeof import("../middleware/index.js"),
+  typeof import("../routes/issue-tree-control.js"),
+];
+
 async function createApp(actor: Record<string, unknown>) {
-  const [{ errorHandler }, { issueTreeControlRoutes }] = await Promise.all([
-    import("../middleware/index.js"),
-    import("../routes/issue-tree-control.js"),
-  ]);
+  const [{ errorHandler }, { issueTreeControlRoutes }] = routeModules;
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -46,7 +48,7 @@ async function createApp(actor: Record<string, unknown>) {
 }
 
 describe("issue tree control routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue({
       id: "11111111-1111-4111-8111-111111111111",
@@ -62,6 +64,10 @@ describe("issue tree control routes", () => {
     });
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
     mockHeartbeatService.wakeup.mockResolvedValue(null);
+    routeModules = await Promise.all([
+      import("../middleware/index.js"),
+      import("../routes/issue-tree-control.js"),
+    ]);
   });
 
   it("rejects cross-company preview requests with a uniform 404 before calling the preview service", async () => {
