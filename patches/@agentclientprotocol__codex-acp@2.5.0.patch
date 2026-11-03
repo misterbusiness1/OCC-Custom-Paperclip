@@ -1,0 +1,159 @@
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -37241,26 +37241,15 @@
+     delete this.sessionState.sessionFailure;
+   }
+   async handleFailedTurn(turn) {
+-    if (turn.status === "failed" && this.isAuthenticationRequiredError(turn.error?.codexErrorInfo ?? null)) {
++    if (turn.status !== "failed") return;
++    const error = turn.error ?? (this.terminalTurnError?.turnId === turn.id ? this.terminalTurnError.error : null) ?? { message: "Turn failed", codexErrorInfo: null, additionalDetails: null };
++    if (this.isAuthenticationRequiredError(error.codexErrorInfo ?? null)) {
+       this.failure = RequestError.authRequired();
+       return;
+     }
+-    const activeFailure = this.sessionState.sessionFailure;
+-    if (!this.supportsTypedSessionFailures || turn.status !== "failed" || this.failure !== null || this.failureTurnIdById.get(activeFailure?.id ?? "") === turn.id && activeFailure?.severity === "error") {
+-      return;
+-    }
+-    const error62 = turn.error ?? {
+-      message: "Turn failed",
+-      codexErrorInfo: null,
+-      additionalDetails: null,
+-      misalignment: null
+-    };
+-    this.recordTypedSessionFailure({
+-      threadId: this.sessionState.sessionId,
+-      turnId: turn.id,
+-      willRetry: false,
+-      error: error62
+-    });
++    if (this.failure !== null) return;
++    this.failure = RequestError.internalError(this.createTurnErrorData(error));
++    if (this.supportsTypedSessionFailures) this.recordTypedSessionFailure({ threadId: this.sessionState.sessionId, turnId: turn.id, willRetry: false, error });
+   }
+   takeCompletedPlan() {
+     const plan = this.completedPlan;
+@@ -37901,14 +37890,10 @@
+         }
+       });
+     }
++    this.failure = RequestError.internalError(this.createTurnErrorData(params.error));
+     if (this.supportsTypedSessionFailures) {
+       this.recordTypedSessionFailure(params);
+       return null;
+-    }
+-    if (error62 === "usageLimitExceeded") {
+-      this.failure = RequestError.internalError(
+-        this.createTurnErrorData(params.error)
+-      );
+     }
+     if (this.failure !== null) {
+       failuresShownAsMessages.add(this.failure);
+@@ -38835,7 +38820,7 @@
+   return {
+     request: {
+       sessionId,
+-      toolCall,
++      toolCall: { ...toolCall, ...(context.isToolApproval ? { rawInput: { ...toolCall.rawInput, serverName: params.serverName } } : {}) },
+       ...toolApprovalMeta,
+       options: buildMcpPermissionOptions(
+         context.isToolApproval,
+@@ -38994,7 +38979,7 @@
+     const signal = subagentInteractionSignal(params.threadId, this.cancellationSignal);
+     try {
+       const context = this.createMcpElicitationContext(params);
+-      if (this.shouldUseAcpElicitation(params)) {
++      if (!context.isToolApproval && this.shouldUseAcpElicitation(params)) {
+         const response2 = await withSubagentUserAction(params.threadId, () => this.connection.request(
+           methods.client.elicitation.create,
+           this.buildElicitationRequest(params, context),
+@@ -41581,6 +41566,7 @@
+     const response = await this.resumeThreadWithInstructions({
+       excludeTurns: true,
+       config: sessionConfig.config,
++      baseInstructions: paperclipBaseInstructions(request),
+       cwd: request.cwd,
+       modelProvider: await this.getResumeModelProvider(),
+       threadId: request.sessionId,
+@@ -41627,6 +41613,7 @@
+     const response = await this.resumeThreadWithInstructions({
+       excludeTurns: true,
+       config: sessionConfig.config,
++      baseInstructions: paperclipBaseInstructions(request),
+       cwd: request.cwd,
+       modelProvider: await this.getResumeModelProvider(),
+       threadId: request.sessionId,
+@@ -41719,6 +41706,7 @@
+       config: sessionConfig.config,
+       modelProvider: this.getModelProvider(),
+       cwd: request.cwd,
++      baseInstructions: paperclipBaseInstructions(request),
+       ...developerInstructions !== void 0 && { developerInstructions }
+     });
+     const codexModels = await this.fetchAvailableModels();
+@@ -41913,6 +41901,7 @@
+     });
+     const mergedConfig = {
+       ...disableUnsupportedSkills(forceGitRootTurnDiffPaths(mergeGatewayConfig(this.config, this.gatewayConfig))),
++      ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" ? { "include_apps_instructions": false, "features.apps": false, "features.memory_tool": false, "skills.include_instructions": true, "mcp_servers": {} } : {}),
+       projects: Object.fromEntries(sessionRoots.map((root) => [root, {
+         trust_level: "trusted"
+       }]))
+@@ -41926,7 +41915,7 @@
+       server: normalizeMcpServer(mcp)
+     }));
+     let serversToConfigure = requestedServers;
+-    if (shouldDeduplicateMcpConflicts()) {
++    if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1" && shouldDeduplicateMcpConflicts()) {
+       const existingNames = await this.getConfigMcpServerNames(projectPath);
+       serversToConfigure = requestedServers.filter((mcp) => !existingNames.has(mcp.name));
+     }
+@@ -41971,7 +41960,8 @@
+     if (!cwd) {
+       return;
+     }
+-    const skillExtraRoots = additionalRoots.map((root) => path10.join(root, ".agents", "skills"));
++    const isolated = process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1";
++    const skillExtraRoots = isolated ? [] : additionalRoots.map((root) => path10.join(root, ".agents", "skills"));
+     if (!arraysEqual(this.skillExtraRoots, skillExtraRoots)) {
+       await this.codexClient.skillsExtraRootsSet({ extraRoots: skillExtraRoots });
+       this.skillExtraRoots = skillExtraRoots;
+@@ -42078,7 +42068,7 @@
+       input: input2,
+       approvalPolicy: agentMode.approvalPolicy,
+       approvalsReviewer: agentMode.approvalsReviewer,
+-      sandboxPolicy: addAdditionalDirectoriesToSandboxPolicy(agentMode.sandboxPolicy, additionalDirectories),
++      sandboxPolicy: addAdditionalDirectoriesToSandboxPolicy(paperclipSandboxPolicy(agentMode.sandboxPolicy), additionalDirectories),
+       summary: disableSummary ? "none" : "auto",
+       effort,
+       model: modelId.model,
+@@ -42296,6 +42286,20 @@
+     return `[@${fileName}](${uri})`;
+   }
+   return uri;
++}
++function paperclipBaseInstructions(request) {
++  if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1") return void 0;
++  const prompt = request?._meta?.systemPrompt ?? request?.systemPrompt;
++  if (typeof prompt === "string") return prompt;
++  if (prompt && typeof prompt === "object" && typeof prompt.append === "string") {
++    return prompt.append;
++  }
++  return void 0;
++}
++function paperclipSandboxPolicy(sandboxPolicy) {
++  const networkAccess = process.env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS;
++  if (sandboxPolicy.type !== "workspaceWrite" || !["true", "false"].includes(networkAccess)) return sandboxPolicy;
++  return { ...sandboxPolicy, networkAccess: networkAccess === "true" && process.env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled" };
+ }
+ function shouldDeduplicateMcpConflicts() {
+   const disabledByEnv = process.env["DISABLE_MCP_CONFIG_FILTERING"] === "true";
+@@ -49900,6 +49904,7 @@
+         if (methodRequest.params.action === "set") {
+           const objective = methodRequest.params.objective;
+           await this.runWithProcessCheck(() => this.codexAcpClient.setGoal(sessionState.sessionId, objective));
++          if (this.sessionPublishIsCurrent(sessionState, sessionGeneration)) await this.publishCurrentGoalBestEffort(sessionState, sessionGeneration, true);
+         } else if (methodRequest.params.action === "pause") {
+           const goal = await this.runWithProcessCheck(() => this.codexAcpClient.setGoalStatus(sessionState.sessionId, "paused"));
+           if (this.sessionPublishIsCurrent(sessionState, sessionGeneration)) {
