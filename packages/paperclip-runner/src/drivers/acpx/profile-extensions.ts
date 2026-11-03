@@ -38,8 +38,29 @@ export function createAcpxProfileExtensionAdapter(
 ): AcpxProfileExtensionAdapter | null {
   return null;
 }
-export function acpxProfileClientCapabilities(_agent: QualifiedAcpxAgent): Record<string, unknown> {
-  return {};
+// ACPX 0.21.1 no longer hard-codes the JetBrains AIR typed session-failure
+// advertisement (0.13.1's runner patch did), so the runner declares it here
+// with the same rule as the production adapters (adapter-utils
+// acpClientCapabilitiesForAgent). codex-acp 2.5.0 switches into AIR IDE mode on
+// ANY `_meta.jetbrains.air`, so Codex gets nothing. Without typed session
+// failures codex-acp 2.5.0 streams the provider failure sentence as an agent
+// text chunk (runner `agentMessage` progress, never the final reply of the
+// failed turn) and then rejects the prompt with a JSON-RPC error carrying
+// `codexErrorInfo`; production codex_local behaves the same and its quota
+// classifier relies on that sentence. claude-agent-acp 0.100.0's
+// Paperclip patch keeps a client plain only when the capability list is exactly
+// ["sessionFailure"]; do not add entries to it.
+const AIR_TYPED_SESSION_FAILURE_CLIENT_CAPABILITIES = Object.freeze({
+  _meta: Object.freeze({
+    jetbrains: Object.freeze({
+      air: Object.freeze({ version: 1, capabilities: Object.freeze(["sessionFailure"]) }),
+    }),
+  }),
+});
+
+export function acpxProfileClientCapabilities(agent: QualifiedAcpxAgent): Record<string, unknown> {
+  if (agent === "codex") return {};
+  return structuredClone(AIR_TYPED_SESSION_FAILURE_CLIENT_CAPABILITIES) as Record<string, unknown>;
 }
 
 /** Reject an oversized approval document; never silently approve a truncated revision. */

@@ -88,7 +88,7 @@ export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "ap
 export interface NativeAcpxProfileSnapshot {
   driverKind: "acpx_runtime";
   protocolVersion: 1;
-  acpxVersion: "0.13.1";
+  acpxVersion: "0.21.1";
   agent: NativeAcpxAgent;
   agentProfileVersion: 1 | 2 | 3 | 4 | 5;
   agentServerPackage: string;
@@ -599,7 +599,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (
       profile.driverKind !== "acpx_runtime"
       || profile.protocolVersion !== 1
-      || profile.acpxVersion !== "0.13.1"
+      || profile.acpxVersion !== "0.21.1"
       || profile.agent !== provider.agent
       || (profile.agentProfileVersion !== 1 && profile.agentProfileVersion !== 2 && profile.agentProfileVersion !== 3 && profile.agentProfileVersion !== 4 && profile.agentProfileVersion !== 5)
     ) {
@@ -620,7 +620,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       profile: {
         driverKind: "acpx_runtime",
         protocolVersion: 1,
-        acpxVersion: "0.13.1",
+        acpxVersion: "0.21.1",
         agent: provider.agent,
         agentProfileVersion: profile.agentProfileVersion,
         agentServerPackage: text(profile.agentServerPackage, "input.provider.profile.agentServerPackage"),

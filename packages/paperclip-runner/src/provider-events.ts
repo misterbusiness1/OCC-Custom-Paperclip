@@ -1050,6 +1050,30 @@ export function canonicalProviderEventsFromOpenCodePart(
   return [];
 }
 
+/**
+ * The plan entries of an ACPX runtime plan event, or null when the event is not
+ * a plan. ACPX 0.21.1 reports plan updates as `status` events tagged `plan`
+ * that carry the normalized entries (an empty list for "plan updated"); the
+ * retired 0.13.1 runner patch emitted `{type: "plan"}`. A tagged status
+ * without an entries list carries no plan structure and stays a status line.
+ * The sidecar and the in-process mapper both use this so they cannot drift.
+ */
+export function acpxPlanEntriesFromRuntimeEvent(event: unknown): unknown[] | null {
+  const value = record(event);
+  const runtimeType = text(value.type);
+  if (runtimeType === "plan") {
+    return Array.isArray(value.entries) ? value.entries : [];
+  }
+  if (
+    runtimeType === "status" &&
+    value.tag === "plan" &&
+    Array.isArray(value.entries)
+  ) {
+    return value.entries;
+  }
+  return null;
+}
+
 /** Maps ACPX's bounded public runtime events; raw ACP JSON-RPC never enters PRP. */
 export function canonicalProviderEventsFromAcpxRuntimeEvent(
   event: AcpRuntimeEventShape,
@@ -1086,19 +1110,21 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
       },
     ];
   }
+  const planEntries = acpxPlanEntriesFromRuntimeEvent(event);
   const itemId = safeId(
     event.type === "tool_call"
       ? text(event.toolCallId, fallbackItemId)
-      : event.type === "plan"
+      : planEntries !== null
         ? text(turnId, fallbackItemId)
         : fallbackItemId,
     "acpx-item",
   );
-  if (event.type === "plan") {
-    const steps = (event.entries ?? [])
+  if (planEntries !== null) {
+    const steps = planEntries
       .slice(0, 256)
-      .flatMap((entry, index) => {
-        const body = entry.content.trim().slice(0, 4000);
+      .flatMap((candidate, index) => {
+        const entry = record(candidate);
+        const body = text(entry.content).trim().slice(0, 4000);
         return body
           ? [
               {

@@ -1087,11 +1087,11 @@ describe("remote provider pack manifest", () => {
     const payload = {
       pins: {
         nodeMinimum: "24.11.0",
-        codex: "0.156.0",
+        codex: "0.166.0",
         opencode: "1.18.32",
-        acpx: "0.13.1",
-        claudeAcp: "0.73.0",
-        codexAcp: "1.6.2",
+        acpx: "0.21.1",
+        claudeAcp: "0.100.0",
+        codexAcp: "2.5.0",
         grok: "1.0.13",
       },
       target: { platform: "linux", architecture: "x64" },
@@ -1101,9 +1101,9 @@ describe("remote provider pack manifest", () => {
       acpxProfileDigests: {
         grok: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
         claude:
-          "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+          "sha256:dac87af861bedf6ee1444e99832274d6f517f5e83006f3905094cfc4479b3b00",
         codex:
-          "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
+          "sha256:1c6c476df092c7f62c9d15b9cfe9d420afdf81bb27fdec585398a1997c8f99c9",
       },
       artifacts: {
         grokLauncher: { path: "dist/providers/grok/launcher.cjs", sha256: digest(grokLauncher) },
@@ -2180,7 +2180,7 @@ describe("remote preinstalled executable discovery", () => {
       const shim =
         '#!/bin/sh\ncat "$(dirname "$0")/version.txt"\nprintf "%s\\n" "$@"\n';
       await writeFile(source, shim, { mode: 0o755 });
-      await writeFile(join(installation, "version.txt"), "codex-cli 0.156.0\n");
+      await writeFile(join(installation, "version.txt"), "codex-cli 0.166.0\n");
       // Existing deployments may already have the old symlink. Never write
       // through it into the shared installation while upgrading the launcher.
       await symlink(source, target);
@@ -2193,7 +2193,7 @@ describe("remote preinstalled executable discovery", () => {
           execFileSync(target, ["--version", "argument with 'quotes'"], {
             encoding: "utf8",
           }),
-        ).toBe("codex-cli 0.156.0\n--version\nargument with 'quotes'\n");
+        ).toBe("codex-cli 0.166.0\n--version\nargument with 'quotes'\n");
         expect(await readFile(source, "utf8")).toBe(shim);
       }
       expect(await readdir(join(root, "workspace", "bin"))).toEqual(["codex"]);
@@ -4098,7 +4098,7 @@ describe("stopped native conversation physical cleanup", () => {
     process.env.PAPERCLIP_RUNNER_STATE_DIR = base;
     const input = parseNativeExecutionInput({ ...execution,
       provider: provider === "codex" ? execution.provider : { kind: "acpx", agent: "claude", model: "claude-sonnet-5", permissionPolicy: "interactive",
-        profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "claude", agentProfileVersion: 1,
+        profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.21.1", agent: "claude", agentProfileVersion: 1,
           agentServerPackage: "@zed-industries/claude-agent-acp", agentServerVersion: "1", agentRuntimePackage: null,
           agentRuntimeVersion: null, commandDigest: "fixture" } },
       session: { ...execution.session, driverKind: provider === "codex" ? "codex_app_server" : "acpx_runtime" },
@@ -11175,7 +11175,7 @@ describe("runnerd provider runtime wiring", () => {
         }), stderr: "",
       };
       if (command.args?.[0] === "--version") return {
-        exitCode: 0, timedOut: false, stdout: "codex-cli 0.156.0", stderr: "",
+        exitCode: 0, timedOut: false, stdout: "codex-cli 0.166.0", stderr: "",
       };
       if (command.args?.[1]?.includes("base64")) return {
         exitCode: 1, timedOut: false, stdout: "", stderr: "",
@@ -11252,7 +11252,7 @@ describe("runnerd provider runtime wiring", () => {
         }), stderr: "",
       };
       if (command.args?.[0] === "--version") return {
-        exitCode: 0, timedOut: false, stdout: "codex-cli 0.156.0", stderr: "",
+        exitCode: 0, timedOut: false, stdout: "codex-cli 0.166.0", stderr: "",
       };
       if (command.args?.[2] === "paperclip-runner-launch") {
         throw new Error("fixture_stop_after_launch_staging");
@@ -11334,10 +11334,10 @@ describe("runnerd provider runtime wiring", () => {
 
   it.each([
     ...["current", "preinstalled-exact", "preinstalled-mismatch", "preinstalled-error", "preinstalled-timeout", "stale", "missing", "retained", "retained-mismatch", "retained-error", "retained-timeout", "retained-explicit"]
-      .map((image) => ({ image, version: "0.156.0", compatible: true })),
-    ...["0.149.0", "0.149.1", "0.153.4", "0.156.1"]
+      .map((image) => ({ image, version: "0.166.0", compatible: true })),
+    ...["0.149.0", "0.149.1", "0.153.4", "0.156.1", "0.157.0", "0.166.1"]
       .map((version) => ({ image: "current", version, compatible: true })),
-    ...["0.148.9", "0.157.0", "1.0.0", "0.156.0-alpha.1", "unknown"]
+    ...["0.148.9", "0.167.0", "1.0.0", "0.166.0-alpha.1", "unknown"]
       .map((version) => ({ image: "current", version, compatible: false })),
   ])("uses shared Codex and the server-owned replacement artifact (image=$image, Codex=$version)", async ({ image, version, compatible }) => {
     const retained = image.startsWith("retained");
@@ -11431,7 +11431,7 @@ describe("runnerd provider runtime wiring", () => {
       controlPlaneRegistration: (authority: unknown) => Promise<unknown>;
     };
     await expect(transport.controlPlaneRegistration({})).rejects.toThrow(
-      compatible ? "reached-preinstalled-codex-verification" : "runner_remote_provider_artifact_incompatible: supported Codex versions >=0.149.0 <0.157.0",
+      compatible ? "reached-preinstalled-codex-verification" : "runner_remote_provider_artifact_incompatible: supported Codex versions >=0.149.0 <0.167.0",
     );
     if (!compatible) {
       expect(syncIn).not.toHaveBeenCalled();
@@ -11439,7 +11439,7 @@ describe("runnerd provider runtime wiring", () => {
       expect(onLog).not.toHaveBeenCalledWith("stderr", expect.stringContaining("using compatible Codex"));
       return;
     }
-    if (version !== "0.156.0") {
+    if (version !== "0.166.0") {
       expect(onLog).toHaveBeenCalledWith("stderr", expect.stringContaining(`using compatible Codex ${version}`));
     }
     if (needsReplacement) {
@@ -11591,11 +11591,11 @@ describe("runnerd provider runtime wiring", () => {
         profile: {
           driverKind: "acpx_runtime",
           protocolVersion: 1,
-          acpxVersion: "0.13.1",
+          acpxVersion: "0.21.1",
           agent: "codex",
           agentProfileVersion: 1,
           agentServerPackage: "@agentclientprotocol/codex-acp",
-          agentServerVersion: "1.6.2",
+          agentServerVersion: "2.5.0",
           agentRuntimePackage: null,
           agentRuntimeVersion: null,
           commandDigest: "sha256:test",

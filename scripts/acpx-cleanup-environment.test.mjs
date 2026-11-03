@@ -13,8 +13,8 @@ const runtimePackages = [
   // Production lanes: the adapter-utils engine and the server bundle.
   ["0.21.1", "../packages/adapter-utils/package.json"],
   ["0.21.1", "../server/package.json"],
-  // The runner's separately qualified lane.
-  ["0.13.1", "../packages/paperclip-runner/package.json"],
+  // The Paperclip Runner, requalified onto the same lane.
+  ["0.21.1", "../packages/paperclip-runner/package.json"],
 ];
 
 const assignedKeys = ["HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "ACP_ASSIGNED_SENTINEL"];

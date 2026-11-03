@@ -172,8 +172,8 @@ export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = 
     const acpxPackage = JSON.parse(
       readFileSync(resolve(destinationDir, "node_modules/acpx/package.json"), "utf8"),
     );
-    // Only the production lane's acpx is staged into published bundles; the
-    // runner's separately qualified 0.13.1 copy is not bundled here.
+    // Only the shared acpx 0.21.1 lane is staged into published bundles (the
+    // runner's former separate 0.13.1 copy was retired).
     const expectedPatchMarker = {
       "0.21.1": "spawnEnvironment",
     }[acpxPackage.version];

@@ -304,7 +304,7 @@ describe("NativeExecutionInputV1", () => {
       profile: {
         driverKind: "acpx_runtime",
         protocolVersion: 1,
-        acpxVersion: "0.13.1",
+        acpxVersion: "0.21.1",
         agent: "pi",
         agentProfileVersion,
         agentServerPackage: "pi-acp",

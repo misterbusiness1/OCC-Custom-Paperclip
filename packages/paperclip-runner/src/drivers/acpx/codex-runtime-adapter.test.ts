@@ -12,7 +12,7 @@ import { decodeAcpxRuntimeHandleState } from "acpx/runtime";
 import { describe, expect, it, vi } from "vitest";
 
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
-import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { CODEX_ACPX_RUNNER_SPAWN_ENVIRONMENT, openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
@@ -103,7 +103,7 @@ describe("Codex ACPX runtime adapter", () => {
     const pending = pendingExtensionTurn("turn-1");
     const runtime = Object.assign(fakeRuntime(), { requestExtension: vi.fn(async () => ({ accepted: true })) });
     vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
-    let created!: AcpRuntimeOptions & { onAgentInitialize?: (result: unknown) => void };
+    let created!: AcpRuntimeOptions & { onAgentInitialize?: (result: Record<string, unknown>) => void };
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "pi" };
     const port = await openCodexAcpxRuntime(options, {
@@ -273,6 +273,8 @@ describe("Codex ACPX runtime adapter", () => {
     expect(runtimeOptions?.spawnEnvironment?.()).toEqual({
       CODEX_HOME: "/runtime/agent-home",
       OPENAI_API_KEY: "credential-secret",
+      INITIAL_AGENT_MODE: "workspace-write",
+      PAPERCLIP_CODEX_ACP_GOAL_META: "1",
     });
     // Provider credentials are authorized for the provider process only.
     // The terminal callback must not copy that process's launch environment.
@@ -284,6 +286,108 @@ describe("Codex ACPX runtime adapter", () => {
       backendSessionId: "backend-1",
       agentSessionId: "agent-1",
     });
+  });
+
+  it("pins Codex out of codex-acp 2.5.0 auto-review mode and opts into top-level goal metadata", async () => {
+    const options = openOptions(fakeCommand());
+    // An inherited launch value must not re-enable the guardian reviewer or
+    // turn the goal extension back off.
+    options.launchEnvironment = {
+      ...options.launchEnvironment,
+      INITIAL_AGENT_MODE: "agent",
+      PAPERCLIP_CODEX_ACP_GOAL_META: "0",
+    };
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(),
+      createStore: () => store(),
+      createRuntime: (created) => {
+        runtimeOptions = created;
+        return fakeRuntime();
+      },
+    });
+    expect(runtimeOptions?.spawnEnvironment?.()).toMatchObject(CODEX_ACPX_RUNNER_SPAWN_ENVIRONMENT);
+    expect(CODEX_ACPX_RUNNER_SPAWN_ENVIRONMENT).toEqual({
+      INITIAL_AGENT_MODE: "workspace-write",
+      PAPERCLIP_CODEX_ACP_GOAL_META: "1",
+    });
+    // Model-created shells never receive the provider launch settings.
+    expect(runtimeOptions?.terminalEnvironment?.()).toEqual({});
+
+    const claude = openOptions(fakeCommand());
+    claude.profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
+    let claudeOptions: AcpRuntimeOptions | undefined;
+    await openCodexAcpxRuntime(claude, {
+      createRegistry: () => registry(),
+      createStore: () => store(),
+      createRuntime: (created) => {
+        claudeOptions = created;
+        return fakeRuntime();
+      },
+    });
+    expect(claudeOptions?.spawnEnvironment?.()).not.toHaveProperty("INITIAL_AGENT_MODE");
+    expect(claudeOptions?.spawnEnvironment?.()).not.toHaveProperty("PAPERCLIP_CODEX_ACP_GOAL_META");
+  });
+
+  it("admits Codex goal control from the patched codex-acp 2.5.0 top-level goal metadata", async () => {
+    const runtime = Object.assign(fakeRuntime(), {
+      requestExtension: vi.fn(async () => ({})),
+    });
+    let created!: AcpRuntimeOptions & {
+      onAgentInitialize?: (result: Record<string, unknown>) => void;
+      onSessionNotification?: (notification: unknown) => void;
+    };
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      createRegistry: () => registry(),
+      createStore: () => store(),
+      createRuntime: (value) => {
+        created = value;
+        return runtime;
+      },
+    });
+    // Upstream 2.5.0 without AIR: steering only, no goal anywhere.
+    created.onAgentInitialize!({ _meta: { steering: { supported: true } } });
+    expect(port.goalCapability!()).toBeNull();
+    await expect(port.controlGoal!("set", "Ship it")).rejects.toThrow("unavailable");
+
+    // Exact initialize `_meta` of the patched bundle with PAPERCLIP_CODEX_ACP_GOAL_META=1.
+    created.onAgentInitialize!({
+      _meta: {
+        steering: { supported: true },
+        goal: { version: 1, controlMethod: "_session/goal", actions: ["set", "pause", "resume", "clear"] },
+      },
+    });
+    expect(port.goalCapability!()).toEqual({
+      version: 1,
+      controlMethod: "_session/goal",
+      actions: ["set", "pause", "resume", "clear"],
+    });
+    // Exact goal snapshot update of the patched bundle (toThreadGoalSnapshot).
+    created.onSessionNotification!({
+      sessionId: "agent-1",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          goal: {
+            objective: "Ship it",
+            status: "active",
+            tokenBudget: null,
+            tokensUsed: 12,
+            timeUsedSeconds: 3,
+            createdAt: 1_700_000_000_000,
+            updatedAt: 1_700_000_001_000,
+            controlMethod: "_session/goal",
+          },
+        },
+      },
+    });
+    expect(port.goalSnapshot!()).toMatchObject({ objective: "Ship it", status: "active", tokensUsed: 12 });
+    created.onSessionNotification!({
+      sessionId: "agent-1",
+      update: { sessionUpdate: "session_info_update", _meta: { goal: null } },
+    });
+    expect(port.goalSnapshot!()).toBeNull();
+    await port.close({ reason: "test finished" });
   });
 
   it.each([["claude" as const, "claude-sonnet-5", "claude-sonnet-5"]])(
@@ -2913,11 +3017,11 @@ function openOptions(
     profile: {
       driverKind: "acpx_runtime",
       protocolVersion: 1,
-      acpxVersion: "0.13.1",
+      acpxVersion: "0.21.1",
       agent: "codex",
       agentProfileVersion: 1,
       agentServerPackage: "@agentclientprotocol/codex-acp",
-      agentServerVersion: "1.6.2",
+      agentServerVersion: "2.5.0",
       agentRuntimePackage: null,
       agentRuntimeVersion: null,
       commandDigest: "sha256:test",

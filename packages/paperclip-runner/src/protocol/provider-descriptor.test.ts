@@ -9,7 +9,7 @@ const validate = new Ajv2020({ allErrors: true, strict: false }).compile(provide
 describe("provider runtime descriptor", () => {
   it("validates negotiated turn controls in descriptors and capability events", () => {
     const descriptor = { provider: "acpx", driver: "acpx_runtime", agent: "pi", model: "explicit-model",
-      requestedModel: "explicit-model", executionKind: "local_process", providerVersion: "0.13.1",
+      requestedModel: "explicit-model", executionKind: "local_process", providerVersion: "0.21.1",
       agentProcessId: 42, acpProtocolVersion: 1, agentServerPackage: "pi-acp", agentServerVersion: "0.0.33",
       acpxRecordId: "record", turnControls: { steering: true, queuedFollowUp: true } };
     expect(validate(descriptor), JSON.stringify(validate.errors)).toBe(true);
@@ -38,13 +38,13 @@ describe("provider runtime descriptor", () => {
       model: "claude-sonnet-5",
       requestedModel: "claude-sonnet-5",
       executionKind: "local_process",
-      providerVersion: "0.13.1",
+      providerVersion: "0.21.1",
       providerSessionId: "claude-session-1",
       processId: 41001,
       agentProcessId: 41002,
       acpProtocolVersion: 1,
       agentServerPackage: "@agentclientprotocol/claude-agent-acp",
-      agentServerVersion: "0.73.0",
+      agentServerVersion: "0.100.0",
       agentRuntimePackage: null,
       agentRuntimeVersion: null,
       acpxRecordId: "acpx-record-1",

@@ -9,7 +9,9 @@ import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const acpxRoot = process.env.PAPERCLIP_TEST_ACPX_PACKAGE_ROOT ?? dirname(require.resolve("acpx/package.json"));
-const { k: AcpClient } = await import(pathToFileURL(join(acpxRoot, "dist/live-checkpoint-BSIrfgVo.js")));
+// ACPX 0.21.1's AcpClient lives in a hashed chunk under a minified alias.
+const { Y: AcpClient } = await import(pathToFileURL(join(acpxRoot, "dist/queue-owner-runtime-B0mPqOu4.js")));
+assert.equal(AcpClient.name, "AcpClient");
 const deferred = () => Promise.withResolvers();
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
 

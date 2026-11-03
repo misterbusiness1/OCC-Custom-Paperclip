@@ -1,6 +1,15 @@
 diff --git a/dist/index.js b/dist/index.js
 --- a/dist/index.js
 +++ b/dist/index.js
+@@ -34644,7 +34644,7 @@
+   return left.objective === right.objective && left.status === right.status && left.tokenBudget === right.tokenBudget && left.createdAt === right.createdAt;
+ }
+ function goalSessionInfoUpdate(goal, airClient) {
+-  if (!airClient) return null;
++  if (!airClient) return process.env.PAPERCLIP_CODEX_ACP_GOAL_META === "1" ? { sessionUpdate: "session_info_update", _meta: { goal } } : null;
+   return {
+     sessionUpdate: "session_info_update",
+     _meta: withAirMeta(void 0, AIR_GOAL_KEY, goal)
 @@ -37241,26 +37241,15 @@
      delete this.sessionState.sessionFailure;
    }
@@ -162,6 +171,15 @@ diff --git a/dist/index.js b/dist/index.js
  }
  function shouldDeduplicateMcpConflicts() {
    const disabledByEnv = process.env["DISABLE_MCP_CONFIG_FILTERING"] === "true";
+@@ -45365,7 +45369,7 @@
+   }
+   createSkillsListParams(sessionState) {
+     return {
+-      cwds: [sessionState.cwd, ...sessionState.additionalDirectories]
++      cwds: process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" ? [process.env.CODEX_HOME] : [sessionState.cwd, ...sessionState.additionalDirectories]
+     };
+   }
+   buildAvailableCommands(skillsEntries, airClient) {
 @@ -46689,6 +46693,7 @@
     *                        not turn.items — turn.items contains only agent output).
     */
@@ -170,7 +188,15 @@ diff --git a/dist/index.js b/dist/index.js
      if (this.generated) return;
      const src = this.getSessionTitleSource();
      if (src === "explicit" || src === "unknown") return;
-@@ -49900,6 +49905,7 @@
+@@ -49829,6 +49834,7 @@
+       steering: {
+         supported: true
+       },
++      ...!this.capabilities.airClient && process.env.PAPERCLIP_CODEX_ACP_GOAL_META === "1" ? { goal: { version: GOAL_EXTENSION_VERSION, controlMethod: GOAL_CONTROL_METHOD, actions: [...GOAL_CONTROL_ACTIONS] } } : {},
+       ...this.capabilities.airClient ? {
+         [JETBRAINS_META_KEY]: {
+           [AIR_META_KEY]: {
+@@ -49900,6 +49906,7 @@
          if (methodRequest.params.action === "set") {
            const objective = methodRequest.params.objective;
            await this.runWithProcessCheck(() => this.codexAcpClient.setGoal(sessionState.sessionId, objective));

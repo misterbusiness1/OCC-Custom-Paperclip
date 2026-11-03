@@ -1120,10 +1120,22 @@ it.each([
       if (terminalReplay) {
         // Forward failures now preserve a startup fence. Keep this genuinely
         // produced failed copy intact; it is NOT a legacy replay candidate.
+        // The replay drops the provider environment (no HOME, CODEX_HOME or
+        // credentials). PATH is pinned to an empty directory rather than
+        // omitted: with no PATH at all, execvp falls back to the libc default
+        // search path (/bin:/usr/bin), so a host-installed `codex` there would
+        // start and fail at `initialize` instead of the bare command being
+        // unresolvable at `spawn`.
+        const unresolvableProviderPath = join(
+          original,
+          "..",
+          "empty-provider-path",
+        );
+        await mkdir(unresolvableProviderPath);
         await expect(
           settleRetainedRunnerdSession({
             ...input,
-            environment: undefined,
+            environment: { PATH: unresolvableProviderPath },
             sourceCodexHome: null,
           }),
         ).rejects.toThrow("native_cleanup_maintenance_unproven");

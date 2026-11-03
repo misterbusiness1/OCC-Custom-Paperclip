@@ -539,10 +539,17 @@ describe("codex_local ACP lane", () => {
     // Upstream v2026.916 always forwards PAPERCLIP_CODEX_ACP_NETWORK_ACCESS in
     // env, so assert the bypass mode is absent rather than env itself, and that
     // the bypass mapping keeps the network-access flag.
+    // Without bypass, pin the client-reviewed workspace mode instead of codex-acp
+    // 2.5.0's auto_review default; an explicit agent env mode still wins.
     expect(buildCodexAcpConfig({
       dangerouslyBypassApprovalsAndSandbox: false,
       dangerouslyBypassSandbox: true,
-    }).env).not.toHaveProperty("INITIAL_AGENT_MODE");
+    }).env).toMatchObject({ INITIAL_AGENT_MODE: "workspace-write" });
+    expect(buildCodexAcpConfig({}).env).toMatchObject({ INITIAL_AGENT_MODE: "workspace-write" });
+    expect(buildCodexAcpConfig({
+      dangerouslyBypassApprovalsAndSandbox: false,
+      env: { INITIAL_AGENT_MODE: "read-only" },
+    }).env).toMatchObject({ INITIAL_AGENT_MODE: "read-only" });
     expect(buildCodexAcpConfig({ dangerouslyBypassApprovalsAndSandbox: true })).toMatchObject({
       env: { INITIAL_AGENT_MODE: "agent-full-access", PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "true" },
     });

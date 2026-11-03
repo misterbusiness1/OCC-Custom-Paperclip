@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CODEX_THREAD_ITEM_CLASSIFICATION,
   PROVIDER_EVENT_FAMILIES,
+  acpxPlanEntriesFromRuntimeEvent,
   canonicalProviderEventsFromAcpxRuntimeEvent,
   canonicalProviderEventsFromCodex,
   canonicalProviderEventsFromOpenCodePart,
@@ -397,6 +398,67 @@ describe("provider-neutral events", () => {
     expect(events.some((event) => event.eventType === "plan.updated")).toBe(
       false,
     );
+  });
+
+  it("maps ACPX 0.21.1 status-tagged plan snapshots to plan.updated", () => {
+    // Exact planUpdateEvent output of acpx 0.21.1 for a non-empty plan.
+    const [event] = canonicalProviderEventsFromAcpxRuntimeEvent(
+      {
+        type: "status",
+        text: "plan: Inspect",
+        tag: "plan",
+        entries: [
+          { content: "Inspect", status: "in_progress", priority: "high" },
+          { content: "Fix", status: "pending", priority: "medium" },
+        ],
+      } as never,
+      "fallback",
+      "turn-acp",
+    );
+    expect(event).toMatchObject({
+      eventType: "plan.updated",
+      itemId: "turn-acp",
+      payload: {
+        schema: "paperclip.plan.updated.v1",
+        planId: "turn-acp",
+        steps: [
+          { stepId: "step-1", body: "Inspect", status: "in_progress" },
+          { stepId: "step-2", body: "Fix", status: "pending" },
+        ],
+        complete: false,
+      },
+    });
+    expect(
+      canonicalProviderEventsFromAcpxRuntimeEvent(
+        {
+          type: "status",
+          text: "plan: Inspect",
+          tag: "plan",
+          entries: [{ content: "Inspect", status: "completed" }],
+        } as never,
+        "fallback",
+        "turn-acp",
+      )[0]?.payload.complete,
+    ).toBe(true);
+  });
+
+  it("maps the ACPX 0.21.1 empty-plan status to a clearing plan snapshot, like the sidecar", () => {
+    const [event] = canonicalProviderEventsFromAcpxRuntimeEvent(
+      { type: "status", text: "plan updated", tag: "plan", entries: [] } as never,
+      "fallback",
+      "turn-acp",
+    );
+    expect(event).toMatchObject({
+      eventType: "plan.updated",
+      payload: { planId: "turn-acp", steps: [], complete: false },
+    });
+    // Same classification as the sidecar's sanitizeRuntimeEvent.
+    expect(
+      acpxPlanEntriesFromRuntimeEvent({ type: "status", text: "plan updated", tag: "plan", entries: [] }),
+    ).toEqual([]);
+    expect(acpxPlanEntriesFromRuntimeEvent({ type: "plan" })).toEqual([]);
+    expect(acpxPlanEntriesFromRuntimeEvent({ type: "status", text: "plan: x", tag: "plan" })).toBeNull();
+    expect(acpxPlanEntriesFromRuntimeEvent({ type: "status", tag: "usage_update", entries: [] })).toBeNull();
   });
 
   it("bounds and sanitizes structured ACPX plan snapshots", () => {

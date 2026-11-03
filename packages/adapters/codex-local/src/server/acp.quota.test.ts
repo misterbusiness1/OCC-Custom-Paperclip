@@ -11,9 +11,18 @@ const repoRoot = fileURLToPath(new URL("../../../../..", import.meta.url));
 const fixture = path.join(repoRoot, "scripts/mcp-fixtures/servers/acp-echo-agent.mjs");
 const roots: string[] = [];
 const now = new Date("2026-07-15T20:00:00.000Z");
-// Exercise both pinned dependency patches through the same real ACP child.
-const runnerRequire = createRequire(path.join(repoRoot, "packages/paperclip-runner/package.json"));
-const runnerAcpx = await import(runnerRequire.resolve("acpx/runtime"));
+// Every lane (the runner included) now runs ACPX 0.21.1, and none advertises
+// AIR to codex-acp 2.5.0. To keep the typed-failure classifier wiring covered,
+// these rows force the AIR typed-session-failure declaration onto the
+// production engine's ACPX runtime; real codex traffic takes the JSON-RPC
+// `codexErrorInfo` path covered further below.
+const adapterUtilsRequire = createRequire(path.join(repoRoot, "packages/adapter-utils/package.json"));
+const productionAcpx = await import(adapterUtilsRequire.resolve("acpx/runtime"));
+const typedAirRuntime: AcpxEngineExecutorOptions["createRuntime"] = (options) =>
+  productionAcpx.createAcpRuntime({
+    ...options,
+    clientCapabilities: { _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } } } },
+  });
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
@@ -59,17 +68,14 @@ async function executeFailure(
   return { result, logs: logs.join("\n") };
 }
 
-// Typed AIR session failures reach the codex classifier only on the runner's
-// ACPX 0.13.1 lane, which advertises AIR to every agent. The production engine
-// (ACPX 0.21.1) deliberately does not advertise AIR to codex-acp 2.5.0; its
-// provider failures are covered by the JSON-RPC rows below.
-it.each([
-  ["0.13.1", "oneshot"],
-  ["0.13.1", "persistent"],
-])("waits for a typed Codex quota reset with ACPX %s in %s mode without exposing provider text", async (_version, mode) => {
+// Typed AIR session failures no longer reach the codex classifier on any
+// shipped lane (ACPX 0.21.1 does not advertise AIR to codex-acp 2.5.0); these
+// rows keep the classifier wiring honest through an explicitly AIR-declaring
+// runtime.
+it.each(["oneshot", "persistent"])("waits for a typed Codex quota reset on an AIR-declaring ACPX 0.21.1 runtime in %s mode without exposing provider text", async (mode) => {
   const title = "You've hit your usage limit for GPT-5. Switch to another model now, or try again at 4:30 PM (America/Chicago).";
   const { result, logs } = await executeFailure(
-    title, "limit", mode, runnerAcpx.createAcpRuntime,
+    title, "limit", mode, typedAirRuntime,
   );
   expect(result).toMatchObject({
     exitCode: 1,
@@ -88,7 +94,7 @@ it.each([
 
 it("classifies quota without a reset time for the existing recovery backoff", async () => {
   const title = "You've hit your usage limit. Visit https://example.invalid/usage for account details.";
-  const { result, logs } = await executeFailure(title, "limit", "oneshot", runnerAcpx.createAcpRuntime);
+  const { result, logs } = await executeFailure(title, "limit", "oneshot", typedAirRuntime);
   expect(result).toMatchObject({ errorCode: "provider_quota", errorFamily: "provider_quota" });
   expect(result.retryNotBefore).toBeUndefined();
   expect(JSON.stringify(result)).not.toContain(title);
@@ -106,7 +112,7 @@ it.each([
   ["The account has available quota", "limit"],
   ["The worker connection closed", "connection"],
 ])("keeps a non-quota typed failure out of quota recovery: %s", async (title, category) => {
-  const { result, logs } = await executeFailure(title, category, "oneshot", runnerAcpx.createAcpRuntime);
+  const { result, logs } = await executeFailure(title, category, "oneshot", typedAirRuntime);
   expect(result).toMatchObject({ exitCode: 1, errorCode: "acpx_turn_failed" });
   expect(result.errorFamily).not.toBe("provider_quota");
   expect(result.retryNotBefore).toBeUndefined();
