@@ -6,10 +6,12 @@ diff --git a/dist/index.js b/dist/index.js
    }
    async handleFailedTurn(turn) {
 -    if (turn.status === "failed" && this.isAuthenticationRequiredError(turn.error?.codexErrorInfo ?? null)) {
+-      this.failure = RequestError.authRequired();
 +    if (turn.status !== "failed") return;
 +    const error = turn.error ?? (this.terminalTurnError?.turnId === turn.id ? this.terminalTurnError.error : null) ?? { message: "Turn failed", codexErrorInfo: null, additionalDetails: null };
-+    if (this.isAuthenticationRequiredError(error.codexErrorInfo ?? null)) {
-       this.failure = RequestError.authRequired();
++    if (this.failure !== null) return;
++    if (this.isAuthenticationRequiredError(error.codexErrorInfo ?? null) && !this.sessionState.authConfigured) {
++      this.failure = RequestError.authRequired(this.createTurnErrorData(error), error.message);
        return;
      }
 -    const activeFailure = this.sessionState.sessionFailure;
@@ -28,12 +30,23 @@ diff --git a/dist/index.js b/dist/index.js
 -      willRetry: false,
 -      error: error62
 -    });
-+    if (this.failure !== null) return;
 +    this.failure = RequestError.internalError(this.createTurnErrorData(error));
 +    if (this.supportsTypedSessionFailures) this.recordTypedSessionFailure({ threadId: this.sessionState.sessionId, turnId: turn.id, willRetry: false, error });
    }
    takeCompletedPlan() {
      const plan = this.completedPlan;
+@@ -37869,9 +37858,9 @@
+       });
+       return null;
+     }
+-    if (this.isAuthenticationRequiredError(error62)) {
++    if (this.isAuthenticationRequiredError(error62) && !this.sessionState.authConfigured) {
+       if (!params.willRetry && params.turnId === this.sessionState.currentTurnId) {
+-        this.failure = RequestError.authRequired();
++        this.failure = RequestError.authRequired(this.createTurnErrorData(params.error), params.error.message);
+       }
+       return null;
+     }
 @@ -37901,14 +37890,10 @@
          }
        });
@@ -149,7 +162,15 @@ diff --git a/dist/index.js b/dist/index.js
  }
  function shouldDeduplicateMcpConflicts() {
    const disabledByEnv = process.env["DISABLE_MCP_CONFIG_FILTERING"] === "true";
-@@ -49900,6 +49904,7 @@
+@@ -46689,6 +46693,7 @@
+    *                        not turn.items — turn.items contains only agent output).
+    */
+   onTurnCompleted(userPromptText) {
++    if (process.env.PAPERCLIP_CODEX_ACP_TITLE_GENERATION !== "true") return;
+     if (this.generated) return;
+     const src = this.getSessionTitleSource();
+     if (src === "explicit" || src === "unknown") return;
+@@ -49900,6 +49905,7 @@
          if (methodRequest.params.action === "set") {
            const objective = methodRequest.params.objective;
            await this.runWithProcessCheck(() => this.codexAcpClient.setGoal(sessionState.sessionId, objective));
