@@ -194,11 +194,13 @@ function registerModuleMocks() {
   }));
 }
 
+let routeModules: [
+  typeof import("../routes/company-skills.js"),
+  typeof import("../middleware/index.js"),
+];
+
 async function createApp(actor: Record<string, unknown>) {
-  const [{ companySkillRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/company-skills.js")>("../routes/company-skills.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+  const [{ companySkillRoutes }, { errorHandler }] = routeModules;
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -211,7 +213,7 @@ async function createApp(actor: Record<string, unknown>) {
 }
 
 describe("company skill mutation permissions", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
@@ -697,6 +699,11 @@ describe("company skill mutation permissions", () => {
       remediation: null,
     }));
     mockReflectionCoachMutationGate.assertConsented.mockResolvedValue(undefined);
+    // Load this test's cold modules during setup; request assertions keep their deadline.
+    routeModules = await Promise.all([
+      vi.importActual<typeof import("../routes/company-skills.js")>("../routes/company-skills.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
   });
 
   it("allows local board operators to mutate company skills", async () => {
