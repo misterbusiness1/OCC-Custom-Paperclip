@@ -148,7 +148,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  				writer.releaseLock();
  			}
  			if (activePrompt && promptOwner) options.onPromptRequestWritten(activePrompt, promptOwner);
-@@ -1967,8 +1990,15 @@
+@@ -1967,8 +1990,20 @@
  	for (const entry of env ?? []) merged[entry.name] = entry.value;
  	return merged;
  }
@@ -162,11 +162,16 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
 +	return environment;
 +}
 +function buildTerminalSpawnOptions(command, cwd, env, platform = process.platform, inheritedEnv, terminalEnvironment) {
-+	const resolvedEnv = { ...(toEnvObject(env, inheritedEnv) ?? inheritParentEnvironment(inheritedEnv)), ...toPlainTerminalEnvironment(terminalEnvironment) };
++	// Precedence: inherited env < host terminal env < agent-requested env (as in acpx 0.12.0),
++	// except that the host's PAPERCLIP_* run identity always wins.
++	const hostEnvironment = toPlainTerminalEnvironment(terminalEnvironment);
++	const resolvedEnv = { ...inheritParentEnvironment(inheritedEnv), ...hostEnvironment };
++	for (const entry of env ?? []) resolvedEnv[entry.name] = entry.value;
++	for (const [name, value] of Object.entries(hostEnvironment)) if (name.startsWith("PAPERCLIP_")) resolvedEnv[name] = value;
  	return buildSpawnCommandOptions(command, {
  		cwd,
  		env: resolvedEnv,
-@@ -2035,6 +2065,7 @@
+@@ -2035,6 +2070,7 @@
  		this.outputCeilingBytes = readTerminalOutputCeiling();
  		this.cwd = options.cwd;
  		this.inheritedEnv = options.inheritedEnv;
@@ -174,7 +179,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  		this.permissionMode = options.permissionMode;
  		this.nonInteractivePermissions = options.nonInteractivePermissions ?? "deny";
  		this.onOperation = options.onOperation;
-@@ -2073,7 +2104,8 @@
+@@ -2073,7 +2109,8 @@
  			const outputByteLimit = resolveTerminalOutputLimit(params.outputByteLimit, this.outputCeilingBytes);
  			const { proc, spawnCommand } = await spawnTerminalProcess(params, {
  				cwd: this.cwd,
@@ -184,7 +189,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  			}, authority);
  			let resolveExit = () => {};
  			const exitPromise = new Promise((resolve) => {
-@@ -2359,7 +2391,7 @@
+@@ -2359,7 +2396,7 @@
  	}
  }
  async function spawnAndWait(spawnCommand, params, context, authority) {
@@ -193,7 +198,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  	if (process.platform !== "win32") spawnOptions.detached = true;
  	assertControlAuthority(authority);
  	const proc = spawn(spawnCommand.command, spawnCommand.args, spawnOptions);
-@@ -2571,6 +2603,27 @@
+@@ -2571,6 +2608,27 @@
  }
  function cancelledPermissionResponse() {
  	return { outcome: { outcome: "cancelled" } };
@@ -221,7 +226,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  }
  var AcpClient = class {
  	options;
-@@ -2616,7 +2669,9 @@
+@@ -2616,7 +2674,9 @@
  			agentProcessEnvBlock: snapshotEnvNames("agentProcessEnvBlock", options.agentProcessEnvBlock),
  			authPolicy: options.authPolicy ?? "skip",
  			permissionPolicy: snapshotPermissionPolicy(options.permissionPolicy),
@@ -232,7 +237,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  		};
  		this.eventHandlers = {
  			onAcpMessage: this.options.onAcpMessage,
-@@ -2635,6 +2690,7 @@
+@@ -2635,6 +2695,7 @@
  		});
  		this.terminalManager = new TerminalManager({
  			cwd: this.options.cwd,
@@ -240,7 +245,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  			inheritedEnv: this.inheritedEnvPolicy(),
  			permissionMode: this.options.permissionMode,
  			nonInteractivePermissions: this.options.nonInteractivePermissions,
-@@ -2745,6 +2801,10 @@
+@@ -2745,6 +2806,10 @@
  		const startupStderr = [];
  		child.stderr.on("data", (chunk) => {
  			this.captureStartupStderr(startupStderr, chunk);
@@ -251,7 +256,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  			if (!this.options.verbose) return;
  			process.stderr.write(chunk);
  		});
-@@ -2772,6 +2832,7 @@
+@@ -2772,6 +2837,7 @@
  			elicitationModes: this.options.elicitationModes
  		});
  		connection = this.createConnection(stream, launch, capabilities);
@@ -259,7 +264,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  		const onConnectionClose = () => {
  			this.handleAgentDisconnect(child, "connection_close", child.exitCode ?? null, child.signalCode ?? null);
  		};
-@@ -2797,7 +2858,7 @@
+@@ -2797,7 +2863,7 @@
  		const configuredCommand = resolveAgentCommandParts(this.options.agentCommand, this.options.agentArgv);
  		const resolvedBuiltInLaunch = resolveBuiltInAgentLaunch(this.options.agentCommand);
  		const spawnCommand = resolvedBuiltInLaunch?.command ?? configuredCommand.command;
@@ -268,7 +273,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  		const commandContext = {
  			env: spawnOptions.env,
  			readOutput: async (command, args, timeoutMs, diagnostic = false) => {
-@@ -2877,10 +2938,8 @@
+@@ -2877,10 +2943,8 @@
  		assertControlAuthority(authority);
  		let spawnedChild;
  		try {
@@ -281,7 +286,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  			await waitForSpawn(spawnedChild);
  		} catch (error) {
  			const spawnError = new AgentSpawnError(this.options.agentCommand, error);
-@@ -2969,6 +3028,7 @@
+@@ -2969,6 +3033,7 @@
  	async admitAndObserveSpawnedProcess(child, process) {
  		await this.admitSpawnedProcess(child, (barrier) => this.attachAgentLifecycleObservers(child, process, barrier), async () => {
  			await this.options.processLifecycle?.onSpawned?.(process);
@@ -289,7 +294,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  		});
  	}
  	async admitSpawnedProcess(child, observe, admit) {
-@@ -2988,10 +3048,10 @@
+@@ -2988,10 +3053,10 @@
  	createConnection(stream, launch, capabilities) {
  		const app = client({ name: "acpx" }).onNotification(methods.client.session.update, async ({ params }) => {
  			await this.handleSessionUpdate(params);
@@ -303,7 +308,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  		});
  		if (capabilities.fs?.readTextFile) app.onRequest(methods.client.fs.readTextFile, async ({ params, signal }) => {
  			return await this.handleReadTextFile(params, signal);
-@@ -3010,6 +3070,11 @@
+@@ -3010,6 +3075,11 @@
  		}).onRequest(methods.client.terminal.release, async ({ params }) => {
  			return await this.terminalManager.releaseTerminal(params);
  		});
@@ -315,7 +320,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  		if (launch.devinAcp) app.onRequest("_cognition.ai/request_diagnostics", (params) => {
  			return params && typeof params === "object" && !Array.isArray(params) ? params : {};
  		}, async () => ({}));
-@@ -3031,7 +3096,7 @@
+@@ -3031,7 +3101,7 @@
  	async initializeProtocolConnection(connection, launch, capabilities) {
  		const initializePromise = connection.agent.request(methods.agent.initialize, {
  			protocolVersion: PROTOCOL_VERSION,
@@ -324,7 +329,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  			clientInfo: resolveClientInfo(launch.devinAcp)
  		});
  		const initialized = launch.geminiAcp ? await withTimeout(initializePromise, resolveGeminiAcpStartupTimeoutMs()) : await initializePromise;
-@@ -3050,7 +3115,41 @@
+@@ -3050,7 +3120,41 @@
  		throw normalizedError;
  	}
  	createTappedStream(base) {
@@ -367,7 +372,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  			onMessage: (direction, message) => {
  				this.eventHandlers.onAcpOutputMessage?.(direction, message);
  				this.eventHandlers.onAcpMessage?.(direction, message);
-@@ -3059,10 +3158,11 @@
+@@ -3059,10 +3163,11 @@
  			bindPromptOwner: (owner) => this.bindPromptOwner(owner),
  			assertPromptActive: (active) => this.assertPromptActive(active),
  			onPromptRequestWritten: (active, owner) => this.onPromptRequestWritten(active, owner)
@@ -380,7 +385,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  		return buildClaudeCodeOptionsMeta(this.options.sessionOptions, isClaudeAcpCommand(command, args));
  	}
  	async createSession(cwd = this.options.cwd, authority) {
-@@ -3243,6 +3343,11 @@
+@@ -3243,6 +3348,11 @@
  	throwPromptPermissionFailureIfPresent(sessionId) {
  		const permissionFailure = this.consumePromptPermissionFailure(sessionId);
  		if (permissionFailure) throw permissionFailure;
@@ -392,7 +397,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  	}
  	async setSessionMode(sessionId, modeId, authority) {
  		const connection = this.getConnection();
-@@ -3575,7 +3680,7 @@
+@@ -3575,7 +3685,7 @@
  	}
  	selectAuthMethod(methods) {
  		for (const method of methods) {
@@ -401,7 +406,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  			if (envCredential) return {
  				methodId: method.id,
  				credential: envCredential,
-@@ -3607,7 +3712,7 @@
+@@ -3607,7 +3717,7 @@
  	}
  	readAgentSpecificEnvCredential(methodId) {
  		if (!this.isGrokBuildAcpCommand() || methodId !== "xai.api_key" || !isInheritedEnvName(this.inheritedEnvPolicy(), "XAI_API_KEY")) return;
@@ -410,7 +415,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  		return typeof value === "string" && value.trim().length > 0 ? value : void 0;
  	}
  	selectAgentManagedAuthMethod(methodId) {
-@@ -3632,7 +3737,7 @@
+@@ -3632,7 +3742,7 @@
  		await connection.agent.request(methods.agent.authenticate, { methodId: selected.methodId });
  		this.log(`authenticated with method ${selected.methodId} (${selected.source})`);
  	}
@@ -419,7 +424,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  		const owner = this.captureDelegatedRequestOwner(params.sessionId, requestSignal);
  		if (!this.isDelegatedRequestActive(owner)) return cancelledPermissionResponse();
  		if (!this.hasPermissionOwner(params.sessionId)) return this.finishPermissionRequest(params, owner, cancelledPermissionResponse());
-@@ -3640,7 +3745,7 @@
+@@ -3640,7 +3750,7 @@
  			const response = this.handleModePermissionError(params.sessionId, new PermissionPromptUnavailableError("Antigravity requested a user answer. acpx cannot answer Antigravity interaction questions; continue in an interactive client."));
  			return this.finishPermissionRequest(params, owner, response);
  		}
@@ -428,7 +433,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  		return this.finishPermissionRequest(params, owner, response);
  	}
  	finishPermissionRequest(params, owner, response) {
-@@ -3651,7 +3756,41 @@
+@@ -3651,7 +3761,41 @@
  	hasPermissionOwner(sessionId) {
  		return !this.pendingPromptOwners.some((owner) => owner.permissionHandler !== void 0) || this.pendingPromptOwners.some((owner) => owner.sessionId === sessionId);
  	}
@@ -471,7 +476,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  		const resolved = this.resolveElicitationOwner(request);
  		if ("response" in resolved) return resolved.response;
  		const { active, handler } = resolved.owner;
-@@ -3664,7 +3803,7 @@
+@@ -3664,7 +3808,7 @@
  			signal.throwIfAborted();
  			return await handler(request, {
  				requestId,
@@ -480,7 +485,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  			});
  		}).then((response) => ({
  			kind: "response",
-@@ -3725,7 +3864,7 @@
+@@ -3725,7 +3869,7 @@
  			return false;
  		}
  	}
@@ -489,7 +494,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  		const handler = owner.permissionHandler;
  		if (!handler) return;
  		const { signal } = owner;
-@@ -3735,7 +3874,7 @@
+@@ -3735,7 +3879,7 @@
  				sessionId: params.sessionId,
  				raw: params,
  				inferredKind: inferToolKind(params)
@@ -498,7 +503,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  			return this.hostPermissionDecisionResponse(params, owner, decision);
  		} catch (error) {
  			return this.hostPermissionErrorResponse(owner, error);
-@@ -3787,6 +3926,7 @@
+@@ -3787,6 +3931,7 @@
  	attachAgentLifecycleObservers(child, startedProcess, exitNotificationBarrier) {
  		this.attachProcessExitObserver(child, startedProcess, exitNotificationBarrier, (exitCode, signal) => {
  			this.handleAgentDisconnect(child, "process_exit", exitCode, signal);
@@ -506,7 +511,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  			this.terminateAgentProcess(child);
  		});
  		child.once("close", (exitCode, signal) => {
-@@ -4437,8 +4577,11 @@
+@@ -4437,8 +4582,11 @@
  }
  function reducePromptResponseUsage(conversation, usage, promptMessageId, timestamp) {
  	const tokenUsage = sourceToTokenUsage(usage);
@@ -520,7 +525,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  	updateConversationTimestamp(conversation, timestamp);
  	return true;
  }
-@@ -4578,6 +4721,13 @@
+@@ -4578,6 +4726,13 @@
  	const { acpx } = reduceSessionUpdate(conversation, state, notification, timestamp, userMessageId ?? randomUUID);
  	trimConversationForRuntime(conversation);
  	return acpx;
@@ -534,7 +539,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  }
  function recordPromptResponseUsage(conversation, usage, promptMessageId, timestamp = isoNow()) {
  	if (!reducePromptResponseUsage(conversation, usage, promptMessageId, timestamp)) return false;
-@@ -6695,6 +6845,27 @@
+@@ -6695,6 +6850,27 @@
  // src/runtime/engine/prompt-turn.ts
  const SESSION_REPLY_IDLE_MS = 1e3;
  const SESSION_REPLY_DRAIN_TIMEOUT_MS = 5e3;
@@ -562,7 +567,7 @@ diff --git a/dist/queue-owner-runtime-B0mPqOu4.js b/dist/queue-owner-runtime-B0m
  function responseMetaField(meta) {
  	return meta === void 0 ? {} : { _meta: meta };
  }
-@@ -6729,7 +6900,22 @@
+@@ -6729,7 +6905,22 @@
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});

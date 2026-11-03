@@ -27,12 +27,23 @@ async function handleRequest(request) {
   }
   if (request.method === "session/new") return { sessionId: "terminal-env-session" };
   if (request.method === "session/prompt") {
+    // A prompt that mentions "precedence" requests its own terminal env: one
+    // ordinary override (must win) and a forged run id (the host must win).
+    const promptText = (request.params.prompt ?? []).map((block) => block?.text ?? "").join(" ");
+    const precedence = promptText.includes("precedence");
     const created = await requestHost("terminal/create", {
       sessionId: request.params.sessionId,
       command: process.execPath,
-      args: ["-e", "process.stdout.write(process.env.PAPERCLIP_RUN_ID ?? 'missing')"],
+      args: precedence
+        ? ["-e", "process.stdout.write(`${process.env.PAPERCLIP_RUN_ID ?? 'missing'} ${process.env.TERMINAL_ENV_PROBE ?? 'missing'}`)"]
+        : ["-e", "process.stdout.write(process.env.PAPERCLIP_RUN_ID ?? 'missing')"],
       cwd: process.cwd(),
-      env: [],
+      env: precedence
+        ? [
+            { name: "PAPERCLIP_RUN_ID", value: "agent-forged" },
+            { name: "TERMINAL_ENV_PROBE", value: "agent" },
+          ]
+        : [],
     });
     await requestHost("terminal/wait_for_exit", { sessionId: request.params.sessionId, terminalId: created.terminalId });
     const output = await requestHost("terminal/output", { sessionId: request.params.sessionId, terminalId: created.terminalId });

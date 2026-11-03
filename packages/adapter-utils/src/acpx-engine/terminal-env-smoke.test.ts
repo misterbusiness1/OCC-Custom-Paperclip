@@ -39,10 +39,10 @@ it("uses the current terminal environment for fresh and warm ACP sessions", asyn
     cwd: root,
     sessionOptions: { env: {} },
   });
-  const runTurn = async (requestId: string): Promise<string> => {
+  const runTurn = async (requestId: string, text = "Read the run id from a terminal."): Promise<string> => {
     let output = "";
     const seen: unknown[] = [];
-    for await (const event of runtime.runTurn({ handle, text: "Read the run id from a terminal.", mode: "prompt", requestId })) {
+    for await (const event of runtime.runTurn({ handle, text, mode: "prompt", requestId })) {
       seen.push(event);
       if (event.type === "text_delta") output += event.text;
     }
@@ -54,6 +54,10 @@ it("uses the current terminal environment for fresh and warm ACP sessions", asyn
     expect(await runTurn("terminal-env-run-one")).toBe("run-one");
     terminalEnvState.env = { PAPERCLIP_RUN_ID: "run-two" };
     expect(await runTurn("terminal-env-run-two")).toBe("run-two");
+    // The agent's own terminal/create env wins over the host env (as in acpx
+    // 0.12.0), but it cannot replace the host's PAPERCLIP_* run identity.
+    terminalEnvState.env = { PAPERCLIP_RUN_ID: "run-three", TERMINAL_ENV_PROBE: "host" };
+    expect(await runTurn("terminal-env-run-three", "Check env precedence in a terminal.")).toBe("run-three agent");
   } finally {
     await runtime.close({ handle, reason: "terminal environment smoke complete", discardPersistentState: true });
   }
