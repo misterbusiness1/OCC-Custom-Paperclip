@@ -18,7 +18,7 @@ test("the local ACP bridge resolves and launches its qualified native package", 
   const bridge = JSON.parse(await readFile(bridgeManifestPath, "utf8"));
   const native = JSON.parse(await readFile(nativeManifestPath, "utf8"));
   assert.equal(bridge.version, "1.1.7", "retain the separately patched ACP bridge");
-  assert.equal(native.version, "0.163.0", "resolve the native override from the actual bridge package");
+  assert.equal(native.version, "0.166.0", "resolve the native override from the actual bridge package");
 
   const home = await mkdtemp(join(tmpdir(), "paperclip-codex-package-"));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -29,23 +29,23 @@ test("the local ACP bridge resolves and launches its qualified native package", 
     timeout: 5_000,
     env: { PATH: process.env.PATH ?? "", HOME: home, CODEX_HOME: home },
   }).trim();
-  assert.equal(version, "codex-cli 0.163.0");
+  assert.equal(version, "codex-cli 0.166.0");
 });
 
 test("the Linux x64 native package includes the matching tool host and sandbox resource", {
   skip: process.platform !== "linux" || process.arch !== "x64",
 }, async () => {
   const native = JSON.parse(await readFile(nativeManifestPath, "utf8"));
-  assert.equal(native.optionalDependencies["@openai/codex-linux-x64"], "npm:@openai/codex@0.163.0-linux-x64");
+  assert.equal(native.optionalDependencies["@openai/codex-linux-x64"], "npm:@openai/codex@0.166.0-linux-x64");
   const platformManifestPath = requireNative.resolve("@openai/codex-linux-x64/package.json");
   const platform = JSON.parse(await readFile(platformManifestPath, "utf8"));
-  assert.equal(platform.version, "0.163.0-linux-x64");
+  assert.equal(platform.version, "0.166.0-linux-x64");
 
-  // These digests come from the integrity-verified official 0.163.0-linux-x64
+  // These digests come from the integrity-verified official 0.166.0-linux-x64
   // archive. A copied main executable alone cannot satisfy this contract.
   const qualifiedFiles = {
-    "bin/codex": "399ff69c431c066e40de318fba45c2b07f45a76b19939d247ee4828fc70c4215",
-    "bin/codex-code-mode-host": "8724d73ec190536233ab4628d24a071bfbcf27e5124f08fe35129f26fe48b916",
+    "bin/codex": "b8a11fedf24b2dfb59a70c9e52b030f9a508dcd49cd2dd0d41956f4c785156b8",
+    "bin/codex-code-mode-host": "657f4e902726e05867c937b583049d5997e057f8cd0ab40450633c9c9ef8d630",
     "codex-resources/bwrap": "77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c",
   };
   const root = join(dirname(platformManifestPath), "vendor", "x86_64-unknown-linux-musl");
