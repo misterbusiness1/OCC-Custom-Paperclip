@@ -428,6 +428,10 @@ export async function openQualifiedAcpxRuntime(
       ...(options.profile.agent === "claude"
         ? {
             PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+            // claude-agent-acp 0.100.0 advertises the session-goal extension only to
+            // AIR clients. The Paperclip patch restores the 0.73.0 top-level
+            // `_meta.goal` capability and snapshots when this flag is set (runner only).
+            PAPERCLIP_CLAUDE_ACP_GOAL_META: "1",
             // This URL comes from the runner-owned authenticated tool bridge,
             // never provider-supplied permission-request metadata.
             PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: options.mcpServers.find(

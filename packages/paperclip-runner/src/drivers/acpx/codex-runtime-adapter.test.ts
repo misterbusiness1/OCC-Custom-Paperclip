@@ -327,6 +327,7 @@ describe("Codex ACPX runtime adapter", () => {
     });
     expect(claudeOptions?.spawnEnvironment?.()).not.toHaveProperty("INITIAL_AGENT_MODE");
     expect(claudeOptions?.spawnEnvironment?.()).not.toHaveProperty("PAPERCLIP_CODEX_ACP_GOAL_META");
+    expect(claudeOptions?.spawnEnvironment?.()).toMatchObject({ PAPERCLIP_CLAUDE_ACP_GOAL_META: "1" });
   });
 
   it("admits Codex goal control from the patched codex-acp 2.5.0 top-level goal metadata", async () => {
@@ -421,6 +422,7 @@ describe("Codex ACPX runtime adapter", () => {
         PATH: "/verified/bin",
         OPENAI_API_KEY: "provider-secret-must-stay-out-of-terminal",
         PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+        PAPERCLIP_CLAUDE_ACP_GOAL_META: "1",
         PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: "",
       });
       expect(runtimeOptions?.terminalEnvironment?.()).toEqual({
@@ -457,6 +459,7 @@ describe("Codex ACPX runtime adapter", () => {
       });
       expect(runtimeOptions?.spawnEnvironment?.()).toEqual({
         PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+        PAPERCLIP_CLAUDE_ACP_GOAL_META: "1",
         PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: binding === "runner-owned" ? "http://127.0.0.1:3210/mcp" : "",
       });
       expect(runtimeOptions?.terminalEnvironment?.()).toEqual({
