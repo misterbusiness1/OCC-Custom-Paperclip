@@ -207,6 +207,11 @@ function flushChildStderr(state: ChildStderrState) {
 // output, and runs an extra billable prompt-suggestion turn after every turn.
 // Codex reports provider failures as a JSON-RPC error carrying
 // `codexErrorInfo` instead, so it does not need (and must not get) the flag.
+// claude-agent-acp 0.100.0 has the same "any `jetbrains.air` is AIR" detection
+// (changed-only tool-call `_meta`, no streamed subagent text, no tool rawInput).
+// Its Paperclip patch narrows `isAirClient` so a declaration whose ONLY
+// capability is `sessionFailure` stays a plain ACP client; keep this list at
+// exactly ["sessionFailure"] (see claude-local acp.air-capabilities.test.ts).
 const AIR_TYPED_SESSION_FAILURE_CLIENT_CAPABILITIES: Readonly<Record<string, unknown>> = Object.freeze({
   _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } } },
 });

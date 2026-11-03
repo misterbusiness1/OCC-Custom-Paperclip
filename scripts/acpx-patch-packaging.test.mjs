@@ -172,6 +172,29 @@ test("production ACPX 0.21.1 patch carries every host callback the engine relies
   assert.doesNotMatch(patch, /^\+.*typedSessionFailureMeta/m);
 });
 
+test("production claude-agent-acp 0.100.0 patch keeps a sessionFailure-only client out of AIR mode", async () => {
+  const patch = await readFile(
+    new URL("../patches/@agentclientprotocol__claude-agent-acp@0.100.0.patch", import.meta.url),
+    "utf8",
+  );
+  const start = patch.indexOf("diff --git a/dist/air-extension.js b/dist/air-extension.js");
+  assert.ok(start >= 0, "patch touches dist/air-extension.js");
+  const next = patch.indexOf("\ndiff --git ", start + 1);
+  const section = patch.slice(start, next < 0 ? patch.length : next);
+  assert.match(section, /^-\s+return airExtensionMeta\(asRecord\(capabilities\)\._meta\) !== undefined;$/m);
+  assert.match(section, /^\+\s+advertised\.every\(\(capability\) => capability === AIR_SESSION_FAILURE_CAPABILITY\)\)$/m);
+
+  // The installed copy that claude_local agents run must carry the narrowing.
+  const requireClaudeLocal = createRequire(new URL("../packages/adapters/claude-local/package.json", import.meta.url));
+  const installed = await import(
+    new URL(`file://${requireClaudeLocal.resolve("@agentclientprotocol/claude-agent-acp/dist/air-extension.js")}`).href
+  );
+  const paperclip = { _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } } } };
+  assert.equal(installed.isAirClient(paperclip), false);
+  assert.equal(installed.clientSupportsAirCapability(paperclip, "sessionFailure"), true);
+  assert.equal(installed.isAirClient({ _meta: { jetbrains: { air: { version: 1 } } } }), true);
+});
+
 test("published packages preserve the patched embedded-postgres runtime", () => {
   assert.equal(
     rootPackage.pnpm.patchedDependencies["embedded-postgres@18.1.0-beta.16"],

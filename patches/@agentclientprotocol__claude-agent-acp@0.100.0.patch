@@ -58,3 +58,27 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
              // Forward MCP elicitation requests onto ACP elicitation. Only attached
              // when the client advertised support, so non-supporting clients keep the
              // SDK's default (auto-decline) behavior. (AskUserQuestion is handled in
+diff --git a/dist/air-extension.js b/dist/air-extension.js
+--- a/dist/air-extension.js
++++ b/dist/air-extension.js
+@@ -116,7 +116,19 @@
+  * upstream adapter, and no key that exists only for AIR.
+  */
+ export function isAirClient(capabilities) {
+-    return airExtensionMeta(asRecord(capabilities)._meta) !== undefined;
++    const air = airExtensionMeta(asRecord(capabilities)._meta);
++    if (air === undefined)
++        return false;
++    // Paperclip: a client whose only AIR capability is typed session failures
++    // (Paperclip's ACPX host) is not JetBrains AIR. It opts into
++    // `sessionFailure` alone, as with 0.73.0, and keeps the upstream tool-call,
++    // transcript and capability surface of every other client.
++    const advertised = air[AIR_EXTENSION_CAPABILITIES_KEY];
++    if (Array.isArray(advertised) &&
++        advertised.length > 0 &&
++        advertised.every((capability) => capability === AIR_SESSION_FAILURE_CAPABILITY))
++        return false;
++    return true;
+ }
+ /**
+  * The `_meta` of an AIR client with one more AIR payload, or undefined for
