@@ -81,7 +81,33 @@ Worker teardown removes credential visibility; it does **not** revoke this
 long-lived canonical token. The worker must not expose another agent's files,
 operator HOME, administrative tokens, host mounts or an unscoped owner CLI login.
 A legitimate assigned cluster operator, worker isolation qualification and real
-model subscription checks remain release gates. Mocked seam tests do not prove
-those runtime properties. Recheck the actual deployed Paperclip source/image
-before merging or deploying this branch, which starts at recorded source
-`63d9c0955970f0dfb769aa44cc01ec0dc5e4db8c`.
+model subscription checks remain activation gates. Mocked seam tests do not prove
+those runtime properties. Source changes may merge after the required source
+checks and independent review pass while managed-worker mode stays disabled.
+Merge does not authorize deployment or activation.
+
+## Companion status and owner activation follow-up (2026-11-03)
+
+The original server companion, OneCLI #9, is preserved in
+[the public history repository](https://github.com/misterbusiness1/onecli-public-history-20261028/pull/9).
+Its runtime identity work landed in canonical
+[OneCLI #1](https://github.com/misterbusiness1/onecli/pull/1), merge commit
+`c7466d0d85c5ccd3560f9ed5d5681c5b08b8c24f`.
+The closed [onecli-cli #2](https://github.com/misterbusiness1/onecli-cli/pull/2)
+moved through the consolidated repository and landed in canonical
+[OneCLI #2](https://github.com/misterbusiness1/onecli/pull/2), merge commit
+`83e4cd2ad8411d86dcca6cf80cdca325fcc7695d`. Both canonical changes merged on
+2026-10-28. Their source merge does not establish that a particular worker image,
+CLI distribution or deployment contains them.
+
+Managed-worker activation remains a separate owner-controlled follow-up:
+
+- Qualify the exact Paperclip server, native Kubernetes plugin, OneCLI server and
+  immutable worker/CLI artifacts together. Verify the CLI source commit and hash.
+- Verify owner administration continuity, assigned self-identity, immutable
+  credential versions, routing and per-worker filesystem, process and network
+  isolation in the intended environment.
+- Run genuine assigned-subscription model and tool heartbeats. Verify billing,
+  revocation, rotation, teardown and the recovery procedure.
+- Obtain owner approval before deployment or setting the managed environment ID
+  and trusted API origin. Keep managed-worker mode disabled until then.
