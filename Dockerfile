@@ -196,7 +196,7 @@ WORKDIR /app
 # (the single most expensive layer: four CLI toolchains + apt, per arch) can
 # never hit the layer cache and rebuilds on every build.
 RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
-  && npm install --global --omit=dev @anthropic-ai/claude-code@2.1.283 @openai/codex@0.157.1 opencode-ai @google/gemini-cli@latest @moonshot-ai/kimi-code@2.1.1 \
+  && npm install --global --omit=dev @anthropic-ai/claude-code@2.1.317 @openai/codex@0.166.0 opencode-ai@1.19.5 @google/gemini-cli@0.66.0 @moonshot-ai/kimi-code@2.4.1 \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq lsof php-cli php-xml composer postgresql-client \
   && rm -rf /var/lib/apt/lists/* \
