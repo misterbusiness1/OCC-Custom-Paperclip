@@ -588,18 +588,27 @@ function isUserCommentSupersedableKind(
   ).includes(kind);
 }
 
-function isIssueThreadInteractionIdempotencyConflict(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
-  const err = error as {
-    code?: string;
-    constraint?: string;
-    constraint_name?: string;
-  };
-  const constraint = err.constraint ?? err.constraint_name;
-  return (
-    err.code === "23505" &&
-    constraint === ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT
-  );
+export function isIssueThreadInteractionIdempotencyConflict(error: unknown): boolean {
+  const seen = new Set<object>();
+  let current = error;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const candidate = current as {
+      code?: unknown;
+      constraint?: unknown;
+      constraint_name?: unknown;
+      cause?: unknown;
+    };
+    const constraint = candidate.constraint ?? candidate.constraint_name;
+    if (
+      candidate.code === "23505" &&
+      constraint === ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
 }
 
 function isEquivalentCreateRequest(
