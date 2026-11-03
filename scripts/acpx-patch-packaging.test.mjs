@@ -195,6 +195,16 @@ test("production claude-agent-acp 0.100.0 patch keeps a sessionFailure-only clie
   assert.equal(installed.isAirClient({ _meta: { jetbrains: { air: { version: 1 } } } }), true);
 });
 
+test("production claude-agent-acp 0.100.0 patch turns prompt suggestions off by default", async () => {
+  // 0.100.0 asks the model for a predicted follow-up prompt after every turn.
+  // Headless Paperclip runs never show it, so the patch defaults it off while
+  // still letting session/new _meta.claudeCode.options override it.
+  const requireClaudeLocal = createRequire(new URL("../packages/adapters/claude-local/package.json", import.meta.url));
+  const source = await readFile(requireClaudeLocal.resolve("@agentclientprotocol/claude-agent-acp/dist/acp-agent.js"), "utf8");
+  const queryOptions = source.slice(source.indexOf("// One predicted follow-up prompt per turn"));
+  assert.match(queryOptions, /^\s+promptSuggestions: false,\n\s+\.\.\.userProvidedOptions,$/m);
+});
+
 test("published packages preserve the patched embedded-postgres runtime", () => {
   assert.equal(
     rootPackage.pnpm.patchedDependencies["embedded-postgres@18.1.0-beta.16"],

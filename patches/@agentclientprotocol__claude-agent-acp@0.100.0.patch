@@ -24,15 +24,20 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                                      }),
                                  });
                              }
-@@ -9225,6 +9235,7 @@
+@@ -9223,8 +9233,11 @@
+             // (`promptSuggestionEnabled`) or with CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false.
+             // Before `userProvidedOptions`, so a client that passes
              // `promptSuggestions: false` keeps it off.
-             promptSuggestions: true,
+-            promptSuggestions: true,
++            // Paperclip: off by default. Headless agent runs never show the
++            // suggestion, and it costs an extra model call per turn.
++            promptSuggestions: false,
              ...userProvidedOptions,
 +            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && { settingSources: ["user"] }),
              // Claude Code uses the same checkpoint store for /rewind. Enable it only
              // for clients that negotiated per-turn file-change reports; this avoids
              // snapshot I/O for every other session.
-@@ -9236,12 +9247,24 @@
+@@ -9236,12 +9249,24 @@
              includePartialMessages: true,
              forwardSubagentText,
              mcpServers: {
