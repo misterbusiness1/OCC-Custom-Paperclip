@@ -17,7 +17,7 @@ const requireNative = createRequire(nativeManifestPath);
 test("the local ACP bridge resolves and launches its qualified native package", async (t) => {
   const bridge = JSON.parse(await readFile(bridgeManifestPath, "utf8"));
   const native = JSON.parse(await readFile(nativeManifestPath, "utf8"));
-  assert.equal(bridge.version, "1.1.7", "retain the separately patched ACP bridge");
+  assert.equal(bridge.version, "2.5.0", "the production ACP bridge is the patched codex-acp 2.5.0");
   assert.equal(native.version, "0.166.0", "resolve the native override from the actual bridge package");
 
   const home = await mkdtemp(join(tmpdir(), "paperclip-codex-package-"));

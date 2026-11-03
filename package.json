@@ -112,8 +112,9 @@
     "patchedDependencies": {
       "@dnd-kit/core@6.3.1": "patches/@dnd-kit__core@6.3.1.patch",
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch",
-      "acpx@0.12.0": "patches/acpx@0.12.0.patch",
-      "@agentclientprotocol/codex-acp@1.1.7": "patches/@agentclientprotocol__codex-acp@1.1.7.patch",
+      "@agentclientprotocol/codex-acp@2.5.0": "patches/@agentclientprotocol__codex-acp@2.5.0.patch",
+      "acpx@0.21.1": "patches/acpx@0.21.1.patch",
+      "@agentclientprotocol/claude-agent-acp@0.100.0": "patches/@agentclientprotocol__claude-agent-acp@0.100.0.patch",
       "acpx@0.13.1": "patches/acpx@0.13.1.patch",
       "@agentclientprotocol/claude-agent-acp@0.73.0": "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
       "@agentclientprotocol/codex-acp@1.6.2": "patches/@agentclientprotocol__codex-acp@1.6.2.patch",
@@ -126,7 +127,8 @@
       "postgres@3.4.9": "patches/postgres@3.4.9.patch"
     },
     "overrides": {
-      "@agentclientprotocol/codex-acp@1.1.7>@openai/codex": "0.166.0",
+      "@agentclientprotocol/codex-acp@2.5.0>@openai/codex": "0.166.0",
+      "@agentclientprotocol/claude-agent-acp@0.100.0>@anthropic-ai/claude-agent-sdk": "0.3.317",
       "@agentclientprotocol/codex-acp@1.6.2>@openai/codex": "0.156.0",
       "@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk": "0.3.317",
       "rollup": ">=4.59.0",

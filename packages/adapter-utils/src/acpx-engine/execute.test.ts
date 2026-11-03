@@ -196,11 +196,14 @@ async function runExecutor(
         ...buildRuntime(
           ({ key, value }) => configOptions.push({ key, value }),
           (input) => sessionInputs.push(input),
-          (input) => turnInputs.push(input),
+          (input) => {
+            turnInputs.push(input);
+            // acpx evaluates terminalEnvironment at each terminal/create; record
+            // what a terminal created during this turn would receive.
+            const turnTerminalEnv = options.terminalEnvironment?.();
+            if (turnTerminalEnv) terminalEnvs.push({ ...turnTerminalEnv });
+          },
         ),
-        setTerminalEnv: async ({ env }: { env: Record<string, string> }) => {
-          terminalEnvs.push({ ...env });
-        },
       } as never;
     },
   });
@@ -242,7 +245,8 @@ it("passes the current Paperclip run environment to ACP terminal shells", async 
     { authToken: "run-token-1" },
   );
 
-  expect(result.runtimeOptions[0]?.terminalEnv).toMatchObject({
+  const terminalEnvironment = result.runtimeOptions[0]?.terminalEnvironment as (() => Record<string, string>) | undefined;
+  expect(terminalEnvironment?.()).toMatchObject({
     PAPERCLIP_API_KEY: "run-token-1",
     PAPERCLIP_RUN_ID: "run-1",
     PAPERCLIP_TEST_MARKER: "from-config",
@@ -253,6 +257,31 @@ it("passes the current Paperclip run environment to ACP terminal shells", async 
     PAPERCLIP_RUN_ID: "run-1",
     PAPERCLIP_TEST_MARKER: "from-config",
   });
+});
+
+it("starts the ACP agent child from an empty environment instead of the server's process env", async () => {
+  const result = await runExecutor(
+    { agent: "custom", agentCommand: "node ./fake-acp.js", env: { PAPERCLIP_TEST_MARKER: "from-config" } },
+    { authToken: "run-token-1" },
+  );
+  const options = result.runtimeOptions[0] ?? {};
+  // acpx 0.21.1 replaces the old patched `inheritProcessEnv: false` with a
+  // spawn-environment factory; the session env and agentProcessEnv overlay it.
+  expect(options).not.toHaveProperty("inheritProcessEnv");
+  expect(options).not.toHaveProperty("terminalEnv");
+  const spawnEnvironment = options.spawnEnvironment as (() => Record<string, string>) | undefined;
+  expect(typeof spawnEnvironment).toBe("function");
+  expect(spawnEnvironment?.()).toEqual({});
+});
+
+it("advertises typed AIR session failures to every agent except codex", async () => {
+  const air = { _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } } } };
+  const claude = await runExecutor({ agent: "claude", agentCommand: "node ./fake-acp.js" });
+  expect(claude.runtimeOptions[0]?.clientCapabilities).toEqual(air);
+  const custom = await runExecutor({ agent: "custom", agentCommand: "node ./fake-acp.js" });
+  expect(custom.runtimeOptions[0]?.clientCapabilities).toEqual(air);
+  const codex = await runExecutor({ agent: "codex", agentCommand: "node ./fake-acp.js" });
+  expect(codex.runtimeOptions[0]?.clientCapabilities).toBeUndefined();
 });
 
 it("passes the current runtime-tool capability to ACP terminal shells", async () => {
@@ -275,7 +304,8 @@ it("passes the current runtime-tool capability to ACP terminal shells", async ()
     },
   );
 
-  expect(result.runtimeOptions[0]?.terminalEnv).toMatchObject({
+  const terminalEnvironment = result.runtimeOptions[0]?.terminalEnvironment as (() => Record<string, string>) | undefined;
+  expect(terminalEnvironment?.()).toMatchObject({
     PAPERCLIP_RUNTIME_TOOLS_MCP_URL: "https://runtime.test/mcp/run-1",
     PAPERCLIP_RUNTIME_TOOLS_TOKEN: "run-tool-token-1",
     PAPERCLIP_RUNTIME_TOOLS_AVAILABLE: "connections_search,connection_request,typesafe_judge",

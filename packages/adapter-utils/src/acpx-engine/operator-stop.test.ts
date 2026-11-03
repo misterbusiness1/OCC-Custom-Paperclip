@@ -9,6 +9,10 @@ import { createAcpxEngineExecutor } from './execute.js';
 import { sessionCodec } from './session-codec.js';
 const fixture = fileURLToPath(new URL('../../../../scripts/mcp-fixtures/servers/acp-stop-agent.mjs', import.meta.url));
 const roots: string[] = [];
+// acpx 0.21.1 snapshots the host process table (/proc on Linux) around agent
+// and terminal lifecycle steps; on a busy host each full run costs a few extra
+// seconds over 0.12.0, so these real-process runs get explicit budgets.
+const REAL_PROCESS_RUN_TIMEOUT_MS = 30_000;
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))); });
 async function setup(tool?: string) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paperclip-acp-stop-'));
@@ -46,7 +50,7 @@ it('stops an actual ACP process and resumes its established session with the new
   const launches = (await fs.readFile(path.join(root, 'run-env'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   expect(launches.map(launch => launch.runId)).toEqual(['stop-test', 'follow-up']);
   expect(launches[1].tokenHash).toBe(createHash('sha256').update('follow-up-test-token').digest('hex'));
-});
+}, REAL_PROCESS_RUN_TIMEOUT_MS);
 it('continues after an interrupted write without replaying that write', async () => {
   const { root, ctx, abort, started, execute } = await setup('write');
   const running = execute(ctx);
@@ -62,7 +66,7 @@ it('continues after an interrupted write without replaying that write', async ()
   expect(next.exitCode, JSON.stringify(next)).toBe(0);
   expect(await fs.readFile(path.join(root, 'writes'), 'utf8')).toBe(before);
   expect((await fs.readFile(path.join(root, 'completed'), 'utf8')).trim()).toBe('follow-up');
-}, 15000);
+}, REAL_PROCESS_RUN_TIMEOUT_MS);
 it('does not dispatch a provider when Stop precedes startup', async () => {
   const { root, ctx, abort, execute } = await setup();
   abort.abort(new Error('Stopped before startup'));
@@ -89,7 +93,7 @@ it.each(['missing session', 'changed configuration'])('starts a new turn when th
   }
   expect(next.exitCode, JSON.stringify(next)).toBe(0);
   expect((await fs.readFile(path.join(root, 'prompts'), 'utf8')).trim().split('\n')).toHaveLength(2);
-});
+}, REAL_PROCESS_RUN_TIMEOUT_MS);
 
 it('keeps the Stop deadline active after cancellation returns until provider exit', async () => {
   const { ctx, abort, started, execute } = await setup();
@@ -105,4 +109,4 @@ it('keeps the Stop deadline active after cancellation returns until provider exi
   expect(result.executionRecovery).toBeUndefined();
   expect(providerPid).toBeTypeOf('number');
   expect(() => process.kill(providerPid!, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
-}, 10000);
+}, REAL_PROCESS_RUN_TIMEOUT_MS);

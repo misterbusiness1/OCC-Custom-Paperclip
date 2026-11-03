@@ -49,7 +49,7 @@ const claudeAcpPatch = await readFile(
   "utf8",
 );
 
-for (const version of ["0.12.0", "0.13.1"]) {
+for (const version of ["0.21.1", "0.13.1"]) {
   test(`ACPX ${version} release patch uses portable generated unified hunks`, async () => {
     const patch = await readFile(
       new URL(`../patches/acpx@${version}.patch`, import.meta.url),
@@ -108,17 +108,20 @@ for (const version of ["0.12.0", "0.13.1"]) {
 }
 
 test("published packages preserve the patched ACPX runtime", () => {
+  // Production lanes (adapter-utils engine and the server bundle) moved from
+  // acpx 0.12.0 / 0.13.1 to the ported 0.21.1 patch; the runner keeps 0.13.1.
   assert.equal(
-    rootPackage.pnpm.patchedDependencies["acpx@0.12.0"],
-    "patches/acpx@0.12.0.patch",
+    rootPackage.pnpm.patchedDependencies["acpx@0.21.1"],
+    "patches/acpx@0.21.1.patch",
   );
+  assert.equal(rootPackage.pnpm.patchedDependencies["acpx@0.12.0"], undefined);
   assert.equal(
     rootPackage.pnpm.patchedDependencies["acpx@0.13.1"],
     "patches/acpx@0.13.1.patch",
   );
-  assert.equal(adapterUtilsPackage.dependencies.acpx, "0.12.0");
+  assert.equal(adapterUtilsPackage.dependencies.acpx, "0.21.1");
   assert.deepEqual(adapterUtilsPackage.bundleDependencies, ["acpx"]);
-  assert.equal(serverPackage.dependencies.acpx, "0.13.1");
+  assert.equal(serverPackage.dependencies.acpx, "0.21.1");
   assert.ok(serverPackage.bundleDependencies.includes("acpx"));
   assert.equal(bundledCliNpmDependencies.has("acpx"), true);
   assert.equal(cliEsbuildConfig.external.includes("acpx"), false);
@@ -140,6 +143,66 @@ test("Paperclip Runner pins the qualified ACPX host callbacks", () => {
   ]) assert.match(acpxRuntimePatch, new RegExp(callback));
   assert.match(claudeAcpPatch, /usage: \{/);
   assert.match(claudeAcpPatch, /cache_creation_input_tokens/);
+});
+
+test("production ACPX 0.21.1 patch carries every host callback the engine relies on", async () => {
+  const patch = await readFile(new URL("../patches/acpx@0.21.1.patch", import.meta.url), "utf8");
+  for (const callback of [
+    "spawnEnvironment", "terminalEnvironment", "spawnCwd",
+    "onAgentSpawn", "onAgentStderr", "onTerminalSessionFailure",
+    "providerHttpStatus", "sessionFailure", "clientCapabilities",
+  ]) assert.match(patch, new RegExp(callback), callback);
+  const fileSection = (name) => {
+    const start = patch.indexOf(`diff --git a/dist/${name} b/dist/${name}`);
+    assert.ok(start >= 0, `patch touches dist/${name}`);
+    const next = patch.indexOf("\ndiff --git ", start + 1);
+    return patch.slice(start, next < 0 ? patch.length : next);
+  };
+  // The engine passes onTerminalSessionFailure on runTurn/startTurn input, so
+  // the public declaration must carry it, not only the JavaScript.
+  assert.match(fileSection("runtime.d.ts"), /^\+\s+onTerminalSessionFailure\?:/m);
+  // onAgentStderr replaces the verbose process.stderr passthrough (0.12.0
+  // semantics), so routed child stderr is never also written to the server log.
+  assert.match(
+    fileSection("queue-owner-runtime-B0mPqOu4.js"),
+    /\+\s+if \(this\.options\.onAgentStderr\) \{\n\+\s+this\.options\.onAgentStderr\(String\(chunk\)\);\n\+\s+return;/,
+  );
+  // Typed AIR session failures are advertised per runtime by the engine (not
+  // to codex-acp 2.5.0), so the patch must not hard-code them for every agent.
+  assert.doesNotMatch(patch, /^\+.*typedSessionFailureMeta/m);
+});
+
+test("production claude-agent-acp 0.100.0 patch keeps a sessionFailure-only client out of AIR mode", async () => {
+  const patch = await readFile(
+    new URL("../patches/@agentclientprotocol__claude-agent-acp@0.100.0.patch", import.meta.url),
+    "utf8",
+  );
+  const start = patch.indexOf("diff --git a/dist/air-extension.js b/dist/air-extension.js");
+  assert.ok(start >= 0, "patch touches dist/air-extension.js");
+  const next = patch.indexOf("\ndiff --git ", start + 1);
+  const section = patch.slice(start, next < 0 ? patch.length : next);
+  assert.match(section, /^-\s+return airExtensionMeta\(asRecord\(capabilities\)\._meta\) !== undefined;$/m);
+  assert.match(section, /^\+\s+advertised\.every\(\(capability\) => capability === AIR_SESSION_FAILURE_CAPABILITY\)\)$/m);
+
+  // The installed copy that claude_local agents run must carry the narrowing.
+  const requireClaudeLocal = createRequire(new URL("../packages/adapters/claude-local/package.json", import.meta.url));
+  const installed = await import(
+    new URL(`file://${requireClaudeLocal.resolve("@agentclientprotocol/claude-agent-acp/dist/air-extension.js")}`).href
+  );
+  const paperclip = { _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } } } };
+  assert.equal(installed.isAirClient(paperclip), false);
+  assert.equal(installed.clientSupportsAirCapability(paperclip, "sessionFailure"), true);
+  assert.equal(installed.isAirClient({ _meta: { jetbrains: { air: { version: 1 } } } }), true);
+});
+
+test("production claude-agent-acp 0.100.0 patch turns prompt suggestions off by default", async () => {
+  // 0.100.0 asks the model for a predicted follow-up prompt after every turn.
+  // Headless Paperclip runs never show it, so the patch defaults it off while
+  // still letting session/new _meta.claudeCode.options override it.
+  const requireClaudeLocal = createRequire(new URL("../packages/adapters/claude-local/package.json", import.meta.url));
+  const source = await readFile(requireClaudeLocal.resolve("@agentclientprotocol/claude-agent-acp/dist/acp-agent.js"), "utf8");
+  const queryOptions = source.slice(source.indexOf("// One predicted follow-up prompt per turn"));
+  assert.match(queryOptions, /^\s+promptSuggestions: false,\n\s+\.\.\.userProvidedOptions,$/m);
 });
 
 test("published packages preserve the patched embedded-postgres runtime", () => {
@@ -207,20 +270,20 @@ test("bundled package staging selects only the installed dependency version's pa
   mkdirSync(installedPackageDir, { recursive: true });
   writeFileSync(
     join(installedPackageDir, "package.json"),
-    JSON.stringify({ name: "acpx", version: "0.12.0" }),
+    JSON.stringify({ name: "acpx", version: "0.21.1" }),
   );
   t.after(() => rmSync(destinationDir, { recursive: true, force: true }));
 
   assert.deepEqual(
     selectBundledDependencyPatches(destinationDir, ["acpx"], {
-      "acpx@0.12.0": "patches/acpx@0.12.0.patch",
+      "acpx@0.21.1": "patches/acpx@0.21.1.patch",
       "acpx@0.13.1": "patches/acpx@0.13.1.patch",
     }),
     [
       {
         packageName: "acpx",
-        specifier: "acpx@0.12.0",
-        patchPath: "patches/acpx@0.12.0.patch",
+        specifier: "acpx@0.21.1",
+        patchPath: "patches/acpx@0.21.1.patch",
       },
     ],
   );
@@ -258,7 +321,7 @@ test("bundled package patch selection reports missing installed metadata", (t) =
   assert.throws(
     () =>
       selectBundledDependencyPatches(destinationDir, ["acpx"], {
-        "acpx@0.12.0": "patches/acpx@0.12.0.patch",
+        "acpx@0.21.1": "patches/acpx@0.21.1.patch",
       }),
     /Cannot select a patch for bundled dependency acpx: failed to read/,
   );
@@ -277,10 +340,10 @@ test("bundled package patch selection rejects an unpatched installed version", (
   assert.throws(
     () =>
       selectBundledDependencyPatches(destinationDir, ["acpx"], {
-        "acpx@0.12.0": "patches/acpx@0.12.0.patch",
+        "acpx@0.21.1": "patches/acpx@0.21.1.patch",
         "acpx@0.13.1": "patches/acpx@0.13.1.patch",
       }),
-    /installed acpx@0\.14\.0, but configured patches are acpx@0\.12\.0, acpx@0\.13\.1/,
+    /installed acpx@0\.14\.0, but configured patches are acpx@0\.13\.1, acpx@0\.21\.1/,
   );
 });
 
@@ -324,7 +387,7 @@ printf 'npm %s\\n' "$*" >> "$FAKE_CALL_LOG"
 node -e 'const fs = require("node:fs"); const pkg = require("./package.json"); if ("devDependencies" in pkg) process.exit(1); for (const [name, version] of Object.entries(pkg.dependencies)) { const dir = "node_modules/" + name; fs.mkdirSync(dir + "/dist", { recursive: true }); fs.writeFileSync(dir + "/package.json", JSON.stringify({ name, version })); }'
 mkdir -p node_modules/acpx/dist
 printf 'unpatched runtime\\n' > node_modules/acpx/dist/runtime.js
-printf '{"name":"acpx","version":"0.13.1"}\\n' > node_modules/acpx/package.json
+printf '{"name":"acpx","version":"0.21.1"}\\n' > node_modules/acpx/package.json
 `,
   );
   writeExecutable(

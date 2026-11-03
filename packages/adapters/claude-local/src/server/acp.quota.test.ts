@@ -58,8 +58,8 @@ async function executeFailure(
 }
 
 it.each([
-  ["0.12.0", "oneshot"],
-  ["0.12.0", "persistent"],
+  ["0.21.1", "oneshot"],
+  ["0.21.1", "persistent"],
   ["0.13.1", "oneshot"],
   ["0.13.1", "persistent"],
 ])("waits for a typed Claude quota reset with ACPX %s in %s mode with provider diagnostics", async (version, mode) => {
@@ -85,8 +85,8 @@ it.each([
 });
 
 it.each([
-  ["0.12.0", "oneshot"],
-  ["0.12.0", "persistent"],
+  ["0.21.1", "oneshot"],
+  ["0.21.1", "persistent"],
   ["0.13.1", "oneshot"],
   ["0.13.1", "persistent"],
 ])("retains redacted service diagnostics beyond 4 KiB with ACPX %s in %s mode", async (version, mode) => {
@@ -130,8 +130,8 @@ it("classifies quota without a reset time for the existing recovery backoff", as
 });
 
 it.each([
-  ["0.12.0", "oneshot"],
-  ["0.12.0", "persistent"],
+  ["0.21.1", "oneshot"],
+  ["0.21.1", "persistent"],
   ["0.13.1", "oneshot"],
   ["0.13.1", "persistent"],
 ])("recognizes the Claude bridge quota fallback with ACPX %s in %s mode", async (version, mode) => {
