@@ -1214,13 +1214,29 @@ concurrent listings do not skip healthy logs because another listing is busy.
 
 ### Local Codex ACP runtime
 
-The local Codex adapter keeps its patched ACP bridge at `1.1.7` and pins that
-bridge's native `@openai/codex` dependency to `0.163.0`. Install the complete
-official platform package so the matching code-mode tool host and sandbox
-resources remain beside the native executable. The release-registry tests check
-normal package resolution, the launcher version, and the Linux x64 tool resources.
-Explicit model settings retain their normal precedence. An omitted model follows
-the native release's default and may advance when that release changes.
+The production ACP lanes run patched `@agentclientprotocol/codex-acp@2.5.0`
+(codex-local), `@agentclientprotocol/claude-agent-acp@0.100.0` (claude-local)
+and `acpx@0.21.1` (the adapter-utils engine and the server bundle). The Codex
+bridge's native `@openai/codex` dependency is pinned to `0.166.0` through the
+`@agentclientprotocol/codex-acp@2.5.0>@openai/codex` override. Install the
+complete official platform package so the matching code-mode tool host and
+sandbox resources remain beside the native executable. The release-registry
+tests check normal package resolution, the launcher version, and the Linux x64
+tool resources. Explicit model settings retain their normal precedence. An
+omitted model follows the native release's default and may advance when that
+release changes.
+
+The bridge patch keeps the provider-error contract codex-local classifies: a
+non-retryable turn error fails the prompt with a JSON-RPC internal error that
+carries `codexErrorInfo` (usage limit, HTTP status), and a configured-auth
+401 stays an internal error. The engine does not advertise JetBrains AIR
+typed session failures to codex-acp, because AIR mode changes its tool-call
+payloads, drops the provider sentence from the turn output and starts an extra
+prompt-suggestion model turn; claude and the other agents still receive it.
+codex-acp's own title generation (an extra model turn after a session's first
+turn) stays off unless `PAPERCLIP_CODEX_ACP_TITLE_GENERATION=true`.
+Paperclip Runner keeps its separately qualified codex-acp `1.6.2`,
+claude-agent-acp `0.73.0` and acpx `0.13.1` copies.
 
 ### Preinstalled remote runner runtime
 

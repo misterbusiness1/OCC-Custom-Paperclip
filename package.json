@@ -112,7 +112,7 @@
     "patchedDependencies": {
       "@dnd-kit/core@6.3.1": "patches/@dnd-kit__core@6.3.1.patch",
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch",
-            "@agentclientprotocol/codex-acp@2.5.0": "patches/@agentclientprotocol__codex-acp@2.5.0.patch",
+      "@agentclientprotocol/codex-acp@2.5.0": "patches/@agentclientprotocol__codex-acp@2.5.0.patch",
       "acpx@0.21.1": "patches/acpx@0.21.1.patch",
       "@agentclientprotocol/claude-agent-acp@0.100.0": "patches/@agentclientprotocol__claude-agent-acp@0.100.0.patch",
       "acpx@0.13.1": "patches/acpx@0.13.1.patch",

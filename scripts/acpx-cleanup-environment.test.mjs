@@ -10,8 +10,11 @@ import { pathToFileURL } from "node:url";
 // process before discarding it so cleanup must use the saved session rather
 // than reuse a warm client that masks this bug.
 const runtimePackages = [
-  ["0.12.0", "../packages/adapter-utils/package.json"],
-  ["0.13.1", "../server/package.json"],
+  // Production lanes: the adapter-utils engine and the server bundle.
+  ["0.21.1", "../packages/adapter-utils/package.json"],
+  ["0.21.1", "../server/package.json"],
+  // The runner's separately qualified lane.
+  ["0.13.1", "../packages/paperclip-runner/package.json"],
 ];
 
 const assignedKeys = ["HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "ACP_ASSIGNED_SENTINEL"];
@@ -63,7 +66,7 @@ for (const [version, packageManifest] of runtimePackages) {
   );
 
   for (const agent of ["codex", "claude"]) {
-    test(`ACPX ${version} preserves ${agent}'s assigned environment during backend cleanup`,
+    test(`ACPX ${version} (${packageManifest.split("/").at(-2)}) preserves ${agent}'s assigned environment during backend cleanup`,
       { timeout: 15_000 }, async (t) => {
         const root = await mkdtemp(join(tmpdir(), "paperclip-acpx-cleanup-env-"));
         const previousAmbient = process.env[ambientKey];
@@ -105,8 +108,8 @@ for (const [version, packageManifest] of runtimePackages) {
           cwd: runtimeCwd,
           sessionStore: createRuntimeStore({ stateDir: join(root, "state") }),
           agentRegistry,
-          // The two qualified versions expose different host-env controls.
-          ...(version === "0.12.0" ? { inheritProcessEnv: false } : { spawnEnvironment: () => ({}) }),
+          // Every qualified version starts the child from an empty host env.
+          spawnEnvironment: () => ({}),
           permissionMode: "approve-all",
           nonInteractivePermissions: "deny",
           timeoutMs: 5_000,
@@ -118,9 +121,9 @@ for (const [version, packageManifest] of runtimePackages) {
           cwd: sessionCwd,
           sessionOptions: { env: assignedEnv },
         });
-        // 0.13 retains even an initialized oneshot process; normal close
-        // releases it without deleting the backend session. The later discard
-        // must therefore exercise the cold cleanup path in both versions.
+        // 0.13 and 0.21 retain even an initialized oneshot process; normal
+        // close releases it without deleting the backend session. The later
+        // discard must therefore exercise the cold cleanup path in every lane.
         await runtime.close({ handle, reason: "release local process before backend cleanup" });
 
         // A changed registry/default cwd must not redirect cleanup away from
