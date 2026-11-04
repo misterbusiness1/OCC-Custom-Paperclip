@@ -3035,6 +3035,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn active_turn_recovery_closes_without_starting_the_provider() {
+        if serve_original_lifetime_fence_child() {
+            return;
+        }
         let directory = temporary_directory("active-recovery");
         let runtime = directory.join("runtime");
         let workspace = directory.join("workspace");
@@ -3062,7 +3065,7 @@ mod tests {
         value["cwd"] = json!(workspace);
         let descriptor: AcpxProviderDescriptor = serde_json::from_value(value).unwrap();
         let (provider_lifetime_fence_candidates, original_lifetime_fence) =
-            reserve_provider_lifetime_fence();
+            OriginalLifetimeFenceChild::start();
         let identity = AcpxProviderSessionIdentity {
             kind: "acpx".to_owned(),
             normalized_session_id: "session-1".to_owned(),
@@ -3180,7 +3183,7 @@ mod tests {
         assert!(persisted.provider_exit_unconfirmed);
         assert!(!marker.exists());
 
-        drop(original_lifetime_fence);
+        original_lifetime_fence.close_and_wait();
         recovered.shutdown().unwrap();
         let persisted: AcpxDurableState = serde_json::from_slice(
             &fs::read(recovered.state_path()).expect("read cleared ACPX state"),
@@ -3299,19 +3302,136 @@ mod tests {
         );
     }
 
-    fn reserve_provider_lifetime_fence() -> ([u16; 3], Vec<TcpListener>) {
-        use std::sync::atomic::{AtomicU32, Ordering};
+    // This child is the only process that ever owns the original listeners.
+    // Other tests may fork concurrently; CLOEXEC alone cannot prevent those
+    // forks from inheriting listeners owned by this libtest process.
+    const FENCE_CHILD_ENV: &str = "PAPERCLIP_TEST_ORIGINAL_FENCE_CHILD";
+    const FENCE_TEST: &str =
+        "acpx_provider_backend::tests::active_turn_recovery_closes_without_starting_the_provider";
 
+    fn serve_original_lifetime_fence_child() -> bool {
+        if std::env::var_os(FENCE_CHILD_ENV).is_none() {
+            return false;
+        }
+        let range = std::env::var(FENCE_CHILD_ENV).unwrap();
+        let mut fields = range.splitn(3, ':');
+        let start = fields.next().unwrap();
+        let end = fields.next().unwrap();
+        let directory = PathBuf::from(fields.next().expect("private fixture directory"));
+        let start: u16 = start.parse().unwrap();
+        let end: u16 = end.parse().unwrap();
+        assert!(start >= 49_152 && end > start);
+        let (candidates, listeners) = reserve_provider_lifetime_fence_from_ports(start..end);
+        fs::write(
+            directory.join("ready.tmp"),
+            serde_json::to_vec(&candidates).unwrap(),
+        )
+        .unwrap();
+        fs::rename(directory.join("ready.tmp"), directory.join("ready")).unwrap();
+        let mut command = [0];
+        std::io::stdin().read_exact(&mut command).unwrap();
+        assert_eq!(command, [b'C']);
+        drop(listeners);
+        fs::write(directory.join("closed.tmp"), b"closed").unwrap();
+        fs::rename(directory.join("closed.tmp"), directory.join("closed")).unwrap();
+        true
+    }
+
+    struct OriginalLifetimeFenceChild {
+        child: std::process::Child,
+        directory: PathBuf,
+    }
+
+    impl OriginalLifetimeFenceChild {
+        fn start() -> ([u16; 3], Self) {
+            let directory = temporary_directory("original-fence-child");
+            // Consume a disjoint chunk from the SAME allocator used by every
+            // parent fixture. Never let a later fixture reuse the child's ports.
+            let start = NEXT_CANDIDATE_PORT.fetch_add(64, std::sync::atomic::Ordering::Relaxed);
+            let end = start.checked_add(64).expect("fixture port range overflow");
+            assert!(end <= u16::MAX as u32, "fixture port range exhausted");
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", FENCE_TEST, "--nocapture"])
+                .env(
+                    FENCE_CHILD_ENV,
+                    format!("{start}:{end}:{}", directory.display()),
+                )
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .expect("start original lifetime listener owner");
+            let owner = Self { child, directory };
+            let ready = owner.protocol_file("ready");
+            let ports: [u16; 3] = serde_json::from_slice(&ready).unwrap();
+            assert!(ports
+                .iter()
+                .all(|port| (*port as u32) >= start && (*port as u32) < end));
+            assert!(ports[0] != ports[1] && ports[0] != ports[2] && ports[1] != ports[2]);
+            (ports, owner)
+        }
+
+        fn protocol_file(&self, name: &str) -> Vec<u8> {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match fs::read(self.directory.join(name)) {
+                    Ok(value) => return value,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => panic!("read listener owner acknowledgment: {error}"),
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "listener owner must acknowledge within fixture setup budget"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        fn close_and_wait(mut self) {
+            self.child.stdin.take().unwrap().write_all(b"C").unwrap();
+            assert_eq!(self.protocol_file("closed"), b"closed");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(status) = self.child.try_wait().unwrap() {
+                    assert!(status.success(), "listener owner must exit successfully");
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "listener owner must exit after close acknowledgment"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    impl Drop for OriginalLifetimeFenceChild {
+        fn drop(&mut self) {
+            if self.child.try_wait().ok().flatten().is_none() {
+                let _ = self.child.kill();
+            }
+            let _ = self.child.wait();
+            let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    static NEXT_CANDIDATE_PORT: std::sync::atomic::AtomicU32 =
+        std::sync::atomic::AtomicU32::new(49_152);
+
+    fn reserve_provider_lifetime_fence() -> ([u16; 3], Vec<TcpListener>) {
+        reserve_provider_lifetime_fence_from_ports(std::iter::from_fn(|| {
+            u16::try_from(NEXT_CANDIDATE_PORT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                .ok()
+        }))
+    }
+
+    fn reserve_provider_lifetime_fence_from_ports(
+        ports: impl Iterator<Item = u16>,
+    ) -> ([u16; 3], Vec<TcpListener>) {
         // A fixture releases its original listeners before proving cleanup.
         // Never give those candidate ports to another parallel fixture in that
         // gap: its listeners would impersonate the original provider lifetime.
-        static NEXT_CANDIDATE_PORT: AtomicU32 = AtomicU32::new(49_152);
         let mut listeners = Vec::new();
-        loop {
-            let Ok(port) = u16::try_from(NEXT_CANDIDATE_PORT.fetch_add(1, Ordering::Relaxed))
-            else {
-                break;
-            };
+        for port in ports {
             if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
                 listeners.push(listener);
                 if listeners.len() == 3 {
