@@ -3035,9 +3035,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn active_turn_recovery_closes_without_starting_the_provider() {
-        if serve_original_lifetime_fence_child() {
-            return;
-        }
         let directory = temporary_directory("active-recovery");
         let runtime = directory.join("runtime");
         let workspace = directory.join("workspace");
@@ -3065,7 +3062,7 @@ mod tests {
         value["cwd"] = json!(workspace);
         let descriptor: AcpxProviderDescriptor = serde_json::from_value(value).unwrap();
         let (provider_lifetime_fence_candidates, original_lifetime_fence) =
-            OriginalLifetimeFenceChild::start();
+            reserve_provider_lifetime_fence();
         let identity = AcpxProviderSessionIdentity {
             kind: "acpx".to_owned(),
             normalized_session_id: "session-1".to_owned(),
@@ -3199,7 +3196,7 @@ mod tests {
         let (candidates, original_lifetime_fence) = reserve_provider_lifetime_fence();
         let releaser = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(25));
-            drop(original_lifetime_fence);
+            original_lifetime_fence.close_and_wait();
         });
 
         let confirmed = await_provider_lifetime_fence(candidates)
@@ -3266,7 +3263,7 @@ mod tests {
         assert!(attach_error
             .to_string()
             .contains("requires the same settled ACPX provider profile and session"));
-        drop(original_lifetime_fence);
+        original_lifetime_fence.close_and_wait();
         executor.shutdown().unwrap();
         let recovered = executor.state.as_ref().unwrap();
         assert_eq!(recovered.lifecycle, "prepared");
@@ -3284,9 +3281,12 @@ mod tests {
 
     #[test]
     fn lifetime_fence_fixtures_do_not_reuse_a_retired_provider_quorum() {
+        if serve_original_lifetime_fence_child() {
+            return;
+        }
         let (original_candidates, original_lifetime_fence) = reserve_provider_lifetime_fence();
-        drop(original_lifetime_fence);
-        let (other_candidates, _other_lifetime_fence) = reserve_provider_lifetime_fence();
+        original_lifetime_fence.close_and_wait();
+        let (other_candidates, other_lifetime_fence) = reserve_provider_lifetime_fence();
 
         assert!(
             original_candidates
@@ -3300,6 +3300,7 @@ mod tests {
                 .len(),
             2
         );
+        other_lifetime_fence.close_and_wait();
     }
 
     // This child is the only process that ever owns the original listeners.
@@ -3307,7 +3308,7 @@ mod tests {
     // forks from inheriting listeners owned by this libtest process.
     const FENCE_CHILD_ENV: &str = "PAPERCLIP_TEST_ORIGINAL_FENCE_CHILD";
     const FENCE_TEST: &str =
-        "acpx_provider_backend::tests::active_turn_recovery_closes_without_starting_the_provider";
+        "acpx_provider_backend::tests::lifetime_fence_fixtures_do_not_reuse_a_retired_provider_quorum";
 
     fn serve_original_lifetime_fence_child() -> bool {
         if std::env::var_os(FENCE_CHILD_ENV).is_none() {
@@ -3417,11 +3418,8 @@ mod tests {
     static NEXT_CANDIDATE_PORT: std::sync::atomic::AtomicU32 =
         std::sync::atomic::AtomicU32::new(49_152);
 
-    fn reserve_provider_lifetime_fence() -> ([u16; 3], Vec<TcpListener>) {
-        reserve_provider_lifetime_fence_from_ports(std::iter::from_fn(|| {
-            u16::try_from(NEXT_CANDIDATE_PORT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-                .ok()
-        }))
+    fn reserve_provider_lifetime_fence() -> ([u16; 3], OriginalLifetimeFenceChild) {
+        OriginalLifetimeFenceChild::start()
     }
 
     fn reserve_provider_lifetime_fence_from_ports(
