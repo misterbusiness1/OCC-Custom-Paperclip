@@ -237,6 +237,9 @@ describe("minimax_local execute", () => {
   it.each([{}, null, [], { message: null }, { message: [] }, { message: {} },
     { message: { role: "user", content: "hi" } }, { message: { content: 42 } },
     { message: { content: "hi", tool_calls: {} } },
+    { message: { content: [{}] } }, { message: { content: [42] } },
+    { message: { content: [{ text: 42 }] } },
+    { message: { content: [{ type: "image", text: "unsupported" }] } },
     { message: { content: null, tool_calls: [{}] } },
     { message: { content: null, tool_calls: [null] } },
     { message: { content: null, tool_calls: ["bash"] } },
@@ -248,7 +251,8 @@ describe("minimax_local execute", () => {
     expect(result.errorMeta).toMatchObject({ protocolError: "invalid_assistant_message" });
   });
 
-  it.each(["", null])("retains valid explicit blank content %j as empty-output no-op", async (content) => {
+  it.each([{ content: "" }, { content: null }, { content: [] },
+    { content: [{ type: "text", text: "" }] }])("retains valid explicit blank content %j as empty-output no-op", async ({ content }) => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
       choices: [{ message: { role: "assistant", content } }], usage: { prompt_tokens: 5 },
     }));
@@ -256,6 +260,15 @@ describe("minimax_local execute", () => {
     expect(result.exitCode).toBe(0);
     expect(result.resultJson).toMatchObject({ stopReason: "empty_output" });
     expect(result.usage?.inputTokens).toBe(5);
+  });
+
+  it("accepts supported array-of-text-parts completion content", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
+      choices: [{ message: { content: [{ type: "text", text: "Hello" }, { text: " world" }] } }],
+    }));
+    const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "k" } }));
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("Hello world");
   });
 
   it("treats a blank final answer as a no-op (exit 0) and still records usage", async () => {

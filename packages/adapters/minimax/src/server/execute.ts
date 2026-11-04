@@ -617,6 +617,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const assistant = message && typeof message === "object" && !Array.isArray(message)
         ? message as Record<string, unknown>
         : null;
+      const validContentParts = !Array.isArray(assistant?.content) || assistant.content.every((part) => {
+        if (!part || typeof part !== "object" || Array.isArray(part)) return false;
+        const fields = part as Record<string, unknown>;
+        return (fields.type === undefined || fields.type === "text") && typeof fields.text === "string";
+      });
       const validToolCalls = !Array.isArray(assistant?.tool_calls) || assistant.tool_calls.every((call) => {
         if (!call || typeof call !== "object" || Array.isArray(call)) return false;
         const fn = (call as Record<string, unknown>).function;
@@ -626,7 +631,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           && (typeof fields.arguments === "string"
             || (fields.arguments !== null && typeof fields.arguments === "object" && !Array.isArray(fields.arguments)));
       });
-      if (!assistant || !validToolCalls
+      if (!assistant || !validContentParts || !validToolCalls
         || (assistant.role !== undefined && assistant.role !== "assistant")
         || (assistant.content !== undefined && assistant.content !== null
           && typeof assistant.content !== "string" && !Array.isArray(assistant.content))
