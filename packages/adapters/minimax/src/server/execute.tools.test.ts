@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { execute, TOOL_MARKUP_PATTERN } from "./execute.js";
 
 // fetch is stubbed for every test: the MiniMax API is never called. Tool
@@ -102,9 +103,28 @@ describe("execute tool loop", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     delete process.env.MINIMAX_LOCAL_TOOLS_ENABLED;
     delete process.env.MINIMAX_LOCAL_MAX_TOOL_ITERATIONS;
+  });
+
+  it.each(["explicit", "default", "operator"])("refuses unsolicited bash calls with tools disabled by %s", async (mode) => {
+    const shell = vi.spyOn(executionTarget, "runAdapterExecutionTargetShellCommand");
+    const prepare = vi.spyOn(executionTarget, "prepareAdapterExecutionTargetRuntime");
+    fetchMock().mockResolvedValueOnce(assistantToolTurn("echo must-never-run"));
+    const { ctx } = makeContext({ toolsEnabled: mode === "operator" });
+    if (mode === "default") delete (ctx.config as Record<string, unknown>).toolsEnabled;
+    if (mode === "operator") process.env.MINIMAX_LOCAL_TOOLS_ENABLED = "false";
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("minimax_tools_disabled");
+    expect(shell).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(fetchMock()).toHaveBeenCalledTimes(1);
+    expect(requestBody(0).tools).toBeUndefined();
   });
 
   it("executes a tool round trip and returns the final text with accumulated usage", async () => {

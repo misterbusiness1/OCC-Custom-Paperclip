@@ -610,6 +610,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         };
       }
 
+      const choice = payload.choices[0];
+      const message = choice && typeof choice === "object" && !Array.isArray(choice)
+        ? (choice as Record<string, unknown>).message
+        : null;
+      const assistant = message && typeof message === "object" && !Array.isArray(message)
+        ? message as Record<string, unknown>
+        : null;
+      const validToolCalls = !Array.isArray(assistant?.tool_calls) || assistant.tool_calls.every((call) => {
+        if (!call || typeof call !== "object" || Array.isArray(call)) return false;
+        const fn = (call as Record<string, unknown>).function;
+        if (!fn || typeof fn !== "object" || Array.isArray(fn)) return false;
+        const fields = fn as Record<string, unknown>;
+        return typeof fields.name === "string" && fields.name.trim().length > 0
+          && (typeof fields.arguments === "string"
+            || (fields.arguments !== null && typeof fields.arguments === "object" && !Array.isArray(fields.arguments)));
+      });
+      if (!assistant || !validToolCalls
+        || (assistant.role !== undefined && assistant.role !== "assistant")
+        || (assistant.content !== undefined && assistant.content !== null
+          && typeof assistant.content !== "string" && !Array.isArray(assistant.content))
+        || (assistant.tool_calls !== undefined && !Array.isArray(assistant.tool_calls))
+        || !(Object.hasOwn(assistant, "content") || typeof assistant.reasoning_content === "string"
+          || (Array.isArray(assistant.tool_calls) && assistant.tool_calls.length > 0))) {
+        const message = "MiniMax API returned a malformed assistant completion; failing the run.";
+        await onLog("stderr", `${message}\n`);
+        return {
+          ok: false,
+          result: buildErrorResult(message, {
+            code: "minimax_invalid_completion",
+            details: { protocolError: "invalid_assistant_message" },
+          }),
+        };
+      }
+
       return { ok: true, payload };
     } finally {
       clearTimeout(timer);
@@ -728,6 +762,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (turn.toolCalls.length === 0) {
         finalTurn = turn;
         break;
+      }
+
+      // Request-side omission is not an execution boundary: an upstream may
+      // still return unsolicited tool calls when the operator disabled tools.
+      if (!toolsEnabled) {
+        return stopFailure("minimax_tools_disabled", "MiniMax returned tool calls while tools are disabled.", {
+          toolIterations: iterations,
+          toolCallCount,
+          stopReason: "tools_disabled",
+        });
       }
 
       // Surface interleaved narration so transcripts stay honest and live.

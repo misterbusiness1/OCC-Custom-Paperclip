@@ -234,6 +234,30 @@ describe("minimax_local execute", () => {
     expect(result.errorCode).toBe("minimax_empty_completion");
   });
 
+  it.each([{}, null, [], { message: null }, { message: [] }, { message: {} },
+    { message: { role: "user", content: "hi" } }, { message: { content: 42 } },
+    { message: { content: "hi", tool_calls: {} } },
+    { message: { content: null, tool_calls: [{}] } },
+    { message: { content: null, tool_calls: [null] } },
+    { message: { content: null, tool_calls: ["bash"] } },
+    { message: { tool_calls: [{ function: { name: "bash" } }] } }])("rejects malformed selected completion %j", async (choice) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ choices: [choice] }));
+    const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "k" } }));
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("minimax_invalid_completion");
+    expect(result.errorMeta).toMatchObject({ protocolError: "invalid_assistant_message" });
+  });
+
+  it.each(["", null])("retains valid explicit blank content %j as empty-output no-op", async (content) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
+      choices: [{ message: { role: "assistant", content } }], usage: { prompt_tokens: 5 },
+    }));
+    const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "k" } }));
+    expect(result.exitCode).toBe(0);
+    expect(result.resultJson).toMatchObject({ stopReason: "empty_output" });
+    expect(result.usage?.inputTokens).toBe(5);
+  });
+
   it("treats a blank final answer as a no-op (exit 0) and still records usage", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse({ choices: [{ finish_reason: "stop", message: { content: "<think>only</think>" } }], usage: { prompt_tokens: 5 } }),
