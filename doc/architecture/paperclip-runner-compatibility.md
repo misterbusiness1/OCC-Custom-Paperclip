@@ -46,15 +46,15 @@ would hide the runtime that executed the task.
 
 ## Remote Codex version window
 
-Remote native Codex runs accept stable CLI versions **`>=0.149.0 <0.157.0`**.
-The install pin remains `0.156.0`. A sandbox image can therefore use an older
+Remote native Codex runs accept stable CLI versions **`>=0.149.0 <0.167.0`**.
+The install pin is `0.166.0`. A sandbox image can therefore use an older
 compatible Codex without failing startup or installing another copy.
 
 The minimum is fixed at **`0.149.0`** until maintainers deliberately change it.
 It is not a rolling one-month support window. The official
 [`@openai/codex` publication history](https://registry.npmjs.org/@openai/codex)
-records `0.149.0` on 2026-08-20, `0.153.4` on 2026-09-04, and `0.156.0` on
-2026-09-22. See also the [Codex changelog](https://learn.chatgpt.com/docs/changelog).
+records `0.149.0` on 2026-08-20, `0.153.4` on 2026-09-04, `0.156.0` on
+2026-09-22, and `0.166.0` on 2026-10-29. See also the [Codex changelog](https://learn.chatgpt.com/docs/changelog).
 This is an explicit compatibility window, not a claim that every Codex minor
 release follows a backward-compatible protocol.
 
@@ -65,7 +65,7 @@ release follows a backward-compatible protocol.
 - The same check applies to discovered, explicitly staged, and npm-installed
   remote Codex executables, including the final executable after linking.
 - For an incompatible image, the existing
-  `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@0.156.0` configuration
+  `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@0.166.0` configuration
   allows installation of the pinned runtime. Without that configuration,
   startup reports the supported range and the remediation.
 - Runner binary contracts, required runner capabilities, artifact digests,
@@ -85,6 +85,35 @@ app-server binaries with a local deterministic Responses API fixture. Both
 passed initialization, thread creation with a dynamic tool, a tool-call/result
 round trip, turn completion, and thread resume. This verifies the tested
 protocol path; it is not a live model, Linux sandbox, or exhaustive feature test.
+
+The November 2026 requalification raised the install pin to `0.166.0` and the
+upper bound to `<0.167.0`, together with the ACP provider pack (acpx `0.21.1`,
+codex-acp `2.5.0`, claude-agent-acp `0.100.0`). Its evidence is the source
+contract and unit suites listed below plus the `codex --version` output of the
+official `0.166.0` Linux x64 package. The real-binary app-server scripts
+(`scripts/tests/native-provider-startup-codex.mjs` and
+`scripts/tests/native-cleanup-paginated-codex.mjs`) are pinned to `0.166.0`
+and must be rerun against that binary before the window is relied on for
+production runner traffic.
+
+The runner's Codex ACPX lane does not declare the JetBrains AIR client
+extension (any AIR declaration switches codex-acp `2.5.0` into IDE mode), so it
+pins the following codex-acp `2.5.0` behaviour itself:
+
+- `INITIAL_AGENT_MODE=workspace-write`. The upstream default mode `agent`
+  ("Auto review") lets Codex's guardian subagent answer sandbox escalations;
+  `workspace-write` keeps the 1.6.2 on-request policy with reviewer `user`, so
+  every escalation reaches the runner permission policy.
+- `PAPERCLIP_CODEX_ACP_GOAL_META=1`. Upstream `2.5.0` advertises the session
+  goal extension only to AIR clients; the Paperclip codex-acp patch restores the
+  top-level `_meta.goal` capability and goal snapshots when this flag is set.
+  Production adapters leave it unset.
+- ACPX `0.21.1` reports plans as `status` events tagged `plan` with `entries`.
+  The sidecar and the in-process mapper both turn them into `plan.updated`.
+- A Codex provider failure (for example a usage limit) streams its provider
+  sentence as `agentMessage` progress before the turn fails, the same as the
+  production `codex_local` ACP path. A failed turn never promotes that text to
+  the final assistant reply.
 Version-boundary and remote artifact-preparation regressions are covered by
 `codex-runtime-compatibility.test.ts` and `native-session-executor.test.ts`.
 

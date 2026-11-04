@@ -438,6 +438,106 @@ describe("Codex ACPX harness driver", () => {
     await session.close({ reason: "channel identity verified" });
   });
 
+  it("streams ACPX 0.21.1 status-tagged plans as plan.updated on the in-process lane", async () => {
+    const fixture = driverFixture(
+      { dynamicToolHandler: vi.fn(async () => ({ ok: true })) },
+      {
+        runtimeEvents: [
+          // Exact acpx 0.21.1 planUpdateEvent output (non-empty, then cleared).
+          {
+            type: "status" as const,
+            text: "plan: Inspect",
+            tag: "plan",
+            entries: [
+              { content: "Inspect", status: "in_progress", priority: "high" },
+              { content: "Fix", status: "pending", priority: "medium" },
+            ],
+          },
+          {
+            type: "status" as const,
+            text: "plan updated",
+            tag: "plan",
+            entries: [],
+          },
+        ] as never,
+      },
+    );
+    const session = await fixture.driver.openSession({
+      runId: "run-acpx-plan",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const terminalEvents = collectUntil(session.events(), "turn.completed");
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "Plan the fix." },
+    });
+    await fixture.hostOptions!.semanticTools!.handler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-acpx-plan",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+
+    const events = await terminalEvents;
+    const plans = events.filter((event) => event.eventType === "plan.updated");
+    expect(plans.map((event) => event.payload)).toMatchObject([
+      {
+        planId: turnId,
+        steps: [
+          { stepId: "step-1", body: "Inspect", status: "in_progress" },
+          { stepId: "step-2", body: "Fix", status: "pending" },
+        ],
+        complete: false,
+      },
+      { planId: turnId, steps: [], complete: false },
+    ]);
+    expect(
+      events.some(
+        (event) =>
+          event.eventType === "provider.notice.recorded" &&
+          event.payload.category === "acp_plan",
+      ),
+    ).toBe(false);
+    await session.close({ reason: "plan mapping verified" });
+  });
+
+  it("keeps a Codex provider failure sentence as progress, never the failed turn's final reply", async () => {
+    // codex-acp 2.5.0 without AIR typed session failures streams the provider
+    // sentence as agent text, then rejects the prompt (production parity).
+    const sentence = "You've hit your usage limit. Try again at 6:00 PM.";
+    const fixture = driverFixture(
+      { dynamicToolHandler: vi.fn(async () => ({ ok: true })) },
+      {
+        runtimeEvents: [
+          { type: "text_delta" as const, text: sentence, stream: "output" as const },
+        ],
+      },
+    );
+    const session = await fixture.driver.openSession({
+      runId: "run-provider-sentence",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const terminalEvents = collectUntil(session.events(), "turn.failed");
+    await session.startTurn({
+      message: { role: "user", text: "Do the task." },
+    });
+    fixture.finishTurn({
+      status: "failed",
+      error: { code: "usageLimitExceeded", message: sentence, retryable: false },
+    });
+
+    const events = await terminalEvents;
+    const assistant = events.filter(
+      (event) => event.payload.kind === "agentMessage",
+    );
+    expect(assistant.length).toBeGreaterThan(0);
+    expect(assistant.every((event) => event.payload.channel !== "final")).toBe(true);
+    expect(events.some((event) => event.eventType === "turn.completed")).toBe(false);
+    await session.close({ reason: "provider sentence verified" });
+  });
+
   it("rejects terminal disposition drift and bounds interruption", async () => {
     const fixture = driverFixture();
     const session = await fixture.driver.openSession({

@@ -309,12 +309,12 @@ try {
   const payload = {
     pins: {
       nodeMinimum: minimumNodeVersion.join("."),
-      codex: "0.156.0",
+      codex: "0.166.0",
       opencode: "1.18.32",
-      acpx: "0.13.1",
+      acpx: "0.21.1",
       grok: "1.0.13",
-      claudeAcp: "0.73.0",
-      codexAcp: "1.6.2",
+      claudeAcp: "0.100.0",
+      codexAcp: "2.5.0",
     },
     target: { platform: process.platform, architecture: process.arch },
     runnerSourceRevision: `${revision}${dirty ? "-dirty" : ""}`,
@@ -329,9 +329,9 @@ try {
     acpxProfileDigests: {
       grok: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
       claude:
-        "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+        "sha256:dac87af861bedf6ee1444e99832274d6f517f5e83006f3905094cfc4479b3b00",
       codex:
-        "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
+        "sha256:1c6c476df092c7f62c9d15b9cfe9d420afdf81bb27fdec585398a1997c8f99c9",
     },
     ...(candidates.length ? { candidateProviders } : {}),
     artifacts: {

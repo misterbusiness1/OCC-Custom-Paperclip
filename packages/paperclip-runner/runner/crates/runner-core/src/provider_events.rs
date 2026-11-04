@@ -1130,7 +1130,7 @@ fn normalize_acpx_status(
             Some(Value::String(currency)) => currency.eq_ignore_ascii_case("USD"),
             Some(_) => false,
         };
-        // ACPX 0.13.1 documents breakdown as per-turn usage while cost is
+        // ACPX (0.21.1, as 0.13.1 before it) documents breakdown as per-turn usage while cost is
         // session-cumulative. Keep those authorities separate so consumers do
         // not add the same tokens twice or treat cumulative cost as a delta.
         let cumulative = json!({

@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const PROFILE_DIGEST: &str =
-    "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3";
+    "sha256:1c6c476df092c7f62c9d15b9cfe9d420afdf81bb27fdec585398a1997c8f99c9";
 
 struct Fixture(PathBuf);
 impl Drop for Fixture {
@@ -80,10 +80,10 @@ fn checkpoints_the_sidecar_and_rebinds_consecutive_warm_runs_before_accepting_wo
     };
     let mut descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
-        "providerVersion": "0.13.1", "agent": "codex", "model": "gpt-5.6-sol",
-        "acpxVersion": "0.13.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
-        "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
-        "agentRuntimeVersion": "0.156.0", "commandDigest": PROFILE_DIGEST,
+        "providerVersion": "0.21.1", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.21.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "agentServerVersion": "2.5.0", "agentRuntimePackage": "@openai/codex",
+        "agentRuntimeVersion": "0.166.0", "commandDigest": PROFILE_DIGEST,
         "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
         "normalizedSessionId": "session-1", "runId": "run-1", "cwd": fixture.0,
         "instructions": "Complete the supplied work.",

@@ -444,7 +444,7 @@ describe("ACPX installation integrity", () => {
     const dependencyFixtures = [
       {
         name: "@agentclientprotocol/sdk",
-        version: "1.4.0",
+        version: "2.4.0",
         directory: join(dependencyRoot, "agentclient-sdk"),
       },
       {
@@ -456,6 +456,11 @@ describe("ACPX installation integrity", () => {
         name: "zod",
         version: "4.6.7",
         directory: join(dependencyRoot, "zod"),
+      },
+      {
+        name: "diff",
+        version: "9.0.0",
+        directory: join(dependencyRoot, "diff"),
       },
     ] as const;
     await Promise.all([
@@ -472,13 +477,14 @@ describe("ACPX installation integrity", () => {
         fixture.serverPackageJsonPath,
         JSON.stringify({
           name: "@agentclientprotocol/claude-agent-acp",
-          version: "0.73.0",
+          version: "0.100.0",
           type: "module",
           bin: "bin/server.js",
           dependencies: {
-            "@agentclientprotocol/sdk": "1.4.0",
-            "@anthropic-ai/claude-agent-sdk": "0.3.257",
-            zod: "^4.0.0",
+            "@agentclientprotocol/sdk": "2.4.0",
+            "@anthropic-ai/claude-agent-sdk": "0.3.316",
+            diff: "9.0.0",
+            zod: "4.6.7",
           },
         }),
       ),
@@ -545,6 +551,61 @@ describe("ACPX installation integrity", () => {
       await expect(verifyQualifiedAcpxInstallation(profile, (name) => paths.get(name)!))
         .rejects.toThrow(`ACPX claude dependency package version mismatch for zod: expected 4.6.7, received ${version}`);
     }
+    await writeFile(join(dependencyFixtures[2].directory, "package.json"), JSON.stringify({
+      name: "zod", version: "4.6.7", type: "module", exports: "./index.js",
+    }));
+    // claude-agent-acp 0.100.0 added a direct "diff" import; it is pinned like
+    // the rest of the closure, so a drifted copy is rejected before launch.
+    await writeFile(join(dependencyFixtures[3].directory, "package.json"), JSON.stringify({
+      name: "diff", version: "9.0.1", type: "module", exports: "./index.js",
+    }));
+    await expect(verifyQualifiedAcpxInstallation(profile, (name) => paths.get(name)!))
+      .rejects.toThrow("ACPX claude dependency package version mismatch for diff: expected 9.0.0, received 9.0.1");
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["loosened", "^9.0.0"],
+  ])("rejects a Claude ACP package whose diff declaration is %s", async (_label, declaration) => {
+    const fixture = await installationFixture();
+    const dependencies: Record<string, string> = {
+      "@agentclientprotocol/sdk": "2.4.0",
+      "@anthropic-ai/claude-agent-sdk": "0.3.316",
+      zod: "4.6.7",
+    };
+    if (declaration !== undefined) dependencies.diff = declaration;
+    await writeFile(
+      fixture.serverPackageJsonPath,
+      JSON.stringify({ version: "0.100.0", type: "module", bin: "bin/server.js", dependencies }),
+    );
+    const versions: Record<string, string> = {
+      "@agentclientprotocol/sdk": "2.4.0",
+      "@anthropic-ai/claude-agent-sdk": "0.3.317",
+      zod: "4.6.7",
+    };
+    const dependencyRoot = join(fixture.root, "qualified-dependencies");
+    const paths = new Map<string, string>();
+    for (const [name, version] of Object.entries(versions)) {
+      const packageJson = join(dependencyRoot, name.replace("/", "__"), "package.json");
+      await mkdir(dirname(packageJson), { recursive: true });
+      await writeFile(packageJson, JSON.stringify({ name, version, type: "module" }));
+      paths.set(name, packageJson);
+    }
+
+    await expect(
+      verifyQualifiedAcpxInstallation(
+        {
+          ...resolveQualifiedAcpxProfile("claude", "claude-sonnet-5"),
+          agentRuntimePackage: null,
+          agentRuntimeVersion: null,
+          commandDigest: fixture.profile.commandDigest,
+        },
+        (packageName) =>
+          packageName === "@agentclientprotocol/claude-agent-acp"
+            ? fixture.serverPackageJsonPath
+            : paths.get(packageName) ?? join(dependencyRoot, "absent", "package.json"),
+      ),
+    ).rejects.toThrow("ACPX claude package dependency mismatch for diff");
   });
 
   it("rejects drift in Claude ACP's qualified dependency versions", async () => {
@@ -552,13 +613,14 @@ describe("ACPX installation integrity", () => {
     await writeFile(
       fixture.serverPackageJsonPath,
       JSON.stringify({
-        version: "0.73.0",
+        version: "0.100.0",
         type: "module",
         bin: "bin/server.js",
         dependencies: {
-          "@agentclientprotocol/sdk": "1.4.0",
-          "@anthropic-ai/claude-agent-sdk": "0.3.257",
-          zod: "^4.0.0",
+          "@agentclientprotocol/sdk": "2.4.0",
+          "@anthropic-ai/claude-agent-sdk": "0.3.316",
+          diff: "9.0.0",
+          zod: "4.6.7",
         },
       }),
     );

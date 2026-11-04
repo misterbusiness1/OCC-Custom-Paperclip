@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { bindAcpxExtensionTurn, validateAcpxExtensionInput, validateAcpxRichEvent } from "./profile-extensions.js";
+import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxExtensionInput, validateAcpxRichEvent } from "./profile-extensions.js";
 import type { CanonicalProviderEvent } from "../../provider-events.js";
 
 const event: CanonicalProviderEvent = { eventType: "plan.updated", itemId: "plan-1", payload: {
@@ -54,5 +54,23 @@ describe("ACP extension turn binding", () => {
     active = false;
     binding.onExtensionNotification("event", { sessionId: "session" });
     await expect(binding.drain()).rejects.toThrow("stale turn");
+  });
+});
+
+describe("ACPX profile client capabilities", () => {
+  it("advertises only typed AIR session failures, and never to Codex", () => {
+    const air = { _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } } } };
+    for (const agent of ["claude", "grok", "pi", "cursor", "copilot"] as const) {
+      expect(acpxProfileClientCapabilities(agent)).toEqual(air);
+    }
+    // codex-acp 2.5.0 enters AIR IDE mode on any jetbrains.air declaration.
+    expect(acpxProfileClientCapabilities("codex")).toEqual({});
+  });
+  it("returns a fresh mutable copy for each launch", () => {
+    const first = acpxProfileClientCapabilities("claude") as { _meta: { jetbrains: { air: { capabilities: string[] } } } };
+    first._meta.jetbrains.air.capabilities.push("promptSuggestions");
+    expect(acpxProfileClientCapabilities("claude")).toEqual({
+      _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } } },
+    });
   });
 });

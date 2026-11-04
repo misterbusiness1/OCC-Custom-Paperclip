@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const CODEX_ACPX_DIGEST: &str =
-    "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3";
+    "sha256:1c6c476df092c7f62c9d15b9cfe9d420afdf81bb27fdec585398a1997c8f99c9";
 const PI_ACPX_DIGEST: &str =
     "sha256:8c696f38296d53d0061fa11534570c5ddd951b63532aed30e0f1fcc676dc169f";
 
@@ -187,7 +187,7 @@ fn prepare_payload(directory: &Path, agent: &str) -> Value {
 fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value {
     let operations = Vec::new();
     let (runtime_package, runtime_version) = if agent == "codex" {
-        (json!("@openai/codex"), json!("0.156.0"))
+        (json!("@openai/codex"), json!("0.166.0"))
     } else {
         (Value::Null, Value::Null)
     };
@@ -202,12 +202,12 @@ fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value
             "kind": "acpx",
             "provider": "acpx",
             "driver": "acpx_runtime",
-            "providerVersion": "0.13.1",
+            "providerVersion": "0.21.1",
             "agent": agent,
             "model": "gpt-5.6-sol",
-            "acpxVersion": "0.13.1",
+            "acpxVersion": "0.21.1",
             "agentServerPackage": "@agentclientprotocol/codex-acp",
-            "agentServerVersion": "1.6.2",
+            "agentServerVersion": "2.5.0",
             "agentRuntimePackage": runtime_package,
             "agentRuntimeVersion": runtime_version,
             "commandDigest": CODEX_ACPX_DIGEST,
@@ -257,7 +257,7 @@ fn pending_acpx_runtime_request(
     let mut payload = prepare_payload_with_mode(directory, "codex", mode);
     if mode.starts_with("permissions-") {
         // Codex's pinned runner policy does not allow interactive ACP permissions.
-        let digest = "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a";
+        let digest = "sha256:dac87af861bedf6ee1444e99832274d6f517f5e83006f3905094cfc4479b3b00";
         *config
             .acpx_launch_profile
             .as_mut()
@@ -269,7 +269,7 @@ fn pending_acpx_runtime_request(
         provider["agent"] = json!("claude");
         provider["model"] = json!("claude-sonnet-5");
         provider["agentServerPackage"] = json!("@agentclientprotocol/claude-agent-acp");
-        provider["agentServerVersion"] = json!("0.73.0");
+        provider["agentServerVersion"] = json!("0.100.0");
         provider["agentRuntimePackage"] = json!("@anthropic-ai/claude-agent-sdk");
         provider["agentRuntimeVersion"] = json!("0.3.317");
         provider["commandDigest"] = json!(digest);

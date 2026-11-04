@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeAcpxPermission } from "../drivers/acpx/acp-permission-adapter.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
 import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
-import { ACPX_SIDECAR_PROTOCOL_VERSION } from "../drivers/acpx/sidecar-protocol.js";
-import { canonicalProviderEventsFromAcpxRuntimeEvent } from "../provider-events.js";
+import { ACPX_SIDECAR_PROTOCOL_VERSION, record, sanitizeAcpxPlanEntries, text } from "../drivers/acpx/sidecar-protocol.js";
+import { acpxPlanEntriesFromRuntimeEvent, canonicalProviderEventsFromAcpxRuntimeEvent } from "../provider-events.js";
 import {
   awaitSidecarCleanupWithin,
   closeActiveSidecarHostWithin,
@@ -56,6 +56,51 @@ describe("qualified ACPX runtime sidecar", () => {
     abort.abort();
     await expect(pending).resolves.toEqual({ outcome: "cancel" });
     expect(permissions.size).toBe(0);
+  });
+  it("keeps ACPX 0.21.1 plan status events structured across the sidecar boundary", () => {
+    const source = readFileSync(
+      fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)),
+      "utf8",
+    );
+    const start = source.indexOf("function sanitizeRuntimeEvent(");
+    const end = source.indexOf('  if (event.type === "text_delta") {', start);
+    if (start < 0 || end < 0) throw new Error("sidecar plan mapping source not found");
+    const planSource = source
+      .slice(start, end)
+      .replace(
+        "function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {",
+        "function sanitizeRuntimeEvent(event) {",
+      );
+    const sanitize = new Function(
+      "text", "record", "sanitizeAcpxPlanEntries", "acpxPlanEntriesFromRuntimeEvent",
+      `return (${planSource}  return { passthrough: event };\n});`,
+    )(text, record, sanitizeAcpxPlanEntries, acpxPlanEntriesFromRuntimeEvent) as (event: Record<string, unknown>) => Record<string, unknown>;
+    const entries = [
+      { content: "Read the failing test", status: "completed", priority: "high" },
+      { content: "Fix the parser", status: "in_progress", priority: "medium" },
+    ];
+
+    expect(sanitize({ type: "status", tag: "plan", text: "plan: Read the failing test", entries }))
+      .toEqual({ type: "plan", entries: sanitizeAcpxPlanEntries(entries) });
+    expect(sanitize({ type: "status", tag: "plan", text: "plan updated", entries: [] }))
+      .toEqual({ type: "plan", entries: [] });
+    // The 0.13.1 runner patch's dedicated plan event keeps working.
+    expect(sanitize({ type: "plan", entries })).toEqual({ type: "plan", entries: sanitizeAcpxPlanEntries(entries) });
+    // A plan-tagged status without entries and ordinary status lines stay status.
+    const textOnly = { type: "status", tag: "plan", text: "plan: Read the failing test" };
+    expect(sanitize(textOnly)).toEqual({ passthrough: textOnly });
+    const usage = { type: "status", tag: "usage_update", text: "usage", entries };
+    expect(sanitize(usage)).toEqual({ passthrough: usage });
+    // The in-process mapper classifies the same 0.21.1 events the same way.
+    for (const event of [
+      { type: "status", tag: "plan", text: "plan: Read the failing test", entries },
+      { type: "status", tag: "plan", text: "plan updated", entries: [] },
+    ]) {
+      expect(canonicalProviderEventsFromAcpxRuntimeEvent(event as never, "fallback", "turn-1")[0]?.eventType)
+        .toBe("plan.updated");
+    }
+    expect(canonicalProviderEventsFromAcpxRuntimeEvent(textOnly as never, "fallback", "turn-1")
+      .some((event) => event.eventType === "plan.updated")).toBe(false);
   });
   it("preserves ACP input presence through the bounded sidecar handoff", () => {
     const source = readFileSync(

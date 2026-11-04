@@ -6,10 +6,20 @@ import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const root = dirname(require.resolve("acpx/package.json"));
+// ACPX 0.21.1 splits the runtime internals across two hashed chunks; the
+// minified export aliases are pinned to this exact qualified build.
 const {
-  _: createConversation, y: recordSubmission, n: runPromptTurn,
-  dt: serialize, ut: parse, tt: assertKeyPolicy,
-} = await import(pathToFileURL(join(root, "dist/live-checkpoint-BSIrfgVo.js")));
+  H: createConversation, W: recordSubmission, l: runPromptTurn,
+} = await import(pathToFileURL(join(root, "dist/queue-owner-runtime-B0mPqOu4.js")));
+const {
+  U: serialize, V: parse, B: assertKeyPolicy,
+} = await import(pathToFileURL(join(root, "dist/ipc-BbYFsKOj.js")));
+assert.equal(createConversation.name, "createSessionConversation");
+assert.equal(recordSubmission.name, "recordPromptSubmission");
+assert.equal(runPromptTurn.name, "runPromptTurn");
+assert.equal(serialize.name, "serializeSessionRecordForDisk");
+assert.equal(parse.name, "parseSessionRecord");
+assert.equal(assertKeyPolicy.name, "assertPersistedKeyPolicy");
 
 async function recordReceipt(metadata, usage = { inputTokens: 12, outputTokens: 3 }) {
   const conversation = createConversation();

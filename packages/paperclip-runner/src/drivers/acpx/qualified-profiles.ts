@@ -1,4 +1,4 @@
-export const QUALIFIED_ACPX_VERSION = "0.13.1" as const;
+export const QUALIFIED_ACPX_VERSION = "0.21.1" as const;
 export const ACPX_DRIVER_KIND = "acpx_runtime" as const;
 export const ACPX_DRIVER_PROTOCOL_VERSION = 1 as const;
 
@@ -87,11 +87,11 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     agent: "claude",
     agentProfileVersion: 1,
     agentServerPackage: "@agentclientprotocol/claude-agent-acp",
-    agentServerVersion: "0.73.0",
+    agentServerVersion: "0.100.0",
     agentRuntimePackage: "@anthropic-ai/claude-agent-sdk",
     agentRuntimeVersion: "0.3.317",
     commandDigest:
-      "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+      "sha256:dac87af861bedf6ee1444e99832274d6f517f5e83006f3905094cfc4479b3b00",
     qualificationModel: "claude-sonnet-5",
     reportedModelId: "claude-sonnet-5",
     permissionPolicy: "interactive",
@@ -103,11 +103,11 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     agent: "codex",
     agentProfileVersion: 1,
     agentServerPackage: "@agentclientprotocol/codex-acp",
-    agentServerVersion: "1.6.2",
+    agentServerVersion: "2.5.0",
     agentRuntimePackage: "@openai/codex",
-    agentRuntimeVersion: "0.156.0",
+    agentRuntimeVersion: "0.166.0",
     commandDigest:
-      "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
+      "sha256:1c6c476df092c7f62c9d15b9cfe9d420afdf81bb27fdec585398a1997c8f99c9",
     qualificationModel: "gpt-5.6-sol",
     reportedModelId: "gpt-5.6-sol",
     permissionPolicy: "interactive",

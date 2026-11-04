@@ -15,7 +15,7 @@ import type {
 
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "../drivers/acpx/profile-extensions.js";
 import type { PaperclipQuestionSet } from "../contracts/question-set.js";
-import { createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
+import { acpxPlanEntriesFromRuntimeEvent, createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import {
   PRP_BLOCK_TOOL_NAME,
@@ -919,11 +919,14 @@ function boundRuntimeEventForNormalization(
 }
 
 function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
-  const runtimeType = text(record(event).type);
-  if (runtimeType === "plan") {
+  // ACPX 0.21.1 reports plan updates as `status` events tagged `plan`. Keep
+  // them structured (shared with the in-process mapper in provider-events.ts)
+  // so the plan is not collapsed into status text.
+  const planEntries = acpxPlanEntriesFromRuntimeEvent(event);
+  if (planEntries !== null) {
     return {
       type: "plan",
-      entries: sanitizeAcpxPlanEntries(record(event).entries),
+      entries: sanitizeAcpxPlanEntries(planEntries),
     };
   }
   if (event.type === "text_delta") {

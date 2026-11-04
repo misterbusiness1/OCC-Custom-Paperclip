@@ -12,6 +12,8 @@ export const models = [
   { id: "kimi-code/kimi-for-coding-highspeed", label: "K2.7 Coding Highspeed" },
   { id: "kimi-code/k3", label: "K3" },
   { id: "kimi-code/k3-256k", label: "K3 (256K)" },
+  { id: "kimi-code/k3.1-pro", label: "K3.1 Pro" },
+  { id: "kimi-code/k3.1-pro-highspeed", label: "K3.1 Pro Highspeed (2x usage cost)" },
 ];
 
 /**
@@ -31,6 +33,8 @@ export const EFFORT_CAPABLE_MODELS = new Set<string>([
   DEFAULT_KIMI_LOCAL_MODEL,
   "kimi-code/k3",
   "kimi-code/k3-256k",
+  "kimi-code/k3.1-pro",
+  "kimi-code/k3.1-pro-highspeed",
 ]);
 
 export function modelSupportsEffort(model: string): boolean {

@@ -169,7 +169,14 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
       ...env,
       PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: String(networkAccess),
       // Fork: honor the Codex bypass flag in ACP sessions (full-access agent mode).
-      ...(bypass ? { INITIAL_AGENT_MODE: "agent-full-access" } : {}),
+      // Without bypass, pin "workspace-write" (on-request, reviewer "user") unless the
+      // agent env chooses a mode: codex-acp 2.5.0 otherwise defaults to "agent", whose
+      // auto_review reviewer answers approvals inside Codex instead of the client.
+      ...(bypass
+        ? { INITIAL_AGENT_MODE: "agent-full-access" }
+        : typeof env.INITIAL_AGENT_MODE === "string" && env.INITIAL_AGENT_MODE.trim()
+          ? {}
+          : { INITIAL_AGENT_MODE: "workspace-write" }),
     },
     agent: "codex",
     mode,

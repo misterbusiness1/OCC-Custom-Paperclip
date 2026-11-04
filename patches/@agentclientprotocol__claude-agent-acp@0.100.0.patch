@@ -1,7 +1,39 @@
 diff --git a/dist/acp-agent.js b/dist/acp-agent.js
+index d58262b5f2c1a58744691974d3935b11be82eaac..828a6d6fa212d0711b029c40e283f60155a47582 100644
 --- a/dist/acp-agent.js
 +++ b/dist/acp-agent.js
-@@ -5237,9 +5237,19 @@
+@@ -1495,6 +1495,12 @@ export class ClaudeAcpAgent {
+                         actions: [...GOAL_ACTIONS],
+                     })
+                     : {}),
++                // Paperclip: the runner reads the goal capability at the top-level `_meta.goal`
++                // (as 0.73.0 advertised it). Only when PAPERCLIP_CLAUDE_ACP_GOAL_META=1, set by
++                // the runner alone, and only for clients that are not AIR.
++                ...(!this.toolCallCapabilities.air.client && process.env.PAPERCLIP_CLAUDE_ACP_GOAL_META === "1"
++                    ? { goal: { version: GOAL_EXTENSION_VERSION, controlMethod: GOAL_CONTROL_METHOD, actions: [...GOAL_ACTIONS] } }
++                    : {}),
+                 steering: {
+                     supported: true,
+                 },
+@@ -2606,8 +2612,16 @@ export class ClaudeAcpAgent {
+             session.lastPublishedGoal = goal;
+         }
+         // The goal is an AIR extension: only AIR gets it.
+-        if (!this.toolCallCapabilities.air.client)
++        if (!this.toolCallCapabilities.air.client) {
++            // Paperclip: runner-only top-level goal snapshots (PAPERCLIP_CLAUDE_ACP_GOAL_META=1).
++            if (process.env.PAPERCLIP_CLAUDE_ACP_GOAL_META === "1") {
++                await this.client.sessionUpdate({
++                    sessionId,
++                    update: { sessionUpdate: "session_info_update", _meta: { goal } },
++                });
++            }
+             return;
++        }
+         await this.client.sessionUpdate({
+             sessionId,
+             update: {
+@@ -5237,9 +5251,19 @@ export class ClaudeAcpAgent {
                                              amount: message.total_cost_usd,
                                              currency: "USD",
                                          },
@@ -24,7 +56,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                                      }),
                                  });
                              }
-@@ -9223,8 +9233,11 @@
+@@ -9223,8 +9247,11 @@ export class ClaudeAcpAgent {
              // (`promptSuggestionEnabled`) or with CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false.
              // Before `userProvidedOptions`, so a client that passes
              // `promptSuggestions: false` keeps it off.
@@ -37,7 +69,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
              // Claude Code uses the same checkpoint store for /rewind. Enable it only
              // for clients that negotiated per-turn file-change reports; this avoids
              // snapshot I/O for every other session.
-@@ -9236,12 +9249,24 @@
+@@ -9236,12 +9263,24 @@ export class ClaudeAcpAgent {
              includePartialMessages: true,
              forwardSubagentText,
              mcpServers: {
@@ -64,9 +96,10 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
              // when the client advertised support, so non-supporting clients keep the
              // SDK's default (auto-decline) behavior. (AskUserQuestion is handled in
 diff --git a/dist/air-extension.js b/dist/air-extension.js
+index a1da80989075f9b037e860c52606d2a8a95add81..59c06ec99ba0d604ac18ee62d2743b2073f0eee2 100644
 --- a/dist/air-extension.js
 +++ b/dist/air-extension.js
-@@ -116,7 +116,19 @@
+@@ -116,7 +116,19 @@ export function withAirMeta(meta, capability, payload) {
   * upstream adapter, and no key that exists only for AIR.
   */
  export function isAirClient(capabilities) {

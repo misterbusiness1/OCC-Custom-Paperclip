@@ -2,7 +2,7 @@
 
 This image is the Paperclip Cloud fleet sandbox image plus a source-built
 `paperclip-runnerd` and immutable provider pack. The pack contains Node 24.11,
-OpenCode 1.18.32, the compiled OpenCode proxy, ACPX 0.13.1 sidecar, qualified ACP
+OpenCode 1.18.32, the compiled OpenCode proxy, ACPX 0.21.1 sidecar, qualified ACP
 agents, and the production lockfile. Its manifest digests each executable bridge
 and binds the pack to the runner source revision, avoiding artifact upload and
 npm installation on every fresh lease.
@@ -14,9 +14,11 @@ image that this Dockerfile can extend directly.
 
 ## Harness versions
 
-The September 22, 2026 refresh pins Codex 0.156.0 and OpenCode 1.18.32 in the
-shared provider pack. The November 3, 2026 update moves the Claude Agent SDK to
-0.3.317 (Claude Code 2.1.317). Claude Code 2.1.280 is the minimum for
+The September 22, 2026 refresh pinned OpenCode 1.18.32 in the shared provider
+pack. The November 3, 2026 update moves the Claude Agent SDK to 0.3.317 (Claude
+Code 2.1.317), and the November 2026 runner requalification moves the pack to
+Codex 0.166.0, ACPX 0.21.1, codex-acp 2.5.0 and claude-agent-acp 0.100.0 (the
+same ACP lanes the production adapters run). Claude Code 2.1.280 is the minimum for
 [Opus 5.5](https://code.claude.com/docs/en/model-config); it also supports
 Fable 5.1. Codex uses the current
 [GPT-6 Sol and Luna model IDs](https://learn.chatgpt.com/docs/models).
