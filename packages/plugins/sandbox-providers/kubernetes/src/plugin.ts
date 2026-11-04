@@ -109,6 +109,23 @@ function requireSandboxUid(metadata: Record<string, unknown> | null | undefined)
   return uid;
 }
 
+// This operator assertion permits cleanup only. It never grants resume/exec/sync.
+function requireSandboxCleanupUid(
+  metadata: Record<string, unknown> | null | undefined,
+  config: KubernetesProviderConfig,
+  namespace: string,
+  leaseId: string,
+): string {
+  if (typeof metadata?.workloadUid === "string" && metadata.workloadUid.length > 0) {
+    return metadata.workloadUid;
+  }
+  const key = JSON.stringify([namespace, leaseId]);
+  if (Object.prototype.hasOwnProperty.call(config.legacySandboxCleanupUids, key)) {
+    return config.legacySandboxCleanupUids[key]!;
+  }
+  throw new Error("Legacy Sandbox cleanup requires an operator-confirmed UID in legacySandboxCleanupUids for the exact namespace and lease ID");
+}
+
 // How long onEnvironmentResumeLease waits for an existing Sandbox pod to
 // report Ready before declaring the lease non-resumable. Deliberately short:
 // this is a liveness check on an already-provisioned pod, not a fresh
@@ -590,7 +607,7 @@ const plugin = definePlugin({
     uploadInterceptorsByLease.delete(params.providerLeaseId);
 
     try {
-      await releaseOrchestrator.release(clients, namespace, params.providerLeaseId, leaseBackend === "sandbox-cr" ? requireSandboxUid(params.leaseMetadata) : undefined);
+      await releaseOrchestrator.release(clients, namespace, params.providerLeaseId, leaseBackend === "sandbox-cr" ? requireSandboxCleanupUid(params.leaseMetadata, config, namespace, params.providerLeaseId) : undefined);
     } catch (err) {
       // If the resource is already gone (404), that's fine.
       const code = (err as { code?: number; statusCode?: number }).code
@@ -638,7 +655,7 @@ const plugin = definePlugin({
       namespace,
       name: params.providerLeaseId,
       backend: leaseBackend,
-      expectedUid: leaseBackend === "sandbox-cr" ? requireSandboxUid(params.leaseMetadata) : undefined,
+      expectedUid: leaseBackend === "sandbox-cr" ? requireSandboxCleanupUid(params.leaseMetadata, config, namespace, params.providerLeaseId) : undefined,
       podName,
       secretName,
     });

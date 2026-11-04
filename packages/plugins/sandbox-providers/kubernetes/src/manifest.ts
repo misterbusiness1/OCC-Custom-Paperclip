@@ -45,6 +45,11 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             description: "Override the auto-derived company slug used in the tenant namespace name.",
           },
+          legacySandboxCleanupUids: {
+            type: "object",
+            additionalProperties: { type: "string", minLength: 1, maxLength: 256 },
+            description: "Cleanup-only owner-confirmed workload UIDs keyed by JSON.stringify([namespace, providerLeaseId]); never grants resume or execution.",
+          },
           imageRegistry: {
             type: "string",
             description: "Override the default registry for agent runtime images (default: ghcr.io/paperclipai).",

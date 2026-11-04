@@ -423,3 +423,74 @@ describe("native lease execution revalidation", () => {
     expect(h.exec).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("operator-confirmed legacy Sandbox cleanup", () => {
+  const key = JSON.stringify(["paperclip-acme", "pc-abc"]);
+  const cleanupConfig = { ...CONFIG, legacySandboxCleanupUids: { [key]: "uid-1" } };
+  function clients() {
+    const custom = {
+      getNamespacedCustomObject: vi.fn().mockResolvedValue(betaSandbox(true, "paperclip-acme")),
+      deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}),
+    };
+    h.clients = { custom, core: { deleteNamespacedPod: vi.fn(), deleteNamespacedSecret: vi.fn() } };
+    return custom;
+  }
+  function params(config = cleanupConfig, metadata = leaseMetadata({ workloadUid: undefined })) {
+    return { driverKey: "kubernetes", companyId: "acme", environmentId: "env-1", config,
+      providerLeaseId: "pc-abc", leaseMetadata: metadata };
+  }
+  for (const operation of ["onEnvironmentReleaseLease", "onEnvironmentDestroyLease"] as const) {
+    it(`${operation} accepts only the exact operator UID and retains foreground UID preconditions`, async () => {
+      const c = clients();
+      await plugin.definition[operation]!(params());
+      expect(c.deleteNamespacedCustomObject).toHaveBeenCalledWith(expect.objectContaining({
+        namespace: "paperclip-acme", name: "pc-abc", propagationPolicy: "Foreground",
+        body: { preconditions: { uid: "uid-1" } },
+      }));
+      expect((h.clients.core as { deleteNamespacedPod: ReturnType<typeof vi.fn> }).deleteNamespacedPod).not.toHaveBeenCalled();
+      expect((h.clients.core as { deleteNamespacedSecret: ReturnType<typeof vi.fn> }).deleteNamespacedSecret).not.toHaveBeenCalled();
+    });
+    it(`${operation} refuses absent and unmatched assertions without looking up a current UID`, async () => {
+      const c = clients();
+      for (const config of [CONFIG, { ...CONFIG, legacySandboxCleanupUids: { [JSON.stringify(["other", "pc-abc"])]: "uid-1" } }, { ...CONFIG, legacySandboxCleanupUids: { [JSON.stringify(["paperclip-acme", "other"])]: "uid-1" } }]) {
+        await expect(plugin.definition[operation]!(params(config as typeof cleanupConfig))).rejects.toThrow("operator-confirmed UID");
+      }
+      expect(c.getNamespacedCustomObject).not.toHaveBeenCalled();
+      expect(c.deleteNamespacedCustomObject).not.toHaveBeenCalled();
+    });
+    it(`${operation} keeps persisted UID authoritative and refuses a recreated resource`, async () => {
+      const c = clients();
+      await expect(plugin.definition[operation]!(params(cleanupConfig, leaseMetadata({ workloadUid: "old-uid" })))).rejects.toThrow("UID does not match");
+      expect(c.deleteNamespacedCustomObject).not.toHaveBeenCalled();
+    });
+    it(`${operation} propagates a UID precondition race without deleting cached children`, async () => {
+      const c = clients();
+      c.deleteNamespacedCustomObject.mockRejectedValue(Object.assign(new Error("UID precondition conflict"), { statusCode: 409 }));
+      await expect(plugin.definition[operation]!(params())).rejects.toThrow("UID precondition conflict");
+    });
+  }
+  it("does not grant resume or execution permission to a UID-less lease", async () => {
+    const c = clients();
+    const p = params();
+    const lease = await plugin.definition.onEnvironmentResumeLease!(p);
+    expect(lease.providerLeaseId).toBeNull();
+    await expect(plugin.definition.onEnvironmentExecute!({ ...p,
+      lease: { providerLeaseId: p.providerLeaseId, metadata: p.leaseMetadata }, command: "true", args: [], timeoutMs: 100,
+    } as never)).rejects.toThrow("no verified workload UID");
+    expect(c.getNamespacedCustomObject).not.toHaveBeenCalled();
+    for (const operation of ["onEnvironmentSyncIn", "onEnvironmentSyncOut"] as const) {
+      await expect(plugin.definition[operation]!({ ...p,
+        lease: { providerLeaseId: p.providerLeaseId, metadata: { ...p.leaseMetadata, remoteCwd: "/workspace" } },
+        operations: [], timeoutMs: 100,
+      } as never)).rejects.toThrow("no verified workload UID");
+    }
+    expect(h.exec).not.toHaveBeenCalled();
+  });
+  it("does not trust a cleanup map injected into lease metadata", async () => {
+    const c = clients();
+    await expect(plugin.definition.onEnvironmentDestroyLease!({ ...params(), config: CONFIG,
+      leaseMetadata: leaseMetadata({ workloadUid: undefined, legacySandboxCleanupUids: { [key]: "uid-1" } }),
+    })).rejects.toThrow("operator-confirmed UID");
+    expect(c.getNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+});

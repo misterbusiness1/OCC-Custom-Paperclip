@@ -184,3 +184,28 @@ RUN_K8S_INTEGRATION_TESTS=1 pnpm test test/integration/end-to-end-run.test.ts
 Sandbox mode requires the v1.0.8 beta CRD/controller; Job mode is a separate explicit backend, never an automatic fallback. Readiness requires a current-generation Ready condition plus exactly one Running/Ready Pod controlled by the claimed Sandbox UID. Labels and cached Pod names do not grant authority. Lease resume, execute and file sync revalidate the UID and current readiness. Legacy leases without a recorded workload UID must acquire a fresh lease. Release uses UID-preconditioned foreground garbage collection; it never deletes a replacement Pod by cached name.
 
 The native Pod builder sets `automountServiceAccountToken: false`; model workers do not receive Kubernetes credentials. Installing a controller does not supply a RuntimeClass or prove worker isolation. RuntimeClass availability and the configured CNI's actual egress policy require separate operator qualification before managed model activation.
+
+### Cleaning up pre-upgrade Sandbox leases
+
+Older leases may lack the persisted `workloadUid` required by UID-preconditioned
+Sandbox operations. They remain ineligible for resume, execution and file sync.
+For cleanup only, an environment owner may configure `legacySandboxCleanupUids`:
+
+```json
+{"legacySandboxCleanupUids":{"[\"paperclip-acme\",\"pc-abc\"]":"previously-confirmed-sandbox-uid"}}
+```
+
+The key is exactly `JSON.stringify([namespace, providerLeaseId])`. Confirm the UID
+from trustworthy records of the original workload and verify the namespace and
+lease identity before configuring it. A current object name, labels, Pod or
+Secret discovered by that name alone do not prove ownership. If that evidence is
+unavailable, leave the mapping absent and use an operator-controlled recovery
+procedure. Missing proof produces an explicit cleanup error.
+
+Release and destroy use this assertion only when persisted `workloadUid` is
+absent. A persisted UID always wins. The assertion never updates lease metadata
+or grants resume, execution or sync permission. Cleanup still verifies the UID
+and uses foreground deletion with a UID precondition; a recreated resource or
+precondition conflict fails closed. It never directly deletes cached Pod or
+Secret names for Sandbox cleanup. Remove the entry after verified cleanup and
+check that only the original workload and its owned children were removed.
