@@ -9,6 +9,7 @@ import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-ru
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
+import { assertDevRunnerDatabaseIsolation } from "./dev-runner-database-guard.ts";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
@@ -411,7 +412,20 @@ async function refreshPendingMigrations() {
   return payload;
 }
 
+function enforceDevDatabaseIsolation() {
+  // The migration preflight below connects to the database (and may migrate it) before the
+  // server child starts, so the local-dev isolation guard has to run here, not only in the
+  // server. It also marks env as a local dev entrypoint for the server child.
+  try {
+    assertDevRunnerDatabaseIsolation(env);
+  } catch (error) {
+    process.stderr.write(`[paperclip] ${toError(error, "Local dev database guard failed").message}\n`);
+    process.exit(1);
+  }
+}
+
 async function maybePreflightMigrations(options: { interactive?: boolean; autoApply?: boolean; exitOnDecline?: boolean } = {}) {
+  enforceDevDatabaseIsolation();
   const interactive = options.interactive ?? mode === "watch";
   const autoApply = options.autoApply ?? env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true";
   const exitOnDecline = options.exitOnDecline ?? mode === "watch";

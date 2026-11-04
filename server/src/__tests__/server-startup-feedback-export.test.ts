@@ -526,3 +526,88 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("https://paperclip.example");
   });
 });
+
+describe("startServer local dev database isolation guard", () => {
+  const ORIGINAL_MARKER = process.env.PAPERCLIP_LOCAL_DEV_ENTRYPOINT;
+  const ORIGINAL_OVERRIDE = process.env.PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE;
+  const SIGNALS = ["SIGINT", "SIGTERM"] as const;
+  let listenersBefore = new Map<string, Function[]>();
+
+  beforeEach(() => {
+    listenersBefore = new Map(SIGNALS.map((signal) => [signal, process.listeners(signal)]));
+    vi.clearAllMocks();
+    resolveHeartbeatSchedulingSuppressionMock.mockReturnValue({ suppressed: false, reason: null });
+    createBetterAuthInstanceMock.mockReturnValue({});
+    deriveAuthTrustedOriginsMock.mockReturnValue([]);
+    process.env.BETTER_AUTH_SECRET = "test-secret";
+    delete process.env.PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE;
+  });
+
+  afterEach(() => {
+    // startServer installs shutdown handlers; drop the ones these cases added.
+    for (const signal of SIGNALS) {
+      const before = listenersBefore.get(signal) ?? [];
+      for (const listener of process.listeners(signal)) {
+        if (!before.includes(listener)) process.off(signal, listener as (...args: unknown[]) => void);
+      }
+    }
+    if (ORIGINAL_MARKER === undefined) delete process.env.PAPERCLIP_LOCAL_DEV_ENTRYPOINT;
+    else process.env.PAPERCLIP_LOCAL_DEV_ENTRYPOINT = ORIGINAL_MARKER;
+    if (ORIGINAL_OVERRIDE === undefined) delete process.env.PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE;
+    else process.env.PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE = ORIGINAL_OVERRIDE;
+  });
+
+  it("refuses a marked dev boot with a non-loopback DATABASE_URL before inspecting migrations or connecting", async () => {
+    const { inspectMigrations } = await import("@paperclipai/db");
+    process.env.PAPERCLIP_LOCAL_DEV_ENTRYPOINT = "true";
+    loadConfigMock.mockReturnValue(
+      buildTestConfig({ databaseUrl: "postgres://u:secret@prod.example.com:5432/paperclip" }),
+    );
+
+    await expect(startServer()).rejects.toThrow(/Refusing to start: .*non-loopback DATABASE_URL/);
+    expect(inspectMigrations).not.toHaveBeenCalled();
+    expect(createDbMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a marked dev boot whose DATABASE_MIGRATION_URL is non-loopback", async () => {
+    const { inspectMigrations } = await import("@paperclipai/db");
+    process.env.PAPERCLIP_LOCAL_DEV_ENTRYPOINT = "true";
+    loadConfigMock.mockReturnValue(
+      buildTestConfig({ databaseMigrationUrl: "postgres://u:secret@prod.example.com:5432/paperclip" }),
+    );
+
+    await expect(startServer()).rejects.toThrow(/non-loopback DATABASE_MIGRATION_URL/);
+    expect(inspectMigrations).not.toHaveBeenCalled();
+    expect(createDbMock).not.toHaveBeenCalled();
+  });
+
+  it("does not apply the guard without the marker (production start)", async () => {
+    delete process.env.PAPERCLIP_LOCAL_DEV_ENTRYPOINT;
+    loadConfigMock.mockReturnValue(
+      buildTestConfig({ databaseUrl: "postgres://u:secret@prod.example.com:5432/paperclip" }),
+    );
+
+    await expect(startServer()).resolves.toBeDefined();
+    expect(createDbMock).toHaveBeenCalled();
+  });
+
+  it("removes the marker after the check so processes spawned by the dev server do not inherit it", async () => {
+    process.env.PAPERCLIP_LOCAL_DEV_ENTRYPOINT = "true";
+    loadConfigMock.mockReturnValue(buildTestConfig());
+
+    await startServer();
+
+    expect(process.env.PAPERCLIP_LOCAL_DEV_ENTRYPOINT).toBeUndefined();
+  });
+
+  it("honors PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE=true", async () => {
+    process.env.PAPERCLIP_LOCAL_DEV_ENTRYPOINT = "true";
+    process.env.PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE = "true";
+    loadConfigMock.mockReturnValue(
+      buildTestConfig({ databaseUrl: "postgres://u:secret@prod.example.com:5432/paperclip" }),
+    );
+
+    await expect(startServer()).resolves.toBeDefined();
+    expect(createDbMock).toHaveBeenCalled();
+  });
+});

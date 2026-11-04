@@ -50,6 +50,8 @@ DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip \
 
 For production, use a hosted provider like [Supabase](https://supabase.com/).
 
+> **Local dev entrypoints refuse non-loopback databases.** `pnpm dev`, `pnpm dev:watch`, `pnpm dev:once` and `pnpm dev:server` refuse to start when `DATABASE_URL` or `DATABASE_MIGRATION_URL` points at a non-loopback host, such as a hosted Supabase URL or a docker-compose `db` service. To run a dev server against such a database on purpose, set `PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE=true`. See [Local dev database isolation guard](https://github.com/misterbusiness1/OCC-Custom-Paperclip/blob/master/doc/DEVELOPING.md#local-dev-database-isolation-guard). Production starts (`node server/dist/index.js`, the Docker image) and `pnpm db:migrate` are not affected.
+
 1. Create a project at [database.new](https://database.new)
 2. Copy the connection string from Project Settings > Database
 3. Set `DATABASE_URL` in your `.env`
@@ -75,3 +77,5 @@ export function createDb(url: string) {
 | `postgres://...supabase.com...` | Hosted Supabase |
 
 The Drizzle schema (`packages/db/src/schema/`) is the same regardless of mode.
+
+The local dev entrypoints (`pnpm dev`, `pnpm dev:watch`, `pnpm dev:once`, `pnpm dev:server`) accept only an unset or loopback `DATABASE_URL` unless `PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE=true` is set.
