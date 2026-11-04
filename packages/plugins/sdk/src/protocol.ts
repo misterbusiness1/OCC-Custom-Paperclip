@@ -630,6 +630,8 @@ export interface PluginEnvironmentRunnerIngressEndpointParams
 }
 
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
+  /** Trusted host opt-in; never derived from agent-editable adapter/workspace settings. */
+  onecliBootstrapPolicy?: "run-bindings-only-v1";
   runId: string;
   workspaceMode?: string;
   requestedCwd?: string;
@@ -657,6 +659,7 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
 }
 
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
+  onecliBootstrapPolicy?: "run-bindings-only-v1";
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
 }

@@ -1,3 +1,4 @@
+import { assertOrdinaryOnecliBinding, hasOnecliIdentity, ONECLI_IDENTITY_PATH, parseOnecliIdentity } from "./managed-onecli-identity.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1207,6 +1208,16 @@ export function secretService(db: Db | DbTransaction) {
     });
   }
 
+  async function assertOnecliOwner(companyId: string, actor?: { userId?: string | null; agentId?: string | null }) {
+    if (!actor?.userId || actor.agentId) throw forbidden("Company owner required for managed OneCLI assignment");
+    const owner = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+      eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, actor.userId), eq(companyMemberships.status, "active"),
+      eq(companyMemberships.membershipRole, "owner"),
+    )).then((rows) => rows[0]);
+    if (!owner) throw forbidden("Company owner required for managed OneCLI assignment");
+  }
+
   async function assertSecretInCompany(
     companyId: string,
     secretId: string,
@@ -1217,6 +1228,7 @@ export function secretService(db: Db | DbTransaction) {
     if (secret.status === "deleted") throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
     if (secret.scope !== "company") throw unprocessable("Secret references require company-scoped secrets");
+    assertOrdinaryOnecliBinding(secret.providerMetadata, "");
     return secret;
   }
 
@@ -1365,6 +1377,14 @@ export function secretService(db: Db | DbTransaction) {
         code: "secret_scope_invalid",
       });
     }
+    if (hasOnecliIdentity(secret.providerMetadata) && (
+      bindingContext?.consumerType !== "agent" || bindingContext.configPath !== ONECLI_IDENTITY_PATH ||
+      accessContext?.actorType !== "system" || accessContext.actorId !== "managed-onecli-projection"
+    )) throw forbidden("Managed OneCLI credentials are available only to the assigned isolated worker");
+    if (hasOnecliIdentity(secret.providerMetadata) && (secret.provider !== "local_encrypted" || secret.managedMode !== "paperclip_managed" || secret.externalRef || secret.providerConfigId)) {
+      throw forbidden("Managed OneCLI credentials require local encrypted storage");
+    }
+
     const resolvedVersion = version === "latest" ? secret.latestVersion : version;
     const providerId = secret.provider as SecretProvider;
     const configPath = accessContext?.configPath ?? null;
@@ -2200,6 +2220,13 @@ export function secretService(db: Db | DbTransaction) {
     },
     actor?: { userId?: string | null; agentId?: string | null },
   ) {
+    if (hasOnecliIdentity(input.providerMetadata)) {
+      await assertOnecliOwner(companyId, actor);
+      const identity = parseOnecliIdentity(input.providerMetadata);
+      if (identity.companyId !== companyId || input.provider !== "local_encrypted" || input.managedMode === "external_reference") {
+        throw forbidden("Managed OneCLI assignment requires an owned local encrypted secret");
+      }
+    }
     const existing = await getByName(companyId, input.name);
     if (existing) throw conflict(`Secret already exists: ${input.name}`);
     const key = normalizeSecretKey(input.key ?? input.name);
@@ -2417,6 +2444,11 @@ export function secretService(db: Db | DbTransaction) {
   ) {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
+    if (hasOnecliIdentity(secret.providerMetadata)) {
+      await assertOnecliOwner(secret.companyId, actor);
+      if (input.externalRef || input.providerConfigId) throw forbidden("Managed OneCLI credentials cannot use external provider references");
+    }
+
     if (secret.status !== "active") throw unprocessable("Cannot rotate a non-active secret");
     if (input.expectedLatestVersion !== undefined && secret.latestVersion !== input.expectedLatestVersion) {
       throw conflict(SECRET_VERSION_STALE_CONFLICT);
@@ -2631,9 +2663,21 @@ export function secretService(db: Db | DbTransaction) {
       externalRef?: string | null;
       providerMetadata?: Record<string, unknown> | null;
     },
+    actor?: { userId?: string | null; agentId?: string | null },
   ) {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
+    if (hasOnecliIdentity(secret.providerMetadata) || hasOnecliIdentity(patch.providerMetadata)) {
+      await assertOnecliOwner(secret.companyId, actor);
+      if (hasOnecliIdentity(patch.providerMetadata)) {
+        const identity = parseOnecliIdentity(patch.providerMetadata);
+        if (identity.companyId !== secret.companyId || secret.provider !== "local_encrypted" || secret.scope !== "company" ||
+          secret.managedMode !== "paperclip_managed" || secret.externalRef || patch.externalRef || patch.providerConfigId) {
+          throw forbidden("Managed OneCLI assignment requires an owned local encrypted secret");
+        }
+      }
+    }
+
     if (secret.status === "deleted") throw notFound("Secret not found");
 
     if (patch.name && patch.name !== secret.name) {
@@ -3380,20 +3424,21 @@ export function secretService(db: Db | DbTransaction) {
   // `removeSecretUnlocked` re-reads the secret under the lock, so a delete
   // that lost a race between the pre-check and the lock still sees current
   // state, not the pre-check's stale read.
-  async function removeSecretInternal(secretId: string) {
+  async function removeSecretInternal(secretId: string, actor?: { userId?: string | null; agentId?: string | null }) {
     const preCheckSecret = await getById(secretId);
     if (!preCheckSecret) return null;
     return withAccountHomeSecretMutationLock(undefined, preCheckSecret.companyId, () =>
-      removeSecretUnlocked(secretId),
+      removeSecretUnlocked(secretId, actor),
     );
   }
 
   // The body of `removeSecretInternal` above, unchanged. Extracted to a named
   // function so that wrapper can hold the lock across this whole delete
   // sequence without duplicating it.
-  async function removeSecretUnlocked(secretId: string) {
+  async function removeSecretUnlocked(secretId: string, actor?: { userId?: string | null; agentId?: string | null }) {
     const secret = await getById(secretId);
     if (!secret) return null;
+    if (hasOnecliIdentity(secret.providerMetadata)) await assertOnecliOwner(secret.companyId, actor);
     const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
     const providerId = secret.provider as SecretProvider;
     const provider = getSecretProvider(providerId);
@@ -3812,6 +3857,7 @@ export function secretService(db: Db | DbTransaction) {
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
+      assertOrdinaryOnecliBinding(input.providerMetadata, "");
       const key = input.key.trim();
       const duplicate = await getUserSecretDefinitionByKey(companyId, key);
       if (duplicate) throw conflict(`User secret definition already exists: ${key}`);
@@ -3859,6 +3905,7 @@ export function secretService(db: Db | DbTransaction) {
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
+      assertOrdinaryOnecliBinding(patch.providerMetadata, "");
       const existing = await resolveUserSecretDefinition(companyId, { definitionId });
       if (patch.status === "deleted") {
         return removeUserSecretDefinitionInternal(companyId, existing.id, actor);
@@ -4645,12 +4692,31 @@ export function secretService(db: Db | DbTransaction) {
         externalRef?: string | null;
         providerMetadata?: Record<string, unknown> | null;
       },
+      actor?: { userId?: string | null; agentId?: string | null },
     ) => {
       const preCheckSecret = await getById(secretId);
       if (!preCheckSecret) throw notFound("Secret not found");
       return withAccountHomeSecretMutationLock(undefined, preCheckSecret.companyId, () =>
-        updateUnlocked(secretId, patch),
+        updateUnlocked(secretId, patch, actor),
       );
+    },
+
+    assignOnecliIdentity: async (companyId: string, secretId: string, actor: { userId: string; agentId?: string | null }) => {
+      await assertOnecliOwner(companyId, actor);
+      const secret = await getById(secretId);
+      if (!secret || secret.companyId !== companyId || secret.scope !== "company" || secret.provider !== "local_encrypted" || secret.status !== "active") {
+        throw forbidden("Managed OneCLI assignment requires an active owned local encrypted secret");
+      }
+      const identity = parseOnecliIdentity(secret.providerMetadata);
+      if (identity.companyId !== companyId) throw forbidden("Managed OneCLI assignment company mismatch");
+      const agent = await db.select({ id: agents.id }).from(agents).where(and(eq(agents.id, identity.agentId), eq(agents.companyId, companyId))).then((rows) => rows[0]);
+      if (!agent) throw forbidden("Managed OneCLI assignment agent mismatch");
+      return db.insert(companySecretBindings).values({ companyId, secretId, targetType: "agent", targetId: identity.agentId,
+        configPath: ONECLI_IDENTITY_PATH, versionSelector: "latest", required: true,
+        projectionClass: "unclassified", projectionAllowlistKey: null,
+      }).onConflictDoUpdate({ target: [companySecretBindings.companyId, companySecretBindings.targetType, companySecretBindings.targetId, companySecretBindings.configPath],
+        set: { secretId, versionSelector: "latest", required: true },
+      }).returning().then((rows) => rows[0]);
     },
 
     createBinding: async (input: {
@@ -4665,6 +4731,7 @@ export function secretService(db: Db | DbTransaction) {
       projectionClass?: SecretProjectionClass;
       projectionAllowlistKey?: string | null;
     }) => {
+      assertOrdinaryOnecliBinding(null, input.configPath);
       await assertSecretInCompany(input.companyId, input.secretId);
       assertSecretBindingConfigPath(input);
       assertClass3StaticLeaseAllowed({
@@ -4728,6 +4795,7 @@ export function secretService(db: Db | DbTransaction) {
         projectionAllowlistKey: string | null;
       }> = [];
       for (const ref of refs) {
+        assertOrdinaryOnecliBinding(null, ref.configPath);
         await assertSecretInCompany(companyId, ref.secretId);
         assertSecretBindingConfigPath({ targetType: target.targetType, configPath: ref.configPath });
         const projectionClass = ref.projectionClass ?? "unclassified";
@@ -4760,6 +4828,7 @@ export function secretService(db: Db | DbTransaction) {
                 eq(companySecretBindings.companyId, companyId),
                 eq(companySecretBindings.targetType, target.targetType),
                 eq(companySecretBindings.targetId, target.targetId),
+                ne(companySecretBindings.configPath, ONECLI_IDENTITY_PATH),
               ),
             );
         } else if (pathPrefixes.length > 0) {
@@ -4771,6 +4840,7 @@ export function secretService(db: Db | DbTransaction) {
                   eq(companySecretBindings.companyId, companyId),
                   eq(companySecretBindings.targetType, target.targetType),
                   eq(companySecretBindings.targetId, target.targetId),
+                ne(companySecretBindings.configPath, ONECLI_IDENTITY_PATH),
                   or(
                     eq(companySecretBindings.configPath, pathPrefix),
                     like(companySecretBindings.configPath, `${pathPrefix}.%`),
@@ -4786,6 +4856,7 @@ export function secretService(db: Db | DbTransaction) {
                 eq(companySecretBindings.companyId, companyId),
                 eq(companySecretBindings.targetType, target.targetType),
                 eq(companySecretBindings.targetId, target.targetId),
+                ne(companySecretBindings.configPath, ONECLI_IDENTITY_PATH),
               ),
             );
         }
@@ -4855,6 +4926,7 @@ export function secretService(db: Db | DbTransaction) {
             { code: "secret_missing", configPath: ref.configPath },
           );
         }
+        assertOrdinaryOnecliBinding(secret.providerMetadata, ref.configPath);
         assertSecretBindingConfigPath({ targetType: target.targetType, configPath: ref.configPath });
         const projectionClass = ref.projectionClass ?? "unclassified";
         const projectionAllowlistKey = ref.projectionAllowlistKey ?? null;
@@ -4883,6 +4955,7 @@ export function secretService(db: Db | DbTransaction) {
             and(
               eq(companySecretBindings.targetType, target.targetType),
               eq(companySecretBindings.targetId, target.targetId),
+                ne(companySecretBindings.configPath, ONECLI_IDENTITY_PATH),
               notLike(companySecretBindings.configPath, "env.%"),
             ),
           );
@@ -4968,6 +5041,7 @@ export function secretService(db: Db | DbTransaction) {
           and(
             eq(companySecretBindings.targetType, target.targetType),
             eq(companySecretBindings.targetId, target.targetId),
+                ne(companySecretBindings.configPath, ONECLI_IDENTITY_PATH),
           ),
         )
         .then((rows) => [...new Set(rows.map((row) => row.companyId))]),
@@ -4997,6 +5071,7 @@ export function secretService(db: Db | DbTransaction) {
       const pathPrefix = target.pathPrefix ?? "env";
       const bindingDb = options?.db ?? db;
       for (const [key, rawBinding] of Object.entries(record)) {
+        assertOrdinaryOnecliBinding(null, `${pathPrefix}.${key}`);
         const parsed = envBindingSchema.safeParse(rawBinding);
         if (!parsed.success) continue;
         const binding = canonicalizeBinding(parsed.data as EnvBinding);
@@ -5043,6 +5118,7 @@ export function secretService(db: Db | DbTransaction) {
               eq(companySecretBindings.companyId, companyId),
               eq(companySecretBindings.targetType, target.targetType),
               eq(companySecretBindings.targetId, target.targetId),
+                ne(companySecretBindings.configPath, ONECLI_IDENTITY_PATH),
               like(companySecretBindings.configPath, `${pathPrefix}.%`),
             ),
           );

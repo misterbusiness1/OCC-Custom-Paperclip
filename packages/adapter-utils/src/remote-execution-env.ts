@@ -47,3 +47,21 @@ export function sanitizeRemoteExecutionEnv(
   }
   return sanitized;
 }
+
+/** Managed worker launches may not inherit control-plane environment values.
+ * Explicit keys are server-owned names of already-resolved run bindings.
+ * Missing policy preserves the existing nonmanaged behavior.
+ */
+export function sanitizeManagedWorkerEnv(
+  env: Record<string, string>,
+  explicitKeys: readonly string[] | undefined,
+  inheritedEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const sanitized = sanitizeRemoteExecutionEnv(env, inheritedEnv);
+  if (explicitKeys === undefined) return sanitized;
+  const allowed = new Set(explicitKeys);
+  return Object.fromEntries(Object.entries(sanitized).filter(([key, value]) => {
+    const inheritedValue = readEnvValueCaseInsensitive(inheritedEnv, key);
+    return inheritedValue === undefined || inheritedValue !== value || allowed.has(key);
+  }));
+}

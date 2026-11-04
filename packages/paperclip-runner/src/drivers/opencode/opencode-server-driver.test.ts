@@ -1,5 +1,6 @@
 import {
   chmod,
+  cp,
   lstat,
   mkdir,
   mkdtemp,
@@ -11,7 +12,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
@@ -30,7 +31,15 @@ import {
 } from "./opencode-server-driver.js";
 
 const roots: string[] = [];
-const fixture = resolve("test/fixtures/fake-opencode-server.mjs");
+let fixtureRoot: string | undefined;
+let fixture: string;
+
+beforeAll(async () => {
+  fixtureRoot = await mkdtemp(join(tmpdir(), "paperclip-opencode-fixture-"));
+  fixture = join(fixtureRoot, "fake-opencode-server.mjs");
+  // Test launch permissions belong to an owned copy, never tracked source.
+  await cp(resolve("test/fixtures/fake-opencode-server.mjs"), fixture);
+});
 
 const TURN_TERMINAL_EVENT_TYPES = new Set([
   "turn.completed",
@@ -122,7 +131,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  await chmod(fixture, 0o644);
+  if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true });
 });
 
 describe("OpenCodeServerDriver", () => {
@@ -2115,7 +2124,7 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
-  it("uses provider structure rather than prose length to select a post-tool answer", async () => {
+  it.each(["final-after-tool-commentary", "buffered-pre-tool-commentary"])("uses provider structure rather than prose length to select a post-tool answer (%s)", async (message) => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
     const workspace = await mkdtemp(
@@ -2137,7 +2146,7 @@ describe("OpenCodeServerDriver", () => {
       workingDirectory: workspace,
     });
     await session.startTurn({
-      message: { role: "user", text: "final-after-tool-commentary" },
+      message: { role: "user", text: message },
     });
     const events = await collectTurnEvents(session.events());
     const finalMessages = events.filter(

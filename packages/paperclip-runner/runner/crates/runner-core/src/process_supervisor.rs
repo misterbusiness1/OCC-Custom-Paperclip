@@ -948,7 +948,7 @@ impl SupervisedProcess {
         // A caller that must exclude escaped or re-parented descendants still
         // needs a separately inherited lifetime fence.
         #[cfg(unix)]
-        signal_process_group(self.process_group_id, "KILL");
+        signal_process_group(self.process_group_id, rustix::process::Signal::KILL);
         self.finished = true;
         Ok(exit_fact(status))
     }
@@ -959,7 +959,7 @@ impl SupervisedProcess {
         }
         self.stdin.take();
         #[cfg(unix)]
-        signal_process_group(self.process_group_id, "TERM");
+        signal_process_group(self.process_group_id, rustix::process::Signal::TERM);
         #[cfg(not(unix))]
         let _ = self.child.kill();
 
@@ -967,7 +967,7 @@ impl SupervisedProcess {
         loop {
             if let Some(fact) = self.try_wait()? {
                 #[cfg(unix)]
-                signal_process_group(self.process_group_id, "KILL");
+                signal_process_group(self.process_group_id, rustix::process::Signal::KILL);
                 self.finished = true;
                 return Ok(fact);
             }
@@ -978,7 +978,7 @@ impl SupervisedProcess {
         }
 
         #[cfg(unix)]
-        signal_process_group(self.process_group_id, "KILL");
+        signal_process_group(self.process_group_id, rustix::process::Signal::KILL);
         #[cfg(not(unix))]
         let _ = self.child.kill();
         self.wait()
@@ -994,17 +994,23 @@ impl Drop for SupervisedProcess {
 }
 
 #[cfg(unix)]
-fn signal_process_group(process_group_id: u32, signal: &str) {
-    let _ = Command::new("kill")
-        .args([
-            format!("-{signal}"),
-            "--".to_owned(),
-            format!("-{process_group_id}"),
-        ])
-        .env_clear()
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+fn owned_process_group_id(process_group_id: u32) -> Option<rustix::process::Pid> {
+    let raw = i32::try_from(process_group_id).ok()?;
+    // kill(0) addresses our own group and kill(-1) broadcasts. Neither can
+    // represent the private group of a child created by this supervisor.
+    if raw <= 1 {
+        return None;
+    }
+    rustix::process::Pid::from_raw(raw)
+}
+
+#[cfg(unix)]
+fn signal_process_group(process_group_id: u32, signal: rustix::process::Signal) {
+    if let Some(group) = owned_process_group_id(process_group_id) {
+        // Spawning a kill utility temporarily inherits other threads' lifetime
+        // fences across fork, even when those descriptors have CLOEXEC set.
+        let _ = rustix::process::kill_process_group(group, signal);
+    }
 }
 
 fn exit_fact(status: ExitStatus) -> ProcessExitFact {
@@ -1077,6 +1083,60 @@ mod tests {
             process.wait().unwrap();
             assert!(process.stdout_drained());
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn invalid_process_group_ids_never_reach_signaling() {
+        for value in [0, 1, i32::MAX as u32 + 1, u32::MAX] {
+            assert!(owned_process_group_id(value).is_none());
+        }
+        assert_eq!(owned_process_group_id(2).unwrap().as_raw_nonzero().get(), 2);
+        assert_eq!(
+            owned_process_group_id(i32::MAX as u32)
+                .unwrap()
+                .as_raw_nonzero()
+                .get(),
+            i32::MAX
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn group_signaling_terminates_owned_descendants() {
+        let mut process = SupervisedProcess::spawn(
+            Path::new("/bin/sh"),
+            &[
+                "-c".to_owned(),
+                r#"trap 'wait; exit' TERM; /bin/sh -c 'trap "exit" TERM; printf "ready\n"; read -r finish' <&0 & wait"#.to_owned(),
+            ],
+            Duration::from_secs(2),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(
+            process.receive_stdout_line(Duration::from_secs(5)).unwrap(),
+            Some("ready".to_owned())
+        );
+        signal_process_group(process.process_group_id, rustix::process::Signal::TERM);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let exited = loop {
+            if process.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        // Always clean up this test's private group before reporting a failure.
+        let group = owned_process_group_id(process.process_group_id).unwrap();
+        let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+        process.wait().unwrap();
+        assert!(
+            exited,
+            "TERM must reach both the owned shell and its ready child"
+        );
     }
 
     #[test]

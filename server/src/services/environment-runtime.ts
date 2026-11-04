@@ -1,3 +1,4 @@
+import { managedOnecliBootstrapHint } from "./managed-onecli-identity.js";
 import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
 import { readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -1846,6 +1847,9 @@ function createSandboxEnvironmentDriver(
         throw new Error(`Expected sandbox environment config for driver "${input.environment.driver}".`);
       }
 
+      if (managedOnecliBootstrapHint(input.environment.id).onecliBootstrapPolicy && parsed.config.provider !== "kubernetes") {
+        throw new Error("Managed OneCLI identities require the native Kubernetes provider");
+      }
       // Check if this provider should be handled by a plugin.
       if (!isBuiltinSandboxProvider(parsed.config.provider)) {
         const pluginProvider = await resolveSandboxProviderPlugin({
@@ -1940,6 +1944,10 @@ function createSandboxEnvironmentDriver(
                 lease.metadata?.agentId === input.agentId,
               )
           : [];
+        if (managedOnecliBootstrapHint(input.environment.id).onecliBootstrapPolicy &&
+            reusableCandidateLeases.some((lease) => lease.metadata?.onecliBootstrapPolicy !== "run-bindings-only-v1")) {
+          throw new Error("Managed OneCLI worker requires an owner-reviewed replacement for legacy bootstrap leases");
+        }
         const reusableExistingLeases = reusableCandidateLeases.filter((lease) =>
           reusableSandboxLeaseScopeMatches({
             lease,
@@ -2021,6 +2029,7 @@ function createSandboxEnvironmentDriver(
                     issueId: input.issueId,
                     config: workerConfig,
                     providerLeaseId: reusableLease.providerLeaseId,
+                    ...managedOnecliBootstrapHint(input.environment.id),
                     leaseMetadata: reusableLease.metadata ?? undefined,
                   },
                   Math.min(
@@ -2101,6 +2110,7 @@ function createSandboxEnvironmentDriver(
                 // UUID so providers that validate or persist the runId still see
                 // a well-formed identifier.
                 runId: acquisitionRunId,
+                ...managedOnecliBootstrapHint(input.environment.id),
                 workspaceMode: input.executionWorkspaceMode ?? undefined,
                 agentId: input.agentId ?? undefined,
                 executionWorkspaceId: input.executionWorkspaceId ?? undefined,
@@ -3577,6 +3587,9 @@ function createPluginEnvironmentDriver(
     driver: "plugin",
 
     async acquireRunLease(input) {
+      if (managedOnecliBootstrapHint(input.environment.id).onecliBootstrapPolicy) {
+        throw new Error("Managed OneCLI identities require the native sandbox Kubernetes driver");
+      }
       const parsed = parseEnvironmentDriverConfig(input.environment);
       if (parsed.driver !== "plugin") {
         throw new Error(`Expected plugin environment config for driver "${input.environment.driver}".`);

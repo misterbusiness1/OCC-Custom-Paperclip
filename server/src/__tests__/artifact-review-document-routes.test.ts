@@ -136,11 +136,15 @@ function createStorageService(): StorageService {
   } as unknown as StorageService;
 }
 
-async function createApp(options?: { companyIds?: string[] }) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
+function loadRouteModules() {
+  return Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
+}
+
+async function createApp(options?: { companyIds?: string[] }) {
+  const [{ errorHandler }, { issueRoutes }] = await loadRouteModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -210,12 +214,14 @@ function makeDocument(overrides: Record<string, unknown> = {}) {
 }
 
 describe("work product review-document route", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
     registerRouteMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockWorkProductService.getById.mockResolvedValue(makeWorkProduct());
+    // Load the cold route graph during fixture setup; keep request deadlines unchanged.
+    await loadRouteModules();
   });
 
   it("returns 404 when the work product belongs to another issue", async () => {

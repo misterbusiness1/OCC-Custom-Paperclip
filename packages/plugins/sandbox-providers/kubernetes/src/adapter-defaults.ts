@@ -121,3 +121,20 @@ export function buildAdapterEnv(
   }
   return out;
 }
+
+/** Managed credentials arrive through per-command run bindings, never host defaults.
+ * Fail before any Kubernetes resource is created rather than silently changing routing.
+ */
+export function buildLeaseAdapterEnv(
+  defaults: AdapterDefaults,
+  onecliBootstrapPolicy: "run-bindings-only-v1" | undefined,
+  processEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const env = buildAdapterEnv(defaults, processEnv);
+  if (onecliBootstrapPolicy !== undefined) {
+    if (onecliBootstrapPolicy !== "run-bindings-only-v1" || Object.keys(env).length > 0) {
+      throw new Error("Managed worker bootstrap requires empty host/default adapter env; use explicit per-command run bindings");
+    }
+  }
+  return env;
+}

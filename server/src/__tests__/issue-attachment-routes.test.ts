@@ -155,11 +155,15 @@ function createStorageService(body = Buffer.from("test")): TestStorageService {
   };
 }
 
-async function createApp(storage: StorageService, options?: { companyIds?: string[]; source?: string }) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
+function loadRouteModules() {
+  return Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
+}
+
+async function createApp(storage: StorageService, options?: { companyIds?: string[]; source?: string }) {
+  const [{ errorHandler }, { issueRoutes }] = await loadRouteModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -227,7 +231,7 @@ describe("MAX_ATTACHMENT_BYTES", () => {
 });
 
 describe("issue attachment routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
@@ -262,6 +266,8 @@ describe("issue attachment routes", () => {
     mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.getById.mockReset();
     mockWorkProductService.update.mockReset();
+    // Load the cold route graph during fixture setup; request deadlines stay unchanged.
+    await loadRouteModules();
   });
 
   it("accepts zip uploads for issue attachments", async () => {

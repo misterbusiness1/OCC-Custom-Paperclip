@@ -157,11 +157,15 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(actor: "board" | "agent" = "board", actorCompanyId = companyId) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+function loadRouteModules() {
+  return Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
+}
+
+async function createApp(actor: "board" | "agent" = "board", actorCompanyId = companyId) {
+  const [{ issueRoutes }, { errorHandler }] = await loadRouteModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -187,7 +191,7 @@ async function createApp(actor: "board" | "agent" = "board", actorCompanyId = co
 }
 
 describe("document annotation routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../middleware/index.js");
@@ -226,6 +230,8 @@ describe("document annotation routes", () => {
     mockAnnotationService.addComment.mockResolvedValue(annotationComment);
     mockAnnotationService.updateThread.mockResolvedValue({ ...annotationThread, status: "resolved" });
     mockAnnotationService.remapOpenThreadsForDocument.mockResolvedValue([]);
+    // Load the cold route graph during fixture setup; keep request deadlines unchanged.
+    await loadRouteModules();
   });
 
   it("includes compact open annotations without comment bodies by default for agent document reads", async () => {

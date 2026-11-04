@@ -12,6 +12,7 @@ import {
   selectVendCredential,
 } from "./codex-auth-cache.js";
 import {
+  adapterExecutionTargetMetadataEnv,
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   overrideAdapterExecutionTargetRemoteCwd,
@@ -197,6 +198,12 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   const openAiCompatibleBiller = inferOpenAiCompatibleBiller(env, "openai");
   if (openAiCompatibleBiller === "openrouter") return "openrouter";
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
+}
+
+export function resolveCodexExecutionBilling(env: Record<string, string>, target: AdapterExecutionContext["executionTarget"]) {
+  const billingEnv = adapterExecutionTargetMetadataEnv(target, env);
+  const billingType = resolveCodexBillingType(billingEnv);
+  return { billingType, biller: resolveCodexBiller(billingEnv, billingType) };
 }
 
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
@@ -992,7 +999,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    const billingType = resolveCodexBillingType(effectiveEnv);
+    const { billingType, biller } = resolveCodexExecutionBilling(effectiveEnv, executionTarget);
     const networkScope = parseLocalProcessNetworkScope(config.networkScope);
     const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
     const runtimeEnv = Object.fromEntries(
@@ -1398,7 +1405,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           sessionParams: null,
           sessionDisplayId: null,
           provider: "openai",
-          biller: resolveCodexBiller(effectiveEnv, billingType),
+          biller,
           model,
           billingType,
           costUsd: null,
@@ -1527,7 +1534,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
         provider: "openai",
-        biller: resolveCodexBiller(effectiveEnv, billingType),
+        biller,
         model,
         billingType,
         costUsd: null,

@@ -1350,6 +1350,7 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "POST /api/secrets/{id}/onecli-assignment",
   "POST /api/approvals/{id}/retire",
   "POST /api/approvals/{id}/revoke",
   "GET /api/issues/{id}/comment-requests/{clientRequestId}",
@@ -1776,6 +1777,9 @@ function applyDocumentFixups(document: any): any {
                 : { actor: "public" };
 
       const key = operationKey(method, path);
+      if (key === "POST /api/secrets/{id}/onecli-assignment") {
+        operation["x-paperclip-authorization"] = { actor: "board", companyRole: "owner" };
+      }
       if (authLevel !== "public") {
         const responses = (operation.responses ??= {}) as Record<
           string,
@@ -4965,6 +4969,37 @@ registry.registerPath({
     body: jsonBody(updateSecretSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/secrets/{id}/onecli-assignment",
+  tags: ["secrets"],
+  summary: "Assign a managed OneCLI identity as the company owner",
+  description:
+    "Requires a board user with active company-owner membership. The active company-scoped local encrypted secret's identity metadata selects the agent; no request body is required and request fields cannot select the identity. Upserts the reserved agent binding and returns binding metadata only, never the secret value. Non-members receive 404.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(z.object({
+      id: z.string().guid(),
+      companyId: z.string().guid(),
+      secretId: z.string().guid(),
+      targetType: z.literal("agent"),
+      targetId: z.string(),
+      configPath: z.literal("access.paperclip_onecli_identity"),
+      versionSelector: z.literal("latest"),
+      required: z.literal(true),
+      label: z.string().nullable(),
+      projectionClass: z.string(),
+      projectionAllowlistKey: z.string().nullable(),
+      createdAt: z.string().datetime(),
+      updatedAt: z.string().datetime(),
+    })),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({

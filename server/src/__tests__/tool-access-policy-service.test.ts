@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -159,6 +159,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.useRealTimers();
     await db.delete(toolRateLimitCounters);
     await db.delete(toolActionRequests);
     await db.delete(toolInvocations);
@@ -910,6 +911,8 @@ describeEmbeddedPostgres("tool access policy service", () => {
       consumeRateLimit: true,
     };
 
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-28T12:00:30.000Z"));
     const first = await toolAccessPolicyService(db).decide(input);
     const second = await toolAccessPolicyService(db).decide(input);
 
@@ -946,6 +949,10 @@ describeEmbeddedPostgres("tool access policy service", () => {
       consumeRateLimit: true,
     };
 
+    // This is a same-window contention assertion. Real wall time can cross a
+    // minute boundary between the two decisions and legitimately allow both.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-28T12:00:30.000Z"));
     const decisions = await Promise.all([
       toolAccessPolicyService(db).decide(input),
       toolAccessPolicyService(db).decide(input),
@@ -953,6 +960,28 @@ describeEmbeddedPostgres("tool access policy service", () => {
 
     expect(decisions.filter((decision) => decision.allowed)).toHaveLength(1);
     expect(decisions.filter((decision) => decision.reasonCode === "rate_limited")).toHaveLength(1);
+    const counters = await db.select().from(toolRateLimitCounters);
+    expect(counters).toHaveLength(1);
+    expect(counters[0]).toMatchObject({
+      remaining: 0,
+      windowStartAt: new Date("2026-10-28T12:00:00.000Z"),
+    });
+
+    // A new fixed window gets exactly one fresh slot, still atomically.
+    vi.setSystemTime(new Date("2026-10-28T12:01:00.000Z"));
+    const nextWindow = await Promise.all([
+      toolAccessPolicyService(db).decide(input),
+      toolAccessPolicyService(db).decide(input),
+    ]);
+    expect(nextWindow.filter((decision) => decision.allowed)).toHaveLength(1);
+    expect(nextWindow.filter((decision) => decision.reasonCode === "rate_limited")).toHaveLength(1);
+    const allCounters = await db.select().from(toolRateLimitCounters);
+    expect(allCounters).toHaveLength(2);
+    expect(allCounters.every((counter) => counter.remaining === 0)).toBe(true);
+    expect(allCounters.map((counter) => counter.windowStartAt.toISOString()).sort()).toEqual([
+      "2026-10-28T12:00:00.000Z",
+      "2026-10-28T12:01:00.000Z",
+    ]);
   });
 
   it("rejects unsupported policy semantics at create and update time", async () => {

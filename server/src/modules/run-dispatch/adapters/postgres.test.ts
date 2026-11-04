@@ -1022,4 +1022,18 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId: null, agentId: null });
   });
 
+
+  it("keeps missing, foreign, and no-longer-queued staleness reads distinct without mutating receipts", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const runId = await seedRun({ companyId, agentId });
+    const adapter = createPostgresRunDispatchAdapter(db);
+    const now = new Date();
+    expect(await adapter.evaluateQueuedRunStaleness({ companyId, runId: randomUUID(), now })).toEqual({ kind: "missing" });
+    expect(await adapter.evaluateQueuedRunStaleness({ companyId: randomUUID(), runId, now })).toEqual({ kind: "missing" });
+    const before = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0]!);
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    expect(await adapter.evaluateQueuedRunStaleness({ companyId, runId, now })).toEqual({ kind: "not_queued" });
+    const after = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0]!);
+    expect(after).toEqual({ ...before, status: "running" });
+  });
 });

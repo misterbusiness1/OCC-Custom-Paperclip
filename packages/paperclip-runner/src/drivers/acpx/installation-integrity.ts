@@ -1815,7 +1815,10 @@ function snapshotBootstrap(format: AcpxCommandFormat, guarded = false): string {
     "const resolveBareFromDescriptor = (specifier, dependencyDirectoryUrl) => { resolvingDescriptorBare = true; try { return require.resolve(specifier, { paths: [fileURLToPath(dependencyDirectoryUrl)] }); } finally { resolvingDescriptorBare = false; } };",
     "registerHooks({ resolve(specifier, context, nextResolve) {",
     "if (resolvingDescriptorBare) return nextResolve(specifier, context);",
-    "if (specifier === target) return { url: target, shortCircuit: true };",
+    // Native require passes an absolute pathname; ESM import passes a URL.
+    // Both identify the one already verified source descriptor, never a fresh
+    // path lookup that could follow a replaced entrypoint symlink.
+    "if (specifier === target || specifier === fileURLToPath(target)) return { url: target, shortCircuit: true };",
     "const entryImport = context.parentURL === target;",
     "const parentDependencyAncestorIndex = entryImport ? 0 : dependencyAncestorIndex(context.parentURL);",
     'const relativeImport = (entryImport || parentDependencyAncestorIndex >= 0) && (specifier.startsWith("./") || specifier.startsWith("../"));',
@@ -1887,7 +1890,13 @@ function snapshotBootstrap(format: AcpxCommandFormat, guarded = false): string {
     "} finally { fs.closeSync(moduleFd); }",
     "});",
     "} });",
-    "import(target).catch((error) => { console.error(error); process.exitCode = 1; });",
+    // Loading CommonJS through the ESM translator on Node 24.16 resolves some
+    // require() paths before the synchronous resolve hook can remap them.
+    // Enter through the native CommonJS loader instead; both loaders retain
+    // the same resolve/load hooks and descriptor-pinned source validation.
+    format === "commonjs"
+      ? "try { require(fileURLToPath(target)); } catch (error) { console.error(error); process.exitCode = 1; }"
+      : "import(target).catch((error) => { console.error(error); process.exitCode = 1; });",
   ].join("");
 }
 

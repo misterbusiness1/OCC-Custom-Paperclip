@@ -151,11 +151,15 @@ function mockManagedRuntime(method: "api_key" | "subscription") {
   );
 }
 
-async function createApp() {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+function loadRouteModules() {
+  return Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
+}
+
+async function createApp() {
+  const [{ agentRoutes }, { errorHandler }] = await loadRouteModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -237,6 +241,8 @@ describe("agent test-environment route", () => {
     await unregisterTestAdapter("external_test");
     const { registerServerAdapter } = await import("../adapters/index.js");
     registerServerAdapter(externalAdapter);
+    // Load the cold route graph during fixture setup; keep request deadlines unchanged.
+    await loadRouteModules();
   });
 
   afterEach(async () => {

@@ -44,6 +44,13 @@ function createInvite(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function loadRouteModules() {
+  return Promise.all([
+    import("../routes/access.js"),
+    import("../middleware/index.js"),
+  ]);
+}
+
 async function createApp(
   db: Record<string, unknown>,
   network: {
@@ -51,10 +58,7 @@ async function createApp(
     requestHead: ReturnType<typeof vi.fn>;
   },
 ) {
-  const [access, middleware] = await Promise.all([
-    import("../routes/access.js"),
-    import("../middleware/index.js"),
-  ]);
+  const [access, middleware] = await loadRouteModules();
   const app = express();
   app.use((req, _res, next) => {
     (req as any).actor = { type: "anon" };
@@ -75,8 +79,10 @@ async function createApp(
 }
 
 describe.sequential("GET /invites/:token/test-resolution", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    // Load the cold route graph during fixture setup; request deadlines stay unchanged.
+    await loadRouteModules();
   });
 
   it("rejects private, local, multicast, and reserved targets before probing", async () => {

@@ -60,10 +60,13 @@ import type {
   DispatchResolvedInteractionOutcome,
   DueRetryRun,
   EvaluateScheduledRetryGateInput,
+  EvaluateQueuedRunStalenessInput,
+  EvaluateQueuedRunStalenessOutcome,
   ListDueRetriesInput,
   PromoteOrCancelDueRetryInput,
   RunDispatchWriter,
   ScheduledRetryReader,
+  QueuedRunStalenessReader,
 } from "../application/ports.js";
 import type {
   CancelStaleQueuedRunOutcome,
@@ -187,7 +190,7 @@ function statusEffect(run: HeartbeatRun, previousStatus: string | null): PostCom
 
 export function createPostgresRunDispatchAdapter(
   db: Db,
-): ScheduledRetryReader & RunDispatchWriter {
+): ScheduledRetryReader & RunDispatchWriter & QueuedRunStalenessReader {
   const budgets = budgetService(db);
   const treeControlSvc = issueTreeControlService(db);
   const issuesSvc = issueService(db);
@@ -1049,6 +1052,21 @@ export function createPostgresRunDispatchAdapter(
     return { issueId, facts, decision: decideQueuedRunStaleness(facts, now) };
   }
 
+  async function evaluateQueuedRunStaleness(
+    input: EvaluateQueuedRunStalenessInput,
+  ): Promise<EvaluateQueuedRunStalenessOutcome> {
+    const run = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+    )).then(rows => rows[0] ?? null);
+    if (!run) return { kind: "missing" };
+    if (run.status !== "queued") return { kind: "not_queued" };
+    // Admission composes this reader with its already-locked transaction.
+    // Reuse the authoritative ownership/interaction facts without opening a
+    // transaction or invoking the dispatch writer's issue/run lock wrapper.
+    const { decision } = await decideCurrentRunStaleness(db, run, input.now);
+    return { kind: "evaluated", decision };
+  }
+
   async function cancelStaleQueuedRun(
     input: CancelStaleQueuedRunInput,
   ): Promise<CancelStaleQueuedRunOutcome> {
@@ -1159,6 +1177,7 @@ export function createPostgresRunDispatchAdapter(
     evaluateScheduledRetryGate,
     listDueRetries,
     cancelStaleQueuedRun,
+    evaluateQueuedRunStaleness,
     dispatchResolvedInteractionIfCurrent,
     promoteOrCancelDueRetry,
   };

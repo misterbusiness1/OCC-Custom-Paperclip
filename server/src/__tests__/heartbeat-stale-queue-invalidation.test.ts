@@ -1865,11 +1865,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
-  // Upstream v2026.916.1 keeps another agent's queued run on the task as the
-  // execution holder at admission (see issue-queued-comments-routes). The fork
-  // guarantee that survives: once that stale holder is claimed and cancelled,
-  // the new assignee's deferred wake is promoted instead of stranding.
-  it("promotes a new assignee deferred behind a stale legacy queued run once the stale run is claimed", async () => {
+  // Admission cancels stale former-owner queued receipts before returning
+  // the new assignee run. The preceding case covers legacy deferred promotion
+  // when a stale run reaches the claim gate.
+  it("admits a new assignee immediately after cancelling a stale legacy queued run", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });
     const replacementAgentId = randomUUID();
     await db.insert(agents).values({
@@ -1910,54 +1909,33 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       requestedByActorId: agentId,
       contextSnapshot: { issueId, source: "issue.update" },
     });
-    expect(replacementRun).toBeNull();
-    const deferredReplacementWake = await db
-      .select({ id: agentWakeupRequests.id })
-      .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.agentId, replacementAgentId),
-          eq(agentWakeupRequests.status, "deferred_issue_execution"),
-        ),
-      )
-      .then((rows) => rows[0] ?? null);
-    expect(deferredReplacementWake).not.toBeNull();
+    expect(replacementRun).toMatchObject({
+      agentId: replacementAgentId,
+      status: "queued",
+      contextSnapshot: { issueId },
+    });
+    expect(typeof replacementRun?.wakeupRequestId).toBe("string");
+    const [cancelledStaleRun, cancelledStaleWake, admittedWake, deferredReplacementWakes] = await Promise.all([
+      db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns).where(eq(heartbeatRuns.id, staleRun.runId)).then(rows => rows[0] ?? null),
+      db.select({ status: agentWakeupRequests.status }).from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, staleRun.wakeupRequestId)).then(rows => rows[0] ?? null),
+      db.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, replacementRun!.wakeupRequestId!)).then(rows => rows[0] ?? null),
+      db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.agentId, replacementAgentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      )),
+    ]);
+    expect(cancelledStaleRun).toEqual({ status: "cancelled", errorCode: "lock_released_on_reassignment" });
+    expect(cancelledStaleWake).toEqual({ status: "cancelled" });
+    expect(admittedWake?.runId).toBe(replacementRun!.id);
+    expect(deferredReplacementWakes).toEqual([]);
 
     await heartbeat.resumeQueuedRuns();
-
-    expect(await waitForCondition(async () => {
-      const wake = await db
-        .select({ status: agentWakeupRequests.status })
-        .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.id, deferredReplacementWake!.id))
-        .then((rows) => rows[0] ?? null);
-      return wake?.status !== "deferred_issue_execution";
-    })).toBe(true);
-
-    const [cancelledStaleRun, promotedWake] = await Promise.all([
-      db
-        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, staleRun.runId))
-        .then((rows) => rows[0] ?? null),
-      db
-        .select({ runId: agentWakeupRequests.runId })
-        .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.id, deferredReplacementWake!.id))
-        .then((rows) => rows[0] ?? null),
-    ]);
-    expect(cancelledStaleRun).toMatchObject({
-      status: "cancelled",
-      errorCode: "issue_assignee_changed",
-    });
-    const promotedRun = promotedWake?.runId
-      ? await db
-        .select({ agentId: heartbeatRuns.agentId })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, promotedWake.runId))
-        .then((rows) => rows[0] ?? null)
-      : null;
-    expect(promotedRun?.agentId).toBe(replacementAgentId);
+    const admittedRun = await db.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, replacementRun!.id)).then(rows => rows[0] ?? null);
+    expect(admittedRun?.agentId).toBe(replacementAgentId);
     expect(countExecuteCallsForRun(staleRun.runId)).toBe(0);
   });
 

@@ -1,3 +1,4 @@
+import { assertOrdinaryOnecliBinding } from "./managed-onecli-identity.js";
 import { withAgentAppearance } from "@paperclipai/shared";
 import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -368,6 +369,8 @@ export function createSecretProposalsService(db: Db) {
     justification: string;
     bindingTargetPolicy: "self_and_reports";
   }) {
+    assertOrdinaryOnecliBinding(null, input.configPath);
+    if (input.sourceConfigPath) assertOrdinaryOnecliBinding(null, input.sourceConfigPath);
     const referenceCount = [input.secretId, input.sourceConfigPath, input.secretProposalId]
       .filter((value) => Boolean(value)).length;
     if (referenceCount !== 1) {
@@ -439,6 +442,7 @@ export function createSecretProposalsService(db: Db) {
       ) {
         throw notFound("Secret not found");
       }
+      assertOrdinaryOnecliBinding(secret.providerMetadata, input.configPath);
       sourceSecretLabel = secret.name;
     }
     return createWithinQuota(
@@ -664,6 +668,7 @@ export function createSecretProposalsService(db: Db) {
     resolvedByUserId: string,
   ) {
     if (!proposal.targetId || !proposal.configPath) throw conflict("Binding proposal is incomplete");
+    assertOrdinaryOnecliBinding(secret.providerMetadata, proposal.configPath);
     const agentSvc = agentService(txDb);
     const target = await agentSvc.getById(proposal.targetId);
     if (!target || target.companyId !== proposal.companyId) throw notFound("Target agent not found");

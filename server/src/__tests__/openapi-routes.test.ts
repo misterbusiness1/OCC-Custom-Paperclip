@@ -785,6 +785,21 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/instance/deployment-lease"].post.responses["200"].content["application/json"].schema.properties.ownerToken).toBeDefined();
   });
 
+  it("documents owner-only OneCLI assignment without returning credentials", () => {
+    const { spec } = loadSpecRoutes();
+    const operation = spec.paths["/api/secrets/{id}/onecli-assignment"].post;
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board", companyRole: "owner" });
+    expect(operation.requestBody).toBeUndefined();
+    for (const status of ["200", "401", "403", "404", "422"]) {
+      expect(operation.responses[status]).toBeDefined();
+    }
+    const schema = operation.responses["200"].content["application/json"].schema;
+    expect(schema.properties.configPath.enum).toEqual(["access.paperclip_onecli_identity"]);
+    expect(schema.properties.versionSelector.enum).toEqual(["latest"]);
+    expect(schema.properties).not.toHaveProperty("value");
+    expect(schema.properties).not.toHaveProperty("token");
+  });
+
   it("covers the mounted server routes exactly", () => {
     const {
       routes: actualRoutes,

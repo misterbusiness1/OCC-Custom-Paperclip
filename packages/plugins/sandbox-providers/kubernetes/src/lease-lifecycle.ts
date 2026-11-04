@@ -48,6 +48,7 @@ export interface ResumeCheckInput {
   /** Workload resource name (Sandbox CR name or Job name) == providerLeaseId. */
   name: string;
   backend: "sandbox-cr" | "job";
+  expectedUid?: string;
   /** Bounded wait for an existing Sandbox pod to report Ready. */
   readyTimeoutMs?: number;
   pollMs?: number;
@@ -68,15 +69,19 @@ export async function checkLeaseResumable(
     // Bounded wait for the Sandbox to report Ready. waitForSandboxReady fails
     // fast on Failed/Terminating; a timeout means the pod never came up. None
     // of those states are resumable — k8s pods cannot be restarted in place.
+    if (!input.expectedUid) return { resumable: false, reason: "Sandbox lease has no verified workload UID" };
     try {
       await waitForSandboxReady(clients, input.namespace, input.name, {
         timeoutMs: input.readyTimeoutMs ?? 30_000,
         pollMs: input.pollMs ?? 1_000,
+        expectedUid: input.expectedUid,
       });
     } catch (err) {
       if (isKubeNotFoundError(err)) {
         return { resumable: false, reason: "Sandbox CR no longer exists" };
       }
+      const code = (err as { code?: number; statusCode?: number }).code ?? (err as { statusCode?: number }).statusCode;
+      if (code !== undefined) throw err;
       return {
         resumable: false,
         reason: err instanceof Error ? err.message : String(err),
@@ -85,7 +90,7 @@ export async function checkLeaseResumable(
 
     let podName: string | null;
     try {
-      podName = await findPodForSandbox(clients, input.namespace, input.name);
+      podName = await findPodForSandbox(clients, input.namespace, input.name, input.expectedUid);
     } catch (err) {
       // CR deleted between the readiness check and the pod lookup.
       if (isKubeNotFoundError(err)) {
@@ -154,6 +159,7 @@ export interface DestroyLeaseInput {
   /** Workload resource name (Sandbox CR name or Job name) == providerLeaseId. */
   name: string;
   backend: "sandbox-cr" | "job";
+  expectedUid?: string;
   podName: string | null;
   secretName: string | null;
 }
@@ -170,7 +176,11 @@ export async function destroyLeaseResources(
   input: DestroyLeaseInput,
 ): Promise<void> {
   if (input.backend === "sandbox-cr") {
-    await ignoreNotFound(deleteSandboxCr(clients, input.namespace, input.name));
+    if (!input.expectedUid) throw new Error("Sandbox lease has no verified workload UID");
+    // UID-preconditioned foreground GC only deletes children owned by this CR.
+    // Never directly delete a cached pod/secret name that could now be foreign.
+    await ignoreNotFound(deleteSandboxCr(clients, input.namespace, input.name, input.expectedUid));
+    return;
   } else {
     await ignoreNotFound(deleteJob(clients, input.namespace, input.name));
   }

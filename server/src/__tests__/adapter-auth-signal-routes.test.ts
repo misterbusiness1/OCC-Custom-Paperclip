@@ -113,6 +113,7 @@ vi.mock("@paperclipai/adapter-codex-local/server", async (importOriginal) => {
 });
 
 let currentActor: Record<string, unknown>;
+let app: express.Express;
 
 function boardActor(userId: string, companyIds: string[] = [COMPANY_1, OTHER_COMPANY]): Record<string, unknown> {
   return {
@@ -144,7 +145,7 @@ const authSignalPath = (companyId: string, type: string, environmentId?: string)
   `/api/companies/${companyId}/adapters/${type}/auth-signal${environmentId ? `?environmentId=${environmentId}` : ""}`;
 
 describe("adapter auth-signal route", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
     currentActor = boardActor(OWNER_A);
@@ -176,6 +177,8 @@ describe("adapter auth-signal route", () => {
       effectiveHome: "/tmp/codex-home",
       sharedSourceHome: "/tmp/codex-shared-home",
     });
+    // Cold route imports belong to fixture setup, preserving the request test deadline.
+    app = await createApp();
   });
 
   afterEach(() => {
@@ -190,7 +193,6 @@ describe("adapter auth-signal route", () => {
       effectiveHome: "/tmp/codex-home",
       sharedSourceHome: "/tmp/codex-shared-home",
     });
-    const app = await createApp();
 
     const res = await request(app).get(authSignalPath(COMPANY_1, "codex_local"));
 
@@ -209,7 +211,6 @@ describe("adapter auth-signal route", () => {
       effectiveHome: "/tmp/codex-home",
       sharedSourceHome: "/tmp/codex-shared-home",
     });
-    const app = await createApp();
 
     const res = await request(app).get(authSignalPath(COMPANY_1, "codex_local"));
 
@@ -219,7 +220,6 @@ describe("adapter auth-signal route", () => {
 
   it("returns unknown for codex_local when the readiness predictor throws", async () => {
     mockEvaluateCodexCredentialReadiness.mockRejectedValueOnce(new Error("boom"));
-    const app = await createApp();
 
     const res = await request(app).get(authSignalPath(COMPANY_1, "codex_local"));
 
@@ -238,7 +238,6 @@ describe("adapter auth-signal route", () => {
       effectiveHome: "/tmp/codex-home",
       sharedSourceHome: "/tmp/codex-shared-home",
     });
-    const app = await createApp();
 
     const res = await request(app).get(authSignalPath(COMPANY_1, "codex_local", ENVIRONMENT_1));
 
@@ -264,7 +263,6 @@ describe("adapter auth-signal route", () => {
       secretKeys: new Set(["OPENAI_API_KEY"]),
       manifest: [],
     });
-    const app = await createApp();
 
     const res = await request(app).get(authSignalPath(COMPANY_1, "codex_local", ENVIRONMENT_1));
 
@@ -290,7 +288,6 @@ describe("adapter auth-signal route", () => {
       effectiveHome: "/tmp/codex-home",
       sharedSourceHome: "/tmp/codex-shared-home",
     });
-    const app = await createApp();
 
     const res = await request(app).get(authSignalPath(COMPANY_1, "codex_local", ENVIRONMENT_1));
 
@@ -318,7 +315,6 @@ describe("adapter auth-signal route", () => {
       secretKeys: new Set(["CLAUDE_CODE_OAUTH_TOKEN"]),
       manifest: [],
     });
-    const app = await createApp();
 
     const res = await request(app).get(authSignalPath(COMPANY_1, "claude_local", ENVIRONMENT_1));
 
@@ -332,7 +328,6 @@ describe("adapter auth-signal route", () => {
       secretId: "secret-1",
       latestVersion: 1,
     });
-    const app = await createApp();
 
     const res = await request(app).get(authSignalPath(COMPANY_1, "claude_local", ENVIRONMENT_1));
 
@@ -342,8 +337,6 @@ describe("adapter auth-signal route", () => {
   });
 
   it("returns absent for claude_local when neither source holds a value", async () => {
-    const app = await createApp();
-
     const res = await request(app).get(authSignalPath(COMPANY_1, "claude_local"));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -351,8 +344,6 @@ describe("adapter auth-signal route", () => {
   });
 
   it("returns unknown for an adapter type that has no cheap signal", async () => {
-    const app = await createApp();
-
     const res = await request(app).get(authSignalPath(COMPANY_1, "cursor_local"));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -363,7 +354,6 @@ describe("adapter auth-signal route", () => {
 
   it("rejects an environment that belongs to another company", async () => {
     mockEnvironmentService.listBoundCompanyIds.mockResolvedValueOnce([OTHER_COMPANY]);
-    const app = await createApp();
 
     const res = await request(app).get(authSignalPath(COMPANY_1, "claude_local", ENVIRONMENT_1));
 
@@ -378,7 +368,6 @@ describe("adapter auth-signal route", () => {
       reason: "deny_no_grant",
       explanation: "Not allowed by any grant",
     });
-    const app = await createApp();
 
     const res = await request(app).get(authSignalPath(COMPANY_1, "claude_local"));
 
@@ -395,7 +384,6 @@ describe("adapter auth-signal route", () => {
       effectiveHome: "/tmp/codex-home",
       sharedSourceHome: "/tmp/codex-shared-home",
     });
-    const app = await createApp();
 
     const res = await request(app).get(authSignalPath(COMPANY_1, "codex_local"));
 
@@ -404,8 +392,6 @@ describe("adapter auth-signal route", () => {
   });
 
   it("takes no sandbox lease and starts no model process", async () => {
-    const app = await createApp();
-
     const res = await request(app).get(authSignalPath(COMPANY_1, "codex_local", ENVIRONMENT_1));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);

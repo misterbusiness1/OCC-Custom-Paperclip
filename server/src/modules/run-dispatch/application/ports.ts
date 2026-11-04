@@ -1,4 +1,4 @@
-import type { GateDecision } from "../domain/policy.js";
+import type { GateDecision, StalenessDecision } from "../domain/policy.js";
 import type {
   CancelStaleQueuedRunOutcome,
   PromoteScheduledRetryOutcome,
@@ -26,6 +26,22 @@ export type EvaluateScheduledRetryGateInput = {
 export interface ScheduledRetryReader {
   evaluateScheduledRetryGate(input: EvaluateScheduledRetryGateInput): Promise<GateDecision>;
   listDueRetries(input: ListDueRetriesInput): Promise<DueRetryRun[]>;
+}
+
+export type EvaluateQueuedRunStalenessInput = {
+  runId: string;
+  companyId: string;
+  now: Date;
+};
+
+export type EvaluateQueuedRunStalenessOutcome =
+  | { kind: "missing" }
+  | { kind: "not_queued" }
+  | { kind: "evaluated"; decision: StalenessDecision };
+
+/** Reads use the connection supplied when composing the module. */
+export interface QueuedRunStalenessReader {
+  evaluateQueuedRunStaleness(input: EvaluateQueuedRunStalenessInput): Promise<EvaluateQueuedRunStalenessOutcome>;
 }
 
 export type PromoteOrCancelDueRetryInput = {

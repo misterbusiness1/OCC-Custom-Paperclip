@@ -7795,6 +7795,66 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     });
   });
 
+  it("locks the issue before the actor run when adopting unowned checkout", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed" });
+    await db.update(issues).set({ checkoutRunId: null, executionRunId: seeded.actorRunId })
+      .where(eq(issues.id, seeded.issueId));
+    const adoptionReady = deferred<number>();
+    const beginAdoption = deferred<void>();
+    const transact = db.transaction.bind(db);
+    let transactions = 0;
+    const spy = vi.spyOn(db, "transaction").mockImplementation(async (callback, config) => {
+      // assertCheckoutOwner first checks the two stale locks. Pause only its
+      // third transaction, the actual unowned adoption, after those checks.
+      if (++transactions === 3) {
+        return transact(async (tx) => {
+          const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`);
+          adoptionReady.resolve(Number(backend.pid));
+          await beginAdoption.promise;
+          return callback(tx);
+        }, config);
+      }
+      return transact(callback, config);
+    });
+    const other = createDb(tempDb!.connectionString);
+    const ownershipPromise = svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId);
+    try {
+      const adoptionPid = await adoptionReady.promise;
+      await transact(async (tx) => {
+        await tx.select().from(issues).where(eq(issues.id, seeded.issueId)).for("update");
+        const [blocker] = await tx.execute(sql`select pg_backend_pid() as pid`);
+        const blockerPid = Number(blocker.pid);
+        beginAdoption.resolve();
+        const deadline = Date.now() + 3_000;
+        let waiting = false;
+        do {
+          const rows = await other.execute(sql`select exists(select 1 from pg_stat_activity
+            where pid=${adoptionPid} and datname=current_database()
+              and wait_event_type='Lock'
+              and ${blockerPid} = any(pg_blocking_pids(pid))) as waiting`);
+          waiting = rows[0]?.waiting === true;
+          if (!waiting) await new Promise((resolve) => setTimeout(resolve, 10));
+        } while (!waiting && Date.now() < deadline);
+        expect(waiting).toBe(true);
+        // Adoption must wait for our issue without already owning this run.
+        // The old run->issue implementation makes this NOWAIT fail with 55P03.
+        await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.actorRunId))
+          .for("update", { noWait: true });
+      });
+      const ownership = await ownershipPromise;
+      expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
+      expect(ownership.executionRunId).toBe(seeded.actorRunId);
+    } finally {
+      beginAdoption.resolve();
+      spy.mockRestore();
+      try {
+        await ownershipPromise;
+      } finally {
+        await other.$client.end({ timeout: 1 });
+      }
+    }
+  });
+
   it("adopts unowned checkout after a concurrent stale-checkout clear wins the lock race", async () => {
     const seeded = await seedOwnershipIssue({ checkoutStatus: "failed" });
     await db
