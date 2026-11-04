@@ -6,6 +6,25 @@ import {
 } from "../log-redaction.js";
 
 describe("log redaction", () => {
+  it.each(["h", "é", "🧑"])("fully masks a one-character username %s", (userName) => {
+    expect(maskUserNameForLogs(userName)).toBe("*");
+    expect(maskUserNameForLogs(userName, "[user]")).toBe("[user]");
+  });
+
+  it.each(["h", "é", "🧑"])("removes the complete home path for username %s", (userName) => {
+    const homeDir = `/home/${userName}`;
+    const result = redactCurrentUserText(`read failed at ${homeDir}/workspace/report.log`, {
+      userNames: [userName],
+      homeDirs: [homeDir],
+    });
+    expect(result).toBe("read failed at /home/*/workspace/report.log");
+    expect(result).not.toContain(homeDir);
+  });
+
+  it("retains a complete first Unicode code point when partially masking a longer name", () => {
+    expect(maskUserNameForLogs("🧑Agent")).toBe("🧑*****");
+  });
+
   it("redacts the active username inside home-directory paths", () => {
     const userName = "paperclipuser";
     const maskedUserName = maskUserNameForLogs(userName);
