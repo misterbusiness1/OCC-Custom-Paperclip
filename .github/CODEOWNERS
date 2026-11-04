@@ -1,18 +1,18 @@
-# Replace @cryppadotta if a different maintainer or team should own release infrastructure.
+# Fork owner. Add teammates here when they share review duty.
 
-.github/** @cryppadotta @devinfoley @nickyleach
-scripts/release*.sh @cryppadotta @devinfoley @nickyleach
-scripts/release-*.mjs @cryppadotta @devinfoley @nickyleach
-scripts/create-github-release.sh @cryppadotta @devinfoley @nickyleach
-scripts/rollback-latest.sh @cryppadotta @devinfoley @nickyleach
-doc/RELEASING.md @cryppadotta @devinfoley @nickyleach
-doc/PUBLISHING.md @cryppadotta @devinfoley @nickyleach
-doc/RELEASE-AUTOMATION-SETUP.md @cryppadotta @devinfoley @nickyleach
-skills/** @cryppadotta @devinfoley @nickyleach
+.github/** @misterbusiness1
+scripts/release*.sh @misterbusiness1
+scripts/release-*.mjs @misterbusiness1
+scripts/create-github-release.sh @misterbusiness1
+scripts/rollback-latest.sh @misterbusiness1
+doc/RELEASING.md @misterbusiness1
+doc/PUBLISHING.md @misterbusiness1
+doc/RELEASE-AUTOMATION-SETUP.md @misterbusiness1
+skills/** @misterbusiness1
 
 # Package files — dependency changes require review
 # package.json matches recursively at all depths (covers root + all workspaces)
-package.json @cryppadotta @devinfoley @nickyleach
-pnpm-lock.yaml @cryppadotta @devinfoley @nickyleach
-pnpm-workspace.yaml @cryppadotta @devinfoley @nickyleach
-.npmrc @cryppadotta @devinfoley @nickyleach
+package.json @misterbusiness1
+pnpm-lock.yaml @misterbusiness1
+pnpm-workspace.yaml @misterbusiness1
+.npmrc @misterbusiness1
