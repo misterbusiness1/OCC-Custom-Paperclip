@@ -69,24 +69,27 @@ set the desired type key (`hermes_local` or `hermes_gateway`).
 
 ### External (plugin) adapters
 
-These adapters ship as standalone npm packages and are installed via the plugin system:
+These adapters are not built in. They are loaded through the plugin system after an operator installs them (from npm or a local path):
 
 | Adapter | Package | Type Key | Description |
 |---------|---------|----------|-------------|
 | Droid | `@henkey/droid-paperclip-adapter` | `droid_local` | Runs Factory Droid locally |
+| [MiniMax](/adapters/minimax) | `@paperclipai/minimax-paperclip-adapter` (in-repo at `packages/adapters/minimax`, install from local path) | `minimax_local` | Calls the MiniMax chat completions API directly, with an optional bash tool |
 
 ## External Adapters
 
 You can build and distribute adapters as standalone packages — no changes to Paperclip's source code required. External adapters are loaded at startup via the plugin system.
 
 ```sh
-# Install from npm via API
-curl -X POST http://localhost:3102/api/adapters \
+# Install from npm via API (instance-admin)
+curl -X POST http://localhost:3100/api/adapters/install \
+  -H "Content-Type: application/json" \
   -d '{"packageName": "my-paperclip-adapter"}'
 
-# Or link from a local directory
-curl -X POST http://localhost:3102/api/adapters \
-  -d '{"localPath": "/home/user/my-adapter"}'
+# Or load from a local directory
+curl -X POST http://localhost:3100/api/adapters/install \
+  -H "Content-Type: application/json" \
+  -d '{"packageName": "/home/user/my-adapter", "isLocalPath": true}'
 ```
 
 See [External Adapters](/adapters/external-adapters) for the full guide.

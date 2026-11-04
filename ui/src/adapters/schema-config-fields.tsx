@@ -516,6 +516,43 @@ export function SchemaConfigFields({
 // Build adapter config from schema values + standard CreateConfigValues fields
 // ---------------------------------------------------------------------------
 
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// The server refuses to persist this placeholder (server/src/services/secrets.ts).
+const REDACTED_ENV_SENTINEL = "***REDACTED***";
+
+/**
+ * Convert the create form's env editor bindings into adapterConfig.env, the
+ * same way the built-in adapters' build-config.ts files do: keep plain values
+ * and company secret references, drop invalid keys and redacted placeholders.
+ */
+export function buildSchemaEnvBindings(bindings: unknown): Record<string, unknown> {
+  if (typeof bindings !== "object" || bindings === null || Array.isArray(bindings)) return {};
+  const env: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(bindings)) {
+    if (!ENV_KEY_RE.test(key)) continue;
+    if (typeof raw === "string") {
+      if (raw !== REDACTED_ENV_SENTINEL) env[key] = { type: "plain", value: raw };
+      continue;
+    }
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+    const rec = raw as Record<string, unknown>;
+    if (rec.type === "plain" && typeof rec.value === "string") {
+      if (rec.value !== REDACTED_ENV_SENTINEL) env[key] = { type: "plain", value: rec.value };
+      continue;
+    }
+    if (rec.type === "secret_ref" && typeof rec.secretId === "string") {
+      env[key] = {
+        type: "secret_ref",
+        secretId: rec.secretId,
+        ...(typeof rec.version === "number" || rec.version === "latest"
+          ? { version: rec.version }
+          : {}),
+      };
+    }
+  }
+  return env;
+}
+
 export function buildSchemaAdapterConfig(
   values: CreateConfigValues,
 ): Record<string, unknown> {
@@ -532,6 +569,12 @@ export function buildSchemaAdapterConfig(
       .split(/\s+/)
       .filter(Boolean);
   }
+
+  // Without this, env bindings entered on the create form (for example a
+  // company secret bound to an adapter API key) were silently dropped for
+  // every schema-driven external adapter; only the edit form persisted env.
+  const env = buildSchemaEnvBindings(values.envBindings);
+  if (Object.keys(env).length > 0) ac.env = env;
 
   if (values.adapterSchemaValues) {
     Object.assign(ac, values.adapterSchemaValues);

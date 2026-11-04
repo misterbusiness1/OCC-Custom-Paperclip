@@ -9,6 +9,7 @@ import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-ru
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
+import { assertDevRunnerDatabaseIsolation, withDevRunnerMigrationTarget } from "./dev-runner-database-guard.ts";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
@@ -375,7 +376,17 @@ async function runPnpm(args: string[], options: {
   });
 }
 
-async function getMigrationStatusPayload() {
+type MigrationStatusPayload = { status?: string; pendingMigrations?: string[] };
+
+async function getMigrationStatusPayload(): Promise<MigrationStatusPayload> {
+  // migration-status connects to the database. Besides the startup preflight, it runs after
+  // each restart and on the periodic backend scan, by which time .paperclip/.env or the
+  // config file may point somewhere else, so the isolation guard runs before every call.
+  const refusal = devDatabaseIsolationRefusal();
+  if (refusal) {
+    process.stderr.write(`[paperclip] Skipping migration-status: ${refusal}\n`);
+    return { status: "databaseGuardRefused" };
+  }
   const status = await runPnpm(
     ["--filter", "@paperclipai/db", "exec", "tsx", "src/migration-status.ts", "--json"],
     { env },
@@ -390,7 +401,7 @@ async function getMigrationStatusPayload() {
   }
 
   try {
-    return JSON.parse(status.stdout.trim()) as { status?: string; pendingMigrations?: string[] };
+    return JSON.parse(status.stdout.trim()) as MigrationStatusPayload;
   } catch (error) {
     process.stderr.write(
       status.stderr ||
@@ -403,6 +414,8 @@ async function getMigrationStatusPayload() {
 
 async function refreshPendingMigrations() {
   const payload = await getMigrationStatusPayload();
+  // Nothing was checked, so keep the last known pending list rather than clearing it.
+  if (payload.status === "databaseGuardRefused") return payload;
   pendingMigrations =
     payload.status === "needsMigrations" && Array.isArray(payload.pendingMigrations)
       ? payload.pendingMigrations.filter((entry) => typeof entry === "string" && entry.trim().length > 0)
@@ -411,7 +424,28 @@ async function refreshPendingMigrations() {
   return payload;
 }
 
+function devDatabaseIsolationRefusal(): string | null {
+  try {
+    assertDevRunnerDatabaseIsolation(env);
+    return null;
+  } catch (error) {
+    return toError(error, "Local dev database guard failed").message;
+  }
+}
+
+function enforceDevDatabaseIsolation() {
+  // The migration preflight below connects to the database (and may migrate it) before the
+  // server child starts, so the local-dev isolation guard has to run here, not only in the
+  // server. It also marks env as a local dev entrypoint for the server child.
+  const refusal = devDatabaseIsolationRefusal();
+  if (refusal) {
+    process.stderr.write(`[paperclip] ${refusal}\n`);
+    process.exit(1);
+  }
+}
+
 async function maybePreflightMigrations(options: { interactive?: boolean; autoApply?: boolean; exitOnDecline?: boolean } = {}) {
+  enforceDevDatabaseIsolation();
   const interactive = options.interactive ?? mode === "watch";
   const autoApply = options.autoApply ?? env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true";
   const exitOnDecline = options.exitOnDecline ?? mode === "watch";
@@ -453,11 +487,11 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
     return;
   }
 
-  const exit = await runPnpm(["db:migrate"], {
+  const exit = await withDevRunnerMigrationTarget(env, (migrationEnv) => runPnpm(["db:migrate"], {
     stdio: "inherit",
-    env,
+    env: migrationEnv,
     cwd: repoRoot,
-  });
+  }));
   if (exit.signal) {
     exitForSignal(exit.signal);
     return;

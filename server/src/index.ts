@@ -60,6 +60,7 @@ import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runt
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
+import { assertLocalDevDatabaseIsolation } from "./local-dev-database-guard.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
@@ -319,6 +320,14 @@ export async function startServer(): Promise<StartedServer> {
   let startupDbInfo:
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
+  // Refuse a local dev server boot (server "dev"/"dev:watch" scripts, i.e. `pnpm dev:server`
+  // and the server child of scripts/dev-runner.ts) that inherited a non-loopback database
+  // URL, before this process connects or migrates. The root `pnpm dev`/`dev:watch`/`dev:once`
+  // runner applies the same guard itself before its own migration preflight.
+  assertLocalDevDatabaseIsolation(process.env, config.databaseUrl, config.databaseMigrationUrl);
+  // The marker describes how this process was launched. Drop it so agent, workspace and
+  // runtime commands spawned by a dev server do not inherit it and get treated as dev boots.
+  delete process.env.PAPERCLIP_LOCAL_DEV_ENTRYPOINT;
   assertCloudDatabaseContract();
   if (config.databaseUrl) {
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
