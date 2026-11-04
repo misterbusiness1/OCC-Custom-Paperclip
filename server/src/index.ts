@@ -60,6 +60,7 @@ import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runt
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
+import { assertLocalDevDatabaseIsolation } from "./local-dev-database-guard.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
@@ -319,6 +320,9 @@ export async function startServer(): Promise<StartedServer> {
   let startupDbInfo:
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
+  // Refuse a local dev boot (`pnpm dev`, `dev:watch`, `dev:once`, `dev:server`) that
+  // inherited a non-loopback database URL, before any migration or connection attempt.
+  assertLocalDevDatabaseIsolation(process.env, config.databaseUrl, config.databaseMigrationUrl);
   assertCloudDatabaseContract();
   if (config.databaseUrl) {
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;

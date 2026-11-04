@@ -271,6 +271,18 @@ PAPERCLIP_HOME=/custom/path PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
 
 No Docker or external database is required for this mode.
 
+### Local dev database isolation guard
+
+The local dev entrypoints (`pnpm dev`, `pnpm dev:watch`, `pnpm dev:once`, `pnpm dev:server`) set `PAPERCLIP_LOCAL_DEV_ENTRYPOINT=true`. When that marker is present, the server refuses to start if `DATABASE_URL` (from the environment or the config file) or `DATABASE_MIGRATION_URL` points at a non-loopback Postgres host. This stops a dev boot that inherited a production or shared connection string, for example from a copied `.env` or an exported shell variable, from running migrations, heartbeats or scheduling against that database. The check runs before any migration or connection attempt, and the error names only the host and port, never the credentials.
+
+Loopback hosts (`localhost`, `127.0.0.0/8`, `::1`) and an unset `DATABASE_URL` (embedded PostgreSQL) are always allowed. If you deliberately point a dev server at a non-loopback database, such as a docker-compose `db` service or a shared dev instance, opt in explicitly:
+
+```sh
+PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE=true DATABASE_URL=postgres://paperclip:paperclip@db:5432/paperclip pnpm dev
+```
+
+Only the exact value `true` is accepted. Production starts (`node server/dist/index.js`, the Docker image) never set the marker, so the guard does not apply there.
+
 ## Storage in Dev (Auto-Handled)
 
 For local development, the default storage provider is `local_disk`, which persists uploaded images/attachments at:
@@ -643,6 +655,8 @@ pnpm dev
 ## Optional: Use External Postgres
 
 If you set `DATABASE_URL`, the server will use that instead of embedded PostgreSQL.
+
+Under the local dev scripts, a non-loopback `DATABASE_URL` is refused unless `PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE=true` is set; see [Local dev database isolation guard](#local-dev-database-isolation-guard).
 
 ## Automatic DB Backups
 
