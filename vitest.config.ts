@@ -16,6 +16,7 @@ export default defineConfig({
       "packages/adapters/opencode-local",
       "packages/adapters/pi-local",
       "packages/adapters/hermes",
+      "packages/adapters/minimax",
       "packages/adapters/openclaw-gateway",
       "packages/mcp-server",
       "packages/google-sheets-mcp-server",

@@ -89,6 +89,17 @@ Key fields:
 | `paperclip.adapterUiParser` | Contract version for the UI parser (`"1.0.0"`) |
 | `files` | Limits what gets published — only `dist/` |
 
+> **The UI parser file must be CommonJS-compatible.** The browser sandbox
+> (`ui/src/adapters/sandboxed-parser-worker.ts`) evaluates the file's text with
+> `new Function("exports", "module", "self", "globalThis", source)`, so
+> `export` / `import` statements are a syntax error there and the parser fails
+> to load. Assign to `module.exports` (or `exports.parseStdoutLine = ...`) with
+> no imports. If you write the parser in TypeScript, compile it to CommonJS
+> (for example a separate `tsc --module commonjs` step emitting `ui-parser.cjs`)
+> or ship a hand-written `.cjs` file, as `packages/adapters/hermes` and
+> `packages/adapters/minimax` do. Do not point `exports["./ui-parser"]` at the
+> ESM output of a `"type": "module"` package build.
+
 ### tsconfig.json
 
 ```json
@@ -279,23 +290,33 @@ Check levels:
 # Via the Paperclip UI
 # Settings → Adapters → Install from npm → "my-paperclip-adapter"
 
-# Or via API
-curl -X POST http://localhost:3102/api/adapters \
+# Or via API (instance-admin; optional "version")
+curl -X POST http://localhost:3100/api/adapters/install \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"packageName": "my-paperclip-adapter"}'
+
+# Or via CLI
+paperclipai adapter install --payload-json '{"packageName":"my-paperclip-adapter"}'
 ```
 
 ### From local directory
 
 ```sh
-curl -X POST http://localhost:3102/api/adapters \
+# Via the Paperclip UI
+# Instance Settings → Adapters → Install Adapter → Local path → "/home/user/my-adapter"
+
+# Or via API: packageName carries the absolute path when isLocalPath is true
+curl -X POST http://localhost:3100/api/adapters/install \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"localPath": "/home/user/my-adapter"}'
+  -d '{"packageName": "/home/user/my-adapter", "isLocalPath": true}'
+
+# Or via CLI
+paperclipai adapter install --payload-json '{"packageName":"/home/user/my-adapter","isLocalPath":true}'
 ```
 
-Local adapters are symlinked into Paperclip's adapter directory. Changes to the source are picked up on server restart.
+Local adapters are loaded in place from that directory (the path is stored as `localPath` in `adapter-plugins.json`); nothing is copied. Changes to the source are picked up on server restart or via `POST /api/adapters/:type/reload`. The in-repo [MiniMax adapter](/adapters/minimax) is installed this way.
 
 ### Via adapter-plugins.json
 
@@ -399,7 +420,7 @@ Other Paperclip users can then install your adapter by package name from the UI 
 - Inject secrets via environment variables, not in prompts
 - Configure network access controls if the runtime supports them
 - Always enforce timeout and grace period — don't let agents run forever
-- The UI parser module runs in a browser sandbox — it must have zero runtime imports and no side effects
+- The UI parser module runs in a browser sandbox — it must have zero runtime imports and no side effects, and it must be CommonJS-compatible (`module.exports`, no `export` statements)
 
 ## Next Steps
 

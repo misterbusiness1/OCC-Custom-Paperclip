@@ -32,6 +32,7 @@ const nonServerProjects = [
   "@paperclipai/adapter-opencode-local",
   "@paperclipai/adapter-pi-local",
   "@paperclipai/hermes-paperclip-adapter",
+  "@paperclipai/minimax-paperclip-adapter",
   "@paperclipai/adapter-openclaw-gateway",
   "@paperclipai/mcp-server",
   "@paperclipai/google-sheets-mcp-server",
