@@ -76,6 +76,8 @@ pnpm dev
 
 For production, use a hosted PostgreSQL provider. [Supabase](https://supabase.com/) is a good option with a free tier.
 
+> **Local dev entrypoints refuse non-loopback databases.** `pnpm dev`, `pnpm dev:watch`, `pnpm dev:once` and `pnpm dev:server` refuse to start when `DATABASE_URL` or `DATABASE_MIGRATION_URL` points at a non-loopback host, such as a hosted Supabase URL or a docker-compose `db` service. To run a dev server against such a database on purpose, set `PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE=true`. See [Local dev database isolation guard](DEVELOPING.md#local-dev-database-isolation-guard). Production starts (`node server/dist/index.js`, the Docker image) and `pnpm db:migrate` are not affected.
+
 ### Setup
 
 1. Create a project at [database.new](https://database.new)
@@ -142,6 +144,8 @@ The database mode is controlled by `DATABASE_URL`:
 | `postgres://...supabase.com...` | Hosted Supabase |
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
+
+The local dev entrypoints accept only the first two rows (unset, or a loopback host such as `localhost` or `127.0.0.1`) unless `PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE=true` is set; see [Local dev database isolation guard](DEVELOPING.md#local-dev-database-isolation-guard).
 
 ## Migration authoring checklist
 
