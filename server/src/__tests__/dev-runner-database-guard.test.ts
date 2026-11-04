@@ -71,6 +71,12 @@ describe("assertDevRunnerDatabaseIsolation", () => {
     expect(() => assertDevRunnerDatabaseIsolation({}, fromPaperclipEnv(LOOPBACK_URL))).not.toThrow();
   });
 
+  it("refuses a driver-qualified URL resolved from .paperclip/.env or the config file", () => {
+    expect(() =>
+      assertDevRunnerDatabaseIsolation({}, fromPaperclipEnv("postgresql+psycopg2://u:p@prod-host/db")),
+    ).toThrow(/non-loopback DATABASE_URL \(host=prod-host\)/);
+  });
+
   it("honors PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE=true", () => {
     expect(() =>
       assertDevRunnerDatabaseIsolation(
@@ -104,6 +110,22 @@ describe("local dev entrypoint wiring", () => {
     expect(guardCall).toBeGreaterThan(preflightStart);
     expect(firstDbTouch).toBeGreaterThan(guardCall);
     expect(source).toMatch(/assertDevRunnerDatabaseIsolation\(env\)/);
+  });
+
+  it("runs the guard before every migration-status call, including background rescans", () => {
+    // refreshPendingMigrations() is also called after a restart (markChildAsCurrent) and by
+    // the periodic backend scan; each call runs migration-status, which connects.
+    const source = fs.readFileSync(path.join(REPO_ROOT, "scripts/dev-runner.ts"), "utf8");
+    const start = source.indexOf("async function getMigrationStatusPayload(");
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf("\n}\n", start);
+    const body = source.slice(start, end);
+    const guard = body.indexOf("devDatabaseIsolationRefusal()");
+    const connect = body.indexOf("src/migration-status.ts");
+    expect(guard).toBeGreaterThan(-1);
+    expect(connect).toBeGreaterThan(guard);
+    expect(source.match(/await getMigrationStatusPayload\(\)/g)).toHaveLength(1);
+    expect(source).toMatch(/async function refreshPendingMigrations\(\) \{\n  const payload = await getMigrationStatusPayload\(\);/);
   });
 
   it("marks the server dev scripts (pnpm dev:server and the dev-runner child) as local dev entrypoints", () => {

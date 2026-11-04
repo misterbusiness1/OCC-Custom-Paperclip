@@ -31,9 +31,36 @@ describe("isNonLoopbackPostgresUrl", () => {
     expect(isNonLoopbackPostgresUrl("postgres://user:pass@127.example.com:5432/db")).toBe(true);
   });
 
-  it("ignores non-postgres URLs and strings that are not postgres URLs at all", () => {
-    expect(isNonLoopbackPostgresUrl("https://example.com")).toBe(false);
-    expect(isNonLoopbackPostgresUrl("not a url")).toBe(false);
+  it("checks the host whatever the URL scheme, because postgres.js ignores the scheme", () => {
+    // postgres.js parseUrl slices at "://" and never looks at the scheme, so all of these
+    // connect to the remote host. The guard used to allow any non-postgres:// scheme.
+    expect(isNonLoopbackPostgresUrl("pg://u:p@example.invalid:5432/db")).toBe(true);
+    expect(isNonLoopbackPostgresUrl("postgresql+psycopg2://user:pw@prod-host/db")).toBe(true);
+    expect(isNonLoopbackPostgresUrl("postgres+x://u:p@example.invalid/db")).toBe(true);
+    expect(isNonLoopbackPostgresUrl("tcp://u:p@example.invalid/db")).toBe(true);
+    expect(isNonLoopbackPostgresUrl("https://example.com")).toBe(true);
+    expect(isNonLoopbackPostgresUrl("pg://u:p@127.0.0.1:5432/db")).toBe(false);
+    expect(isNonLoopbackPostgresUrl("postgresql+psycopg2://u:p@localhost/db")).toBe(false);
+  });
+
+  it("fails closed on a non-empty value that is not a URL at all", () => {
+    expect(isNonLoopbackPostgresUrl("not a url")).toBe(true);
+    expect(isNonLoopbackPostgresUrl("host=prod.example.com dbname=x")).toBe(true);
+    expect(isNonLoopbackPostgresUrl("   ")).toBe(false);
+  });
+
+  it("uses the host postgres.js connects to when the userinfo contains a raw '@'", () => {
+    // The manual first-"@" split yields "localhost", but postgres.js connects to the
+    // WHATWG hostname (example.invalid). Both must be checked.
+    expect(isNonLoopbackPostgresUrl("postgres://u@localhost:p@example.invalid/db")).toBe(true);
+    expect(resolvePostgresUrlHosts("postgres://u@localhost:p@example.invalid/db")).toContain("example.invalid");
+  });
+
+  it("treats other spellings of the loopback address as loopback", () => {
+    expect(isNonLoopbackPostgresUrl("postgres://u:p@[0:0:0:0:0:0:0:1]:5432/db")).toBe(false);
+    expect(isNonLoopbackPostgresUrl("postgres://u:p@[::ffff:127.0.0.1]:5432/db")).toBe(false);
+    expect(isNonLoopbackPostgresUrl("postgres://u:p@[::ffff:10.0.0.5]:5432/db")).toBe(true);
+    expect(isNonLoopbackPostgresUrl("postgres://u:p@[::2]:5432/db")).toBe(true);
   });
 
   it("fails closed on a postgres URL that cannot be parsed", () => {
@@ -76,8 +103,15 @@ describe("describeDatabaseHostForLogging", () => {
     expect(describeDatabaseHostForLogging("postgres://user:secret@db:5432/db")).toBe("db:5432");
   });
 
-  it("falls back for invalid input", () => {
+  it("does not echo a value that is not a URL (it may be a secret)", () => {
     expect(describeDatabaseHostForLogging("not a url")).toBe("<invalid DATABASE_URL>");
+  });
+
+  it("describes non-postgres schemes without credentials", () => {
+    expect(describeDatabaseHostForLogging("postgresql+psycopg2://user:s3cret@prod-host:5432/db")).toBe(
+      "prod-host:5432",
+    );
+    expect(describeDatabaseHostForLogging("pg://u:p@w@example.invalid/db")).toBe("example.invalid");
   });
 
   it("describes multi-host URLs without credentials", () => {
@@ -135,6 +169,15 @@ describe("assertLocalDevDatabaseIsolation", () => {
   it("refuses an unparseable postgres DATABASE_URL instead of letting it through", () => {
     expect(() => assertLocalDevDatabaseIsolation(DEV_ENV, "postgres://u:p@%E0%A4%A,localhost/db")).toThrow(
       /Refusing to start/,
+    );
+  });
+
+  it("refuses a DATABASE_URL with a driver-qualified or alternate scheme", () => {
+    expect(() =>
+      assertLocalDevDatabaseIsolation(DEV_ENV, "postgresql+psycopg2://user:pw@prod-host/db"),
+    ).toThrow(/non-loopback DATABASE_URL \(host=prod-host\)/);
+    expect(() => assertLocalDevDatabaseIsolation(DEV_ENV, LOOPBACK_URL, "pg://u:p@example.invalid/db")).toThrow(
+      /non-loopback DATABASE_MIGRATION_URL/,
     );
   });
 
