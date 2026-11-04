@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  currentUserRedactionProfileSha256,
   maskUserNameForLogs,
   redactCurrentUserText,
   redactCurrentUserValue,
@@ -89,5 +91,33 @@ describe("log redaction", () => {
   it("skips redaction when disabled", () => {
     const input = "cwd=/Users/paperclipuser/paperclip";
     expect(redactCurrentUserText(input, { enabled: false })).toBe(input);
+  });
+});
+
+
+describe("captured redaction profile compatibility", () => {
+  function legacyProfile(userNames: string[], homeDirs: string[]) {
+    return createHash("sha256").update(JSON.stringify({ version: 1,
+      userNames: [...userNames].sort(), homeDirs: [...homeDirs].sort(), replacement: "*",
+    })).digest("hex");
+  }
+
+  it.each(["paperclipuser", "éclair", "a🧑"])("retains the captured v1 identity for unchanged masking of %s", (name) => {
+    const opts = { userNames: [name], homeDirs: [`/home/${name}`] };
+    expect(currentUserRedactionProfileSha256(true, opts)).toBe(legacyProfile(opts.userNames, opts.homeDirs));
+  });
+
+  it.each(["h", "é", "🧑", "🧑Agent"])("invalidates the captured v1 rule when masking changes for %s", (name) => {
+    const opts = { userNames: [name], homeDirs: [] };
+    expect(currentUserRedactionProfileSha256(true, opts)).not.toBe(legacyProfile(opts.userNames, opts.homeDirs));
+  });
+
+  it.each(["/home/h", "C:\\Users\\🧑Agent\\"])("detects changed home-path masking independently of usernames: %s", (homeDir) => {
+    const opts = { userNames: ["ordinary"], homeDirs: [homeDir] };
+    expect(currentUserRedactionProfileSha256(true, opts)).not.toBe(legacyProfile(opts.userNames, opts.homeDirs));
+  });
+
+  it("retains the disabled profile identity", () => {
+    expect(currentUserRedactionProfileSha256(false, { userNames: ["h"], homeDirs: ["/home/h"] })).toBe("disabled");
   });
 });

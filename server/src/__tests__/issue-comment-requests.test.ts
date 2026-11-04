@@ -69,6 +69,21 @@ suite("durable Board comment request admission and delivery", () => {
     await expect(assertCommentRequestRollbackSafe(first, 0)).resolves.toBeUndefined();
   });
 
+  it("rejects an unavailable captured normalization profile before persistence", async () => {
+    const input: CommentRequestInput = { ...await seed(), normalization: {
+      version: 1, censorUsername: true, profileSha256: "0".repeat(64),
+    } };
+    let writes = 0;
+    await expect(service(first).admit(input, persist(input, async () => { writes++; }))).rejects.toMatchObject({
+      status: 409, details: { code: "comment_request_normalization_unavailable" },
+    });
+    expect(writes).toBe(0);
+    expect(await first.select().from(issueComments).where(eq(issueComments.issueId, input.issueId))).toHaveLength(0);
+    expect(await first.select().from(issueCommentRequests).where(eq(issueCommentRequests.issueId, input.issueId))).toHaveLength(0);
+    expect(await first.select().from(issueCommentRequestEffects).where(eq(issueCommentRequestEffects.companyId, input.companyId))).toHaveLength(0);
+    expect((await first.select().from(issues).where(eq(issues.id, input.issueId)))[0].status).toBe("done");
+  });
+
   it("recovers late authoritative receipts with bounded inspection and no repeated external action", async () => {
     const input = await seed(); let clock = Date.now(); let executions = 0; let inspections = 0; let proven = false;
     const delivery = issueCommentRequestService(first, { now: () => new Date(clock),
