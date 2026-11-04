@@ -579,6 +579,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         };
       }
 
+      // A billable HTTP 200 can still have a malformed completion. Account
+      // for its reported usage before any protocol-error return, exactly once.
+      const usage = extractUsage(payload);
+      totalInputTokens = addBoundedTokens(totalInputTokens, usage.inputTokens);
+      totalOutputTokens = addBoundedTokens(totalOutputTokens, usage.outputTokens);
+      totalCachedTokens = addBoundedTokens(totalCachedTokens, usage.cachedInputTokens);
+
       // MiniMax-specific: errors delivered as HTTP 200 + base_resp.
       if (baseRespError) {
         const statusMsg = redactSecrets(baseRespError.statusMsg).slice(0, 2000);
@@ -758,9 +765,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       lastPayload = outcome.payload;
 
       const usage = extractUsage(lastPayload);
-      totalInputTokens = addBoundedTokens(totalInputTokens, usage.inputTokens);
-      totalOutputTokens = addBoundedTokens(totalOutputTokens, usage.outputTokens);
-      totalCachedTokens = addBoundedTokens(totalCachedTokens, usage.cachedInputTokens);
       if (!usage.reported) usageMissing = true;
 
       const turn = extractAssistantTurn(lastPayload);

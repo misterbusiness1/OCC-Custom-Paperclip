@@ -45,6 +45,20 @@ describe("minimax_local config schema", () => {
 });
 
 describe("createServerAdapter", () => {
+  it("declares the complete optional contract without pretending to support absent capabilities", async () => {
+    const adapter = createServerAdapter();
+    const unsupported = ["acp", "listSkills", "syncSkills", "sessionCodec", "sessionManagement",
+      "modelProfiles", "listModelProfiles", "onHireApproved", "getQuotaWindows", "getRuntimeCommandSpec"] as const;
+    for (const key of unsupported) {
+      expect(Object.hasOwn(adapter, key)).toBe(true);
+      expect(adapter[key]).toBeUndefined();
+    }
+    expect(adapter.requiresMaterializedRuntimeSkills).toBe(false);
+    expect(await adapter.detectModel!()).toBeNull();
+    expect(await adapter.listModels!()).toEqual(models);
+    expect(await adapter.refreshModels!()).toEqual(models);
+  });
+
   it("returns a stateless minimax_local module that opts into the local agent JWT", () => {
     const adapter = createServerAdapter();
     expect(adapter.type).toBe("minimax_local");
