@@ -32,13 +32,23 @@ The `exports` point at TypeScript source, so the server must run under the
 
 - `toolsEnabled` is **false**. When enabled, commands run on the Paperclip host
   (external adapters only get the `local` execution driver) with the server's
-  environment minus `PAPERCLIP_*` keys and with the MiniMax key blanked.
+  environment minus `PAPERCLIP_*` keys and with the MiniMax key blanked in
+  the environment. Blanking is not isolation: commands run as the server user
+  and can read host files and process environments.
 - `maxToolIterations` is 25. The iteration cap, repeated identical command
   failures and narrated tool-call markup fail the run with
   `minimax_iteration_cap`, `minimax_repeated_command_failure` and
   `minimax_tool_markup`.
-- HTTP 429 is reported as `errorFamily: "provider_quota"`; 5xx and network
-  failures as `transient_upstream`.
+- Failures exit with `1`. HTTP 429 is reported as
+  `errorFamily: "provider_quota"`; 5xx and network failures as
+  `transient_upstream`. MiniMax's in-band HTTP 200 `base_resp` errors fail as
+  `minimax_api_<code>` (1002/1039 -> `provider_quota`). `Retry-After` is
+  returned as `retryNotBefore`.
+- Only `https://api.minimax.io` receives the shared host key. A custom
+  `baseUrl` needs a company key, https (or an exact loopback host) and no
+  query/fragment/userinfo; the operator allowlist applies to loopback too.
+- Each request timeout covers reading the body; bodies are capped at 8 MiB.
+- Pricing overrides must be > 0 and <= 1000 USD/MTok; token counts are capped.
 - Cost uses an **estimated** rate card for the three known models; override it
   with `pricing` or `MINIMAX_LOCAL_PRICING_JSON`. Unknown models are left
   unpriced.

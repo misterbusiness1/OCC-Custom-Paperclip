@@ -25,12 +25,14 @@ function makeCtx(
   } as unknown as AdapterExecutionContext;
 }
 
-function jsonResponse(body: Record<string, unknown>, init: { ok?: boolean; status?: number } = {}): Response {
-  return {
-    ok: init.ok ?? true,
-    status: init.status ?? 200,
-    json: async () => body,
-  } as Response;
+function jsonResponse(
+  body: Record<string, unknown>,
+  init: { ok?: boolean; status?: number; headers?: Record<string, string> } = {},
+): Response {
+  return new Response(JSON.stringify(body), {
+    status: init.status ?? (init.ok === false ? 500 : 200),
+    headers: { "content-type": "application/json", ...(init.headers ?? {}) },
+  });
 }
 
 describe("minimax_local execute", () => {
@@ -111,7 +113,7 @@ describe("minimax_local execute", () => {
   });
 
   it("uses MINIMAX_LOCAL_PRICING_JSON when no per-agent pricing is set", async () => {
-    process.env.MINIMAX_LOCAL_PRICING_JSON = JSON.stringify({ "MiniMax-M3": { inputPerMTok: 4, outputPerMTok: 0 } });
+    process.env.MINIMAX_LOCAL_PRICING_JSON = JSON.stringify({ "MiniMax-M3": { inputPerMTok: 4, outputPerMTok: 1 } });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse({
         choices: [{ finish_reason: "stop", message: { content: "ok" } }],
@@ -119,7 +121,7 @@ describe("minimax_local execute", () => {
       }),
     );
     const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "k" } }));
-    expect(result.costUsd).toBeCloseTo(2, 9);
+    expect(result.costUsd).toBeCloseTo(2.00001, 9);
   });
 
   it("leaves costUsd undefined for an unknown model so the ledger records it as unpriced", async () => {
@@ -154,7 +156,8 @@ describe("minimax_local execute", () => {
     const logs: Array<{ stream: string; chunk: string }> = [];
     const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "k" } }, logs));
 
-    expect(result.exitCode).toBe(402);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMeta).toMatchObject({ httpStatus: 402 });
     expect(result.errorCode).toBe("http_402");
     expect(result.errorMessage).toBe("Insufficient balance");
     expect(result.errorFamily).toBeNull();
@@ -166,7 +169,8 @@ describe("minimax_local execute", () => {
       jsonResponse({ error: { message: "rate limited" } }, { ok: false, status: 429 }),
     );
     const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "k" } }));
-    expect(result.exitCode).toBe(429);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMeta).toMatchObject({ httpStatus: 429 });
     expect(result.errorCode).toBe("http_429");
     expect(result.errorFamily).toBe("provider_quota");
   });
@@ -335,10 +339,11 @@ describe("minimax_local execute", () => {
   });
 
   it("fails with minimax_run_budget when the run budget is already exhausted", async () => {
+    // The first completion returns at once; the tool command then outlives the
+    // 1s run budget, so the budget check before the next request fails the run.
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 1100));
       return jsonResponse({
-        choices: [{ finish_reason: "tool_calls", message: { content: "", tool_calls: [{ id: "c", function: { name: "bash", arguments: "{\"command\":\"true\"}" } }] } }],
+        choices: [{ finish_reason: "tool_calls", message: { content: "", tool_calls: [{ id: "c", function: { name: "bash", arguments: "{\"command\":\"sleep 2\"}" } }] } }],
         usage: { prompt_tokens: 3, completion_tokens: 1 },
       });
     });

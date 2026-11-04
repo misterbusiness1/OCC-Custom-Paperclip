@@ -300,7 +300,14 @@ describeEmbeddedPostgres("minimax_local heartbeat run through the external loade
     const prompt = JSON.stringify(chatRequests[0]!.body.messages);
     expect(prompt).toContain("You are MiniMax Agent.");
 
-    const ledger = await db.select().from(costEvents).where(eq(costEvents.agentId, agentId));
+    // The heartbeat marks the run succeeded before updateRuntimeState writes
+    // the cost event, so poll briefly for the ledger row instead of racing it.
+    let ledger = await db.select().from(costEvents).where(eq(costEvents.agentId, agentId));
+    const ledgerDeadline = Date.now() + 10_000;
+    while (ledger.length === 0 && Date.now() < ledgerDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      ledger = await db.select().from(costEvents).where(eq(costEvents.agentId, agentId));
+    }
     expect(ledger).toHaveLength(1);
     expect(ledger[0]).toMatchObject({
       companyId,

@@ -34,18 +34,20 @@ Pick one of these. All of them register the package directory with Paperclip's p
    ```
 
    Both require instance-admin access.
-3. **Plugin store file:** add a record to `$PAPERCLIP_HOME/adapter-plugins.json` and restart the server:
+3. **Plugin store file:** add a record to `$PAPERCLIP_HOME/adapter-plugins.json` and restart the server. This is the same record options 1 and 2 write; for a local-path install `packageName` is the directory path, not the npm name:
 
    ```json
    [
      {
-       "packageName": "@paperclipai/minimax-paperclip-adapter",
+       "packageName": "/app/packages/adapters/minimax",
        "localPath": "/app/packages/adapters/minimax",
        "type": "minimax_local",
        "installedAt": "2026-01-01T00:00:00.000Z"
      }
    ]
    ```
+
+   The server resolves the package from `localPath`, so `packageName` only affects how the record is shown. The adapter list (`GET /api/adapters`) labels external adapters by their type, so it shows `minimax_local` whichever `packageName` is stored.
 
 If you restrict adapters with `PAPERCLIP_ADAPTERS` / `PAPERCLIP_ADAPTERS_FILE`, add `minimax_local` there too.
 
@@ -65,16 +67,16 @@ The schema-driven form shows the fields marked *(form)*. The rest can be set in 
 |-------|------|---------|-------------|
 | `model` *(form)* | string | `MiniMax-M3` | `MiniMax-M3`, `MiniMax-M2.7` or `MiniMax-M2.7-highspeed`. Mis-cased or provider-prefixed ids are normalized; unknown ids pass through. |
 | `primaryModel` | string | `model` | Explicit request-model override. |
-| `baseUrl` *(form)* | string | `https://api.minimax.io/v1` | API base URL. A custom endpoint must use `https` (loopback hosts excepted) and its own `env.MINIMAX_API_KEY`. |
+| `baseUrl` *(form)* | string | `https://api.minimax.io/v1` | API base URL. A custom endpoint must use `https` (loopback IP literals and `localhost` excepted), must have no query string, fragment or credentials, and must use its own `env.MINIMAX_API_KEY`. See [Credentials and security](#credentials-and-security). |
 | `temperature` *(form)* | number | `0.2` | Sampling temperature. |
 | `max_completion_tokens` / `maxTokens` *(form)* | number | `8192` | Completion token limit. |
 | `stripThink` *(form)* | boolean | `true` | Strip `<think>...</think>` blocks from logged and stored output. |
 | `toolsEnabled` *(form)* | boolean | `false` | Enable the `bash` tool loop. **Off by default.** |
 | `maxToolIterations` *(form)* | number | `25` | Cap on send/execute round trips. Reaching it **fails** the run. |
 | `toolCommandTimeoutSec` *(form)* | number | `120` | Per-command timeout. |
-| `toolOutputLimitBytes` | number | `32768` | Combined stdout+stderr cap per command before truncation. |
+| `toolOutputLimitBytes` | number | `32768` | Combined stdout+stderr cap per command, in UTF-8 bytes, before truncation. |
 | `timeoutSec` *(form)* | number | `0` (off) | Whole-run wall-clock budget including tool execution. |
-| `requestTimeoutSec` | number | `300` | Per-request timeout for each `/chat/completions` call. Always applies. |
+| `requestTimeoutSec` | number | `300` | Per-request timeout for each `/chat/completions` call, covering both the response headers and reading the body. Always applies. |
 | `instructionsFilePath` *(form)* | string | — | Markdown instructions file prepended to the prompt. |
 | `promptTemplate` | string | Paperclip default | Heartbeat prompt template. |
 | `pricing` | object | built-in estimate | Per-model USD rate overrides. See [Cost and budgets](#cost-and-budgets). |
@@ -85,7 +87,7 @@ Operator-level environment variables on the Paperclip server:
 | Variable | Effect |
 |----------|--------|
 | `MINIMAX_API_KEY` / `MINIMAX_API_KEY_FILE` | Shared host key, used only when the agent has no `env.MINIMAX_API_KEY` and only for the default endpoint. |
-| `MINIMAX_LOCAL_ALLOWED_BASE_URL_HOSTS` | Comma-separated allowlist of hosts for a custom `baseUrl`. |
+| `MINIMAX_LOCAL_ALLOWED_BASE_URL_HOSTS` | Comma-separated allowlist of hosts (`host` or `host:port`) for a custom `baseUrl`. When set it applies to every custom host, loopback included. |
 | `MINIMAX_LOCAL_PRICING_JSON` | Rate-card overrides, same shape as `pricing`. |
 | `MINIMAX_LOCAL_TOOLS_ENABLED` | `true`/`false` forces tool mode on or off for every MiniMax agent, overriding `toolsEnabled`. |
 | `MINIMAX_LOCAL_MAX_TOOL_ITERATIONS` | Overrides `maxToolIterations` for every MiniMax agent. |
@@ -101,14 +103,18 @@ Operator-level environment variables on the Paperclip server:
 | Same command failed 3 times in a row | `1` | `minimax_repeated_command_failure` |
 | Final text contains tool-call markup (the model narrated actions it never ran) | `1` | `minimax_tool_markup` |
 | `timeoutSec` budget expired | `1`, `timedOut` | `minimax_run_budget` |
-| A single request timed out | `1`, `timedOut` | `minimax_request_timeout` / `transient_upstream` |
+| A single request timed out (including a response body that stalls after the headers) | `1`, `timedOut` | `minimax_request_timeout` / `transient_upstream` |
+| Response body larger than 8 MiB | `1` | `minimax_response_too_large` |
 | HTTP 200 with an empty or unparseable payload | `1` | `minimax_empty_completion` |
-| HTTP 429 | `429` | `http_429` / `provider_quota` |
-| HTTP 5xx or a network failure | status or `1` | `transient_upstream` |
-| Other HTTP errors (for example 401, 402) | status | `http_<status>` |
+| HTTP 200 with a non-zero `base_resp.status_code` (MiniMax's in-band error) | `1` | `minimax_api_<code>`; `provider_quota` for 1002 / 1039 (rate limits), `transient_upstream` for 1000 / 1001 / 1013, none otherwise (for example 1004 auth, 1008 balance) |
+| HTTP 429 | `1` | `http_429` / `provider_quota` |
+| HTTP 5xx or a network failure | `1` | `http_<status>` or `minimax_error` / `transient_upstream` |
+| Other HTTP errors (for example 401, 402) | `1` | `http_<status>` |
 | Missing key or refused `baseUrl` | `1` | `minimax_credentials` / `minimax_base_url` |
 
-Token usage and cost are recorded on every outcome that reached the API, including failures.
+The exit code is always a process-style `1` for a failure; the HTTP status is in `errorCode` and `errorMeta.httpStatus`. For a retryable failure (`provider_quota` or `transient_upstream`), a `Retry-After` header (seconds or an HTTP date, capped at 24 hours) is returned as `retryNotBefore`, which the heartbeat uses instead of its default backoff. The error message includes MiniMax's own `error.message` or `base_resp.status_msg`, redacted.
+
+Token usage and cost are recorded on every outcome that reached the API and returned usage, including failures. The final answer kept as the run summary is capped at 100,000 characters.
 
 These defaults differ from the original MiniMax fork, which enabled tools by default, capped at 50 iterations and reported the cap, tool-markup and repeated-failure outcomes as successful runs. Agents migrated from that fork that rely on the bash tool must set `toolsEnabled: true`. Without tools an issue-scoped agent cannot change its issue's status itself; Paperclip's run-liveness and re-wake handling covers that case. This adapter does not PATCH issue status on the agent's behalf.
 
@@ -118,15 +124,18 @@ With `toolsEnabled: true` the model gets one `bash` tool. Each command runs in t
 
 - **It runs on the Paperclip host.** In this fork external adapters only get the `local` environment driver (remote drivers are limited to built-in adapters in `packages/shared/src/environment-support.ts`), so commands run as the server's OS user. They inherit the server's environment minus `PAPERCLIP_*` keys, so other host secrets (for example `DATABASE_URL` or `BETTER_AUTH_SECRET`) are visible to the commands. This matches the other local CLI adapters, and it is why tool mode is opt-in.
 - Commands receive `PAPERCLIP_API_URL`, `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_RUN_ID`, the wake variables (`PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_*`) and the run's server-minted `PAPERCLIP_API_KEY`. Configured env cannot override these identity values.
-- Commands never receive the MiniMax key: `MINIMAX_API_KEY` and `MINIMAX_API_KEY_FILE` are set to empty strings.
-- Output is truncated at `toolOutputLimitBytes`; malformed tool-call arguments are replaced with `{}` in the conversation history so MiniMax does not reject the next request, and the model is told its arguments were invalid.
+- `MINIMAX_API_KEY` and `MINIMAX_API_KEY_FILE` are set to empty strings in the command environment. This keeps the key out of the environment only. It is **not** an isolation boundary: commands run as the server's OS user, so they can still read a host key file or `/proc/<server pid>/environ`. Treat `toolsEnabled: true` as granting host-level access, including to a shared host MiniMax key.
+- Output is truncated at `toolOutputLimitBytes` (UTF-8 bytes); malformed tool-call arguments are replaced with `{}` in the conversation history so MiniMax does not reject the next request, and the model is told its arguments were invalid.
 
 ## Credentials and security
 
 - **Key resolution:** `env.MINIMAX_API_KEY` (company scoped, recommended), then the host `MINIMAX_API_KEY`, then the host `MINIMAX_API_KEY_FILE`.
 - **Key files are operator-only.** An agent's `env.MINIMAX_API_KEY_FILE` is ignored.
-- **Custom `baseUrl`:** the shared host key is only ever sent to the default MiniMax endpoint. A custom endpoint must be `https` (or `localhost` / `127.x` / `::1`) and must use a company key; `MINIMAX_LOCAL_ALLOWED_BASE_URL_HOSTS` can restrict hosts further.
-- Error messages from MiniMax and network errors are passed through `redactCommandTextForLogs` before logging.
+- **Default endpoint:** only `https://api.minimax.io/...` counts as the default endpoint. `http://api.minimax.io` is treated as a custom endpoint and refused, so the shared host key is never sent in cleartext.
+- **Custom `baseUrl`:** the shared host key is only ever sent to the default MiniMax endpoint. A custom endpoint must use a company key and must be `https`, except for `localhost` or a loopback IP literal (`127.0.0.0/8`, `::1`). Loopback is an exact match: a DNS name such as `127.example.com` is not loopback. A query string, fragment or `user:pass@` in the URL is refused, because it would neutralise the appended `/chat/completions` path. If `MINIMAX_LOCAL_ALLOWED_BASE_URL_HOSTS` is set, only the listed hosts are allowed, loopback included.
+- **Bounded responses:** the response body is streamed and read under the request timeout, with an 8 MiB cap per completion (256 KiB for the environment test).
+- **Pricing overrides are validated:** `inputPerMTok` and `outputPerMTok` must be greater than 0 and at most 1000; `cachedInputPerMTok` must be at least 0 and is capped at the input rate. An invalid override is ignored (the built-in card applies, or the run is unpriced). Reported token counts are capped at 10M per completion and 100M per run.
+- Error messages from MiniMax and network errors are passed through `redactCommandTextForLogs`, and the literal API key is scrubbed, before logging.
 
 ## Cost and budgets
 
@@ -140,11 +149,13 @@ The adapter reports `billingType: "metered_api"`, `provider` and `biller` `"mini
 | `MiniMax-M2.7` | 0.30 | 0.03 | 1.20 |
 | `MiniMax-M2.7-highspeed` | 0.50 | 0.05 | 2.20 |
 
+The heartbeat records cost in whole cents per run (`cost_cents`, rounded), so a typical small MiniMax run that costs under about $0.005 is recorded as 0 cents. This is platform behaviour, but it means budgets undercount many cheap heartbeats.
+
 Set real pricing with `adapterConfig.pricing` or `MINIMAX_LOCAL_PRICING_JSON`, for example `{ "MiniMax-M3": { "inputPerMTok": 0.3, "outputPerMTok": 1.2, "cachedInputPerMTok": 0.03 } }`. A model with no rate (an unknown id without an override) has no `costUsd`, so the cost ledger records the run as **unpriced** rather than $0. The run's invocation notes say whether the estimate or a configured rate was used.
 
 ## Environment test
 
-The **Test** button resolves the same key and `baseUrl` as a run, then sends one small completion (`Return exactly: OK`, 45 s timeout). This is a real, billed MiniMax request. A successful HTTP response passes even if the text is not exactly `OK`. Secret values are never echoed.
+The **Test** button resolves the same key and `baseUrl` as a run, then sends one small completion (`Return exactly: OK`, 45 s timeout). This is a real, billed MiniMax request. A successful completion passes even if the text is not exactly `OK`; an HTTP 200 without a completion, or with a non-zero `base_resp.status_code`, fails. Check details never include the raw response body: on failure they show only a structured error message (`error.message`, `message` or `base_resp.status_msg`), redacted and truncated. Secret values are never echoed.
 
 ## Transcript parser
 

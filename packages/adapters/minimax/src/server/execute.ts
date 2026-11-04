@@ -34,14 +34,24 @@ import {
   DEFAULT_MINIMAX_LOCAL_TOOL_COMMAND_TIMEOUT_SEC,
   DEFAULT_MINIMAX_LOCAL_TOOL_OUTPUT_LIMIT_BYTES,
   DEFAULT_MINIMAX_LOCAL_TOOLS_ENABLED,
+  MINIMAX_LOCAL_MAX_FINAL_TEXT_CHARS,
+  MINIMAX_LOCAL_MAX_RESPONSE_BYTES,
 } from "../constants.js";
 import { resolveBaseUrl, validateBaseUrlForCredential } from "../shared/base-url.js";
 import { resolveMiniMaxCredential } from "../shared/credentials.js";
 import { normalizeMiniMaxModel } from "../shared/model.js";
 import { computeMiniMaxCostUsd, hasConfiguredMiniMaxRate } from "../shared/pricing.js";
+import { parseRetryAfter, readResponseTextCapped } from "../shared/http.js";
 import { applyStripThink } from "../shared/text.js";
 import { firstNonEmptyString } from "../shared/util.js";
-import { extractAssistantTurn, extractUsage, sanitizeAssistantMessageForHistory } from "./response.js";
+import {
+  addBoundedTokens,
+  classifyBaseRespError,
+  extractAssistantTurn,
+  extractUsage,
+  readBaseRespError,
+  sanitizeAssistantMessageForHistory,
+} from "./response.js";
 
 // ---------------------------------------------------------------------------
 // Tool calling
@@ -111,6 +121,10 @@ interface BuildErrorOptions {
   details?: Record<string, unknown>;
   transient?: boolean;
   timedOut?: boolean;
+  // Explicit family (e.g. from a MiniMax base_resp code); overrides the
+  // HTTP-status classification when set.
+  family?: AdapterExecutionResult["errorFamily"];
+  retryNotBefore?: string | null;
 }
 
 // HTTP 429 is MiniMax's rate-limit / quota response: classify it as
@@ -125,17 +139,30 @@ function classifyErrorFamily(
   return isTransient ? "transient_upstream" : null;
 }
 
+// exitCode is always a process-style 1 for a failure; the HTTP status is
+// carried in errorCode (http_<status>) and errorMeta.httpStatus instead.
 function buildErrorResult(message: string, options: BuildErrorOptions = {}): AdapterExecutionResult {
-  const { status, code, details, transient, timedOut } = options;
+  const { status, code, details, transient, timedOut, family, retryNotBefore } = options;
+  const errorMeta = {
+    ...(details ?? {}),
+    ...(typeof status === "number" ? { httpStatus: status } : {}),
+  };
   return {
-    exitCode: status ?? 1,
+    exitCode: 1,
     signal: null,
     timedOut: timedOut ?? false,
     errorMessage: message,
     errorCode: code ?? (typeof status === "number" ? `http_${status}` : "minimax_error"),
-    errorFamily: classifyErrorFamily(status, transient),
-    ...(details ? { errorMeta: details } : {}),
+    errorFamily: family !== undefined ? family : classifyErrorFamily(status, transient),
+    ...(Object.keys(errorMeta).length > 0 ? { errorMeta } : {}),
+    ...(retryNotBefore
+      ? { retryNotBefore, resultJson: { retryNotBefore } }
+      : {}),
   };
+}
+
+function truncateText(text: string, limit: number): string {
+  return text.length <= limit ? text : `${text.slice(0, limit)}\n[output truncated at ${limit} characters]`;
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -227,8 +254,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const wakeTaskId = firstNonEmptyString(context.taskId, context.issueId);
   const wakeReason = asString(context.wakeReason, "").trim();
   const wakeCommentId = firstNonEmptyString(context.wakeCommentId, context.commentId);
-  // Sanitized host env re-enters the child, so OVERRIDE the MiniMax credential
-  // vars to empty last — deleting them is not enough.
+  // Blank the MiniMax credential vars in the tool env (overriding, not
+  // deleting, so nothing inherited re-introduces them). This only keeps the
+  // key out of the tool's ENVIRONMENT; it is NOT an isolation boundary. Tool
+  // commands run as the server's OS user on the local host, so they can still
+  // read MINIMAX_API_KEY_FILE or /proc/<server pid>/environ, along with other
+  // host secrets. Treat toolsEnabled as granting host-level access.
   const toolEnv: Record<string, string> = {
     PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
@@ -313,6 +344,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return buildErrorResult(baseUrlError, { code: "minimax_base_url", details: { code: "minimax_base_url" } });
   }
   const baseUrl = resolvedBaseUrl.baseUrl;
+  // Upstream-provided text (error messages, transport errors) is redacted
+  // with the shared log redactor AND scrubbed of the literal API key, in case
+  // a proxy or custom endpoint echoes the Authorization header back.
+  const redactSecrets = (text: string): string => {
+    const redacted = redactCommandTextForLogs(text);
+    return apiKey ? redacted.split(apiKey).join("***REDACTED***") : redacted;
+  };
 
   // Running usage totals — attached to EVERY result (success or failure) so a
   // run that spends tokens then fails still records cost and never bills $0.
@@ -417,82 +455,137 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? Math.max(1000, Math.min(requestTimeoutSec * 1000, deadline - Date.now()))
       : requestTimeoutSec * 1000;
     const controller = new AbortController();
+    // The timer stays armed until the BODY has been read (see finally below):
+    // fetch() resolves on headers, so clearing it earlier would let an
+    // upstream that sends headers and then stalls hang the run forever.
     const timer = setTimeout(() => controller.abort(), perRequestMs);
-    let response: Response;
+    const timeoutResult = async () => {
+      const message = `MiniMax request timed out after ${Math.round(perRequestMs / 1000)}s.`;
+      await onLog("stderr", `${message}\n`);
+      return {
+        ok: false as const,
+        result: buildErrorResult(message, { code: "minimax_request_timeout", transient: true, timedOut: true }),
+      };
+    };
     try {
-      response = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature,
-          max_tokens: maxCompletionTokens,
-          ...(toolsEnabled ? { tools: [BASH_TOOL] } : {}),
-        }),
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature,
+            max_tokens: maxCompletionTokens,
+            ...(toolsEnabled ? { tools: [BASH_TOOL] } : {}),
+          }),
+          signal: controller.signal,
+        });
+      } catch (error) {
+        const err = error as Error & { name?: string };
+        if (err.name === "AbortError" || controller.signal.aborted) return await timeoutResult();
+        // Connection-level failures (DNS/ECONNRESET/TLS) are transient upstream.
+        const message = `MiniMax request failed: ${redactSecrets(err.message ?? String(error))}`;
+        await onLog("stderr", `${message}\n`);
+        return { ok: false, result: buildErrorResult(message, { transient: true }) };
+      }
+
+      const body = await readResponseTextCapped(response, {
+        maxBytes: MINIMAX_LOCAL_MAX_RESPONSE_BYTES,
         signal: controller.signal,
       });
-    } catch (error) {
-      const err = error as Error & { name?: string };
-      if (err.name === "AbortError") {
-        const message = `MiniMax request timed out after ${Math.round(perRequestMs / 1000)}s.`;
+      if (!body.ok) {
+        if (body.reason === "aborted") return await timeoutResult();
+        if (body.reason === "too_large") {
+          const message =
+            `MiniMax response exceeded ${MINIMAX_LOCAL_MAX_RESPONSE_BYTES} bytes; the request was aborted.`;
+          await onLog("stderr", `${message}\n`);
+          return {
+            ok: false,
+            result: buildErrorResult(message, {
+              code: "minimax_response_too_large",
+              details: { maxBytes: MINIMAX_LOCAL_MAX_RESPONSE_BYTES },
+            }),
+          };
+        }
+        const message = `MiniMax response body could not be read: ${redactSecrets(body.message ?? "unknown error")}`;
+        await onLog("stderr", `${message}\n`);
+        return { ok: false, result: buildErrorResult(message, { transient: true }) };
+      }
+
+      let payload: Record<string, unknown> = {};
+      let parseFailed = false;
+      try {
+        payload = parseObject(JSON.parse(body.text));
+      } catch {
+        parseFailed = true;
+        payload = {};
+      }
+
+      const baseRespError = readBaseRespError(payload);
+
+      if (!response.ok) {
+        const errorRecord = parseObject(payload.error);
+        const rawMessage =
+          firstNonEmptyString(
+            errorRecord.message,
+            payload.message,
+            baseRespError?.statusMsg,
+            `MiniMax API returned HTTP ${response.status}.`,
+          ) ?? `MiniMax API returned HTTP ${response.status}.`;
+        const message = redactSecrets(rawMessage).slice(0, 2000);
+        await onLog("stderr", `${message}\n`);
+        const family = classifyErrorFamily(response.status, undefined);
+        const retryNotBefore = family ? parseRetryAfter(response.headers?.get?.("retry-after")) : null;
+        return {
+          ok: false,
+          result: buildErrorResult(message, {
+            status: response.status,
+            details: { type: firstNonEmptyString(errorRecord.type, payload.type) },
+            retryNotBefore,
+          }),
+        };
+      }
+
+      // MiniMax-specific: errors delivered as HTTP 200 + base_resp.
+      if (baseRespError) {
+        const statusMsg = redactSecrets(baseRespError.statusMsg).slice(0, 2000);
+        const message =
+          `MiniMax API error ${baseRespError.statusCode}` + (statusMsg ? `: ${statusMsg}` : ".");
         await onLog("stderr", `${message}\n`);
         return {
           ok: false,
-          result: buildErrorResult(message, { code: "minimax_request_timeout", transient: true, timedOut: true }),
+          result: buildErrorResult(message, {
+            code: `minimax_api_${baseRespError.statusCode}`,
+            family: classifyBaseRespError(baseRespError.statusCode),
+            details: { baseRespStatusCode: baseRespError.statusCode },
+            retryNotBefore: parseRetryAfter(response.headers?.get?.("retry-after")),
+          }),
         };
       }
-      // Connection-level failures (DNS/ECONNRESET/TLS) are transient upstream.
-      const message = `MiniMax request failed: ${redactCommandTextForLogs(err.message ?? String(error))}`;
-      await onLog("stderr", `${message}\n`);
-      return { ok: false, result: buildErrorResult(message, { transient: true }) };
+
+      if (parseFailed || !Array.isArray(payload.choices) || payload.choices.length === 0) {
+        const message =
+          "MiniMax API returned HTTP 200 with an unparseable or empty completion payload; " +
+          "failing the run rather than treating it as success.";
+        await onLog("stderr", `${message}\n`);
+        return {
+          ok: false,
+          result: buildErrorResult(message, {
+            code: "minimax_empty_completion",
+            details: { protocolError: "empty_completion_payload" },
+          }),
+        };
+      }
+
+      return { ok: true, payload };
     } finally {
       clearTimeout(timer);
     }
-
-    let payload: Record<string, unknown> = {};
-    let parseFailed = false;
-    try {
-      payload = (await response.json()) as Record<string, unknown>;
-    } catch {
-      parseFailed = true;
-      payload = {};
-    }
-
-    if (!response.ok) {
-      const errorRecord = parseObject(payload.error);
-      const rawMessage =
-        firstNonEmptyString(errorRecord.message, payload.message, `MiniMax API returned HTTP ${response.status}.`) ??
-        `MiniMax API returned HTTP ${response.status}.`;
-      const message = redactCommandTextForLogs(rawMessage);
-      await onLog("stderr", `${message}\n`);
-      return {
-        ok: false,
-        result: buildErrorResult(message, {
-          status: response.status,
-          details: { type: firstNonEmptyString(errorRecord.type, payload.type) },
-        }),
-      };
-    }
-
-    if (parseFailed || !Array.isArray(payload.choices) || payload.choices.length === 0) {
-      const message =
-        "MiniMax API returned HTTP 200 with an unparseable or empty completion payload; " +
-        "failing the run rather than treating it as success.";
-      await onLog("stderr", `${message}\n`);
-      return {
-        ok: false,
-        result: buildErrorResult(message, {
-          code: "minimax_empty_completion",
-          details: { protocolError: "empty_completion_payload" },
-        }),
-      };
-    }
-
-    return { ok: true, payload };
   };
 
   // Prepare the execution target for tool use (syncs the workspace to a remote
@@ -532,14 +625,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     command: string,
     perCommandTimeoutSec: number,
   ): Promise<{ output: string; exitCode: number | null; timedOut: boolean }> => {
-    let buffer = "";
+    // The limit is in UTF-8 BYTES (not UTF-16 code units), matching its name.
+    const captured: Buffer[] = [];
+    let capturedBytes = 0;
     let truncated = false;
     const capture = async (stream: "stdout" | "stderr", chunk: string): Promise<void> => {
       if (!truncated) {
-        buffer += chunk;
-        if (buffer.length > toolOutputLimitBytes) {
-          buffer = buffer.slice(0, toolOutputLimitBytes);
+        const bytes = Buffer.from(chunk, "utf8");
+        const room = toolOutputLimitBytes - capturedBytes;
+        if (bytes.length > room) {
+          captured.push(bytes.subarray(0, Math.max(0, room)));
+          capturedBytes = toolOutputLimitBytes;
           truncated = true;
+        } else {
+          captured.push(bytes);
+          capturedBytes += bytes.length;
         }
       }
       await onLog(stream, chunk);
@@ -555,6 +655,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       truncated ? "\n[output truncated]" : "",
       result.timedOut ? `\n[command timed out after ${perCommandTimeoutSec}s and was killed]` : "",
     ].join("");
+    // A cut inside a multi-byte character decodes to U+FFFD; drop it.
+    const buffer = Buffer.concat(captured).toString("utf8").replace(/\uFFFD+$/, "");
     return { output: buffer + suffix, exitCode: result.exitCode, timedOut: result.timedOut };
   };
 
@@ -589,9 +691,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       lastPayload = outcome.payload;
 
       const usage = extractUsage(lastPayload);
-      totalInputTokens += usage.inputTokens;
-      totalOutputTokens += usage.outputTokens;
-      totalCachedTokens += usage.cachedInputTokens;
+      totalInputTokens = addBoundedTokens(totalInputTokens, usage.inputTokens);
+      totalOutputTokens = addBoundedTokens(totalOutputTokens, usage.outputTokens);
+      totalCachedTokens = addBoundedTokens(totalCachedTokens, usage.cachedInputTokens);
 
       const turn = extractAssistantTurn(lastPayload);
       if (turn.toolCalls.length === 0) {
@@ -669,7 +771,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const rawText = finalTurn?.content ?? "";
-    const finalText = applyStripThink(rawText, stripThink);
+    const finalText = truncateText(applyStripThink(rawText, stripThink), MINIMAX_LOCAL_MAX_FINAL_TEXT_CHARS);
 
     // Narrated tool syntax means the model fell out of native tool calling and
     // did NOT actually run the work it describes: fail the run.

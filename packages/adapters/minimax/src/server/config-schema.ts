@@ -33,7 +33,7 @@ export function getConfigSchema(): AdapterConfigSchema {
         type: "text",
         default: DEFAULT_MINIMAX_LOCAL_BASE_URL,
         hint:
-          "OpenAI-compatible endpoint. A custom endpoint must use https (loopback excepted) and its own env.MINIMAX_API_KEY.",
+          "OpenAI-compatible endpoint. A custom endpoint must use https (localhost / loopback IP excepted), no query string, and its own env.MINIMAX_API_KEY.",
       },
       {
         key: "temperature",

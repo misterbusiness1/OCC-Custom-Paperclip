@@ -83,6 +83,23 @@ export interface UsageTotals {
   cachedInputTokens: number;
 }
 
+// Upper bounds for reported token counts. Usage comes from the upstream
+// response, which for a custom baseUrl is not trusted: an absurd value
+// (1e300, Infinity) must not reach the integer cost_events columns. One
+// completion is capped at 10M tokens and a whole run at 100M per counter,
+// far above any real MiniMax context window.
+export const MAX_TOKENS_PER_RESPONSE = 10_000_000;
+export const MAX_TOKENS_PER_RUN = 100_000_000;
+
+function boundedTokenCount(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(MAX_TOKENS_PER_RESPONSE, Math.max(0, Math.trunc(value)));
+}
+
+export function addBoundedTokens(total: number, delta: number): number {
+  return Math.min(MAX_TOKENS_PER_RUN, total + delta);
+}
+
 // Read token usage from an OpenAI-compatible payload. Cached prompt tokens are
 // reported under usage.prompt_tokens_details.cached_tokens in the schema MiniMax
 // implements; a top-level usage.cached_tokens is accepted as a fallback.
@@ -90,17 +107,42 @@ export function extractUsage(payload: Record<string, unknown>): UsageTotals {
   const usage = parseObject(payload.usage);
   const details = parseObject(usage.prompt_tokens_details);
   return {
-    inputTokens: Math.max(
-      0,
-      Math.trunc(asNumber(usage.prompt_tokens, asNumber(usage.input_tokens, 0))),
-    ),
-    outputTokens: Math.max(
-      0,
-      Math.trunc(asNumber(usage.completion_tokens, asNumber(usage.output_tokens, 0))),
-    ),
-    cachedInputTokens: Math.max(
-      0,
-      Math.trunc(asNumber(details.cached_tokens, asNumber(usage.cached_tokens, 0))),
+    inputTokens: boundedTokenCount(asNumber(usage.prompt_tokens, asNumber(usage.input_tokens, 0))),
+    outputTokens: boundedTokenCount(asNumber(usage.completion_tokens, asNumber(usage.output_tokens, 0))),
+    cachedInputTokens: boundedTokenCount(
+      asNumber(details.cached_tokens, asNumber(usage.cached_tokens, 0)),
     ),
   };
+}
+
+// MiniMax reports some API errors (rate limit, insufficient balance, auth)
+// as HTTP 200 with a non-zero base_resp.status_code and no choices. Returns
+// the error when present, null for success (status_code 0 or absent).
+export interface MiniMaxBaseRespError {
+  statusCode: number;
+  statusMsg: string;
+}
+
+export function readBaseRespError(payload: Record<string, unknown>): MiniMaxBaseRespError | null {
+  const baseResp = parseObject(payload.base_resp);
+  const code = asNumber(baseResp.status_code, 0);
+  if (!Number.isFinite(code) || code === 0) return null;
+  return {
+    statusCode: Math.trunc(code),
+    statusMsg: typeof baseResp.status_msg === "string" ? baseResp.status_msg : "",
+  };
+}
+
+// Classification of MiniMax base_resp status codes (MiniMax API error-code
+// reference): 1002 = rate limit (RPM), 1039 = token rate limit (TPM) ->
+// provider_quota; 1000 = unknown error, 1001 = request timeout, 1013 =
+// internal service error -> transient_upstream. Everything else (1004 auth,
+// 1008 insufficient balance, 2013 invalid params, 1026/1027 content safety,
+// ...) is a non-retryable failure.
+export function classifyBaseRespError(
+  statusCode: number,
+): "provider_quota" | "transient_upstream" | null {
+  if (statusCode === 1002 || statusCode === 1039) return "provider_quota";
+  if (statusCode === 1000 || statusCode === 1001 || statusCode === 1013) return "transient_upstream";
+  return null;
 }

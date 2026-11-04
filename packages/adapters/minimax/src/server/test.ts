@@ -1,11 +1,16 @@
-import { parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { parseObject, redactCommandTextForLogs } from "@paperclipai/adapter-utils/server-utils";
 import type { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { resolveBaseUrl, validateBaseUrlForCredential } from "../shared/base-url.js";
 import { resolveMiniMaxCredential } from "../shared/credentials.js";
+import { readResponseTextCapped } from "../shared/http.js";
 import { normalizeMiniMaxModel } from "../shared/model.js";
+import { firstNonEmptyString } from "../shared/util.js";
+import { readBaseRespError } from "./response.js";
 import { stripThinkBlocks } from "../shared/text.js";
 
 const PROBE_TIMEOUT_MS = 45_000;
+// The probe only needs a tiny completion; anything larger is refused.
+const PROBE_MAX_RESPONSE_BYTES = 256 * 1024;
 
 function truncate(text: unknown, limit = 500): string {
   const value = String(text ?? "").replace(/\s+/g, " ").trim();
@@ -81,6 +86,33 @@ export async function testEnvironment(
     max_completion_tokens: 128,
   };
 
+  // Probe details are shown in the UI. They must never echo the raw upstream
+  // body (a custom loopback baseUrl could otherwise be used to read arbitrary
+  // local HTTP endpoints back through the probe) and are always redacted.
+  const apiKey = credential.credential.key;
+  const redact = (text: unknown): string => {
+    const redacted = redactCommandTextForLogs(String(text ?? ""));
+    return truncate(apiKey ? redacted.split(apiKey).join("***REDACTED***") : redacted, 300);
+  };
+  // Only a structured error message field is surfaced, never the body itself.
+  const describeErrorBody = (text: string): string => {
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = parseObject(JSON.parse(text));
+    } catch {
+      return `Response body was not JSON (${text.length} characters); body not shown.`;
+    }
+    const errorRecord = parseObject(parsed.error);
+    const baseResp = readBaseRespError(parsed);
+    const message = firstNonEmptyString(
+      errorRecord.message,
+      typeof parsed.error === "string" ? parsed.error : null,
+      parsed.message,
+      baseResp?.statusMsg,
+    );
+    return message ? `Upstream error: ${redact(message)}` : "Response carried no error message.";
+  };
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
 
@@ -95,14 +127,32 @@ export async function testEnvironment(
       signal: controller.signal,
     });
 
-    const text = await response.text();
+    const read = await readResponseTextCapped(response, {
+      maxBytes: PROBE_MAX_RESPONSE_BYTES,
+      signal: controller.signal,
+    });
+    if (!read.ok) {
+      checks.push({
+        code: "minimax_completion",
+        level: "error",
+        message:
+          read.reason === "aborted"
+            ? `MiniMax API probe timed out after ${PROBE_TIMEOUT_MS / 1000}s.`
+            : read.reason === "too_large"
+              ? `MiniMax API probe response exceeded ${PROBE_MAX_RESPONSE_BYTES} bytes.`
+              : "MiniMax API probe response could not be read.",
+        ...(read.message ? { detail: redact(read.message) } : {}),
+      });
+      return { adapterType: "minimax_local", status: "fail", testedAt, checks };
+    }
+    const text = read.text;
 
     if (!response.ok) {
       checks.push({
         code: "minimax_completion",
         level: "error",
         message: `MiniMax API probe failed with HTTP ${response.status}.`,
-        detail: truncate(text),
+        detail: describeErrorBody(text),
       });
       return { adapterType: "minimax_local", status: "fail", testedAt, checks };
     }
@@ -115,12 +165,31 @@ export async function testEnvironment(
         code: "minimax_completion",
         level: "error",
         message: "MiniMax API returned non-JSON output.",
-        detail: truncate(text),
+        detail: describeErrorBody(text),
       });
       return { adapterType: "minimax_local", status: "fail", testedAt, checks };
     }
 
     const payload = parseObject(json);
+    const baseRespError = readBaseRespError(payload);
+    if (baseRespError) {
+      checks.push({
+        code: "minimax_completion",
+        level: "error",
+        message: `MiniMax API probe failed with error ${baseRespError.statusCode}.`,
+        detail: describeErrorBody(text),
+      });
+      return { adapterType: "minimax_local", status: "fail", testedAt, checks };
+    }
+    if (!Array.isArray(payload.choices) || payload.choices.length === 0) {
+      checks.push({
+        code: "minimax_completion",
+        level: "error",
+        message: "MiniMax API returned HTTP 200 without a completion.",
+        detail: describeErrorBody(text),
+      });
+      return { adapterType: "minimax_local", status: "fail", testedAt, checks };
+    }
     const choice = Array.isArray(payload.choices) ? parseObject(payload.choices[0]) : {};
     const message = parseObject(choice.message);
     const raw = typeof message.content === "string" ? message.content : "";
@@ -135,7 +204,7 @@ export async function testEnvironment(
         : "MiniMax API authenticated and returned a completion response.",
       detail: exactOk
         ? `Model: ${model}`
-        : `Probe response was non-OK after stripping reasoning; not treated as credential failure. Sanitized response: ${truncate(cleaned || raw)}`,
+        : `Probe response was non-OK after stripping reasoning; not treated as credential failure. Sanitized response: ${redact(cleaned || raw)}`,
     });
 
     return { adapterType: "minimax_local", status: "pass", testedAt, checks };
@@ -147,7 +216,7 @@ export async function testEnvironment(
       message: aborted
         ? `MiniMax API probe timed out after ${PROBE_TIMEOUT_MS / 1000}s.`
         : "MiniMax API probe failed.",
-      detail: error instanceof Error ? error.message : String(error),
+      detail: redact(error instanceof Error ? error.message : String(error)),
     });
     return { adapterType: "minimax_local", status: "fail", testedAt, checks };
   } finally {

@@ -31,6 +31,17 @@ export const DEFAULT_MINIMAX_RATE_CARD: Record<string, MiniMaxModelRate> = {
   "MiniMax-M2.7-highspeed": { inputPerMTok: 0.5, outputPerMTok: 2.2, cachedInputPerMTok: 0.05 },
 };
 
+// Bounds for a configured rate (USD per 1M tokens). adapterConfig.pricing is
+// tenant-editable, so it is validated: a zero or negative rate would record $0
+// (or a negative cost) and side-step budget enforcement, and an absurd rate
+// could overflow the integer cost ledger. An out-of-range override is ignored
+// (the built-in card, or "unpriced", applies instead).
+export const MAX_MINIMAX_RATE_PER_MTOK = 1000;
+
+function isValidRate(value: number): boolean {
+  return Number.isFinite(value) && value > 0 && value <= MAX_MINIMAX_RATE_PER_MTOK;
+}
+
 function readRateFromConfig(config: Record<string, unknown>, model: string): MiniMaxModelRate | null {
   const candidates: Array<Record<string, unknown>> = [];
 
@@ -50,12 +61,15 @@ function readRateFromConfig(config: Record<string, unknown>, model: string): Min
   for (const cand of candidates) {
     const input = asNumber(cand.inputPerMTok, NaN);
     const output = asNumber(cand.outputPerMTok, NaN);
-    if (Number.isFinite(input) && Number.isFinite(output)) {
+    if (isValidRate(input) && isValidRate(output)) {
       const cached = asNumber(cand.cachedInputPerMTok, NaN);
+      // A cached rate may be 0 (cached tokens are a discounted subset of
+      // input) but never negative and never above the input rate.
+      const cachedValid = Number.isFinite(cached) && cached >= 0;
       return {
         inputPerMTok: input,
         outputPerMTok: output,
-        ...(Number.isFinite(cached) ? { cachedInputPerMTok: cached } : {}),
+        ...(cachedValid ? { cachedInputPerMTok: Math.min(cached, input) } : {}),
       };
     }
   }
