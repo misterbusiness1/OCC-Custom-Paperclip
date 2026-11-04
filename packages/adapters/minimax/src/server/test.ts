@@ -2,8 +2,8 @@ import { parseObject, redactCommandTextForLogs } from "@paperclipai/adapter-util
 import type { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { resolveBaseUrl, validateBaseUrlForCredential } from "../shared/base-url.js";
 import { resolveMiniMaxCredential } from "../shared/credentials.js";
-import { readResponseTextCapped } from "../shared/http.js";
-import { normalizeMiniMaxModel } from "../shared/model.js";
+import { isRedirectResponse, NO_REDIRECT, readResponseTextCapped } from "../shared/http.js";
+import { resolveMiniMaxModel } from "../shared/model.js";
 import { firstNonEmptyString } from "../shared/util.js";
 import { readBaseRespError } from "./response.js";
 import { stripThinkBlocks } from "../shared/text.js";
@@ -57,9 +57,8 @@ export async function testEnvironment(
     };
   }
 
-  const model = normalizeMiniMaxModel(
-    typeof config.model === "string" ? config.model : (config.primaryModel as string | undefined),
-  );
+  // Same model resolution as execute(): primaryModel overrides model.
+  const model = resolveMiniMaxModel(config);
   const endpoint = `${resolvedBaseUrl.baseUrl}/chat/completions`;
 
   const checks: AdapterEnvironmentTestResult["checks"] = [
@@ -125,7 +124,19 @@ export async function testEnvironment(
       },
       body: JSON.stringify(body),
       signal: controller.signal,
+      redirect: NO_REDIRECT,
     });
+
+    if (isRedirectResponse(response)) {
+      await response.body?.cancel().catch(() => {});
+      checks.push({
+        code: "minimax_completion",
+        level: "error",
+        message: `MiniMax API probe got a redirect (HTTP ${response.status}); redirects are not followed.`,
+        hint: "Point baseUrl at the final endpoint.",
+      });
+      return { adapterType: "minimax_local", status: "fail", testedAt, checks };
+    }
 
     const read = await readResponseTextCapped(response, {
       maxBytes: PROBE_MAX_RESPONSE_BYTES,

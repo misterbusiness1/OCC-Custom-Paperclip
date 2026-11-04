@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { isLoopbackHostname, resolveBaseUrl, validateBaseUrlForCredential } from "./base-url.js";
+import {
+  isLoopbackHostname,
+  isNonPublicIpLiteral,
+  resolveBaseUrl,
+  validateBaseUrlForCredential,
+} from "./base-url.js";
 
 function check(baseUrl: string, source: "company" | "host") {
   return validateBaseUrlForCredential(resolveBaseUrl({ baseUrl }), source);
@@ -71,5 +76,43 @@ describe("minimax_local baseUrl guard", () => {
     expect(check("http://127.0.0.1:9999/v1", "company")).toMatch(/not permitted/);
     process.env.MINIMAX_LOCAL_ALLOWED_BASE_URL_HOSTS = "api.minimaxi.com,127.0.0.1:9999";
     expect(check("http://127.0.0.1:9999/v1", "company")).toBeNull();
+  });
+
+  it("refuses private, link-local and other non-public IP literals when no allowlist is set", () => {
+    for (const baseUrl of [
+      "https://10.0.0.5/v1",
+      "https://169.254.169.254/v1",
+      "https://172.16.4.2/v1",
+      "https://192.168.1.10/v1",
+      "https://100.64.0.1/v1",
+      "https://0.0.0.0/v1",
+      "https://[fd00::1]/v1",
+      "https://[fe80::1]/v1",
+      "https://[::]/v1",
+      "https://[::ffff:169.254.169.254]/v1",
+      "https://[::ffff:10.0.0.5]/v1",
+      "https://[::ffff:127.0.0.1]/v1",
+    ]) {
+      expect(check(baseUrl, "company"), baseUrl).toMatch(/non-public/);
+    }
+    // Public literals and DNS names are still accepted (DNS is not resolved).
+    expect(check("https://8.8.8.8/v1", "company")).toBeNull();
+    expect(check("https://internal.corp/v1", "company")).toBeNull();
+    // Loopback stays the documented on-box exception.
+    expect(check("http://127.0.0.1:5432/x", "company")).toBeNull();
+  });
+
+  it("lets the operator allowlist a private host explicitly", () => {
+    process.env.MINIMAX_LOCAL_ALLOWED_BASE_URL_HOSTS = "10.0.0.5";
+    expect(check("https://10.0.0.5/v1", "company")).toBeNull();
+    expect(check("https://10.0.0.6/v1", "company")).toMatch(/not permitted/);
+  });
+
+  it("classifies IP literals for the non-public check", () => {
+    expect(isNonPublicIpLiteral("169.254.169.254")).toBe(true);
+    expect(isNonPublicIpLiteral("[fe80::1]")).toBe(true);
+    expect(isNonPublicIpLiteral("8.8.8.8")).toBe(false);
+    expect(isNonPublicIpLiteral("api.minimax.io")).toBe(false);
+    expect(isNonPublicIpLiteral("127.0.0.1")).toBe(false);
   });
 });

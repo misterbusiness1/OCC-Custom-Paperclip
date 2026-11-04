@@ -43,15 +43,23 @@ The `exports` point at TypeScript source, so the server must run under the
   `errorFamily: "provider_quota"`; 5xx and network failures as
   `transient_upstream`. MiniMax's in-band HTTP 200 `base_resp` errors fail as
   `minimax_api_<code>` (1002/1039 -> `provider_quota`). `Retry-After` is
-  returned as `retryNotBefore`.
+  returned as `retryNotBefore` (capped at one hour).
 - Only `https://api.minimax.io` receives the shared host key. A custom
   `baseUrl` needs a company key, https (or an exact loopback host) and no
   query/fragment/userinfo; the operator allowlist applies to loopback too.
+  Without an allowlist, private/link-local/other non-public IP literals are
+  refused (DNS names are not resolved). Redirects are never followed: a 3xx
+  fails with `minimax_redirect_refused`.
+- The literal API key is scrubbed from model output (summary and run log) as
+  well as from error text.
 - Each request timeout covers reading the body; bodies are capped at 8 MiB.
-- Pricing overrides must be > 0 and <= 1000 USD/MTok; token counts are capped.
+- Pricing overrides must be > 0 and <= 1000 USD/MTok (a sanity check, not a
+  control); token counts are capped and cached tokens are clamped to input.
 - Cost uses an **estimated** rate card for the three known models; override it
-  with `pricing` or `MINIMAX_LOCAL_PRICING_JSON`. Unknown models are left
-  unpriced.
+  with `MINIMAX_LOCAL_PRICING_JSON` (operator, wins) or `pricing`. Unknown
+  models, and completions with no usage block, are left unpriced.
+- Without tools (the default) an agent cannot record an issue disposition, so
+  an issue assigned to it ends `blocked` after about three runs (see the docs).
 
 ## Layout
 

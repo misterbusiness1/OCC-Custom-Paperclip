@@ -1,4 +1,5 @@
 import { DEFAULT_MINIMAX_LOCAL_MODEL, models } from "../constants.js";
+import { firstNonEmptyString } from "./util.js";
 
 // The canonical, correctly-cased model ids the MiniMax API expects.
 const CANONICAL_MODEL_IDS = models.map((m) => m.id);
@@ -21,4 +22,11 @@ export function normalizeMiniMaxModel(value: string | null | undefined): string 
     if (lower === canonical.toLowerCase()) return canonical;
   }
   return trimmed;
+}
+
+// The request model for a config: primaryModel (documented override) first,
+// then model. Shared by execute() and the environment probe so Test checks the
+// same model a run will use.
+export function resolveMiniMaxModel(config: Record<string, unknown>): string {
+  return normalizeMiniMaxModel(firstNonEmptyString(config.primaryModel, config.model));
 }

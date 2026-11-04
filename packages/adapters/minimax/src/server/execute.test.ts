@@ -149,6 +149,19 @@ describe("minimax_local execute", () => {
     expect(body.model).toBe("MiniMax-M2.7-highspeed");
   });
 
+  it("lets primaryModel override model (the environment probe resolves the same way)", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ choices: [{ finish_reason: "stop", message: { content: "ok" } }], usage: {} }),
+    );
+    const result = await execute(
+      makeCtx({ env: { MINIMAX_API_KEY: "k" }, primaryModel: "MiniMax-M2.7-highspeed", model: "MiniMax-M3" }),
+    );
+    expect(result.model).toBe("MiniMax-M2.7-highspeed");
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    expect(JSON.parse(String(init.body)).model).toBe("MiniMax-M2.7-highspeed");
+    expect(init.redirect).toBe("manual");
+  });
+
   it("returns a non-transient structured error on HTTP 402", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse({ error: { type: "insufficient_balance_error", message: "Insufficient balance" } }, { ok: false, status: 402 }),

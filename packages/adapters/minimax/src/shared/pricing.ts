@@ -21,9 +21,9 @@ export interface UsageForPricing {
 // IMPORTANT: these are UNVERIFIED ESTIMATES carried over from the original
 // fork so budgets enforce (a non-zero cost is recorded) before exact rates are
 // configured. Verify against current MiniMax pricing and override per
-// deployment via adapterConfig.pricing.<modelId> = { inputPerMTok, outputPerMTok }
-// or the MINIMAX_LOCAL_PRICING_JSON env var. execute() says in its invocation
-// notes whether the estimate or a configured rate is in use. A model with no
+// deployment via the MINIMAX_LOCAL_PRICING_JSON env var (operator, takes
+// precedence) or adapterConfig.pricing.<modelId> = { inputPerMTok, outputPerMTok }.
+// execute() says in its invocation notes whether the estimate or a configured rate is in use. A model with no
 // rate at all (unknown id, no override) is left unpriced (costUsd undefined).
 export const DEFAULT_MINIMAX_RATE_CARD: Record<string, MiniMaxModelRate> = {
   "MiniMax-M3": { inputPerMTok: 0.3, outputPerMTok: 1.2, cachedInputPerMTok: 0.03 },
@@ -31,11 +31,15 @@ export const DEFAULT_MINIMAX_RATE_CARD: Record<string, MiniMaxModelRate> = {
   "MiniMax-M2.7-highspeed": { inputPerMTok: 0.5, outputPerMTok: 2.2, cachedInputPerMTok: 0.05 },
 };
 
-// Bounds for a configured rate (USD per 1M tokens). adapterConfig.pricing is
-// tenant-editable, so it is validated: a zero or negative rate would record $0
-// (or a negative cost) and side-step budget enforcement, and an absurd rate
-// could overflow the integer cost ledger. An out-of-range override is ignored
-// (the built-in card, or "unpriced", applies instead).
+// Bounds for a configured rate (USD per 1M tokens). A zero or negative rate
+// would record $0 (or a negative cost), and an absurd rate could overflow the
+// integer cost ledger, so an out-of-range override is ignored (the next source,
+// the built-in card, or "unpriced" applies instead). These bounds are a sanity
+// check only: they do NOT stop someone who can edit the agent's
+// adapterConfig.pricing (agent_config:update) from setting a tiny positive
+// rate and under-recording cost. Operators who need the rate to be
+// authoritative set MINIMAX_LOCAL_PRICING_JSON, which takes precedence over
+// adapterConfig.pricing for every model it lists.
 export const MAX_MINIMAX_RATE_PER_MTOK = 1000;
 
 function isValidRate(value: number): boolean {
@@ -43,10 +47,9 @@ function isValidRate(value: number): boolean {
 }
 
 function readRateFromConfig(config: Record<string, unknown>, model: string): MiniMaxModelRate | null {
+  // Precedence: the operator's MINIMAX_LOCAL_PRICING_JSON, then the
+  // agent's adapterConfig.pricing. The first source with a valid rate wins.
   const candidates: Array<Record<string, unknown>> = [];
-
-  const configPricing = parseObject(config.pricing);
-  if (configPricing[model]) candidates.push(parseObject(configPricing[model]));
 
   const envRaw = process.env.MINIMAX_LOCAL_PRICING_JSON;
   if (envRaw) {
@@ -57,6 +60,9 @@ function readRateFromConfig(config: Record<string, unknown>, model: string): Min
       // ignore malformed env pricing
     }
   }
+
+  const configPricing = parseObject(config.pricing);
+  if (configPricing[model]) candidates.push(parseObject(configPricing[model]));
 
   for (const cand of candidates) {
     const input = asNumber(cand.inputPerMTok, NaN);

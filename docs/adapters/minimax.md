@@ -87,8 +87,8 @@ Operator-level environment variables on the Paperclip server:
 | Variable | Effect |
 |----------|--------|
 | `MINIMAX_API_KEY` / `MINIMAX_API_KEY_FILE` | Shared host key, used only when the agent has no `env.MINIMAX_API_KEY` and only for the default endpoint. |
-| `MINIMAX_LOCAL_ALLOWED_BASE_URL_HOSTS` | Comma-separated allowlist of hosts (`host` or `host:port`) for a custom `baseUrl`. When set it applies to every custom host, loopback included. |
-| `MINIMAX_LOCAL_PRICING_JSON` | Rate-card overrides, same shape as `pricing`. |
+| `MINIMAX_LOCAL_ALLOWED_BASE_URL_HOSTS` | Comma-separated allowlist of hosts (`host` or `host:port`) for a custom `baseUrl`. Unset by default. When set it applies to every custom host, loopback included, and only listed hosts are accepted. It is also the only way to allow a private or link-local IP literal. |
+| `MINIMAX_LOCAL_PRICING_JSON` | Rate-card overrides, same shape as `pricing`. Takes precedence over an agent's `pricing` for every model it lists. |
 | `MINIMAX_LOCAL_TOOLS_ENABLED` | `true`/`false` forces tool mode on or off for every MiniMax agent, overriding `toolsEnabled`. |
 | `MINIMAX_LOCAL_MAX_TOOL_ITERATIONS` | Overrides `maxToolIterations` for every MiniMax agent. |
 
@@ -110,13 +110,16 @@ Operator-level environment variables on the Paperclip server:
 | HTTP 429 | `1` | `http_429` / `provider_quota` |
 | HTTP 5xx or a network failure | `1` | `http_<status>` or `minimax_error` / `transient_upstream` |
 | Other HTTP errors (for example 401, 402) | `1` | `http_<status>` |
+| The endpoint answered with a redirect (3xx); redirects are never followed | `1` | `minimax_redirect_refused` |
 | Missing key or refused `baseUrl` | `1` | `minimax_credentials` / `minimax_base_url` |
 
-The exit code is always a process-style `1` for a failure; the HTTP status is in `errorCode` and `errorMeta.httpStatus`. For a retryable failure (`provider_quota` or `transient_upstream`), a `Retry-After` header (seconds or an HTTP date, capped at 24 hours) is returned as `retryNotBefore`, which the heartbeat uses instead of its default backoff. The error message includes MiniMax's own `error.message` or `base_resp.status_msg`, redacted.
+The exit code is always a process-style `1` for a failure; the HTTP status is in `errorCode` and `errorMeta.httpStatus`. For a retryable failure (`provider_quota` or `transient_upstream`), a `Retry-After` header (seconds or an HTTP date, capped at one hour) is returned as `retryNotBefore`, which the heartbeat uses instead of its default backoff. The error message includes MiniMax's own `error.message` or `base_resp.status_msg`, redacted.
 
-Token usage and cost are recorded on every outcome that reached the API and returned usage, including failures. The final answer kept as the run summary is capped at 100,000 characters.
+Token usage and cost are recorded on every outcome that reached the API and returned usage, including failures. If a successful completion carries no usage block (no non-negative `prompt_tokens` or `completion_tokens`), the run has no `costUsd` and is ledgered as **unpriced** rather than $0. Cached tokens are clamped to the reported input tokens. The final answer kept as the run summary is capped at 100,000 characters.
 
-These defaults differ from the original MiniMax fork, which enabled tools by default, capped at 50 iterations and reported the cap, tool-markup and repeated-failure outcomes as successful runs. Agents migrated from that fork that rely on the bash tool must set `toolsEnabled: true`. Without tools an issue-scoped agent cannot change its issue's status itself; Paperclip's run-liveness and re-wake handling covers that case. This adapter does not PATCH issue status on the agent's behalf.
+These defaults differ from the original MiniMax fork, which enabled tools by default, capped at 50 iterations and reported the cap, tool-markup and repeated-failure outcomes as successful runs. Agents migrated from that fork that rely on the bash tool must set `toolsEnabled: true`. This adapter does not PATCH issue status on the agent's behalf.
+
+**Issues assigned to a chat-only agent end `blocked`.** Without tools (the default), the agent cannot call the Paperclip API, so it cannot record an issue disposition (`done`, `in_review`, `blocked` and so on). Paperclip's recovery handling then treats each successful run as missing a disposition: it wakes the agent once more to finish the handoff (`finish_successful_run_handoff`, one attempt by default), then queues a source-scoped recovery action, and finally moves the issue to `blocked` for a recovery owner. In review testing against a local stub, assigning one issue to a `toolsEnabled: false` agent produced three billed completions (`issue_assigned`, `finish_successful_run_handoff`, `source_scoped_recovery_action`) and the issue ended `blocked`; with a bad key (HTTP 401) it produced four failed runs. Use chat-only mode for on-demand or routine work that does not need an issue disposition, and set `toolsEnabled: true` for agents that work issues.
 
 ## Tool mode
 
@@ -133,9 +136,11 @@ With `toolsEnabled: true` the model gets one `bash` tool. Each command runs in t
 - **Key files are operator-only.** An agent's `env.MINIMAX_API_KEY_FILE` is ignored.
 - **Default endpoint:** only `https://api.minimax.io/...` counts as the default endpoint. `http://api.minimax.io` is treated as a custom endpoint and refused, so the shared host key is never sent in cleartext.
 - **Custom `baseUrl`:** the shared host key is only ever sent to the default MiniMax endpoint. A custom endpoint must use a company key and must be `https`, except for `localhost` or a loopback IP literal (`127.0.0.0/8`, `::1`). Loopback is an exact match: a DNS name such as `127.example.com` is not loopback. A query string, fragment or `user:pass@` in the URL is refused, because it would neutralise the appended `/chat/completions` path. If `MINIMAX_LOCAL_ALLOWED_BASE_URL_HOSTS` is set, only the listed hosts are allowed, loopback included.
+- **Non-public IP literals are refused by default:** with no allowlist, a custom `baseUrl` whose host is a private (`10/8`, `172.16/12`, `192.168/16`), carrier-grade NAT (`100.64/10`), link-local (`169.254/16`, including cloud metadata at `169.254.169.254`; `fe80::/10`), unique-local (`fc00::/7`), unspecified or multicast IP literal is refused, including its IPv4-mapped IPv6 form. Add the host to the allowlist to use it. DNS names are **not** resolved, so a public-looking name that resolves to a private address is not caught; set the allowlist when you need a strict posture.
+- **Redirects are never followed:** both the run and the environment test send requests with `redirect: "manual"`. A 3xx answer fails the request (`minimax_redirect_refused`) and nothing is sent to the `Location` host, so a redirect cannot carry the prompt to a host the `baseUrl` checks never saw.
 - **Bounded responses:** the response body is streamed and read under the request timeout, with an 8 MiB cap per completion (256 KiB for the environment test).
-- **Pricing overrides are validated:** `inputPerMTok` and `outputPerMTok` must be greater than 0 and at most 1000; `cachedInputPerMTok` must be at least 0 and is capped at the input rate. An invalid override is ignored (the built-in card applies, or the run is unpriced). Reported token counts are capped at 10M per completion and 100M per run.
-- Error messages from MiniMax and network errors are passed through `redactCommandTextForLogs`, and the literal API key is scrubbed, before logging.
+- **Pricing overrides are range-checked:** `inputPerMTok` and `outputPerMTok` must be greater than 0 and at most 1000; `cachedInputPerMTok` must be at least 0 and is capped at the input rate. An invalid override is ignored (the next source, the built-in card, or unpriced applies). This is a sanity check, not a control: anyone who can edit the agent's config (`agent_config:update`) can set a tiny positive `pricing` rate and under-record cost. When the rate must be authoritative, set it in `MINIMAX_LOCAL_PRICING_JSON`, which wins over the agent's `pricing`. Reported token counts are capped at 10M per completion and 100M per run.
+- Error messages from MiniMax and network errors are passed through `redactCommandTextForLogs`, and the literal API key is scrubbed, before logging. Successful model output (the final answer and any narration between tool calls) has the literal API key scrubbed too (keys of 8 characters or more), so an endpoint that echoes the `Authorization` header cannot put the key into the run summary or run log.
 
 ## Cost and budgets
 
@@ -151,11 +156,11 @@ The adapter reports `billingType: "metered_api"`, `provider` and `biller` `"mini
 
 The heartbeat records cost in whole cents per run (`cost_cents`, rounded), so a typical small MiniMax run that costs under about $0.005 is recorded as 0 cents. This is platform behaviour, but it means budgets undercount many cheap heartbeats.
 
-Set real pricing with `adapterConfig.pricing` or `MINIMAX_LOCAL_PRICING_JSON`, for example `{ "MiniMax-M3": { "inputPerMTok": 0.3, "outputPerMTok": 1.2, "cachedInputPerMTok": 0.03 } }`. A model with no rate (an unknown id without an override) has no `costUsd`, so the cost ledger records the run as **unpriced** rather than $0. The run's invocation notes say whether the estimate or a configured rate was used.
+Set real pricing with `MINIMAX_LOCAL_PRICING_JSON` (operator, takes precedence) or `adapterConfig.pricing`, for example `{ "MiniMax-M3": { "inputPerMTok": 0.3, "outputPerMTok": 1.2, "cachedInputPerMTok": 0.03 } }`. A model with no rate (an unknown id without an override) has no `costUsd`, so the cost ledger records the run as **unpriced** rather than $0. The run's invocation notes say whether the estimate or a configured rate was used.
 
 ## Environment test
 
-The **Test** button resolves the same key and `baseUrl` as a run, then sends one small completion (`Return exactly: OK`, 45 s timeout). This is a real, billed MiniMax request. A successful completion passes even if the text is not exactly `OK`; an HTTP 200 without a completion, or with a non-zero `base_resp.status_code`, fails. Check details never include the raw response body: on failure they show only a structured error message (`error.message`, `message` or `base_resp.status_msg`), redacted and truncated. Secret values are never echoed.
+The **Test** button resolves the same key, `baseUrl` and model (`primaryModel`, then `model`) as a run, then sends one small completion (`Return exactly: OK`, 45 s timeout). This is a real, billed MiniMax request. A successful completion passes even if the text is not exactly `OK`; an HTTP 200 without a completion, or with a non-zero `base_resp.status_code`, fails. Check details never include the raw response body: on failure they show only a structured error message (`error.message`, `message` or `base_resp.status_msg`), redacted and truncated. Secret values are never echoed.
 
 ## Transcript parser
 

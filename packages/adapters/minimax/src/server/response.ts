@@ -103,15 +103,25 @@ export function addBoundedTokens(total: number, delta: number): number {
 // Read token usage from an OpenAI-compatible payload. Cached prompt tokens are
 // reported under usage.prompt_tokens_details.cached_tokens in the schema MiniMax
 // implements; a top-level usage.cached_tokens is accepted as a fallback.
-export function extractUsage(payload: Record<string, unknown>): UsageTotals {
+// Cached tokens are a subset of the prompt, so they are clamped to inputTokens
+// (the stored usage then never claims more cached than total input).
+// `reported` is false when the payload carries no non-negative numeric prompt
+// or completion token count; the run is then left unpriced instead of being billed $0.
+export function extractUsage(payload: Record<string, unknown>): UsageTotals & { reported: boolean } {
   const usage = parseObject(payload.usage);
   const details = parseObject(usage.prompt_tokens_details);
+  const rawInput = asNumber(usage.prompt_tokens, asNumber(usage.input_tokens, Number.NaN));
+  const rawOutput = asNumber(usage.completion_tokens, asNumber(usage.output_tokens, Number.NaN));
+  const reported = (Number.isFinite(rawInput) && rawInput >= 0) || (Number.isFinite(rawOutput) && rawOutput >= 0);
+  const inputTokens = boundedTokenCount(rawInput);
   return {
-    inputTokens: boundedTokenCount(asNumber(usage.prompt_tokens, asNumber(usage.input_tokens, 0))),
-    outputTokens: boundedTokenCount(asNumber(usage.completion_tokens, asNumber(usage.output_tokens, 0))),
-    cachedInputTokens: boundedTokenCount(
-      asNumber(details.cached_tokens, asNumber(usage.cached_tokens, 0)),
+    inputTokens,
+    outputTokens: boundedTokenCount(rawOutput),
+    cachedInputTokens: Math.min(
+      inputTokens,
+      boundedTokenCount(asNumber(details.cached_tokens, asNumber(usage.cached_tokens, 0))),
     ),
+    reported,
   };
 }
 

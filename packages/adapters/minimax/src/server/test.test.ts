@@ -45,6 +45,21 @@ describe("minimax_local testEnvironment", () => {
     expect(JSON.stringify(result)).not.toContain("test-key");
   });
 
+  it("probes the same model a run uses: primaryModel overrides model", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      textResponse({ choices: [{ message: { content: "OK" } }] }),
+    );
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "minimax_local",
+      config: { env: { MINIMAX_API_KEY: "test-key" }, primaryModel: "MiniMax-M2.7-highspeed", model: "MiniMax-M3" },
+    });
+    expect(result.status).toBe("pass");
+    const [, init] = fetchSpy.mock.calls[0]!;
+    expect(JSON.parse(String((init as RequestInit).body)).model).toBe("MiniMax-M2.7-highspeed");
+    expect((init as RequestInit).redirect).toBe("manual");
+  });
+
   it("accepts a { value } env binding shape from the environment-test draft", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(textResponse({ choices: [{ message: { content: "OK" } }] }));
     const result = await testEnvironment({

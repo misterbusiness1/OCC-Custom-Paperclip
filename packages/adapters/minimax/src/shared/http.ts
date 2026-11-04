@@ -75,10 +75,21 @@ export async function readResponseTextCapped(
   return { ok: true, text: new TextDecoder().decode(merged), bytes };
 }
 
+// Both MiniMax requests are sent with redirect: "manual" so a redirect cannot
+// carry the request (prompt body included) to a host the baseUrl guard never
+// validated. A 3xx, or the opaque redirect a spec-compliant fetch returns for
+// "manual", is treated as a failure.
+export const NO_REDIRECT: RequestRedirect = "manual";
+
+export function isRedirectResponse(response: Response): boolean {
+  return response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400);
+}
+
 // Parse a Retry-After header (delta-seconds or an HTTP-date) into an ISO
-// timestamp. Returns null when absent or unparseable. The hint is capped so a
-// hostile/buggy upstream cannot park the agent indefinitely.
-const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
+// timestamp. Returns null when absent or unparseable. The hint is capped at
+// one hour (a per-run quota hint, not a schedule) so a hostile/buggy upstream
+// cannot park the agent for long.
+export const MAX_RETRY_AFTER_MS = 60 * 60 * 1000;
 
 export function parseRetryAfter(value: string | null | undefined, now: number = Date.now()): string | null {
   if (!value) return null;

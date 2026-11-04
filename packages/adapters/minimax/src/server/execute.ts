@@ -39,9 +39,9 @@ import {
 } from "../constants.js";
 import { resolveBaseUrl, validateBaseUrlForCredential } from "../shared/base-url.js";
 import { resolveMiniMaxCredential } from "../shared/credentials.js";
-import { normalizeMiniMaxModel } from "../shared/model.js";
+import { resolveMiniMaxModel } from "../shared/model.js";
 import { computeMiniMaxCostUsd, hasConfiguredMiniMaxRate } from "../shared/pricing.js";
-import { parseRetryAfter, readResponseTextCapped } from "../shared/http.js";
+import { isRedirectResponse, NO_REDIRECT, parseRetryAfter, readResponseTextCapped } from "../shared/http.js";
 import { applyStripThink } from "../shared/text.js";
 import { firstNonEmptyString } from "../shared/util.js";
 import {
@@ -191,7 +191,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsPrefix = await readInstructionsPrefix(instructionsFilePath, onLog);
-  const model = normalizeMiniMaxModel(firstNonEmptyString(config.primaryModel, config.model));
+  const model = resolveMiniMaxModel(config);
   const resolvedBaseUrl = resolveBaseUrl(config);
   const temperature = asNumber(config.temperature, DEFAULT_MINIMAX_LOCAL_TEMPERATURE);
   const maxCompletionTokens = Math.max(
@@ -351,12 +351,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const redacted = redactCommandTextForLogs(text);
     return apiKey ? redacted.split(apiKey).join("***REDACTED***") : redacted;
   };
+  // Model output (final answer and interleaved narration) is scrubbed of the
+  // literal API key only, so an endpoint that echoes the Authorization header
+  // cannot put the key into the run summary or run log. The generic log
+  // redactor is not applied here because it would also rewrite legitimate
+  // prose and code samples (e.g. "Authorization: Bearer <token>" in docs). A
+  // key shorter than 8 characters is not scrubbed, to avoid mangling text.
+  const scrubKey = (text: string): string =>
+    apiKey && apiKey.length >= 8 ? text.split(apiKey).join("***REDACTED***") : text;
 
   // Running usage totals — attached to EVERY result (success or failure) so a
   // run that spends tokens then fails still records cost and never bills $0.
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCachedTokens = 0;
+  // Set when a successful completion carried no usage block: the run's token
+  // count is then incomplete, so it is left unpriced rather than billed $0.
+  let usageMissing = false;
 
   const accounting = (): Partial<AdapterExecutionResult> => {
     const usage = {
@@ -364,7 +375,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       outputTokens: totalOutputTokens,
       cachedInputTokens: totalCachedTokens,
     };
-    const cost = computeMiniMaxCostUsd(model, usage, config);
+    const cost = usageMissing ? null : computeMiniMaxCostUsd(model, usage, config);
     return {
       provider: "minimax",
       biller: "minimax",
@@ -372,8 +383,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       billingType: "metered_api",
       usage,
       usageBasis: "per_run",
-      // No rate for this model (unknown id, no override): leave costUsd unset
-      // so the ledger records the run as "unpriced" instead of $0.
+      // No rate for this model (unknown id, no override), or a completion
+      // with no usage block: leave costUsd unset so the ledger records the
+      // run as "unpriced" instead of $0.
       ...(cost ? { costUsd: cost.costUsd } : {}),
     };
   };
@@ -484,6 +496,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ...(toolsEnabled ? { tools: [BASH_TOOL] } : {}),
           }),
           signal: controller.signal,
+          redirect: NO_REDIRECT,
         });
       } catch (error) {
         const err = error as Error & { name?: string };
@@ -492,6 +505,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const message = `MiniMax request failed: ${redactSecrets(err.message ?? String(error))}`;
         await onLog("stderr", `${message}\n`);
         return { ok: false, result: buildErrorResult(message, { transient: true }) };
+      }
+
+      if (isRedirectResponse(response)) {
+        await response.body?.cancel().catch(() => {});
+        const message =
+          `MiniMax endpoint answered with a redirect (HTTP ${response.status}); redirects are not followed, ` +
+          "so the request was not sent anywhere else. Point baseUrl at the final endpoint.";
+        await onLog("stderr", `${message}\n`);
+        return {
+          ok: false,
+          result: buildErrorResult(message, {
+            code: "minimax_redirect_refused",
+            details: { httpStatus: response.status },
+          }),
+        };
       }
 
       const body = await readResponseTextCapped(response, {
@@ -694,6 +722,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       totalInputTokens = addBoundedTokens(totalInputTokens, usage.inputTokens);
       totalOutputTokens = addBoundedTokens(totalOutputTokens, usage.outputTokens);
       totalCachedTokens = addBoundedTokens(totalCachedTokens, usage.cachedInputTokens);
+      if (!usage.reported) usageMissing = true;
 
       const turn = extractAssistantTurn(lastPayload);
       if (turn.toolCalls.length === 0) {
@@ -702,7 +731,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
 
       // Surface interleaved narration so transcripts stay honest and live.
-      const interleaved = applyStripThink(turn.content, stripThink);
+      const interleaved = scrubKey(applyStripThink(turn.content, stripThink));
       if (interleaved) await onLog("stdout", `${interleaved}\n`);
 
       messages.push(sanitizeAssistantMessageForHistory(turn.message));
@@ -771,11 +800,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const rawText = finalTurn?.content ?? "";
-    const finalText = truncateText(applyStripThink(rawText, stripThink), MINIMAX_LOCAL_MAX_FINAL_TEXT_CHARS);
+    const fullText = scrubKey(applyStripThink(rawText, stripThink));
 
     // Narrated tool syntax means the model fell out of native tool calling and
-    // did NOT actually run the work it describes: fail the run.
-    if (TOOL_MARKUP_PATTERN.test(finalText)) {
+    // did NOT actually run the work it describes: fail the run. Checked on the
+    // whole answer, before the length cut, so markup past the cut is caught.
+    if (TOOL_MARKUP_PATTERN.test(fullText)) {
       const message =
         "Model narrated tool-call markup instead of using native tool calling; the described actions were not executed.";
       await onLog("stdout", `[paperclip] ${message}\n`);
@@ -785,6 +815,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stopReason: "tool_markup_in_text",
       });
     }
+
+    const finalText = truncateText(fullText, MINIMAX_LOCAL_MAX_FINAL_TEXT_CHARS);
 
     // No final assistant text (blank content / all-think) after the run — for a
     // heartbeat this means "nothing to report", a benign no-op rather than a

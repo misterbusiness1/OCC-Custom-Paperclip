@@ -3,7 +3,8 @@ import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "./execute.js";
-import { MINIMAX_LOCAL_MAX_RESPONSE_BYTES } from "../constants.js";
+import { MINIMAX_LOCAL_MAX_FINAL_TEXT_CHARS, MINIMAX_LOCAL_MAX_RESPONSE_BYTES } from "../constants.js";
+import { testEnvironment } from "./test.js";
 
 // No test here reaches the real MiniMax API: fetch is mocked, or pointed at a
 // node:http stub bound to 127.0.0.1.
@@ -212,13 +213,15 @@ describe("minimax_local execute hardening", () => {
     expect(bad.retryNotBefore ?? null).toBeNull();
   });
 
-  it("caps an absurd Retry-After at 24 hours", async () => {
+  it("caps an absurd Retry-After at one hour", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ error: { message: "x" } }, 429, { "retry-after": "999999999" }),
+      jsonResponse({ error: { message: "x" } }, 429, { "retry-after": "99999999" }),
     );
     const before = Date.now();
     const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "k" } }));
-    expect(Date.parse(result.retryNotBefore!) - before).toBeLessThanOrEqual(24 * 60 * 60 * 1000 + 5000);
+    const delay = Date.parse(result.retryNotBefore!) - before;
+    expect(delay).toBeGreaterThanOrEqual(60 * 60 * 1000 - 5000);
+    expect(delay).toBeLessThanOrEqual(60 * 60 * 1000 + 5000);
   });
 
   it("scrubs the API key from an upstream error message that echoes it", async () => {
@@ -291,5 +294,159 @@ describe("minimax_local execute hardening", () => {
     expect(toolMessage.content).toContain("[output truncated]");
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(4096);
     expect(output).not.toContain("�");
+  });
+
+  describe("redirects are refused, never followed", () => {
+    // R answers 307 to T. T is NOT on the operator allowlist; the guard must
+    // not be side-stepped by following the hop.
+    async function startRedirectPair() {
+      const hits: Array<{ server: "R" | "T"; method?: string; url?: string; auth?: string }> = [];
+      const target = await startStub((req, res) => {
+        hits.push({ server: "T", method: req.method, url: req.url, auth: req.headers.authorization });
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "INTERNAL SECRET DATA: do-not-leak" } }));
+      });
+      const targetPort = new URL(target).port;
+      const redirector = await startStub((req, res) => {
+        hits.push({ server: "R", method: req.method, url: req.url, auth: req.headers.authorization });
+        req.resume();
+        res.writeHead(307, { location: `http://localhost:${targetPort}/internal-admin` });
+        res.end();
+      });
+      process.env.MINIMAX_LOCAL_ALLOWED_BASE_URL_HOSTS = new URL(redirector).host;
+      return { redirector, hits };
+    }
+
+    it("execute() fails with minimax_redirect_refused and does not contact the redirect target", async () => {
+      const { redirector, hits } = await startRedirectPair();
+      const logs: Array<{ stream: string; chunk: string }> = [];
+      const result = await execute(
+        makeCtx({ env: { MINIMAX_API_KEY: "sk-company" }, baseUrl: redirector }, logs),
+      );
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("minimax_redirect_refused");
+      expect(result.errorFamily ?? null).toBeNull();
+      expect(result.errorMeta).toMatchObject({ httpStatus: 307 });
+      expect(hits.map((h) => h.server)).toEqual(["R"]);
+      expect(hits[0]).toMatchObject({ method: "POST", url: "/v1/chat/completions", auth: "Bearer sk-company" });
+      const allText = `${result.errorMessage} ${logs.map((l) => l.chunk).join("")}`;
+      expect(allText).not.toContain("INTERNAL SECRET DATA");
+    });
+
+    it("testEnvironment() fails the probe and does not contact the redirect target", async () => {
+      const { redirector, hits } = await startRedirectPair();
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "minimax_local",
+        config: { env: { MINIMAX_API_KEY: "sk-company" }, baseUrl: redirector },
+      } as never);
+      expect(result.status).toBe("fail");
+      const completion = result.checks.find((c) => c.code === "minimax_completion");
+      expect(completion?.level).toBe("error");
+      expect(completion?.message).toMatch(/redirect/);
+      expect(JSON.stringify(result)).not.toContain("INTERNAL SECRET DATA");
+      expect(hits.map((h) => h.server)).toEqual(["R"]);
+    });
+
+    it("execute() also refuses an opaque redirect from a spec-compliant fetch", async () => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+        expect((init as RequestInit).redirect).toBe("manual");
+        const response = new Response(null, { status: 200 });
+        Object.defineProperty(response, "type", { value: "opaqueredirect" });
+        Object.defineProperty(response, "status", { value: 0 });
+        return response;
+      });
+      const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "k" } }));
+      expect(result.errorCode).toBe("minimax_redirect_refused");
+    });
+  });
+
+  it("scrubs the API key from successful model output (summary, resultJson and run log)", async () => {
+    const key = "company-secret-VALUE-123";
+    const baseUrl = await startStub((req, res) => {
+      req.resume();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          choices: [{ finish_reason: "stop", message: { content: `Done. key=${req.headers.authorization}` } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
+        }),
+      );
+    });
+    const logs: Array<{ stream: string; chunk: string }> = [];
+    const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: key }, baseUrl }, logs));
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("Done. key=Bearer ***REDACTED***");
+    expect(JSON.stringify(result)).not.toContain(key);
+    expect(logs.map((l) => l.chunk).join("")).not.toContain(key);
+  });
+
+  it("detects tool-call markup that appears after the final-text length cut", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        choices: [
+          {
+            finish_reason: "stop",
+            message: { content: `${"a".repeat(MINIMAX_LOCAL_MAX_FINAL_TEXT_CHARS + 10)}<tool_call>{"name":"bash"}` },
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      }),
+    );
+    const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "k" } }));
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("minimax_tool_markup");
+  });
+
+  it("keeps cached tokens within input tokens and leaves a nonsense usage block unpriced", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        choices: [{ finish_reason: "stop", message: { content: "ok" } }],
+        usage: { prompt_tokens: "1e30", completion_tokens: -5, prompt_tokens_details: { cached_tokens: 1e9 } },
+      }),
+    );
+    const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "k" } }));
+    expect(result.exitCode).toBe(0);
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 });
+    expect(result.costUsd).toBeUndefined();
+  });
+
+  it("clamps cached tokens to input tokens in the stored usage", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        choices: [{ finish_reason: "stop", message: { content: "ok" } }],
+        usage: { prompt_tokens: 100, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 5000 } },
+      }),
+    );
+    const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "k" } }));
+    expect(result.usage).toEqual({ inputTokens: 100, outputTokens: 10, cachedInputTokens: 100 });
+    expect(result.costUsd).toBeGreaterThan(0);
+  });
+
+  it("leaves a run unpriced (not $0) when a completion carries no usage block", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ choices: [{ finish_reason: "stop", message: { content: "ok" } }] }),
+    );
+    const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "k" } }));
+    expect(result.exitCode).toBe(0);
+    expect(result.billingType).toBe("metered_api");
+    expect(result.costUsd).toBeUndefined();
+  });
+
+  it("lets the operator's MINIMAX_LOCAL_PRICING_JSON take precedence over a tenant pricing override", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        choices: [{ finish_reason: "stop", message: { content: "ok" } }],
+        usage: { prompt_tokens: 1_000_000, completion_tokens: 0 },
+      }),
+    );
+    process.env.MINIMAX_LOCAL_PRICING_JSON = JSON.stringify({ "MiniMax-M3": { inputPerMTok: 2, outputPerMTok: 4 } });
+    const result = await execute(
+      makeCtx({
+        env: { MINIMAX_API_KEY: "k" },
+        pricing: { "MiniMax-M3": { inputPerMTok: 1e-9, outputPerMTok: 1e-9 } },
+      }),
+    );
+    expect(result.costUsd).toBeCloseTo(2, 9);
   });
 });

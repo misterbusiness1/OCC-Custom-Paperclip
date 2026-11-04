@@ -74,6 +74,7 @@ Core fields:
 - pricing (object, optional): per-model USD rate overrides, e.g.
   { "MiniMax-M3": { "inputPerMTok": 0.3, "outputPerMTok": 1.2 } }.
   Rates must be > 0 and <= 1000; an invalid override is ignored.
+  MINIMAX_LOCAL_PRICING_JSON (operator) takes precedence over this field.
 - env.MINIMAX_API_KEY (string or secret ref, recommended): MiniMax API key
 
 Notes:
@@ -85,11 +86,14 @@ Notes:
   not contain a query string, fragment or credentials, and must supply its own
   env.MINIMAX_API_KEY: the shared host key is never sent to a non-default
   endpoint. Key files are operator-only (process.env.MINIMAX_API_KEY_FILE).
+  Without MINIMAX_LOCAL_ALLOWED_BASE_URL_HOSTS, private/link-local IP literals
+  are refused. Redirects are never followed (minimax_redirect_refused).
 - Tool commands get MINIMAX_API_KEY / MINIMAX_API_KEY_FILE blanked in their
   environment. This is not isolation: they run as the server's OS user.
 - Failures exit with 1. HTTP 429 and MiniMax base_resp rate limits
   (1002/1039) are provider_quota; 5xx, network errors and base_resp
-  1000/1001/1013 are transient_upstream. Retry-After becomes retryNotBefore.
+  1000/1001/1013 are transient_upstream. Retry-After becomes retryNotBefore
+  (capped at one hour).
 - The run fails (non-zero exit) when the iteration cap is reached
   (minimax_iteration_cap), when the run budget expires (timedOut), when the
   same command fails 3 consecutive times (minimax_repeated_command_failure),
@@ -99,7 +103,10 @@ Notes:
   (exit 0) and does not call the API.
 - Cost is estimated from reported tokens x a per-model rate card. The default
   card is an unverified estimate; override it with pricing or
-  MINIMAX_LOCAL_PRICING_JSON. Unknown models are recorded as unpriced.
+  MINIMAX_LOCAL_PRICING_JSON. Unknown models, and completions without a usage
+  block, are recorded as unpriced.
+- Without tools (the default) the agent cannot record an issue disposition;
+  an issue assigned to it ends blocked after Paperclip's recovery runs.
 - By default, <think>...</think> blocks are removed before logging and storage.
 - Environment tests send one small "Return exactly: OK" completion (billed by
   MiniMax) and never echo secret values.
