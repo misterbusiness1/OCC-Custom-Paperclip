@@ -458,11 +458,13 @@ describe("sandbox adapter execution targets", () => {
   });
 
   it.each([
-    { outputMode: "polled", streamOutputViaSession: false },
-    { outputMode: "streamed", streamOutputViaSession: true },
+    { outputMode: "polled", streamOutputViaSession: false, managed: false },
+    { outputMode: "streamed", streamOutputViaSession: true, managed: false },
+    { outputMode: "polled", streamOutputViaSession: false, managed: true },
+    { outputMode: "streamed", streamOutputViaSession: true, managed: true },
   ])(
-    "preserves an explicit remote PATH equal to host PATH in $outputMode mode",
-    async ({ outputMode, streamOutputViaSession }) => {
+    "preserves an explicit remote PATH equal to host PATH in $outputMode mode (managed=$managed)",
+    async ({ outputMode, streamOutputViaSession, managed }) => {
       const rootDir = await mkdtemp(
         path.join(os.tmpdir(), `paperclip-process-session-${outputMode}-path-`),
       );
@@ -499,10 +501,13 @@ describe("sandbox adapter execution targets", () => {
         remoteCwd: rootDir,
         timeoutMs: 30_000,
         runner,
+        // Managed workers carry a trusted-key policy; PATH is deliberately not
+        // listed so only the explicit-launch baseline can keep it.
+        ...(managed ? { trustedRuntimeEnvKeys: [] } : {}),
       };
 
       const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-        runId: `run-process-session-${outputMode}-path`,
+        runId: `run-process-session-${outputMode}-path${managed ? "-managed" : ""}`,
         target,
         runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
         adapterKey: "acpx",

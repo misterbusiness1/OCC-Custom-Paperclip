@@ -680,7 +680,7 @@ function sanitizeExecutionTargetEnv(
   inheritedEnv: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
   if (target?.kind === "remote" && target.transport === "sandbox" && target.trustedRuntimeEnvKeys !== undefined) {
-    return sanitizeManagedWorkerEnv(env, target.trustedRuntimeEnvKeys, process.env);
+    return sanitizeManagedWorkerEnv(env, target.trustedRuntimeEnvKeys, inheritedEnv);
   }
   return sanitizeRemoteExecutionEnv(env, inheritedEnv);
 }

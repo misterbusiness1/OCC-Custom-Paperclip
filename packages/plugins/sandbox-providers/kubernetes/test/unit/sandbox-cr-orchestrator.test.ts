@@ -257,6 +257,30 @@ describe("beta readiness polling", () => {
       ),
     ).rejects.toBeInstanceOf(SandboxCrTimeoutError);
   });
+  it("keeps polling while a Ready CR's pod is not yet observable", async () => {
+    const pods: unknown[] = [];
+    const c = clients(betaSandbox(), pods);
+    let reads = 0;
+    c.custom.getNamespacedCustomObject.mockImplementation(async () => {
+      if (++reads === 2) pods.push(betaPod());
+      return betaSandbox();
+    });
+    expect(
+      await waitForSandboxReady(c as never, "ns", "pc-abc", {
+        timeoutMs: 1000,
+        pollMs: 1,
+      }),
+    ).toMatchObject({ phase: "Running" });
+    expect(reads).toBeGreaterThanOrEqual(2);
+  });
+  it("times out instead of failing when a Ready CR never gets an observable pod", async () => {
+    await expect(
+      waitForSandboxReady(clients(betaSandbox(), []) as never, "ns", "pc-abc", {
+        timeoutMs: 4,
+        pollMs: 1,
+      }),
+    ).rejects.toBeInstanceOf(SandboxCrTimeoutError);
+  });
   it("fails fast on replacement UID", async () => {
     await expect(
       waitForSandboxReady(clients() as never, "ns", "pc-abc", {

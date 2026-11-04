@@ -325,11 +325,11 @@ export async function waitForSandboxReady(
         `Sandbox ${namespace}/${name} cannot reach Ready: ${state.reason} — ${state.message ?? ""}`,
       );
     if (state.phase === "Running") {
+      // CR and pod reads are separate, eventually consistent requests: a
+      // Ready CR whose pod is not yet observable keeps polling until the
+      // deadline. findPodForSandbox still throws on foreign/ambiguous pods.
       if (await findPodForSandbox(clients, namespace, name, cr.metadata!.uid))
         return state;
-      throw new Error(
-        "Sandbox Ready condition has no current ready controller-owned pod",
-      );
     }
     await sleep(
       Math.min(opts.pollMs ?? 2000, Math.max(0, deadline - Date.now())),

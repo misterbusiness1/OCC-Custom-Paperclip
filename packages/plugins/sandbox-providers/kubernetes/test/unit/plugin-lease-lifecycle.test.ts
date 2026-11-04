@@ -179,17 +179,26 @@ describe("onEnvironmentResumeLease", () => {
       },
     };
 
-    const lease = await plugin.definition.onEnvironmentResumeLease!({
-      driverKey: "kubernetes",
-      companyId: "acme",
-      environmentId: "env-1",
-      config: CONFIG,
-      providerLeaseId: "pc-abc",
-      leaseMetadata: leaseMetadata(),
-    });
+    // A Ready CR whose pod never becomes observable is polled until the
+    // bounded resume deadline, then reported non-resumable.
+    vi.useFakeTimers();
+    try {
+      const pending = plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "kubernetes",
+        companyId: "acme",
+        environmentId: "env-1",
+        config: CONFIG,
+        providerLeaseId: "pc-abc",
+        leaseMetadata: leaseMetadata(),
+      });
+      await vi.advanceTimersByTimeAsync(31_000);
+      const lease = await pending;
 
-    expect(lease.providerLeaseId).toBeNull();
-    expect(lease.metadata?.expired).toBe(true);
+      expect(lease.providerLeaseId).toBeNull();
+      expect(lease.metadata?.expired).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
