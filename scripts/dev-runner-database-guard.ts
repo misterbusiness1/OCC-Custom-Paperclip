@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   resolveDatabaseTarget,
   type ResolvedDatabaseTarget,
@@ -30,4 +33,36 @@ export function assertDevRunnerDatabaseIsolation(
     databaseUrl = target.mode === "postgres" ? target.connectionString : undefined;
   }
   assertLocalDevDatabaseIsolation(env, databaseUrl, env.DATABASE_MIGRATION_URL);
+}
+
+/** Recheck after any prompt, then prevent the child from rereading mutable DB config. */
+export async function withDevRunnerMigrationTarget<T>(
+  env: NodeJS.ProcessEnv,
+  run: (childEnv: NodeJS.ProcessEnv) => Promise<T>,
+  resolveTarget: () => ResolvedDatabaseTarget = resolveDatabaseTarget,
+): Promise<T> {
+  const target = resolveTarget();
+  const childEnv = { ...env };
+  assertDevRunnerDatabaseIsolation(childEnv, () => target);
+  const databaseUrl = childEnv.DATABASE_URL?.trim()
+    || (target.mode === "postgres" ? target.connectionString : undefined);
+  if (databaseUrl) {
+    return await run({ ...childEnv, DATABASE_URL: databaseUrl });
+  }
+
+  // Embedded migration startup also resolves config in the child. Give it only the
+  // already-vetted local data directory and port, not the mutable instance files.
+  if (target.mode !== "embedded-postgres") throw new Error("Missing migration database target");
+  const directory = mkdtempSync(path.join(os.tmpdir(), "paperclip-dev-migration-"));
+  try {
+    const configPath = path.join(directory, "config.json");
+    writeFileSync(configPath, JSON.stringify({ database: {
+      mode: "embedded-postgres",
+      embeddedPostgresDataDir: target.dataDir,
+      embeddedPostgresPort: target.port,
+    } }), { mode: 0o600, flag: "wx" });
+    return await run({ ...childEnv, DATABASE_URL: "", PAPERCLIP_CONFIG: configPath });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }

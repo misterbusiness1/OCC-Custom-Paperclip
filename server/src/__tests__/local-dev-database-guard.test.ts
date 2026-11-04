@@ -107,6 +107,25 @@ describe("describeDatabaseHostForLogging", () => {
     expect(describeDatabaseHostForLogging("not a url")).toBe("<invalid DATABASE_URL>");
   });
 
+  it.each(["/", "?"])("does not log credentials when raw %s ends malformed userinfo", (delimiter) => {
+    const secret = "synthetic-password-never-log";
+    const url = `postgres://dev_user:${secret}${delimiter}extra@db.example/db`;
+    expect(describeDatabaseHostForLogging(url)).toBe("<invalid DATABASE_URL>");
+    expect(() => assertLocalDevDatabaseIsolation(DEV_ENV, url)).toThrow(/host=<invalid DATABASE_URL>/);
+    try {
+      assertLocalDevDatabaseIsolation(DEV_ENV, url);
+    } catch (error) {
+      expect(String(error)).not.toContain(secret);
+      expect(String(error)).not.toContain("dev_user");
+    }
+  });
+
+  it("never logs an unvalidated authority or encoded/control text", () => {
+    for (const url of ["postgres://user:secret/db", "pg://u:p@host:secret/db", "pg://u:p@host%40secret/db"]) {
+      expect(describeDatabaseHostForLogging(url)).toBe("<invalid DATABASE_URL>");
+    }
+  });
+
   it("describes non-postgres schemes without credentials", () => {
     expect(describeDatabaseHostForLogging("postgresql+psycopg2://user:s3cret@prod-host:5432/db")).toBe(
       "prod-host:5432",

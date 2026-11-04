@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
+import { stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertDevRunnerDatabaseIsolation } from "../../../scripts/dev-runner-database-guard.ts";
+import { resolveDatabaseTarget } from "../../../packages/db/src/runtime-config.ts";
+import { assertDevRunnerDatabaseIsolation, withDevRunnerMigrationTarget } from "../../../scripts/dev-runner-database-guard.ts";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const REMOTE_URL = "postgres://u:secret@prod.example.com:5432/db";
@@ -135,5 +137,89 @@ describe("local dev entrypoint wiring", () => {
     expect(pkg.scripts.dev).toMatch(/PAPERCLIP_LOCAL_DEV_ENTRYPOINT=true/);
     expect(pkg.scripts["dev:watch"]).toMatch(/PAPERCLIP_LOCAL_DEV_ENTRYPOINT=true/);
     expect(pkg.scripts.start ?? "").not.toMatch(/PAPERCLIP_LOCAL_DEV_ENTRYPOINT/);
+  });
+});
+
+describe("withDevRunnerMigrationTarget", () => {
+  it("refuses a config switched to remote while the migration prompt is pending", async () => {
+    let target = fromPaperclipEnv(LOOPBACK_URL);
+    const env = {};
+    assertDevRunnerDatabaseIsolation(env, () => target());
+    await Promise.resolve(); // interactive prompt yields to config writers
+    target = fromPaperclipEnv(REMOTE_URL);
+    let spawned = false;
+    await expect(withDevRunnerMigrationTarget(env, async () => { spawned = true; }, () => target()))
+      .rejects.toThrow(/non-loopback DATABASE_URL/);
+    expect(spawned).toBe(false);
+  });
+
+  it("pins the checked URL so a later config edit cannot redirect the migration child", async () => {
+    let target = fromPaperclipEnv(LOOPBACK_URL);
+    await withDevRunnerMigrationTarget({}, async (childEnv) => {
+      target = fromPaperclipEnv(REMOTE_URL);
+      expect(childEnv.DATABASE_URL).toBe(LOOPBACK_URL);
+      expect(childEnv.PAPERCLIP_LOCAL_DEV_ENTRYPOINT).toBe("true");
+    }, () => target());
+  });
+
+  it("pins an embedded target in a private disposable config and removes it after failure", async () => {
+    let configPath = "";
+    await expect(withDevRunnerMigrationTarget({}, async (childEnv) => {
+      configPath = childEnv.PAPERCLIP_CONFIG!;
+      expect(childEnv.DATABASE_URL).toBe("");
+      expect(fs.statSync(configPath).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(path.dirname(configPath)).mode & 0o777).toBe(0o700);
+      expect(JSON.parse(fs.readFileSync(configPath, "utf8")).database).toEqual({
+        mode: "embedded-postgres", embeddedPostgresDataDir: embedded().dataDir,
+        embeddedPostgresPort: embedded().port,
+      });
+      process.env.PAPERCLIP_CONFIG = configPath;
+      process.env.DATABASE_URL = childEnv.DATABASE_URL;
+      expect(resolveDatabaseTarget()).toMatchObject({
+        mode: "embedded-postgres", dataDir: embedded().dataDir,
+        port: embedded().port, configPath,
+      });
+      throw new Error("synthetic child failure");
+    }, embedded)).rejects.toThrow("synthetic child failure");
+    expect(fs.existsSync(configPath)).toBe(false);
+  });
+
+  it("refuses an unvetted migration URL before constructing a child environment", async () => {
+    let spawned = false;
+    await expect(withDevRunnerMigrationTarget({ DATABASE_MIGRATION_URL: REMOTE_URL }, async () => {
+      spawned = true;
+    }, embedded)).rejects.toThrow(/non-loopback DATABASE_MIGRATION_URL/);
+    expect(spawned).toBe(false);
+  });
+
+  it("preserves explicit remote override while pinning its actual checked target", async () => {
+    await withDevRunnerMigrationTarget({ PAPERCLIP_ALLOW_REMOTE_DEV_DATABASE: "true" }, async (childEnv) => {
+      expect(childEnv.DATABASE_URL).toBe(REMOTE_URL);
+    }, fromPaperclipEnv(REMOTE_URL));
+  });
+});
+
+describe("dev runner migration prompt call site", () => {
+  it("rechecks the database after the actual interactive prompt before spawning", async () => {
+    const source = fs.readFileSync(path.join(REPO_ROOT, "scripts/dev-runner.ts"), "utf8");
+    const start = source.indexOf("async function maybePreflightMigrations(");
+    const end = source.indexOf("\nasync function ", start + 1);
+    const code = stripTypeScriptTypes(source.slice(start, end));
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    const run = new AsyncFunction("enforceDevDatabaseIsolation", "mode", "env",
+      "refreshPendingMigrations", "pendingMigrations", "stdin", "stdout", "createInterface",
+      "formatPendingMigrationSummary", "runPnpm", "repoRoot", "exitForSignal",
+      "withDevRunnerMigrationTarget", code + ";return maybePreflightMigrations({interactive:true,autoApply:false})");
+    let target = fromPaperclipEnv(LOOPBACK_URL);
+    let spawned = false;
+    const env: NodeJS.ProcessEnv = {};
+    await expect(run(() => assertDevRunnerDatabaseIsolation(env, () => target()), "watch", env,
+      async () => ({ status: "needsMigrations" }), ["001"], { isTTY: true }, { isTTY: true },
+      () => ({ question: async () => { target = fromPaperclipEnv(REMOTE_URL); return "y"; }, close() {} }),
+      () => "001", async () => { spawned = true; return { code: 0, signal: null }; }, REPO_ROOT, () => {},
+      (childEnv: NodeJS.ProcessEnv, callback: (pinned: NodeJS.ProcessEnv) => Promise<unknown>) =>
+        withDevRunnerMigrationTarget(childEnv, callback, () => target())))
+      .rejects.toThrow(/non-loopback DATABASE_URL/);
+    expect(spawned).toBe(false);
   });
 });

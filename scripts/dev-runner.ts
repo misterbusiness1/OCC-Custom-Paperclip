@@ -9,7 +9,7 @@ import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-ru
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
-import { assertDevRunnerDatabaseIsolation } from "./dev-runner-database-guard.ts";
+import { assertDevRunnerDatabaseIsolation, withDevRunnerMigrationTarget } from "./dev-runner-database-guard.ts";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
@@ -487,11 +487,11 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
     return;
   }
 
-  const exit = await runPnpm(["db:migrate"], {
+  const exit = await withDevRunnerMigrationTarget(env, (migrationEnv) => runPnpm(["db:migrate"], {
     stdio: "inherit",
-    env,
+    env: migrationEnv,
     cwd: repoRoot,
-  });
+  }));
   if (exit.signal) {
     exitForSignal(exit.signal);
     return;

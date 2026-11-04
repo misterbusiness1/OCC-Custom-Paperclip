@@ -87,10 +87,18 @@ export function resolvePostgresUrlHosts(connectionString: string, env: GuardEnv 
 export function describeDatabaseHostForLogging(connectionString: string): string {
   // Never echo a value that is not a URL: it could be a bare secret or a keyword DSN.
   if (!connectionString.includes("://")) return "<invalid DATABASE_URL>";
-  // Use the text after the last "@" so a password containing a raw "@" never leaks.
+  const rest = connectionString.slice(connectionString.indexOf("://") + 3);
   const authority = hostAuthority(connectionString);
+  // A raw path/query delimiter before userinfo ends makes the authority ambiguous.
+  // Never report its prefix: it can be part of a malformed username or password.
+  if (rest.slice(authority.length).includes("@")) return "<invalid DATABASE_URL>";
   const hostPart = authority.slice(authority.lastIndexOf("@") + 1);
-  return hostPart || "<empty host>";
+  if (!hostPart) return "<empty host>";
+  // Only log host/port grammar, never arbitrary text from an untrusted URL.
+  const safeHost = /^(?:[a-zA-Z0-9_.-]+|\[[0-9a-fA-F:.]+\])(?::[0-9]+)?$/;
+  return hostPart.split(",").every((host) => safeHost.test(host))
+    ? hostPart
+    : "<invalid DATABASE_URL>";
 }
 
 /**
