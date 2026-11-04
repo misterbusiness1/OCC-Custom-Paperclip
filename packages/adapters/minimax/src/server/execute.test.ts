@@ -71,6 +71,30 @@ describe("minimax_local execute", () => {
     expect(logs).toEqual([{ stream: "stdout", chunk: "Visible answer\n" }]);
   });
 
+  it.each([
+    { choices: [] },
+    { choices: [{ message: { content: [{}] } }] },
+    { base_resp: { status_code: 1002, status_msg: "provider failure" } },
+  ])("retains reported billable usage when HTTP 200 fails protocol validation: %j", async (payload) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
+      ...payload,
+      usage: { prompt_tokens: 12, completion_tokens: 7, prompt_tokens_details: { cached_tokens: 2 } },
+    }));
+    const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "test-key" } }));
+    expect(result.exitCode).toBe(1);
+    expect(result.usage).toEqual({ inputTokens: 12, outputTokens: 7, cachedInputTokens: 2 });
+    expect(result.costUsd).toBeGreaterThan(0);
+  });
+
+  it("bounds malformed-completion usage before it reaches accounting", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
+      choices: [], usage: { prompt_tokens: 1e100, completion_tokens: 1e100, cached_tokens: 1e100 },
+    }));
+    const result = await execute(makeCtx({ env: { MINIMAX_API_KEY: "test-key" } }));
+    expect(result.exitCode).toBe(1);
+    expect(result.usage).toEqual({ inputTokens: 10_000_000, outputTokens: 10_000_000, cachedInputTokens: 10_000_000 });
+  });
+
   it("sends a chat-only request by default (tools are opt-in)", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse({ choices: [{ finish_reason: "stop", message: { content: "ok" } }], usage: {} }),

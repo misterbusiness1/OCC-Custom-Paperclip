@@ -15,6 +15,23 @@ export function createServerAdapter(): ServerAdapterModule {
     execute,
     testEnvironment,
     models,
+    listModels: async () => models,
+    refreshModels: async () => models,
+    // This API adapter has no local model configuration to discover.
+    detectModel: async () => null,
+    // Explicitly declare unsupported optional capabilities. Do not advertise
+    // session/skill/quota/runtime hooks that this stateless adapter cannot run.
+    acp: undefined,
+    listSkills: undefined,
+    syncSkills: undefined,
+    sessionCodec: undefined,
+    sessionManagement: undefined,
+    modelProfiles: undefined,
+    listModelProfiles: undefined,
+    onHireApproved: undefined,
+    getQuotaWindows: undefined,
+    getRuntimeCommandSpec: undefined,
+    requiresMaterializedRuntimeSkills: false,
     agentConfigurationDoc,
     getConfigSchema,
     // The heartbeat only mints a per-run agent JWT (ctx.authToken, surfaced to
@@ -23,6 +40,5 @@ export function createServerAdapter(): ServerAdapterModule {
     supportsLocalAgentJwt: true,
     supportsInstructionsBundle: true,
     instructionsPathKey: "instructionsFilePath",
-    // Stateless single-turn adapter: no sessionCodec.
   };
 }

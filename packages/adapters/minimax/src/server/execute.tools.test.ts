@@ -127,6 +127,21 @@ describe("execute tool loop", () => {
     expect(requestBody(0).tools).toBeUndefined();
   });
 
+  it("includes a malformed second turn's usage after an executed tool turn, exactly once", async () => {
+    fetchMock()
+      .mockResolvedValueOnce(assistantToolTurn("echo accounted-tool"))
+      .mockResolvedValueOnce(chatResponse({
+        choices: [], usage: { prompt_tokens: 12, completion_tokens: 7 },
+      }));
+    const { ctx } = makeContext();
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("minimax_empty_completion");
+    expect(result.usage).toEqual({ inputTokens: 32, outputTokens: 15, cachedInputTokens: 0 });
+    expect(result.costUsd).toBeCloseTo((32 * 0.3 + 15 * 1.2) / 1_000_000, 12);
+    expect(fetchMock()).toHaveBeenCalledTimes(2);
+  });
+
   it("executes a tool round trip and returns the final text with accumulated usage", async () => {
     fetchMock()
       .mockResolvedValueOnce(assistantToolTurn("echo tool-was-executed"))
