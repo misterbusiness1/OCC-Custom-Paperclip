@@ -16,7 +16,6 @@
  */
 
 import type { Db } from "@paperclipai/db";
-import { adapterSupportsRemoteManagedEnvironments } from "@paperclipai/shared";
 import type {
   Environment,
   EnvironmentLease,
@@ -45,7 +44,7 @@ import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
 import { parseObject } from "../adapters/utils.js";
-import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
+import { isBuiltInServerAdapter } from "../adapters/registry.js";
 import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
@@ -110,8 +109,8 @@ export function assertAdapterSupportsEnvironment(input: {
 }): void {
   const { adapterType, environment } = input;
   if (environment.driver === "local") return;
-  if (adapterSupportsRemoteManagedEnvironments(adapterType)) return;
-  if (BUILTIN_ADAPTER_TYPES.has(adapterType)) return;
+  // An external override does not inherit execution support from its type name.
+  if (isBuiltInServerAdapter(adapterType)) return;
   const provider =
     typeof environment.config?.provider === "string" ? environment.config.provider : undefined;
   throw new EnvironmentRunError(

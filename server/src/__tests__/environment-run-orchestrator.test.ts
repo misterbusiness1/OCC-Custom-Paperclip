@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks — must be declared before any imports that reference them
@@ -54,6 +54,8 @@ import {
   environmentRunOrchestrator,
   EnvironmentRunError,
 } from "../services/environment-run-orchestrator.ts";
+import { registerServerAdapter, unregisterServerAdapter } from "../adapters/registry.js";
+import type { ServerAdapterModule } from "../adapters/index.js";
 import type { Environment, EnvironmentLease, ExecutionWorkspace } from "@paperclipai/shared";
 import type { RealizedExecutionWorkspace } from "../services/workspace-runtime.ts";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.ts";
@@ -607,6 +609,29 @@ describe("environmentRunOrchestrator — adapter environment support", () => {
     );
     expect(runtime.realizeWorkspace).not.toHaveBeenCalled();
     expect(mockResolveEnvironmentExecutionTarget).not.toHaveBeenCalled();
+  });
+
+  afterEach(() => {
+    unregisterServerAdapter("hermes_gateway");
+    unregisterServerAdapter("claude_local");
+  });
+
+  it.each(["hermes_gateway", "claude_local"])("refuses an external %s override before lease or workspace work", async (adapterType) => {
+    registerServerAdapter({ type: adapterType } as ServerAdapterModule);
+    mockGetEnvironmentById.mockResolvedValue(kubernetesEnvironment());
+    const runtime = makeMockRuntime();
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    await expect(orchestrator.acquireForRun({
+      companyId: "company-1", selectedEnvironmentId: "env-k8s", localEnvironmentId: "env-local",
+      adapterType, issueId: null, heartbeatRunId: "run-1", agentId: "agent-1", persistedExecutionWorkspace: null,
+    })).rejects.toMatchObject({ code: "unsupported_adapter_environment" });
+    await expect(orchestrator.realizeForRun({
+      ...makeRealizeInput({ environment: kubernetesEnvironment() }), adapterType,
+    })).rejects.toMatchObject({ code: "unsupported_adapter_environment" });
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+    expect(runtime.realizeWorkspace).not.toHaveBeenCalled();
+    expect(mockResolveEnvironmentExecutionTarget).not.toHaveBeenCalled();
+    expect(() => assertAdapterSupportsEnvironment({ adapterType, environment: makeEnvironment("local") })).not.toThrow();
   });
 
   it("keeps local environments, remote-capable adapters and built-in adapters unchanged", () => {

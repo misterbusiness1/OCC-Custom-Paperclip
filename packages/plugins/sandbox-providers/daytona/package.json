@@ -50,11 +50,16 @@
     "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
   },
   "dependencies": {
-    "@daytonaio/sdk": "^0.171.0"
+    "@daytona/sdk": "0.227.3"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
     "typescript": "^5.7.3",
     "vitest": "^4.1.8"
+  },
+  "pnpm": {
+    "overrides": {
+      "@opentelemetry/api": "1.9.1"
+    }
   }
 }

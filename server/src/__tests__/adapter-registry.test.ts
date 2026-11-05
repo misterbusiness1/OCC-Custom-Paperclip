@@ -13,6 +13,7 @@ import {
   unregisterServerAdapter,
 } from "../adapters/index.js";
 import {
+  isBuiltInServerAdapter,
   resolveExternalAdapterRegistration,
   setOverridePaused,
 } from "../adapters/registry.js";
@@ -60,6 +61,19 @@ describe("server adapter registry", () => {
     expect(await listAdapterModels("external_test")).toEqual([
       { id: "external-model", label: "External Model" },
     ]);
+  });
+
+  it("tracks active implementation origin across built-in overrides and pause/resume", () => {
+    expect(isBuiltInServerAdapter("hermes_gateway")).toBe(true);
+    registerServerAdapter({ ...externalAdapter, type: "hermes_gateway" });
+    expect(isBuiltInServerAdapter("hermes_gateway")).toBe(false);
+    setOverridePaused("hermes_gateway", true);
+    expect(isBuiltInServerAdapter("hermes_gateway")).toBe(true);
+    setOverridePaused("hermes_gateway", false);
+    expect(isBuiltInServerAdapter("hermes_gateway")).toBe(false);
+    unregisterServerAdapter("hermes_gateway");
+    expect(isBuiltInServerAdapter("hermes_gateway")).toBe(true);
+    expect(isBuiltInServerAdapter("unknown_adapter")).toBe(false);
   });
 
   it("exposes adapter model profiles when adapters declare them", async () => {

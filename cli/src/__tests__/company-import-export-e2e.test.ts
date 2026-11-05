@@ -187,16 +187,75 @@ function collectTextFiles(root: string, current: string, files: Record<string, s
 }
 
 async function stopServerProcess(child: ServerProcess | null) {
-  if (!child || child.exitCode !== null) return;
-  child.kill("SIGTERM");
-  await new Promise<void>((resolve) => {
-    child.once("exit", () => resolve());
-    setTimeout(() => {
-      if (child.exitCode === null) {
-        child.kill("SIGKILL");
+  if (!child?.pid) return;
+  const pid = child.pid;
+  let exited = child.exitCode !== null || child.signalCode !== null;
+  const onExit = () => { exited = true; };
+  // Subscribe before signalling: a fast exit must not leave teardown waiting.
+  child.once("exit", onExit);
+  const groupAlive = () => {
+    if (process.platform === "win32") return !exited;
+    if (process.platform === "linux") {
+      // The verification owner may adopt exited grandchildren as zombies until
+      // this test returns. They have no work left; require every live member of
+      // this exact spawned session/group to settle rather than waiting on reaping.
+      return readdirSync("/proc").some((entry) => {
+        if (!/^\d+$/.test(entry)) return false;
+        try {
+          const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+          const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+          return Number(fields[2]) === pid && Number(fields[3]) === pid && fields[0] !== "Z";
+        } catch (error) {
+          if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+          throw error;
+        }
+      });
+    }
+    try {
+      process.kill(-pid, 0);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+      throw error;
+    }
+  };
+  const signal = (value: NodeJS.Signals) => {
+    try {
+      if (process.platform === "win32") {
+        if (!exited) child.kill(value);
+      } else {
+        // spawn below gives this fixture its own group. Settle it even if pnpm
+        // has already exited while its Node/tsx descendants remain alive.
+        process.kill(-pid, value);
       }
-    }, 5_000);
-  });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  };
+  const waitForSettlement = async () => {
+    const deadline = Date.now() + 5_000;
+    while ((!exited || groupAlive()) && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    }
+    return exited && !groupAlive();
+  };
+  try {
+    if (process.platform === "win32") {
+      // A leader-only signal loses the tree before taskkill can address it.
+      // If it already exited, do not guess that its descendants settled or
+      // signal a potentially reused PID.
+      if (exited) throw new Error("Cannot prove Windows fixture tree ownership after leader exit");
+      await execFileAsync("taskkill", ["/PID", String(pid), "/T", "/F"], { timeout: 5_000 });
+      if (!(await waitForSettlement())) throw new Error("Owned Windows CLI fixture tree did not settle");
+      return;
+    }
+    signal("SIGTERM");
+    if (await waitForSettlement()) return;
+    signal("SIGKILL");
+    if (!(await waitForSettlement())) throw new Error("Owned CLI fixture process group did not settle");
+  } finally {
+    child.removeListener("exit", onExit);
+  }
 }
 
 async function api<T>(baseUrl: string, pathname: string, init?: RequestInit): Promise<T> {
@@ -280,6 +339,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
   let cliShellHome = "";
   let paperclipInstanceId = "";
   let serverProcess: ServerProcess | null = null;
+  let bundledSkillSourceCommit = "";
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
@@ -299,17 +359,41 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     apiBase = `http://127.0.0.1:${port}`;
 
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+    // Preserve the actual source commit and skill tree in an owned Git clone.
+    // Do not invent a syntactically valid commit unrelated to the exported skill.
+    const gitFixture = path.join(tempRoot, "skill-provenance");
+    await execFileAsync("git", [
+      "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+      "-c", `safe.directory=${repoRoot}`,
+      "clone", "--no-hardlinks", "--no-checkout", repoRoot, gitFixture,
+    ]);
+    const gitEnv = { ...process.env, GIT_DIR: path.join(gitFixture, ".git"), GIT_WORK_TREE: gitFixture };
+    const git = (args: string[]) => execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], {
+      cwd: gitFixture, env: gitEnv,
+    });
+    await git(["checkout", "HEAD", "--", "skills"]);
+    const { stdout: fixtureCommit } = await git(["rev-parse", "HEAD"]);
+    expect(fixtureCommit.trim()).toMatch(/^[0-9a-f]{40}$/);
+    // The fixture must contain the same actual bundled skill bytes as the server.
+    expect(readFileSync(path.join(gitFixture, "skills", "paperclip", "SKILL.md")))
+      .toEqual(readFileSync(path.join(repoRoot, "skills", "paperclip", "SKILL.md")));
+    bundledSkillSourceCommit = fixtureCommit.trim();
     const output = { stdout: [] as string[], stderr: [] as string[] };
     const child = spawn(
       "pnpm",
       ["paperclipai", "run", "--config", configPath],
       {
         cwd: repoRoot,
-        env: createServerEnv(configPath, port, tempDb.connectionString, {
-          paperclipHome,
-          instanceId: paperclipInstanceId,
-          shellHome: cliShellHome,
-        }),
+        env: {
+          ...createServerEnv(configPath, port, tempDb.connectionString, {
+            paperclipHome,
+            instanceId: paperclipInstanceId,
+            shellHome: cliShellHome,
+          }),
+          GIT_DIR: gitEnv.GIT_DIR,
+          GIT_WORK_TREE: gitEnv.GIT_WORK_TREE,
+        },
+        detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -447,6 +531,8 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
 
     expect(exportResult.ok).toBe(true);
     expect(exportResult.filesWritten).toBeGreaterThan(0);
+    const exportedSkill = readFileSync(path.join(exportDir, "skills", "paperclipai", "paperclip", "paperclip", "SKILL.md"), "utf8");
+    expect(exportedSkill).toContain(bundledSkillSourceCommit);
     expect(readFileSync(path.join(exportDir, "COMPANY.md"), "utf8")).toContain(sourceCompany.name);
     expect(readFileSync(path.join(exportDir, ".paperclip.yaml"), "utf8")).toContain('schema: "paperclip/v1"');
 
