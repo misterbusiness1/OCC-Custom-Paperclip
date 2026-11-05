@@ -16,6 +16,7 @@
  */
 
 import type { Db } from "@paperclipai/db";
+import { adapterSupportsRemoteManagedEnvironments } from "@paperclipai/shared";
 import type {
   Environment,
   EnvironmentLease,
@@ -44,6 +45,7 @@ import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
 import { parseObject } from "../adapters/utils.js";
+import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
@@ -88,6 +90,42 @@ export class EnvironmentRunError extends Error {
     this.provider = details?.provider;
     this.cause = details?.cause;
   }
+}
+
+/**
+ * Refuse to run an external (plugin-provided) adapter that has no remote
+ * execution support in a non-local environment.
+ *
+ * resolveEnvironmentExecutionTarget returns null for such adapters, and a null
+ * target makes the heartbeat run the adapter on the server host. For an
+ * external adapter that silently defeats the selected environment, including
+ * the executionMode=kubernetes policy (a tool-enabled external adapter would
+ * run model-requested shell commands on the control-plane host). Built-in
+ * adapter types keep their existing behavior; local environments are always
+ * allowed.
+ */
+export function assertAdapterSupportsEnvironment(input: {
+  adapterType: string;
+  environment: Pick<Environment, "id" | "name" | "driver" | "config">;
+}): void {
+  const { adapterType, environment } = input;
+  if (environment.driver === "local") return;
+  if (adapterSupportsRemoteManagedEnvironments(adapterType)) return;
+  if (BUILTIN_ADAPTER_TYPES.has(adapterType)) return;
+  const provider =
+    typeof environment.config?.provider === "string" ? environment.config.provider : undefined;
+  throw new EnvironmentRunError(
+    "unsupported_adapter_environment",
+    `Adapter "${adapterType}" cannot run in environment "${environment.name}" ` +
+      `(${environment.driver}${provider ? `/${provider}` : ""}): external adapters only support ` +
+      `the local environment. Refusing to fall back to running it on the server host. ` +
+      `Select a local environment for this agent, or use an adapter with remote environment support.`,
+    {
+      environmentId: environment.id,
+      driver: environment.driver,
+      provider,
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +308,10 @@ export function environmentRunOrchestrator(
       localEnvironmentId: input.localEnvironmentId,
     });
 
+    // Fail before acquiring a lease (which may provision a sandbox) when the
+    // adapter cannot execute in the selected environment.
+    assertAdapterSupportsEnvironment({ adapterType: input.adapterType, environment });
+
     // Step 2: Acquire lease
     const leaseRecord = await acquireLease({
       companyId: input.companyId,
@@ -351,6 +393,8 @@ export function environmentRunOrchestrator(
       effectiveExecutionWorkspaceMode,
     } = input;
     let { lease, persistedExecutionWorkspace } = input;
+
+    assertAdapterSupportsEnvironment({ adapterType, environment });
 
     // Step 1: Build workspace realization request
     const workspaceRealizationRequest = buildWorkspaceRealizationRequest({
