@@ -311,6 +311,8 @@ function gatePolicy(ctx) {
       ["node", ["--test", "./scripts/__tests__/run-local-ci.test.mjs"]],
       ["node", ["--test", "./scripts/__tests__/run-vitest-stable-projects.test.mjs"]],
       ["node", ["--test", "./scripts/__tests__/run-sandbox-provider-tests.test.mjs"]],
+      ["node", ["--test", "./scripts/dependency-audit.test.mjs"]],
+      ["node", ["--test", "./scripts/__tests__/pnpm-overrides.test.mjs"]],
       ["node", ["--test", "./scripts/__tests__/overlay-image-workflow.test.mjs"]],
       ["node", ["--test", "./scripts/__tests__/agent-runtime-images-workflow.test.mjs"]],
       ["node", ["./scripts/release-package-map.mjs", "check"]],
