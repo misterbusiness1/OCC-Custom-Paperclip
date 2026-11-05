@@ -15,6 +15,8 @@ import type {
   CloudUpstreamWarning,
   CompanyPortabilityExportResult,
   CompanyPortabilityFileEntry,
+  DeploymentExposure,
+  DeploymentMode,
 } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
 import {
@@ -125,10 +127,25 @@ type LocalUpstreamExportBundle = {
 
 type ConnectionRow = typeof cloudUpstreamConnections.$inferSelect;
 type RunRow = typeof cloudUpstreamRuns.$inferSelect;
-type CloudUpstreamEndpointGuard = Pick<RemoteHttpEndpointGuardOptions, "lookup" | "dnsTimeoutMs">;
+type CloudUpstreamEndpointGuard = Pick<RemoteHttpEndpointGuardOptions, "lookup" | "dnsTimeoutMs"> & {
+  /**
+   * Whether the localhost development exception (loopback remote URL plus
+   * loopback endpoint, plain HTTP allowed) applies. Defaults to true; the
+   * service turns it off in authenticated + public deployments.
+   */
+  allowLocalDevelopment?: boolean;
+};
 
 export type CloudUpstreamServiceOptions = {
   instanceId?: string;
+  /**
+   * Deployment mode and exposure of this instance. In an authenticated,
+   * publicly exposed deployment the localhost development exception is
+   * disabled, so company members cannot point cloud sync at loopback
+   * services on the server host (the same rule toolAccessService applies).
+   */
+  deploymentMode?: DeploymentMode;
+  deploymentExposure?: DeploymentExposure;
   /** DNS lookup used to check that remote endpoints resolve to public addresses (tests inject one). */
   endpointLookup?: RemoteHttpEndpointLookup;
 };
@@ -136,7 +153,10 @@ export type CloudUpstreamServiceOptions = {
 export function cloudUpstreamService(db: Db, options: CloudUpstreamServiceOptions = {}) {
   const sourceInstanceId = `paperclip-local-${options.instanceId ?? "default"}`;
   const portability = companyPortabilityService(db);
-  const endpointGuard: CloudUpstreamEndpointGuard = { lookup: options.endpointLookup };
+  const endpointGuard: CloudUpstreamEndpointGuard = {
+    lookup: options.endpointLookup,
+    allowLocalDevelopment: cloudUpstreamAllowsLocalDevelopment(options),
+  };
 
   return {
     list: async (companyId: string): Promise<CloudUpstreamsState> => {
@@ -675,6 +695,24 @@ function isLocalDevelopmentHost(url: URL): boolean {
   return url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
 }
 
+/**
+ * The localhost development exception is off in authenticated + public
+ * deployments, matching toolAccessService's allowPrivateRemoteEndpoints().
+ */
+export function cloudUpstreamAllowsLocalDevelopment(
+  options: Pick<CloudUpstreamServiceOptions, "deploymentMode" | "deploymentExposure">,
+): boolean {
+  return options.deploymentMode !== "authenticated" || options.deploymentExposure !== "public";
+}
+
+function localDevelopmentAllowed(guard: CloudUpstreamEndpointGuard, ...urls: URL[]): boolean {
+  return guard.allowLocalDevelopment !== false && urls.every(isLocalDevelopmentHost);
+}
+
+function endpointGuardOptions(guard: CloudUpstreamEndpointGuard): Pick<RemoteHttpEndpointGuardOptions, "lookup" | "dnsTimeoutMs"> {
+  return { lookup: guard.lookup, dnsTimeoutMs: guard.dnsTimeoutMs };
+}
+
 function parseCloudUpstreamUrl(value: string, description: string): URL {
   try {
     return new URL(value);
@@ -689,7 +727,7 @@ function parseCloudUpstreamUrl(value: string, description: string): URL {
  * the operator; the discovery document (token URL, consent URL, stack origin)
  * is attacker-controlled when the remote is untrusted. The one exception is
  * explicit localhost development, where both the remote URL and the checked
- * URL are loopback hosts.
+ * URL are loopback hosts; it is disabled in authenticated + public deployments.
  */
 async function assertCloudUpstreamEndpoint(
   url: URL,
@@ -697,13 +735,13 @@ async function assertCloudUpstreamEndpoint(
   description: string,
   guard: CloudUpstreamEndpointGuard,
 ): Promise<void> {
-  const localDevelopment = isLocalDevelopmentHost(remote) && isLocalDevelopmentHost(url);
+  const localDevelopment = localDevelopmentAllowed(guard, remote, url);
   if (url.protocol !== "https:" && !(url.protocol === "http:" && localDevelopment)) {
     throw badRequest(`${description} must use HTTPS`);
   }
   await assertPublicRemoteHttpEndpoint(
     url,
-    { ...guard, allowPrivateNetwork: localDevelopment },
+    { ...endpointGuardOptions(guard), allowPrivateNetwork: localDevelopment },
     (_message, code) => badRequest(
       code === "remote_http_dns_failed"
         ? `${description} hostname could not be resolved`
@@ -1150,7 +1188,7 @@ async function fetchWithTimeout(input: string | URL, init: RequestInit | undefin
     // would also re-send the request body.
     redirect: "error",
     signal: AbortSignal.timeout(timeoutMs),
-  }, { ...guard, allowPrivateNetwork: isLocalDevelopmentHost(endpoint) },
+  }, { ...endpointGuardOptions(guard), allowPrivateNetwork: localDevelopmentAllowed(guard, endpoint) },
   (message, code) => badRequest(message, { code }));
 }
 

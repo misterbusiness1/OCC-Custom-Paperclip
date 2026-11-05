@@ -3,7 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 // Imported statically: a cold dynamic import of the service inside a test body
 // took longer than the default 5s test timeout on a loaded machine.
-import { assertDiscoveryUrl, assertTargetOrigin } from "../services/cloud-upstreams.js";
+import { assertDiscoveryUrl, assertTargetOrigin, cloudUpstreamAllowsLocalDevelopment } from "../services/cloud-upstreams.js";
 
 const mockCloudUpstreamService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -315,6 +315,26 @@ describe("cloud upstream discovery URL validation", () => {
     await expect(assertDiscoveryUrl("http://[::1]:4000/token", "http://[::1]:4000", "tokenUrl")).resolves.toBe(
       "http://[::1]:4000/token",
     );
+  });
+
+  it("rejects loopback discovery URLs when the localhost development exception is disabled", async () => {
+    const guard = { allowLocalDevelopment: false };
+    await expect(assertDiscoveryUrl("http://127.0.0.1:6379/internal", "http://127.0.0.1:3100/x", "tokenUrl", guard)).rejects.toThrow(
+      /must use HTTPS/,
+    );
+    await expect(assertDiscoveryUrl("https://localhost:6379/internal", "https://localhost:3100/x", "tokenUrl", guard)).rejects.toThrow(
+      /cannot target private/,
+    );
+    await expect(assertTargetOrigin("http://localhost:3100", "http://localhost:3100/stack", guard)).rejects.toThrow(
+      /must use HTTPS/,
+    );
+  });
+
+  it("only turns the localhost development exception off for authenticated + public deployments", () => {
+    expect(cloudUpstreamAllowsLocalDevelopment({})).toBe(true);
+    expect(cloudUpstreamAllowsLocalDevelopment({ deploymentMode: "local_trusted", deploymentExposure: "private" })).toBe(true);
+    expect(cloudUpstreamAllowsLocalDevelopment({ deploymentMode: "authenticated", deploymentExposure: "private" })).toBe(true);
+    expect(cloudUpstreamAllowsLocalDevelopment({ deploymentMode: "authenticated", deploymentExposure: "public" })).toBe(false);
   });
 
   it("rejects non-HTTPS discovery URLs from a non-local remote", async () => {
