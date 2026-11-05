@@ -44,7 +44,10 @@ function replaceLastPathSegment(pathValue: string, replacement: string) {
 export function maskUserNameForLogs(value: string, fallback = CURRENT_USER_REDACTION_TOKEN) {
   const trimmed = value.trim();
   if (!trimmed) return fallback;
-  return `${trimmed[0]}${"*".repeat(Math.max(1, Array.from(trimmed).length - 1))}`;
+  const characters = Array.from(trimmed);
+  // Keeping the first character of a one-character name reveals the whole name.
+  if (characters.length === 1) return fallback;
+  return `${characters[0]}${"*".repeat(characters.length - 1)}`;
 }
 
 function defaultUserNames() {
@@ -106,10 +109,20 @@ function resolveCurrentUserCandidates(opts?: CurrentUserRedactionOptions) {
 }
 
 /** Identifies the exact normalization profile without retaining names/home paths in request ledgers. */
-export function currentUserRedactionProfileSha256(enabled: boolean) {
+export function currentUserRedactionProfileSha256(enabled: boolean, opts?: CurrentUserRedactionOptions) {
   if (!enabled) return "disabled";
-  const profile = resolveCurrentUserCandidates();
-  return createHash("sha256").update(JSON.stringify({ version: 1,
+  const profile = resolveCurrentUserCandidates(opts);
+  const maskedNames = [
+    ...profile.userNames,
+    ...profile.homeDirs.map((homeDir) => splitPathSegments(homeDir).pop() ?? ""),
+  ];
+  // Retain captured v1 identities where masking is unchanged; changed rules must
+  // fail the accepted-profile availability check before retry material is compared.
+  const usesUpdatedMask = maskedNames.some((name) => {
+    const characters = Array.from(name.trim());
+    return characters.length === 1 || (characters[0]?.length ?? 0) > 1;
+  });
+  return createHash("sha256").update(JSON.stringify({ version: usesUpdatedMask ? 2 : 1,
     userNames: [...profile.userNames].sort(), homeDirs: [...profile.homeDirs].sort(), replacement: profile.replacement,
   })).digest("hex");
 }

@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockProjectService = vi.hoisted(() => ({
   create: vi.fn(),
@@ -206,6 +206,18 @@ describe.sequential("workspace runtime service route authorization", () => {
   const projectId = "11111111-1111-4111-8111-111111111111";
   const workspaceId = "22222222-2222-4222-8222-222222222222";
   const executionWorkspaceId = "33333333-3333-4333-8333-333333333333";
+
+  beforeAll(async () => {
+    // Load the cold dependency graph as fixture setup, within the existing hook budget.
+    // Per-case query imports below still create fresh route modules and Express apps.
+    registerWorkspaceRouteMocks();
+    const routeModulePath = "../routes/projects.js?workspace-runtime-routes-authz-prime";
+    const middlewareModulePath = "../middleware/index.js?workspace-runtime-routes-authz-prime";
+    await Promise.all([
+      import(routeModulePath) as Promise<typeof import("../routes/projects.js")>,
+      import(middlewareModulePath) as Promise<typeof import("../middleware/index.js")>,
+    ]);
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();

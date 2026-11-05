@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readZipArchive } from "@paperclipai/shared/portability-zip";
 import {
   CHUNKED_IMPORT_THRESHOLD_BYTES,
@@ -111,6 +111,11 @@ function buildDeflateZip(entryPath: string, text: string): Uint8Array {
 }
 
 describe("resolveChunkedImportZip", () => {
+  let densePackageZipBytes: Uint8Array;
+  beforeAll(() => {
+    // Construct the large compressed fixture outside the resolver's test budget.
+    densePackageZipBytes = buildDeflateZip("dense-package/NOTES.md", "paperclip agent docs\n".repeat(3_200_000));
+  });
 
   it("returns null for a zip at or under the threshold", async () => {
     const dir = await makeTempDir();
@@ -126,7 +131,7 @@ describe("resolveChunkedImportZip", () => {
     // ~64 MB of repetitive text DEFLATEs to a tiny file: far under the raw
     // 48 MB threshold, but the inline body would carry the inflated entries,
     // so the estimated request size sends the zip down the chunked path.
-    const zipBytes = buildDeflateZip("dense-package/NOTES.md", "paperclip agent docs\n".repeat(3_200_000));
+    const zipBytes = densePackageZipBytes;
     await writeFile(zipPath, zipBytes);
 
     const resolved = await resolveChunkedImportZip(zipPath);

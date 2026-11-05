@@ -12,6 +12,9 @@ export const kubernetesProviderConfigSchema = z
     namespacePrefix: z.string().regex(/^[a-z0-9-]{1,32}$/).default("paperclip-"),
     companySlug: z.string().regex(/^[a-z0-9-]{1,32}$/).optional(),
 
+    // Cleanup-only operator assertions, keyed by JSON.stringify([namespace, leaseId]).
+    legacySandboxCleanupUids: z.record(z.string().trim().min(1).max(256)).default({}),
+
     imageRegistry: z.string().url().optional(),
     imageAllowList: z.array(z.string()).default([]),
     imagePullSecrets: z.array(z.string()).default([]),
