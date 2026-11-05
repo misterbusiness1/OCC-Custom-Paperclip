@@ -2,7 +2,7 @@
 
 Published Cloudflare sandbox provider plugin for Paperclip.
 
-This package lives in the Paperclip monorepo, but it is intentionally excluded from the root `pnpm` workspace and shaped to publish and install like a standalone npm package. Operators can install it from the Plugins page by package name, and the host will fetch its dependencies at install time without adding lockfile churn to the Paperclip repo.
+This package lives in the Paperclip monorepo, but it is intentionally excluded from the root `pnpm` workspace and shaped to publish and install like a standalone npm package. Operators can install it from the Plugins page by package name, and the host will fetch its dependencies at install time without adding churn to the root `pnpm-lock.yaml`. The package commits its own `pnpm-lock.yaml`, which CI installs with `--frozen-lockfile`.
 
 ## Install
 
@@ -39,7 +39,7 @@ The package includes an operator-facing Cloudflare Worker scaffold under [bridge
 
 ```bash
 cd packages/plugins/sandbox-providers/cloudflare
-pnpm install --ignore-workspace --no-lockfile
+pnpm install --ignore-workspace --frozen-lockfile
 pnpm build
 pnpm test
 pnpm typecheck

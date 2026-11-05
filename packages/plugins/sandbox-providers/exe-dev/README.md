@@ -43,7 +43,7 @@ Operational notes:
 
 ```bash
 cd packages/plugins/sandbox-providers/exe-dev
-pnpm install --ignore-workspace --no-lockfile
+pnpm install --ignore-workspace --frozen-lockfile
 pnpm build
 pnpm test
 pnpm typecheck

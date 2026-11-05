@@ -14,13 +14,16 @@ function writePackage(dir, scripts) {
   writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: path.basename(dir), scripts }));
 }
 
-test("every provider with a test script is installed standalone and tested", (t) => {
+function writeLockedPackage(dir, scripts) {
+  writePackage(dir, scripts);
+  writeFileSync(path.join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+}
+
+test("every provider with a test script is installed standalone from its frozen lockfile and tested", (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), "paperclip-sandbox-providers-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  writePackage(path.join(root, "locked"), { test: "vitest run" });
-  writeFileSync(path.join(root, "locked", "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
-  writePackage(path.join(root, "unlocked"), { test: "vitest run" });
-  writePackage(path.join(root, "group", "nested"), { test: "vitest run" });
+  writeLockedPackage(path.join(root, "locked"), { test: "vitest run" });
+  writeLockedPackage(path.join(root, "group", "nested"), { test: "vitest run" });
   writePackage(path.join(root, "untested"), { build: "tsc" });
   writePackage(path.join(root, "node_modules", "dependency"), { test: "vitest run" });
 
@@ -28,23 +31,36 @@ test("every provider with a test script is installed standalone and tested", (t)
   assert.deepEqual(planSandboxProviderRuns(root), [
     {
       dir: dirs("group", "nested"),
-      install: ["--dir", dirs("group", "nested"), "install", "--ignore-workspace", "--no-lockfile", "--ignore-scripts"],
+      install: ["--dir", dirs("group", "nested"), "install", "--ignore-workspace", "--frozen-lockfile", "--ignore-scripts"],
       test: ["--dir", dirs("group", "nested"), "test"],
     },
     {
       dir: dirs("locked"),
-      install: ["--dir", dirs("locked"), "install", "--ignore-workspace", "--frozen-lockfile"],
+      install: ["--dir", dirs("locked"), "install", "--ignore-workspace", "--frozen-lockfile", "--ignore-scripts"],
       test: ["--dir", dirs("locked"), "test"],
-    },
-    {
-      dir: dirs("unlocked"),
-      install: ["--dir", dirs("unlocked"), "install", "--ignore-workspace", "--no-lockfile", "--ignore-scripts"],
-      test: ["--dir", dirs("unlocked"), "test"],
     },
   ]);
 });
 
-test("the checked-in sandbox providers are all planned", () => {
+test("a provider without a committed lockfile fails the plan", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "paperclip-sandbox-providers-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeLockedPackage(path.join(root, "locked"), { test: "vitest run" });
+  writePackage(path.join(root, "unlocked"), { test: "vitest run" });
+  writePackage(path.join(root, "untested"), { build: "tsc" });
+
+  assert.throws(() => planSandboxProviderRuns(root), /without a committed pnpm-lock\.yaml: unlocked\./);
+});
+
+test("the checked-in providers install from a frozen lockfile without lifecycle scripts", () => {
+  const plan = planSandboxProviderRuns();
+  for (const run of plan) {
+    assert.ok(!run.install.includes("--no-lockfile"), `${run.dir} must not install without a lockfile`);
+    assert.ok(run.install.includes("--frozen-lockfile") && run.install.includes("--ignore-scripts"), run.install.join(" "));
+  }
+});
+
+test("the checked-in sandbox providers all commit a lockfile and are planned", () => {
   const planned = planSandboxProviderRuns().map((run) => path.relative(repoRoot, run.dir).split(path.sep).join("/"));
   for (const provider of ["cloudflare", "daytona", "e2b", "exe-dev", "kubernetes", "modal", "novita"]) {
     assert.ok(

@@ -33,7 +33,7 @@ Notes:
 
 ```bash
 cd packages/plugins/sandbox-providers/daytona
-pnpm install --ignore-workspace --no-lockfile
+pnpm install --ignore-workspace --frozen-lockfile
 pnpm build
 pnpm test
 pnpm typecheck
