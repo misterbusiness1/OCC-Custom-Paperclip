@@ -1,4 +1,4 @@
-import { assertOrdinaryOnecliBinding, hasOnecliIdentity, ONECLI_IDENTITY_PATH, parseOnecliIdentity } from "./managed-onecli-identity.js";
+import { assertOrdinaryOnecliBinding, hasOnecliIdentity, isReservedOnecliPath, ONECLI_IDENTITY_PATH, parseOnecliIdentity } from "./managed-onecli-identity.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -4794,8 +4794,29 @@ export function secretService(db: Db | DbTransaction) {
         projectionClass: SecretProjectionClass;
         projectionAllowlistKey: string | null;
       }> = [];
+      // Reserved OneCLI paths stay closed to new or changed bindings. A binding the
+      // target already holds unchanged (same path, same secret) predates the managed
+      // identity path and is re-sent verbatim by ordinary config saves; keep accepting it.
+      const reservedRefs = refs.filter((ref) => isReservedOnecliPath(ref.configPath));
+      const grandfathered = new Set<string>();
+      if (reservedRefs.length > 0) {
+        const existing = await db
+          .select({ secretId: companySecretBindings.secretId, configPath: companySecretBindings.configPath })
+          .from(companySecretBindings)
+          .where(
+            and(
+              eq(companySecretBindings.companyId, companyId),
+              eq(companySecretBindings.targetType, target.targetType),
+              eq(companySecretBindings.targetId, target.targetId),
+              inArray(companySecretBindings.configPath, reservedRefs.map((ref) => ref.configPath)),
+            ),
+          );
+        for (const row of existing) grandfathered.add(`${row.configPath}\u0000${row.secretId}`);
+      }
       for (const ref of refs) {
-        assertOrdinaryOnecliBinding(null, ref.configPath);
+        if (!grandfathered.has(`${ref.configPath}\u0000${ref.secretId}`)) {
+          assertOrdinaryOnecliBinding(null, ref.configPath);
+        }
         await assertSecretInCompany(companyId, ref.secretId);
         assertSecretBindingConfigPath({ targetType: target.targetType, configPath: ref.configPath });
         const projectionClass = ref.projectionClass ?? "unclassified";
