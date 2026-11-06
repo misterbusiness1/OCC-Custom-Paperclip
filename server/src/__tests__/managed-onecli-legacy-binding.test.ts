@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { companySecretBindings, companySecrets } from "@paperclipai/db";
 import { secretService } from "../services/secrets.js";
+import { ONECLI_IDENTITY_PATH } from "../services/managed-onecli-identity.js";
 
 vi.mock("../adapters/index.js", () => ({ findActiveServerAdapter: vi.fn() }));
 vi.mock("@paperclipai/adapter-codex-local/server", () => ({
@@ -10,7 +11,15 @@ vi.mock("@paperclipai/adapter-codex-local/server", () => ({
 
 // A legacy agent config carries env.ONECLI_SECRET_API as an ordinary secret_ref that
 // predates the managed identity path. Ordinary saves re-send it unchanged.
-function fixture(existing: Array<{ secretId: string; configPath: string }>) {
+type Held = { secretId: string; configPath: string; versionSelector?: string; required?: boolean; projectionClass?: string; projectionAllowlistKey?: string | null };
+function fixture(held: Held[]) {
+  const existing = held.map((row) => ({
+    versionSelector: "latest",
+    required: true,
+    projectionClass: "unclassified",
+    projectionAllowlistKey: null,
+    ...row,
+  }));
   const plainSecret = {
     id: "legacy-secret",
     companyId: "company",
@@ -92,6 +101,45 @@ describe("legacy OneCLI env bindings on ordinary config saves", () => {
         { replaceAll: true },
       ),
     ).rejects.toMatchObject({ status: 403 });
+    expect(f.db.transaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses a held reserved path when the version selector changes", async () => {
+    const f = fixture([{ secretId: "legacy-secret", configPath: "env.ONECLI_SECRET_API" }]);
+    await expect(
+      f.svc.syncSecretRefsForTarget(
+        "company",
+        target,
+        [{ secretId: "legacy-secret", configPath: "env.ONECLI_SECRET_API", versionSelector: 3 as never }],
+        { replaceAll: true },
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(f.db.transaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses a held reserved path when the projection class changes", async () => {
+    const f = fixture([{ secretId: "legacy-secret", configPath: "env.ONECLI_SECRET_API" }]);
+    await expect(
+      f.svc.syncSecretRefsForTarget(
+        "company",
+        target,
+        [{ secretId: "legacy-secret", configPath: "env.ONECLI_SECRET_API", projectionClass: "class3" as never }],
+        { replaceAll: true },
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(f.db.transaction).not.toHaveBeenCalled();
+  });
+
+  it("never grandfathers the canonical identity path, even when held", async () => {
+    const f = fixture([{ secretId: "legacy-secret", configPath: ONECLI_IDENTITY_PATH }]);
+    await expect(
+      f.svc.syncSecretRefsForTarget(
+        "company",
+        target,
+        [{ secretId: "legacy-secret", configPath: ONECLI_IDENTITY_PATH }],
+        { replaceAll: true },
+      ),
+    ).rejects.toMatchObject({ status: 403, message: expect.stringContaining("company owner assignment path") });
     expect(f.db.transaction).not.toHaveBeenCalled();
   });
 });

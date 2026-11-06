@@ -4794,14 +4794,41 @@ export function secretService(db: Db | DbTransaction) {
         projectionClass: SecretProjectionClass;
         projectionAllowlistKey: string | null;
       }> = [];
-      // Reserved OneCLI paths stay closed to new or changed bindings. A binding the
-      // target already holds unchanged (same path, same secret) predates the managed
-      // identity path and is re-sent verbatim by ordinary config saves; keep accepting it.
-      const reservedRefs = refs.filter((ref) => isReservedOnecliPath(ref.configPath));
+      // Reserved OneCLI paths stay closed to new or changed bindings. A legacy env binding
+      // the target already holds unchanged (same path, secret, version selector, required
+      // flag and projection) predates the managed identity path and is re-sent verbatim by
+      // ordinary config saves; keep accepting exactly that. The canonical identity path is
+      // never grandfathered: it belongs to the owner assignment path alone.
+      const grandfatherKey = (ref: {
+        configPath: string;
+        secretId: string;
+        versionSelector: SecretVersionSelector | string;
+        required: boolean;
+        projectionClass: string;
+        projectionAllowlistKey: string | null;
+      }) =>
+        JSON.stringify([
+          ref.configPath,
+          ref.secretId,
+          String(ref.versionSelector),
+          ref.required,
+          ref.projectionClass,
+          ref.projectionAllowlistKey,
+        ]);
+      const reservedRefs = refs.filter(
+        (ref) => ref.configPath !== ONECLI_IDENTITY_PATH && isReservedOnecliPath(ref.configPath),
+      );
       const grandfathered = new Set<string>();
       if (reservedRefs.length > 0) {
         const existing = await db
-          .select({ secretId: companySecretBindings.secretId, configPath: companySecretBindings.configPath })
+          .select({
+            secretId: companySecretBindings.secretId,
+            configPath: companySecretBindings.configPath,
+            versionSelector: companySecretBindings.versionSelector,
+            required: companySecretBindings.required,
+            projectionClass: companySecretBindings.projectionClass,
+            projectionAllowlistKey: companySecretBindings.projectionAllowlistKey,
+          })
           .from(companySecretBindings)
           .where(
             and(
@@ -4811,10 +4838,22 @@ export function secretService(db: Db | DbTransaction) {
               inArray(companySecretBindings.configPath, reservedRefs.map((ref) => ref.configPath)),
             ),
           );
-        for (const row of existing) grandfathered.add(`${row.configPath}\u0000${row.secretId}`);
+        for (const row of existing) {
+          grandfathered.add(
+            grandfatherKey({ ...row, projectionAllowlistKey: row.projectionAllowlistKey ?? null }),
+          );
+        }
       }
       for (const ref of refs) {
-        if (!grandfathered.has(`${ref.configPath}\u0000${ref.secretId}`)) {
+        const offered = grandfatherKey({
+          configPath: ref.configPath,
+          secretId: ref.secretId,
+          versionSelector: ref.versionSelector ?? "latest",
+          required: ref.required ?? true,
+          projectionClass: ref.projectionClass ?? "unclassified",
+          projectionAllowlistKey: ref.projectionAllowlistKey ?? null,
+        });
+        if (ref.configPath === ONECLI_IDENTITY_PATH || !grandfathered.has(offered)) {
           assertOrdinaryOnecliBinding(null, ref.configPath);
         }
         await assertSecretInCompany(companyId, ref.secretId);
