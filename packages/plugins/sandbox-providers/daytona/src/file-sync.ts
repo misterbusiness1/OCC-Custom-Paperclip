@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { FileDownloadRequest, FileDownloadResponse, FileUpload, Sandbox } from "@daytonaio/sdk";
+import type { FileDownloadRequest, FileDownloadResponse, FileUpload, Sandbox } from "@daytona/sdk";
 import type {
   PluginEnvironmentSyncResult,
   PluginSyncFileMapping,

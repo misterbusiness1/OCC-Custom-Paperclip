@@ -184,6 +184,35 @@ test("every pr.yml job maps to local gates that run its commands", () => {
   assert.ok(checked >= 25, `expected to check the pr.yml commands, only found ${checked}`);
 });
 
+// Node test files that guard CI and dependency policy must run in the pr.yml
+// policy job (and therefore in the local policy gate, by the check above).
+// scripts/__tests__ files not listed in NOT_YET_IN_POLICY must be wired in;
+// that list may only shrink.
+const POLICY_NODE_TESTS = ["./scripts/dependency-audit.test.mjs"];
+const NOT_YET_IN_POLICY = new Set([
+  "./scripts/__tests__/release-dry-run-notes.test.mjs",
+  "./scripts/__tests__/run-typecheck-build-gaps.test.mjs",
+  "./scripts/__tests__/serve-storybook-static.test.mjs",
+  "./scripts/__tests__/storybook-visual-baseline.test.mjs",
+]);
+
+test("the pr.yml policy job runs the policy node tests", () => {
+  const policyCommands = new Set(jobCommands(prWorkflowJobs().get("policy")));
+  const testsDir = path.join(repoRoot, "scripts", "__tests__");
+  const scriptTests = readdirSync(testsDir)
+    .filter((name) => name.endsWith(".test.mjs"))
+    .map((name) => `./scripts/__tests__/${name}`);
+  for (const file of NOT_YET_IN_POLICY) {
+    assert.ok(scriptTests.includes(file), `${file} no longer exists; drop it from NOT_YET_IN_POLICY`);
+    assert.ok(!policyCommands.has(`node --test ${file}`), `${file} now runs in policy; drop it from NOT_YET_IN_POLICY`);
+  }
+  const required = [...scriptTests.filter((file) => !NOT_YET_IN_POLICY.has(file)), ...POLICY_NODE_TESTS];
+  for (const file of required) {
+    assert.ok(policyCommands.has(`node --test ${file}`), `pr.yml policy job does not run \`node --test ${file}\``);
+  }
+  assert.ok(required.includes("./scripts/__tests__/pnpm-overrides.test.mjs"));
+});
+
 // ---------------------------------------------------------------------------
 // Self-hosted routing: only unprivileged verification workflows may follow
 // PAPERCLIP_CI_RUNS_ON (doc/SELF-HOSTED-CI.md). A runner that ran a PR job must

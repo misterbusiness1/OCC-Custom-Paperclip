@@ -422,6 +422,7 @@ const piLocalAdapter: ServerAdapterModule = {
 };
 
 const adaptersByType = new Map<string, ServerAdapterModule>();
+const builtInAdapters = new Set<ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
 // original builtin so it can be restored when the override is deactivated.
@@ -449,6 +450,7 @@ function registerBuiltInAdapters() {
     processAdapter,
     httpAdapter,
   ]) {
+    builtInAdapters.add(adapter);
     adaptersByType.set(adapter.type, adapter);
   }
 }
@@ -731,4 +733,10 @@ export function findActiveServerAdapter(type: string): ServerAdapterModule | nul
     if (fallback) return fallback;
   }
   return adaptersByType.get(type) ?? null;
+}
+
+/** Identify the active implementation, including paused override fallbacks. */
+export function isBuiltInServerAdapter(type: string): boolean {
+  const adapter = findActiveServerAdapter(type);
+  return adapter !== null && builtInAdapters.has(adapter);
 }

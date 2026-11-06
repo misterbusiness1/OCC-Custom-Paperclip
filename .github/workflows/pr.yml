@@ -90,6 +90,12 @@ jobs:
       - name: Test sandbox provider test plan
         run: node --test ./scripts/__tests__/run-sandbox-provider-tests.test.mjs
 
+      - name: Test dependency audit policy
+        run: node --test ./scripts/dependency-audit.test.mjs
+
+      - name: Test pnpm override pins
+        run: node --test ./scripts/__tests__/pnpm-overrides.test.mjs
+
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 

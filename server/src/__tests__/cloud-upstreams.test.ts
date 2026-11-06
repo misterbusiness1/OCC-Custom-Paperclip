@@ -359,6 +359,54 @@ describeEmbeddedPostgres("cloud upstream persistence", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("disables the localhost development exception in authenticated + public deployments", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const server = await startLocalServer((req, res, origin) => {
+      if (req.url?.startsWith("/.well-known/paperclip-upstream")) {
+        writeJson(res, discoveryDocument({
+          origin,
+          tokenUrl: `${origin}/oauth/token`,
+          authorizeUrl: `${origin}/oauth/authorize`,
+        }));
+        return;
+      }
+      writeJson(res, { error: "not_found" }, 404);
+    });
+    try {
+      const publicAuthenticated = cloudUpstreamService(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+      });
+      await expect(publicAuthenticated.startConnect({
+        companyId,
+        remoteUrl: `${server.origin}/PC1`,
+        redirectUri: "http://localhost:3100/callback",
+      })).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/remote URL must use HTTPS/) });
+      await expect(publicAuthenticated.startConnect({
+        companyId,
+        remoteUrl: server.origin.replace("http://", "https://"),
+        redirectUri: "http://localhost:3100/callback",
+      })).rejects.toMatchObject({ status: 400, details: { code: "remote_http_private_endpoint" } });
+      expect(server.requests).toEqual([]);
+      await expect(db.select().from(cloudUpstreamConnections)).resolves.toHaveLength(0);
+
+      // The exception still applies to authenticated + private deployments.
+      const started = await cloudUpstreamService(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "private",
+      }).startConnect({
+        companyId,
+        remoteUrl: server.origin,
+        redirectUri: "http://localhost:3100/callback",
+      });
+      expect(started.connection.target.origin).toBe(server.origin);
+      expect(server.requests.map((request) => request.path.split("?")[0])).toEqual(["/.well-known/paperclip-upstream"]);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("does not follow a redirect from the discovery endpoint", async () => {
     const companyId = randomUUID();
     await seedCompany(companyId);

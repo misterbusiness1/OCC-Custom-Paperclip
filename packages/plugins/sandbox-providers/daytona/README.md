@@ -12,7 +12,7 @@ From a Paperclip instance, install:
 @paperclipai/plugin-daytona
 ```
 
-The host plugin installer runs `npm install` into the managed plugin directory, so transitive dependencies such as `@daytonaio/sdk` are pulled in during installation.
+The host plugin installer runs `npm install` into the managed plugin directory, so transitive dependencies such as `@daytona/sdk` are pulled in during installation.
 
 ## Configuration
 
@@ -25,7 +25,7 @@ Configure Daytona from `Instance Settings -> Environments`, not from the plugin'
 
 Notes:
 
-- The current published Daytona SDK package is `@daytonaio/sdk`.
+- The provider uses `@daytona/sdk` 0.227.3, the maintained package name. Its matching OpenTelemetry dependency family replaces the older 0.207.0/2.2.0 family.
 - The driver supports both `snapshot`-based and `image`-based sandbox creation. If both are set, validation rejects the config as ambiguous.
 - Reusable leases map to Daytona stop/start semantics. Non-reusable leases are deleted on release.
 
@@ -33,7 +33,7 @@ Notes:
 
 ```bash
 cd packages/plugins/sandbox-providers/daytona
-pnpm install --ignore-workspace --no-lockfile
+pnpm install --ignore-workspace --frozen-lockfile
 pnpm build
 pnpm test
 pnpm typecheck
@@ -46,3 +46,7 @@ These commands assume the repo root has already been installed once so the local
 - `src/manifest.ts` declares the sandbox-provider driver metadata
 - `src/plugin.ts` implements the environment lifecycle hooks
 - `paperclipPlugin.manifest` and `paperclipPlugin.worker` point the host at the built plugin entrypoints in `dist/`
+
+### Standalone dependency compatibility
+
+The standalone pnpm graph constrains `@opentelemetry/api` to `1.9.1`, which satisfies the Daytona SDK and OpenTelemetry 2.12 peer ranges. API 1.10 is outside several declared peer ranges. This project-level pnpm constraint does not impose dependency overrides on downstream npm consumers; generated-package installer verification remains separate.

@@ -8,6 +8,15 @@
 // Expects the root workspace to be installed and @paperclipai/plugin-sdk built
 // (`pnpm install && pnpm --filter @paperclipai/plugin-sdk build`). Every
 // provider runs even after one fails; the exit status reports all of them.
+//
+// Reproducible installs: every provider must commit its own pnpm-lock.yaml
+// (the root lockfile does not cover them), and each is installed with
+// --frozen-lockfile --ignore-scripts, so CI and `pnpm ci:local` run exactly the
+// reviewed dependency graph and no dependency lifecycle scripts. A provider
+// without a lockfile fails the plan instead of resolving the newest in-range
+// releases. To add or update one, run in the provider directory:
+//   pnpm install --ignore-workspace --lockfile-only --ignore-scripts
+// and commit the resulting pnpm-lock.yaml (see doc/SELF-HOSTED-CI.md).
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -19,19 +28,23 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const providersRoot = join(repoRoot, "packages", "plugins", "sandbox-providers");
 
 // One entry per provider package with a `test` script, in a stable order.
+// Throws when a provider has no committed pnpm-lock.yaml.
 export function planSandboxProviderRuns(parentDir = providersRoot) {
-  return readPluginsUnder(parentDir)
+  const dirs = readPluginsUnder(parentDir)
     .filter((dir) => typeof JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).scripts?.test === "string")
-    .sort((left, right) => left.localeCompare(right))
-    .map((dir) => ({
-      dir,
-      // A provider that commits its own lockfile installs exactly that graph;
-      // the others resolve fresh without running dependency lifecycle scripts.
-      install: existsSync(join(dir, "pnpm-lock.yaml"))
-        ? ["--dir", dir, "install", "--ignore-workspace", "--frozen-lockfile"]
-        : ["--dir", dir, "install", "--ignore-workspace", "--no-lockfile", "--ignore-scripts"],
-      test: ["--dir", dir, "test"],
-    }));
+    .sort((left, right) => left.localeCompare(right));
+  const unlocked = dirs.filter((dir) => !existsSync(join(dir, "pnpm-lock.yaml")));
+  if (unlocked.length > 0) {
+    throw new Error(
+      `Sandbox providers without a committed pnpm-lock.yaml: ${unlocked.map((dir) => relative(parentDir, dir)).join(", ")}. ` +
+        "Run `pnpm install --ignore-workspace --lockfile-only --ignore-scripts` in each and commit the lockfile.",
+    );
+  }
+  return dirs.map((dir) => ({
+    dir,
+    install: ["--dir", dir, "install", "--ignore-workspace", "--frozen-lockfile", "--ignore-scripts"],
+    test: ["--dir", dir, "test"],
+  }));
 }
 
 function runPnpm(args) {
@@ -44,7 +57,13 @@ function runPnpm(args) {
 }
 
 function main() {
-  const runs = planSandboxProviderRuns();
+  let runs;
+  try {
+    runs = planSandboxProviderRuns();
+  } catch (error) {
+    console.error(`[sandbox-providers] ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
   if (runs.length === 0) {
     console.error(`[sandbox-providers] No provider with a test script under ${relative(repoRoot, providersRoot)}`);
     process.exit(1);

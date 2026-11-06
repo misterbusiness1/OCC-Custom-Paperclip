@@ -75,6 +75,19 @@ do not run.
   `PAPERCLIP_E2E_PORT`, because the fixed default port 3199 collides when two
   e2e runs share a host. `tests/e2e/playwright.config.ts` boots the server in
   its own temporary `PAPERCLIP_HOME`, so your `~/.paperclip` is not used.
+- **Sandbox providers install only from their committed lockfiles.** The
+  providers under `packages/plugins/sandbox-providers/` are outside the pnpm
+  workspace, so the root `pnpm-lock.yaml`, its overrides and `pnpm audit` do
+  not cover them. Each provider commits its own `pnpm-lock.yaml`, and
+  `scripts/run-sandbox-provider-tests.mjs` installs it with
+  `--ignore-workspace --frozen-lockfile --ignore-scripts`, so the
+  `sandbox-providers` gate (and the `Sandbox providers standalone` PR job)
+  runs the reviewed dependency graph and no dependency lifecycle scripts. A
+  provider without a lockfile, or a lockfile that no longer matches its
+  `package.json`, fails the gate. To add a provider or change its
+  dependencies, run `pnpm install --ignore-workspace --lockfile-only
+  --ignore-scripts` in the provider directory and commit the lockfile diff for
+  review. Per-provider `pnpm audit` is not part of the gate yet.
 - **Every other environment variable is visible to the code under test,**
   including `gh` logins and cloud credentials. Treat running `pnpm ci:local` on
   a branch like running that branch's code yourself.

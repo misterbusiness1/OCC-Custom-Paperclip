@@ -35,6 +35,11 @@ The `exports` point at TypeScript source, so the server must run under the
   environment minus `PAPERCLIP_*` keys and with the MiniMax key blanked in
   the environment. Blanking is not isolation: commands run as the server user
   and can read host files and process environments.
+- Runs are refused (`unsupported_adapter_environment`) when the agent's
+  resolved environment is not local, for example an instance-default sandbox
+  environment or the managed Kubernetes environment that
+  `executionMode=kubernetes` forces. The server no longer falls back to
+  running external adapters on the host in that case.
 - `maxToolIterations` is 25. The iteration cap, repeated identical command
   failures and narrated tool-call markup fail the run with
   `minimax_iteration_cap`, `minimax_repeated_command_failure` and

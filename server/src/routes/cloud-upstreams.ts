@@ -3,8 +3,12 @@ import type { Db } from "@paperclipai/db";
 import { badRequest, notFound } from "../errors.js";
 import { assertBoardOrgAccess, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { cloudUpstreamService, instanceSettingsService, logActivity } from "../services/index.js";
+import type { CloudUpstreamServiceOptions } from "../services/cloud-upstreams.js";
 
-export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {}) {
+export function cloudUpstreamRoutes(
+  db: Db,
+  options: Pick<CloudUpstreamServiceOptions, "instanceId" | "deploymentMode" | "deploymentExposure"> = {},
+) {
   const router = Router();
   const service = cloudUpstreamService(db, options);
   const settings = instanceSettingsService(db);
