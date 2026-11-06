@@ -251,6 +251,64 @@ describeEmbeddedPostgres("secretService", () => {
     return { agentId, heartbeatRunId };
   }
 
+  it("keeps accepting an unchanged legacy OneCLI env binding, scoped to the holding target only", async () => {
+    const companyId = await seedCompany("Legacy OneCLI");
+    const otherCompanyId = await seedCompany("Other");
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `onecli-secret-api-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "synthetic-only",
+    });
+    const holder = randomUUID();
+    const stranger = randomUUID();
+    // Legacy row, written before the managed identity path existed (createBinding now refuses it).
+    await db.insert(companySecretBindings).values({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: holder,
+      configPath: "env.ONECLI_SECRET_API",
+      versionSelector: "latest",
+      required: true,
+    });
+    const ref = { secretId: secret.id, configPath: "env.ONECLI_SECRET_API" };
+
+    // Two saves in a row: the replaceAll delete/re-insert keeps the row, so the next save still passes.
+    for (let i = 0; i < 2; i++) {
+      await svc.syncSecretRefsForTarget(companyId, { targetType: "agent", targetId: holder }, [ref], { replaceAll: true });
+    }
+    const held = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, holder));
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({ secretId: secret.id, configPath: "env.ONECLI_SECRET_API", versionSelector: "latest", required: true });
+
+    // Another agent in the same company cannot ride on the holder's row.
+    await expect(
+      svc.syncSecretRefsForTarget(companyId, { targetType: "agent", targetId: stranger }, [ref], { replaceAll: true }),
+    ).rejects.toMatchObject({ status: 403 });
+    // Nor can the same target id in another company.
+    await expect(
+      svc.syncSecretRefsForTarget(otherCompanyId, { targetType: "agent", targetId: holder }, [ref], { replaceAll: true }),
+    ).rejects.toMatchObject({ status: 403 });
+    // Nor can a project with the same target id.
+    await expect(
+      svc.syncSecretRefsForTarget(companyId, { targetType: "project", targetId: holder }, [ref], { replaceAll: true }),
+    ).rejects.toMatchObject({ status: 403 });
+    // A changed attribute on the held path is refused, and the stored row is left intact.
+    await expect(
+      svc.syncSecretRefsForTarget(companyId, { targetType: "agent", targetId: holder }, [{ ...ref, required: false }], { replaceAll: true }),
+    ).rejects.toMatchObject({ status: 403 });
+    const after = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, holder));
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ required: true });
+  });
+
   it("rejects cross-company secret references during env normalization", async () => {
     const companyA = await seedCompany("A");
     const companyB = await seedCompany("B");
